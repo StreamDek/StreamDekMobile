@@ -191,10 +191,11 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
 
   useEffect(() => { void refreshUltraEntitlement(); }, [refreshUltraEntitlement]);
 
-  const setUltraBoostEnabled = useCallback(async (enabled: boolean) => {
+  const setUltraBoostEnabled = useCallback((enabled: boolean): Promise<void> => {
     streamCache.current.clear();
     setUltraBoostEnabledState(enabled);
-    await Storage.setItem(ULTRA_BOOST_STORAGE_KEY, enabled ? 'true' : 'false');
+    void Storage.setItem(ULTRA_BOOST_STORAGE_KEY, enabled ? 'true' : 'false').catch(() => {});
+    return Promise.resolve();
   }, []);
 
   const refreshAddons = useCallback(async () => {

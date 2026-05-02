@@ -44,7 +44,7 @@ export const UIStyleProvider = ({ children }: { children: React.ReactNode }) => 
     };
   }, [uiStyleKey]);
 
-  const setUiStyle = async (style: UIStyle) => {
+  const setUiStyle = (style: UIStyle): Promise<void> => {
     setUiStyleState(style);
     if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
     // Page style is a local UI preference, so never block the visible layout swap on disk IO.
@@ -52,6 +52,7 @@ export const UIStyleProvider = ({ children }: { children: React.ReactNode }) => 
       void Storage.setItem(uiStyleKey, style).catch(() => {});
       persistTimerRef.current = null;
     }, 50);
+    return Promise.resolve();
   };
 
   return (

@@ -3,7 +3,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   ActivityIndicator, FlatList, StatusBar, Modal, Pressable, Animated, Linking,
-  Image as RNImage, Dimensions, Platform,
+  Dimensions, Platform,
 } from 'react-native';
 import { runIdle } from '../utils/idleTask';
 import { Image } from 'expo-image';
@@ -1125,6 +1125,11 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const [watchlistRemovalIds, setWatchlistRemovalIds] = useState<string[]>([]);
   const [traktComments, setTraktComments] = useState<TraktCommentItem[]>([]);
 
+  useEffect(() => {
+    if (!ambientBackdropUri) return;
+    void Image.prefetch(ambientBackdropUri, 'memory-disk').catch(() => {});
+  }, [ambientBackdropUri]);
+
   useFocusEffect(
     useCallback(() => {
       const key = movieProgressKey(movieId);
@@ -1851,11 +1856,14 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
         <BlurTargetView ref={blurTargetRef} style={{ flex: 1 }}>
           {(vividAmbientEnabled || useGlassDetailLayout) && ambientBackdropUri ? (
             <View pointerEvents="none" style={useGlassDetailLayout ? styles.glassAmbientBackdrop : styles.ambientBackdrop}>
-              <RNImage
+              <Image
                 source={{ uri: ambientBackdropUri }}
                 style={useGlassDetailLayout ? styles.glassAmbientBackdropImage : styles.ambientBackdropImage}
-                resizeMode="cover"
+                contentFit="cover"
                 blurRadius={useGlassDetailLayout ? 34 : 20}
+                cachePolicy="memory-disk"
+                priority="high"
+                transition={0}
               />
               {useGlassDetailLayout ? <View style={styles.glassAmbientVeil} /> : null}
               <LinearGradient
@@ -2019,10 +2027,13 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
           ) : null}
           {isLightAppearance && uiStyle === 'centered' && detailHeroUri ? (
             <Animated.View pointerEvents="none" style={[styles.backdropGlassOverlay, { transform: [{ translateY: detailHeroTranslateY }, { scale: detailHeroScale }] }]}>
-              <RNImage
+              <Image
                 source={{ uri: detailHeroUri }}
                 blurRadius={4}
-                resizeMode="cover"
+                contentFit="cover"
+                cachePolicy="memory-disk"
+                priority="high"
+                transition={0}
                 style={[
                   StyleSheet.absoluteFillObject,
                   {

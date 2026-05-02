@@ -380,9 +380,128 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     textShadowOffset: { width: 0, height: 0 },
   },
   heroActionsCentered: { flexDirection: 'row' as const, alignItems: 'center', gap: 12, justifyContent: 'center' as const },
+  heroContentGlass: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 20,
+    paddingBottom: 14,
+    zIndex: 2,
+  },
+  heroGlassCard: {
+    alignSelf: 'center' as const,
+    width: Math.min(SCREEN_WIDTH - 40, 392),
+    minHeight: Math.min(HERO_HEIGHT - 64, 552),
+    borderRadius: 30,
+    backgroundColor: 'rgba(8,10,14,0.32)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+    overflow: 'hidden' as const,
+  },
+  heroGlassCardLight: {
+    backgroundColor: 'rgba(255,255,255,0.72)',
+    borderColor: 'rgba(255,255,255,0.34)',
+  },
+  heroGlassPosterWrap: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  heroGlassPoster: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  heroGlassPosterFallback: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  heroGlassImageScrim: {
+    ...StyleSheet.absoluteFillObject,
+    bottom: -2,
+  } as any,
+  heroGlassPosterFallbackText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase' as const,
+  },
+  heroGlassInfo: {
+    justifyContent: 'flex-end',
+    flex: 1,
+    minHeight: 0,
+    gap: 10,
+    padding: 16,
+    zIndex: 1,
+  },
+  heroGlassTop: {
+    gap: 8,
+    marginTop: 'auto',
+    alignItems: 'center' as const,
+  },
+  heroGlassBadge: {
+    alignSelf: 'center' as const,
+    marginBottom: 0,
+  },
+  heroGlassGenreText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    textAlign: 'center' as const,
+    textShadowColor: 'rgba(0,0,0,0.55)',
+    textShadowRadius: 6,
+    textShadowOffset: { width: 0, height: 1 },
+  },
+  heroGlassGenreTextLight: {
+    color: '#ffffff',
+    textShadowColor: 'rgba(0,0,0,0.55)',
+  },
+  heroGlassTitleLogo: {
+    width: '100%',
+    maxWidth: '100%',
+    marginBottom: 0,
+  },
+  heroGlassTitleFallback: {
+    color: '#ffffff',
+    fontSize: 28,
+    fontWeight: '900',
+    lineHeight: 32,
+    textShadowColor: 'rgba(0,0,0,0.55)',
+    textShadowRadius: 6,
+    textShadowOffset: { width: 0, height: 1 },
+    textAlign: 'center' as const,
+  },
+  heroGlassTitleFallbackLight: {
+    color: '#111827',
+    textShadowColor: 'rgba(255,255,255,0.0)',
+    textShadowRadius: 0,
+    textShadowOffset: { width: 0, height: 0 },
+  },
+  heroGlassSynopsis: {
+    color: 'rgba(255,255,255,0.88)',
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: 'center' as const,
+  },
+  heroGlassSynopsisLight: {
+    color: '#334155',
+  },
+  heroGlassActionRow: {
+    flexDirection: 'row' as const,
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap' as const,
+    marginTop: 2,
+    justifyContent: 'center' as const,
+  },
   dots: { 
     flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 2,
-    marginTop: 10, marginBottom: 8,
+    marginTop: 6, marginBottom: 2,
+  },
+  dotsGlass: {
+    marginTop: 24,
+    marginBottom: 0,
   },
 });
 
@@ -454,6 +573,7 @@ export const HomeScreen = ({ navigation }: any) => {
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const isDarkAppearance = resolvedAppearance === 'dark';
   const isMonochromeDark = isDarkAppearance;
+  const heroSectionHeight = uiStyle === 'glass' ? HERO_HEIGHT + 36 : HERO_HEIGHT;
   const { isMovieWatched, isSeriesWatched, toggleMovieWatched, markAllEpisodesWatched, unmarkSeriesWatched } = useWatched();
 
   const defaultSections = useMemo(() => [
@@ -1188,7 +1308,8 @@ export const HomeScreen = ({ navigation }: any) => {
       inputRange: [0, 1],
       outputRange: [18 * heroTransitionDirectionRef.current, 0],
     });
-    const centered = uiStyle === 'centered' || uiStyle === 'glass';
+    const centered = uiStyle === 'centered';
+    const glass = uiStyle === 'glass';
     const heroCloudColors: readonly [string, string, string, string] = isDarkAppearance
       ? ['rgba(0,0,0,0.00)', 'rgba(0,0,0,0.08)', 'rgba(0,0,0,0.06)', 'rgba(0,0,0,0.00)']
       : ['rgba(0,0,0,0.02)', 'rgba(0,0,0,0.44)', 'rgba(0,0,0,0.28)', 'rgba(0,0,0,0.04)'];
@@ -1198,11 +1319,11 @@ export const HomeScreen = ({ navigation }: any) => {
       !isDarkAppearance && styles.heroCloudMaskLightBleed,
     ];
     const showFallbackText = titleLogoState === 'error';
-
+    const glassPosterUri = item.poster || centeredBackgroundUri || getHeroBackgroundUri(item);
     const badgeRow = (
       <View
         style={[
-          centered ? styles.heroBadgeCentered : styles.heroBadge,
+          glass ? styles.heroGlassBadge : centered ? styles.heroBadgeCentered : styles.heroBadge,
           item.type === 'tv' ? styles.heroBadgeTv : styles.heroBadgeMovie,
           !isDarkAppearance && styles.heroBadgeLight,
           centered && { marginBottom: badgeBottomGap },
@@ -1214,6 +1335,11 @@ export const HomeScreen = ({ navigation }: any) => {
         </Text>
       </View>
     );
+    const glassGenreLabel = heroGenre ? (
+      <Text style={[styles.heroGlassGenreText, !isDarkAppearance && styles.heroGlassGenreTextLight]} numberOfLines={1}>
+        {heroGenre}
+      </Text>
+    ) : null;
 
     const titleSection = titleLogoState === 'error' ? (
       <Text
@@ -1281,6 +1407,116 @@ export const HomeScreen = ({ navigation }: any) => {
       titleSection
     );
 
+    const actionRow = (
+      <View style={glass ? styles.heroGlassActionRow : styles.heroIconRow}>
+        {item.rating > 0 && (
+          <View style={[styles.heroIconPill, !isDarkAppearance && styles.ratingPillLightClear, isMonochromeDark && styles.ratingPillMonoDark]}>
+            <RatingBadge rating={item.rating} size={12} textColor={ratingTextColor} ratingBackgroundColor={!isDarkAppearance ? 'transparent' : undefined} />
+          </View>
+        )}
+        {!!trailerKey && (
+          <TouchableOpacity
+            style={[styles.heroIconPill, !isDarkAppearance && styles.heroIconPillLight, isMonochromeDark && styles.heroIconPillMonoDark]}
+            activeOpacity={0.8}
+            onPress={() => setHeroTrailerVisible(trailerKey)}
+          >
+            <Ionicons name="film-outline" size={16} color={isMonochromeDark ? '#ffffff' : (isDarkAppearance ? '#111111' : '#111827')} />
+          </TouchableOpacity>
+        )}
+        <TouchableOpacity
+          style={[
+            styles.heroIconPill,
+            isMonochromeDark && styles.heroIconPillMonoDark,
+            inWatchlist && appearance === 'dark' && !isMonochromeDark && [
+              styles.heroIconPillActive,
+              { borderColor: colors.accentSoft, backgroundColor: colors.accent + '30' },
+            ],
+            inWatchlist && isMonochromeDark && styles.heroIconPillActiveMonoDark,
+            !isDarkAppearance && styles.heroIconPillLight,
+          ]}
+          activeOpacity={0.8}
+          onPress={() => toggleWatchlist(item)}
+        >
+          <Ionicons
+            name={inWatchlist ? 'bookmark' : 'bookmark-outline'}
+            size={16}
+            color={inWatchlist
+              ? (isDarkAppearance
+                ? (isMonochromeDark ? '#ffffff' : colors.accentSoft)
+                : '#111111')
+              : (isMonochromeDark ? '#ffffff' : '#111111')}
+          />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.heroIconPill,
+            isMonochromeDark && styles.heroIconPillMonoDark,
+            watched && isDarkAppearance && !isMonochromeDark && styles.heroIconPillWatchedActive,
+            watched && isMonochromeDark && styles.heroIconPillWatchedActiveMonoDark,
+            !isDarkAppearance && styles.heroIconPillLight,
+          ]}
+          activeOpacity={0.8}
+          onPress={() => { if (!user) { navigation.navigate('Auth'); return; } if (item.type !== 'tv') { void toggleMovieWatched(Number(item.id), item.imdbId, item.title, item.year); } else { setSeriesWatchConfirmItem(item); } }}
+        >
+          <Ionicons name={watched ? 'checkmark-circle' : 'checkmark-circle-outline'} size={16} color={isMonochromeDark ? '#ffffff' : watchedIconColor} />
+        </TouchableOpacity>
+      </View>
+    );
+
+    if (glass) {
+      return (
+        <Animated.View
+          style={[
+            styles.heroContentGlass,
+            {
+              top: insets.top + 14,
+              bottom: 14,
+              opacity: animationValue,
+              transform: [{ translateY }, { translateX }],
+            },
+          ]}
+        >
+          {glassGenreLabel ? (
+            <View style={{ alignItems: 'center', marginBottom: 10 }}>
+              {glassGenreLabel}
+            </View>
+          ) : null}
+          <View style={[styles.heroGlassCard, !isDarkAppearance && styles.heroGlassCardLight]}>
+            <View style={styles.heroGlassPosterWrap}>
+              {glassPosterUri ? (
+                <Image
+                  source={{ uri: glassPosterUri }}
+                  style={styles.heroGlassPoster}
+                  contentFit="cover"
+                  cachePolicy="memory-disk"
+                  priority="high"
+                  transition={0}
+                />
+              ) : (
+                <View style={styles.heroGlassPosterFallback}>
+                  <Text style={[styles.heroGlassPosterFallbackText, !isDarkAppearance && { color: '#111827' }]} numberOfLines={2}>
+                    {item.type === 'movie' ? t('home_movie_badge') : t('home_tv_badge')}
+                  </Text>
+                </View>
+              )}
+              <LinearGradient
+                colors={isDarkAppearance
+                  ? ['rgba(4,6,10,0.08)', 'rgba(4,6,10,0.22)', 'rgba(4,6,10,0.82)']
+                  : ['rgba(255,255,255,0.04)', 'rgba(255,255,255,0.10)', 'rgba(8,12,20,0.62)']}
+                locations={[0, 0.45, 1]}
+                style={styles.heroGlassImageScrim}
+                pointerEvents="none"
+              />
+            </View>
+            <View style={styles.heroGlassInfo}>
+              <View style={styles.heroGlassTop} />
+              {actionRow}
+            </View>
+          </View>
+        </Animated.View>
+      );
+    }
+
     if (centered) {
       return (
         <Animated.View style={[styles.heroContentCentered, { opacity: animationValue, transform: [{ translateY }, { translateX }] }]}>
@@ -1325,47 +1561,7 @@ export const HomeScreen = ({ navigation }: any) => {
               onPress={() => handleHeroPlayPress(item)}
             />
           </View>
-          <View style={styles.heroIconRow}>
-            {item.rating > 0 && <View style={[styles.heroIconPill, !isDarkAppearance && styles.ratingPillLightClear, isMonochromeDark && styles.ratingPillMonoDark]}><RatingBadge rating={item.rating} size={12} textColor={ratingTextColor} ratingBackgroundColor={!isDarkAppearance ? 'transparent' : undefined} /></View>}
-            {!!trailerKey && <TouchableOpacity style={[styles.heroIconPill, !isDarkAppearance && styles.heroIconPillLight, isMonochromeDark && styles.heroIconPillMonoDark]} activeOpacity={0.8} onPress={() => setHeroTrailerVisible(trailerKey)}><Ionicons name="film-outline" size={16} color={isMonochromeDark ? '#ffffff' : (isDarkAppearance ? '#111111' : '#111827')} /></TouchableOpacity>}
-            <TouchableOpacity
-              style={[
-                styles.heroIconPill,
-                isMonochromeDark && styles.heroIconPillMonoDark,
-                inWatchlist && appearance === 'dark' && !isMonochromeDark && [
-                  styles.heroIconPillActive,
-                  { borderColor: colors.accentSoft, backgroundColor: colors.accent + '30' },
-                ],
-                inWatchlist && isMonochromeDark && styles.heroIconPillActiveMonoDark,
-                !isDarkAppearance && styles.heroIconPillLight,
-              ]}
-              activeOpacity={0.8}
-              onPress={() => toggleWatchlist(item)}
-            >
-              <Ionicons
-                name={inWatchlist ? 'bookmark' : 'bookmark-outline'}
-                size={16}
-                color={inWatchlist
-                  ? (isDarkAppearance
-                    ? (isMonochromeDark ? '#ffffff' : colors.accentSoft)
-                    : '#111111')
-                  : (isMonochromeDark ? '#ffffff' : '#111111')}
-              />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.heroIconPill,
-                isMonochromeDark && styles.heroIconPillMonoDark,
-                watched && isDarkAppearance && !isMonochromeDark && styles.heroIconPillWatchedActive,
-                watched && isMonochromeDark && styles.heroIconPillWatchedActiveMonoDark,
-                !isDarkAppearance && styles.heroIconPillLight,
-              ]}
-              activeOpacity={0.8}
-              onPress={() => { if (!user) { navigation.navigate('Auth'); return; } if (item.type !== 'tv') { void toggleMovieWatched(Number(item.id), item.imdbId, item.title, item.year); } else { setSeriesWatchConfirmItem(item); } }}
-            >
-              <Ionicons name={watched ? 'checkmark-circle' : 'checkmark-circle-outline'} size={16} color={isMonochromeDark ? '#ffffff' : watchedIconColor} />
-            </TouchableOpacity>
-          </View>
+          {actionRow}
         </Animated.View>
       );
     }
@@ -1435,6 +1631,7 @@ export const HomeScreen = ({ navigation }: any) => {
   const renderHeroItem = (index: number, isOverlay: boolean) => {
     const item = heroItems[index];
     if (!item) return null;
+    const glass = uiStyle === 'glass';
     const key = `${item.type}_${item.id}`;
     const backgroundUri = heroBackdrops[key] ?? getHeroBackgroundUri(item);
     const imagePosition = item.type === 'tv' ? { top: '30%' } : { top: '28%' };
@@ -1457,32 +1654,43 @@ export const HomeScreen = ({ navigation }: any) => {
       : ['rgba(13,13,26,0.00)', 'rgba(13,13,26,0.14)', 'rgba(255,255,255,0.95)'];
 
     return (
-      <Animated.View style={[styles.heroSlide, StyleSheet.absoluteFill, { opacity }]}>
-        <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ scale }] }]}>
-          {backgroundUri ? (
-            <>
-              <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ translateX: bgTranslateX }, { translateY: heroScrollTranslateY }] }]}>
-                <Image source={{ uri: backgroundUri }} style={styles.heroBg} contentFit="cover" contentPosition={imagePosition} cachePolicy="memory-disk" priority="high" transition={0} />
-              </Animated.View>
-        {isDarkAppearance && <View style={styles.heroPosterBackdropTint} />}
-            </>
-          ) : null}
-        </Animated.View>
-        {isDarkAppearance ? (
-          <LinearGradient
-            colors={heroCloudColors}
-            locations={[0, 0.36, 0.68, 1]}
-            style={[styles.heroCloudMask, styles.heroCloudMaskLightBleed]}
-            pointerEvents="none"
-          />
-        ) : null}
-        {isDarkAppearance ? (
-          <LinearGradient
-            colors={bottomFadeColors}
-            locations={[0, 0.38, 1]}
-            style={[styles.heroBottomFade, { height: heroBottomFadeHeight }]}
-            pointerEvents="none"
-          />
+      <Animated.View
+        style={[
+          styles.heroSlide,
+          StyleSheet.absoluteFill,
+          glass && { height: heroSectionHeight, overflow: 'visible' as const },
+          { opacity },
+        ]}
+      >
+        {uiStyle !== 'glass' ? (
+          <>
+            <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ scale }] }]}>
+              {backgroundUri ? (
+                <>
+                  <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ translateX: bgTranslateX }, { translateY: heroScrollTranslateY }] }]}>
+                    <Image source={{ uri: backgroundUri }} style={styles.heroBg} contentFit="cover" contentPosition={imagePosition} cachePolicy="memory-disk" priority="high" transition={0} />
+                  </Animated.View>
+                  {isDarkAppearance && <View style={styles.heroPosterBackdropTint} />}
+                </>
+              ) : null}
+            </Animated.View>
+            {isDarkAppearance ? (
+              <LinearGradient
+                colors={heroCloudColors}
+                locations={[0, 0.36, 0.68, 1]}
+                style={[styles.heroCloudMask, styles.heroCloudMaskLightBleed]}
+                pointerEvents="none"
+              />
+            ) : null}
+            {isDarkAppearance ? (
+              <LinearGradient
+                colors={bottomFadeColors}
+                locations={[0, 0.38, 1]}
+                style={[styles.heroBottomFade, { height: heroBottomFadeHeight }]}
+                pointerEvents="none"
+              />
+            ) : null}
+          </>
         ) : null}
         {isOverlay && renderHeroContent(item, heroContentAnim)}
       </Animated.View>
@@ -1500,19 +1708,23 @@ export const HomeScreen = ({ navigation }: any) => {
     <View style={{ flex: 1 }}>
       <BlurTargetView ref={blurTargetRef} style={{ flex: 1 }}>
     <View style={styles.container}>
-      {vividAmbientEnabled && activeAmbientBackdropUri ? (
+      {(uiStyle === 'glass' || vividAmbientEnabled) && activeAmbientBackdropUri ? (
         <View pointerEvents="none" style={styles.ambientBackdrop}>
           <RNImage
             source={{ uri: activeAmbientBackdropUri }}
-            style={styles.ambientBackdropImage}
+            style={[styles.ambientBackdropImage, uiStyle === 'glass' && { opacity: isDarkAppearance ? 0.72 : 0.62 }]}
             resizeMode="cover"
-            blurRadius={20}
+            blurRadius={uiStyle === 'glass' ? 28 : 20}
           />
           <LinearGradient
-            colors={isDarkAppearance
-              ? ['rgba(7,8,12,0.05)', 'rgba(7,8,12,0.62)', colors.bg]
-              : ['rgba(255,255,255,0.05)', 'rgba(255,255,255,0.48)', colors.bg]}
-            locations={[0, 0.42, 1]}
+            colors={uiStyle === 'glass'
+              ? (isDarkAppearance
+                ? ['rgba(7,8,12,0.16)', 'rgba(7,8,12,0.54)', colors.bg]
+                : ['rgba(255,255,255,0.12)', 'rgba(255,255,255,0.32)', colors.bg])
+              : (isDarkAppearance
+                ? ['rgba(7,8,12,0.05)', 'rgba(7,8,12,0.62)', colors.bg]
+                : ['rgba(255,255,255,0.05)', 'rgba(255,255,255,0.48)', colors.bg])}
+            locations={uiStyle === 'glass' ? [0, 0.36, 1] : [0, 0.42, 1]}
             style={styles.ambientBackdropScrim}
           />
         </View>
@@ -1527,13 +1739,13 @@ export const HomeScreen = ({ navigation }: any) => {
       )}
       <Animated.ScrollView ref={homeScrollViewRef as any} onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })} scrollEventThrottle={16} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 12 }}>
         {heroItems.length > 0 && (
-          <View style={{ marginBottom: 18 }}>
-            <View style={{ height: HERO_HEIGHT }} {...heroPanResponder.panHandlers}>
+          <View style={{ marginBottom: uiStyle === 'glass' ? 24 : 18 }}>
+            <View style={{ height: heroSectionHeight }} {...heroPanResponder.panHandlers}>
               <TouchableOpacity activeOpacity={1} onPress={() => handleItemPress(heroItems[heroIndex])} style={StyleSheet.absoluteFill}>
                 {heroPrevIndex !== null && <View style={StyleSheet.absoluteFill}>{renderHeroItem(heroPrevIndex, false)}</View>}
                 {renderHeroItem(heroIndex, true)}
               </TouchableOpacity>
-              {isDarkAppearance && (
+              {isDarkAppearance && uiStyle !== 'glass' && (
                 <LinearGradient
                   colors={[colors.bg, 'transparent'] as const}
                   style={{ position: 'absolute', bottom: -100, left: 0, right: 0, height: 100 }}
@@ -1541,7 +1753,7 @@ export const HomeScreen = ({ navigation }: any) => {
                 />
               )}
             </View>
-            <View style={styles.dots}>
+            <View style={[styles.dots, uiStyle === 'glass' && styles.dotsGlass]}>
               {heroItems.map((_, i) => (
                 <AnimatedDot
                   key={`hero-dot-${i}`}

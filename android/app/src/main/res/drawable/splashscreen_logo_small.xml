@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:top="48dp"
+        android:bottom="48dp"
+        android:left="48dp"
+        android:right="48dp">
+        <bitmap
+            android:src="@drawable/splashscreen_logo"
+            android:gravity="center" />
+    </item>
+</layer-list>

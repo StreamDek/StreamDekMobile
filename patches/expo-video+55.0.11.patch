@@ -1,0 +1,151 @@
+diff --git a/node_modules/expo-video/android/build.gradle b/node_modules/expo-video/android/build.gradle
+index 7067dd8..27ecee5 100644
+--- a/node_modules/expo-video/android/build.gradle
++++ b/node_modules/expo-video/android/build.gradle
+@@ -25,6 +25,7 @@ dependencies {
+   implementation "androidx.media3:media3-exoplayer-hls:${androidxMedia3Version}"
+   implementation "androidx.media3:media3-ui:${androidxMedia3Version}"
+   implementation "androidx.media3:media3-datasource-okhttp:${androidxMedia3Version}"
++  implementation "io.github.anilbeesetti:nextlib-media3ext:1.3.0-0.4.0" // Matches Media3 1.3.0
+ 
+   def fragment_version = "1.8.9"
+   implementation "androidx.fragment:fragment:$fragment_version"
+diff --git a/node_modules/expo-video/android/src/main/java/expo/modules/video/VideoModule.kt b/node_modules/expo-video/android/src/main/java/expo/modules/video/VideoModule.kt
+index 336b4aa..bc4e22e 100644
+--- a/node_modules/expo-video/android/src/main/java/expo/modules/video/VideoModule.kt
++++ b/node_modules/expo-video/android/src/main/java/expo/modules/video/VideoModule.kt
+@@ -210,6 +210,16 @@ class VideoModule : Module() {
+           ref.status
+         }
+ 
++      Property("decodingMode")
++        .get { ref: VideoPlayer ->
++          ref.decodingMode
++        }
++
++      Property("audioPassthrough")
++        .get { ref: VideoPlayer ->
++          ref.audioPassthrough
++        }
++
+       Property("staysActiveInBackground")
+         .get { ref: VideoPlayer ->
+           ref.staysActiveInBackground
+diff --git a/node_modules/expo-video/android/src/main/java/expo/modules/video/player/VideoPlayer.kt b/node_modules/expo-video/android/src/main/java/expo/modules/video/player/VideoPlayer.kt
+index ee4e976..9530449 100644
+--- a/node_modules/expo-video/android/src/main/java/expo/modules/video/player/VideoPlayer.kt
++++ b/node_modules/expo-video/android/src/main/java/expo/modules/video/player/VideoPlayer.kt
+@@ -18,6 +18,7 @@ import androidx.media3.common.Tracks
+ import androidx.media3.common.util.UnstableApi
+ import androidx.media3.exoplayer.DecoderReuseEvaluation
+ import androidx.media3.exoplayer.DefaultRenderersFactory
++import io.github.anilbeesetti.nextlib.media3ext.NextRenderersFactory
+ import androidx.media3.exoplayer.ExoPlayer
+ import androidx.media3.exoplayer.analytics.AnalyticsListener
+ import androidx.media3.exoplayer.hls.HlsManifest
+@@ -60,9 +61,16 @@ import kotlin.time.DurationUnit
+ @UnstableApi
+ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSource?, playerBuilderOptions: expo.modules.video.records.PlayerBuilderOptions? = null) : AutoCloseable, SharedObject(appContext), IntervalUpdateEmitter {
+   // This improves the performance of playing DRM-protected content
+-  private var renderersFactory = DefaultRenderersFactory(context)
+-    .forceEnableMediaCodecAsynchronousQueueing()
+-    .setEnableDecoderFallback(true)
++  private var renderersFactory = NextRenderersFactory(context).apply {
++    forceEnableMediaCodecAsynchronousQueueing()
++    setEnableDecoderFallback(true)
++    
++    when (playerBuilderOptions?.decodingMode?.lowercase()) {
++      "software" -> setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
++      "hardware_plus" -> setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
++      else -> setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
++    }
++  }
+   private val listeners: MutableList<WeakReference<VideoPlayerListener>> = mutableListOf()
+   private val currentVideoViewRef = MutableWeakReference<VideoView?>(null) { new, old ->
+     sendEvent(PlayerEvent.TargetViewChanged(new, old))
+@@ -71,13 +79,20 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
+   val loadControl: VideoPlayerLoadControl = VideoPlayerLoadControl()
+   val subtitles: VideoPlayerSubtitles = VideoPlayerSubtitles(this)
+   val audioTracks: VideoPlayerAudioTracks = VideoPlayerAudioTracks(this)
+-  val trackSelector = DefaultTrackSelector(context)
++  val trackSelector = DefaultTrackSelector(context).also { selector ->
++    selector.setParameters(
++      selector.buildUponParameters()
++        .setPreferredAudioLanguage("en")
++        .setAllowAudioMixedMimeTypeAdaptiveness(true)
++    )
++  }
+ 
+   val player = ExoPlayer
+     .Builder(context, renderersFactory)
+     .apply {
+       setLooper(context.mainLooper)
+       setLoadControl(loadControl)
++      setTrackSelector(trackSelector)
+       playerBuilderOptions?.seekBackwardIncrement?.let {
+         setSeekBackIncrementMs((it).toLong(DurationUnit.MILLISECONDS).coerceIn(1, 999_000))
+       }
+@@ -136,6 +151,9 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
+     sendEvent(PlayerEvent.VolumeChanged(new, old))
+   }
+ 
++  var decodingMode: String? = playerBuilderOptions?.decodingMode ?: "hardware"
++  var audioPassthrough: Boolean = playerBuilderOptions?.audioPassthrough ?: false
++
+   var muted: Boolean by IgnoreSameSet(false) { new: Boolean, old: Boolean ->
+     appContext.mainQueue.launch {
+       player.volume = if (new) 0f else userVolume
+diff --git a/node_modules/expo-video/android/src/main/java/expo/modules/video/records/PlayerBuilderOptions.kt b/node_modules/expo-video/android/src/main/java/expo/modules/video/records/PlayerBuilderOptions.kt
+index 43f6190..e7d4155 100644
+--- a/node_modules/expo-video/android/src/main/java/expo/modules/video/records/PlayerBuilderOptions.kt
++++ b/node_modules/expo-video/android/src/main/java/expo/modules/video/records/PlayerBuilderOptions.kt
+@@ -9,5 +9,7 @@ import kotlin.time.Duration
+ @UnstableApi
+ class PlayerBuilderOptions(
+   @Field var seekBackwardIncrement: Duration? = null,
+-  @Field var seekForwardIncrement: Duration? = null
++  @Field var seekForwardIncrement: Duration? = null,
++  @Field var decodingMode: String? = "hardware_plus",
++  @Field var audioPassthrough: Boolean = false
+ ) : Record, Serializable
+diff --git a/node_modules/expo-video/build/VideoPlayer.types.d.ts b/node_modules/expo-video/build/VideoPlayer.types.d.ts
+index 458dd23..6b26f71 100644
+--- a/node_modules/expo-video/build/VideoPlayer.types.d.ts
++++ b/node_modules/expo-video/build/VideoPlayer.types.d.ts
+@@ -111,6 +111,17 @@ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
+      * Indicates the current status of the player.
+      */
+     readonly status: VideoPlayerStatus;
++    /**
++     * Decoding mode of the player.
++     * - `hardware`: Uses platform hardware decoders.
++     * - `hardware_plus`: Uses hardware decoders with software fallback.
++     * - `software`: Forces software decoding (FFmpeg).
++     */
++    readonly decodingMode: 'hardware' | 'hardware_plus' | 'software';
++    /**
++     * Boolean value whether the audio passthrough is enabled.
++     */
++    readonly audioPassthrough: boolean;
+     /**
+      * Boolean value determining whether the player should show the now playing notification.
+      *
+@@ -714,5 +725,17 @@ export type PlayerBuilderOptions = {
+      * @platform android
+      */
+     seekForwardIncrement?: number;
++    /**
++     * Decoding mode to use.
++     * @default 'software'
++     * @platform android
++     */
++    decodingMode?: 'hardware' | 'hardware_plus' | 'software';
++    /**
++     * Whether to enable audio passthrough for AC3/DTS.
++     * @default false
++     * @platform android
++     */
++    audioPassthrough?: boolean;
+ };
+ //# sourceMappingURL=VideoPlayer.types.d.ts.map
+\ No newline at end of file

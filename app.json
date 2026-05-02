@@ -1,0 +1,41 @@
+{
+  "expo": {
+    "name": "StreamDek",
+    "slug": "streamdek",
+    "scheme": "streamdek",
+    "orientation": "portrait",
+    "icon": "./assets/app-logo.png",
+    "userInterfaceStyle": "automatic",
+    "backgroundColor": "#0d0d1a",
+    "splash": {
+      "image": "./assets/app-logo.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0d0d1a"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0d0d1a",
+        "foregroundImage": "./assets/app-logo.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "com.anonymous.streamdekmobile"
+    },
+    "web": {
+      "favicon": "./assets/app-logo.png"
+    },
+    "plugins": [
+      [
+        "expo-video",
+        {
+          "supportsPictureInPicture": true
+        }
+      ],
+      "expo-image",
+      "react-native-google-cast",
+      "expo-web-browser"
+    ]
+  }
+}

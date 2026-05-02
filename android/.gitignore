@@ -1,0 +1,26 @@
+# OSX
+#
+.DS_Store
+
+# Android/IntelliJ
+#
+build/
+.idea
+.gradle
+local.properties
+*.iml
+*.hprof
+.cxx/
+
+# Bundle artifacts
+*.jsbundle
+tmp_libs_check/*.zip
+tmp_mpv_apk/*.zip
+
+# Other
+*.log
+*.apk
+*.aab
+*.keystore
+*.jks
+*.keystore.properties

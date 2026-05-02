@@ -1,0 +1,22 @@
+export const WITTY_LOADING_MESSAGES = [
+  "Cooking the noodles... please don't eat the screen.",
+  "Grinding the seeds... for a stronger signal.",
+  "Bribing the internet hamsters with extra sunflower seeds.",
+  "Adjusting the flux capacitor... almost there.",
+  "Polishing the pixels for maximum shine.",
+  "Negotiating with the bitrate gods.",
+  "Hunting for a stream that actually has audio.",
+  "Untangling the fiber optic cables.",
+  "Teaching the player how to speak English.",
+  "Summoning the 4K spirits.",
+  "Waiting for the satellites to align... or for a cloud to move.",
+  "Calculating the velocity of an unladen swallow.",
+  "Defragmenting the popcorn buckets.",
+  "Downloading more RAM... just kidding.",
+  "Optimizing the 'Best' in 'Best Stream'.",
+  "Reticulating splines...",
+  "Buffering the cosmic microwave background.",
+  "Searching for the remote under the digital couch.",
+  "Loading the drama... please hold your popcorn.",
+  "Convincing the internet that 'buffer' is a bad word."
+];

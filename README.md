@@ -1,6 +1,6 @@
 # streamdek-mobile
 
-The primary StreamDek client - a React Native / Expo app for Android. Users can browse and search movies and shows, pick streams from installed addons, resolve torrents through debrid providers, and play media through a native MPV-based video player with full subtitle support.
+The primary StreamDek client - a React Native / Expo app for Android. Users can browse and search movies and shows, pick streams from installed addons, resolve torrents through debrid providers, and play media through a native MPV-based video player with full subtitle support and more.
 
 ---
 

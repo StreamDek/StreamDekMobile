@@ -179,7 +179,7 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
     if (heroTimerRef.current) clearInterval(heroTimerRef.current);
     heroTimerRef.current = setInterval(() => {
       advanceLaunchHero();
-    }, 9000);
+    }, 3_500);
 
     return () => {
       if (heroTimerRef.current) {

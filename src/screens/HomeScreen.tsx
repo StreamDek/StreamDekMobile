@@ -1083,7 +1083,7 @@ export const HomeScreen = ({ navigation }: any) => {
       if (heroLengthRef.current <= 1) return;
       const next = (heroIndexRef.current + 1) % heroLengthRef.current;
       slideTo(next);
-    }, 2_000);
+    }, 8_000);
   }, [slideTo]);
 
   const heroPanResponder = useRef(

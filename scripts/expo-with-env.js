@@ -3,7 +3,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 const projectRoot = path.resolve(__dirname, '..');
-const dotenvFiles = ['../.env', '.env', '.env.local'];
+const dotenvFiles = ['.env', '.env.local', '../.env'];
 const validModes = new Set(['development', 'production', 'test']);
 
 function stripWrappingQuotes(value) {
@@ -72,12 +72,11 @@ function extractMode(args) {
   return { mode, nextArgs };
 }
 
-loadDotenvFile(path.join(projectRoot, dotenvFiles[0]));
-const rootApiUrl = process.env.STREAMDEK_API_URL;
-
-for (const dotenvFile of dotenvFiles.slice(1)) {
+for (const dotenvFile of dotenvFiles) {
   loadDotenvFile(path.join(projectRoot, dotenvFile));
 }
+
+const rootApiUrl = process.env.STREAMDEK_API_URL;
 
 const [, , ...cliArgs] = process.argv;
 const { mode: requestedMode, nextArgs } = extractMode(cliArgs);
@@ -99,7 +98,7 @@ if (rootApiUrl) {
   process.env.EXPO_PUBLIC_API_BASE_URL = rootApiUrl;
 } else {
   console.error(
-    '[expo-with-env] Missing STREAMDEK_API_URL in the root .env. The mobile app reads its backend URL from streamdek/.env only.'
+    '[expo-with-env] Missing STREAMDEK_API_URL. Add it to .env or .env.local in the project root (e.g. STREAMDEK_API_URL=http://localhost:3000).'
   );
   process.exit(1);
 }

@@ -35,6 +35,9 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Upgrade npm
+        run: npm install -g npm@11
+
       - name: Validate release version
         id: version
         shell: bash

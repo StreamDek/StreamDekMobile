@@ -900,7 +900,7 @@ export const HomeScreen = ({ navigation }: any) => {
       }
     }
 
-    const nextHeroItems = combined.slice(0, 5);
+    const nextHeroItems = combined.slice(0, 8);
     const currentKey = heroItems[heroIndexRef.current] ? getHeroItemKey(heroItems[heroIndexRef.current]) : null;
     const nextIndex = currentKey
       ? nextHeroItems.findIndex(item => getHeroItemKey(item) === currentKey)

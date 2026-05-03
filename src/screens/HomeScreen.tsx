@@ -1034,6 +1034,12 @@ export const HomeScreen = ({ navigation }: any) => {
   }, [heroItems]);
 
   const slideTo = useCallback((index: number) => {
+    if (heroLengthRef.current <= 0) {
+      heroIndexRef.current = 0;
+      setHeroIndex(0);
+      setHeroPrevIndex(null);
+      return;
+    }
     const target = Math.max(0, Math.min(heroLengthRef.current - 1, index));
     if (target === heroIndexRef.current) return;
 
@@ -1074,6 +1080,7 @@ export const HomeScreen = ({ navigation }: any) => {
   const startHeroTimer = useCallback(() => {
     if (heroTimerRef.current) clearInterval(heroTimerRef.current);
     heroTimerRef.current = setInterval(() => {
+      if (heroLengthRef.current <= 1) return;
       const next = (heroIndexRef.current + 1) % heroLengthRef.current;
       slideTo(next);
     }, 15_000);

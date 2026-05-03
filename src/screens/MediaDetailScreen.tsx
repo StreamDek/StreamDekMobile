@@ -795,12 +795,15 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   },
   glassPlayWrap: {
     paddingHorizontal: 18,
-    marginTop: 18,
-    marginBottom: 16,
+    marginTop: 14,
+    marginBottom: 8,
     width: '100%',
   },
   glassSectionSpacing: {
-    marginTop: 18,
+    marginTop: 14,
+  },
+  glassCastSection: {
+    marginTop: 12,
   },
   glassStreamsViewport: {
     minHeight: 150,
@@ -1050,6 +1053,11 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     setHeroBackdropHeight(uiStyle === 'centered' ? 465 : 345);
   }, [uiStyle]);
 
+  useEffect(() => {
+    setIsDescriptionExpanded(false);
+    setShowDescriptionMore(false);
+  }, [cacheKey, uiStyle]);
+
   // ── Sheet state ─────────────────────────────────────────────────────────────
   // Episode long-press action sheet
   const [epSheetEp, setEpSheetEp] = useState<any>(null);
@@ -1267,7 +1275,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
 
   const primaryPlayProgress = type === 'tv' ? seriesDisplayProgress : movieDisplayProgress;
   const movieContinueLabel = useMemo(() => {
-    if (type === 'tv' || uiStyle !== 'centered') return null;
+    if (type === 'tv' || (uiStyle !== 'centered' && uiStyle !== 'glass')) return null;
     const formatted = formatContinueTime(resumeFromSec);
     return formatted ? `${t('media_continue')} from ${formatted}` : null;
   }, [resumeFromSec, t, type, uiStyle]);
@@ -1988,7 +1996,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
 
       <View style={{ flex: 1 }}>
         {useGlassDetailLayout ? (
-          <View style={[styles.glassHeroSection, { paddingTop: insets.top + 14 }]}>
+          <View style={[styles.glassHeroSection, { paddingTop: insets.top + 24 }]}>
             <Text numberOfLines={2} style={styles.glassHeroTitle}>{media.title}</Text>
             <View style={styles.glassHeroCard}>
               {detailHeroUri ? (
@@ -2122,9 +2130,29 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                 </View>
                 {useGlassDetailLayout && (
                   <View style={styles.glassSynopsisBlock}>
-                    <Text style={styles.glassSynopsisText} numberOfLines={isDescriptionExpanded ? undefined : 4}>
+                    <Text
+                      style={styles.glassSynopsisText}
+                      numberOfLines={isDescriptionExpanded ? undefined : 3}
+                      onTextLayout={(e) => {
+                        if (!showDescriptionMore && e.nativeEvent.lines.length > 3) {
+                          setShowDescriptionMore(true);
+                        }
+                      }}
+                    >
                       {media.description || t('media_no_description')}
                     </Text>
+                    {!showDescriptionMore && (
+                      <Text
+                        style={[styles.glassSynopsisText, { position: 'absolute', opacity: 0, left: 20, right: 20 }]}
+                        onTextLayout={(e) => {
+                          if (e.nativeEvent.lines.length > 3) {
+                            setShowDescriptionMore(true);
+                          }
+                        }}
+                      >
+                        {media.description || t('media_no_description')}
+                      </Text>
+                    )}
                     {showDescriptionMore && (
                       <TouchableOpacity
                         onPress={() => setIsDescriptionExpanded(!isDescriptionExpanded)}
@@ -2409,7 +2437,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
         </View>
 
         {useGlassDetailLayout && type === 'tv' && showSeasonsPanel && (
-          <View style={{ paddingHorizontal: 14, paddingTop: 16, paddingBottom: 8 }}>
+          <View style={{ paddingHorizontal: 14, paddingTop: 10, paddingBottom: 0 }}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.seasonPicker} contentContainerStyle={{ paddingHorizontal: 14, flexGrow: 1, justifyContent: 'center' }}>
               {(media.seasons || []).map((s: any) => (
                 <TouchableOpacity
@@ -2704,7 +2732,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
               )}
 
               {useGlassDetailLayout && media.cast?.length > 0 && (
-                <View style={{ marginTop: 20 }}>
+                <View style={styles.glassCastSection}>
                   <Text style={styles.featuredSectionHeading}>{t('media_cast')}</Text>
                   <FlatList
                     horizontal

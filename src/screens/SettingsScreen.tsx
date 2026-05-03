@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Image,
-  StatusBar, Modal, Pressable, PermissionsAndroid, Platform, TextInput, Alert, ActivityIndicator, Linking,
+  StatusBar, Modal, Pressable, PermissionsAndroid, Platform, TextInput, Alert, ActivityIndicator, Linking, BackHandler,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { BlurTargetView } from 'expo-blur';
 import { AppleToggle } from '../components/AppleToggle';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -658,6 +659,50 @@ export const SettingsScreen = ({ navigation }: any) => {
   const [tmdbModalOpen, setTmdbModalOpen] = useState(false);
   const [pickerModal, setPickerModal] = useState<'profile' | 'cache' | 'decoder' | 'surface' | 'quality' | 'fileSize' | null>(null);
   const [signOutModal, setSignOutModal] = useState(false);
+  const [legalModal, setLegalModal] = useState(false);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+        if (pageStyleOpen) {
+          setPageStyleOpen(false);
+          return true;
+        }
+        if (appearanceOpen) {
+          setAppearanceOpen(false);
+          return true;
+        }
+        if (themeOpen) {
+          setThemeOpen(false);
+          return true;
+        }
+        if (cwStyleOpen) {
+          setCwStyleOpen(false);
+          return true;
+        }
+        if (pickerModal) {
+          setPickerModal(null);
+          return true;
+        }
+        if (tmdbModalOpen) {
+          setTmdbModalOpen(false);
+          return true;
+        }
+        if (legalModal) {
+          setLegalModal(false);
+          return true;
+        }
+        if (signOutModal) {
+          setSignOutModal(false);
+          return true;
+        }
+        navigation.navigate('Home');
+        return true;
+      });
+
+      return () => subscription.remove();
+    }, [appearanceOpen, cwStyleOpen, legalModal, navigation, pageStyleOpen, pickerModal, signOutModal, themeOpen, tmdbModalOpen]),
+  );
   const [disconnectModal, setDisconnectModal] = useState<{ id: string; name: string } | null>(null);
   const [disconnectingDeviceId, setDisconnectingDeviceId] = useState<string | null>(null);
 
@@ -684,7 +729,6 @@ export const SettingsScreen = ({ navigation }: any) => {
   const [subtitleLangOpen, setSubtitleLangOpen] = useState(false);
   const [subtitleCacheSize, setSubtitleCacheSize] = useState<number | null>(null);
   const [addonUrlDraft, setAddonUrlDraft] = useState(addonUrl);
-  const [legalModal, setLegalModal] = useState(false);
   const sectionSettingsKey = profileScopedStorageKey(SETTINGS_KEY, user?.uid, activeStreamProfile?.id);
 
   const isServerMode = torrentConfig.streamingMode === 'server';
@@ -1690,7 +1734,7 @@ export const SettingsScreen = ({ navigation }: any) => {
             </View>
             <View style={styles.optionInfo}>
               <Text style={styles.optionTitle}>Ambient Background</Text>
-              <Text style={styles.optionSub}>Show a colourful ambient glow behind the home and detail screens.</Text>
+              <Text style={styles.optionSub}>Show a colourful ambient glow behind the home and detail screens. Applies to Classic and Centered Themes.</Text>
             </View>
             <AppleToggle
               value={vividAmbientEnabled}

@@ -97,10 +97,10 @@ const makeStyles = (c: ThemeColors) => {
   },
   disconnectBtnText: { color: '#ffffff', fontSize: 13, fontWeight: '700' },
   ultraCard: {
-    backgroundColor: '#9f1239',
+    backgroundColor: '#c0392b',
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: 'rgba(253,224,71,0.45)',
+    borderColor: 'rgba(255,255,255,0.20)',
     padding: 16,
     marginBottom: 16,
   },
@@ -117,7 +117,7 @@ const makeStyles = (c: ThemeColors) => {
   },
   ultraInfo: { flex: 1 },
   ultraTitle: { color: '#ffffff', fontSize: 16, fontWeight: '900' },
-  ultraSubtitle: { color: '#fde047', fontSize: 12, lineHeight: 17, marginTop: 4, fontWeight: '600' },
+  ultraSubtitle: { color: 'rgba(255,255,255,0.86)', fontSize: 12, lineHeight: 17, marginTop: 4, fontWeight: '600' },
   // ── Install FAB ──
   fab: {
     position: 'absolute', right: 16, bottom: BOTTOM_NAV_HEIGHT + 16,
@@ -473,13 +473,6 @@ export const AddonsScreen = ({ navigation, route }: any) => {
           </>
         ) : (
           <>
-          {ultraEntitled ? (
-            <UltraBoostCard
-              enabled={ultraBoostEnabled}
-              onToggle={value => { void setUltraBoostEnabled(value); }}
-              styles={styles}
-            />
-          ) : null}
           <Text style={{ color: colors.subText, fontSize: 13, lineHeight: 20, marginBottom: 16 }}>
             {t('addons_debrid_desc')}
             {accounts.length > 1 ? t('addons_debrid_priority') : ''}
@@ -711,7 +704,7 @@ function UltraBoostCard({
     <View style={styles.ultraCard}>
       <View style={styles.ultraTop}>
         <View style={styles.ultraIcon}>
-          <Ionicons name="flash" size={22} color="#fde047" />
+          <Ionicons name="flash" size={22} color="#ffffff" />
         </View>
         <View style={styles.ultraInfo}>
           <Text style={styles.ultraTitle}>SD Ultra</Text>
@@ -722,7 +715,7 @@ function UltraBoostCard({
         <AppleToggle
           value={enabled}
           onValueChange={onToggle}
-          onColor="#fde047"
+          onColor="#ffffff"
           offColor="rgba(255,255,255,0.24)"
         />
       </View>

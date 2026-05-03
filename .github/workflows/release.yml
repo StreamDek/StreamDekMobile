@@ -1,0 +1,190 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
+
+jobs:
+  android-release:
+    name: Build signed Android APK
+    runs-on: ubuntu-latest
+    concurrency:
+      group: streamdek-android-release-${{ github.ref_name }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Validate release version
+        id: version
+        shell: bash
+        env:
+          ANDROID_PACKAGE_JSON: ${{ vars.ANDROID_PACKAGE_JSON }}
+        run: |
+          set -Eeuo pipefail
+
+          tag_name="${GITHUB_REF_NAME}"
+          version_name="${tag_name#v}"
+          package_json="${ANDROID_PACKAGE_JSON:-package.json}"
+
+          if [ ! -f "$package_json" ]; then
+            echo "Package version file not found: $package_json"
+            exit 1
+          fi
+
+          package_version="$(node -e "const pkg=require('./${package_json}'); if (!pkg.version) process.exit(1); process.stdout.write(pkg.version);")"
+
+          if [ "$package_version" != "$version_name" ]; then
+            echo "Release tag $tag_name does not match $package_json version $package_version."
+            echo "Update package.json to $version_name or push a matching tag."
+            exit 1
+          fi
+
+          package_dir="$(dirname "$package_json")"
+          node "$package_dir/scripts/validate-version.js" "$version_name"
+
+          echo "version_name=$version_name" >> "$GITHUB_OUTPUT"
+
+      - name: Detect Android project
+        id: android
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          if [ -f "android/gradlew" ]; then
+            project_dir="android"
+          else
+            project_dir="$(find . -maxdepth 4 -name gradlew -path '*/android/gradlew' -print -quit | sed 's#/gradlew$##')"
+          fi
+
+          if [ -z "${project_dir:-}" ] || [ ! -f "$project_dir/gradlew" ]; then
+            echo "No Android Gradle project found."
+            exit 1
+          fi
+          chmod +x "$project_dir/gradlew"
+
+          app_dir="$project_dir/app"
+          if [ ! -f "$app_dir/build.gradle" ] && [ ! -f "$app_dir/build.gradle.kts" ]; then
+            echo "Android app module not found at $app_dir."
+            exit 1
+          fi
+
+          echo "project_dir=$project_dir" >> "$GITHUB_OUTPUT"
+          echo "app_dir=$app_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Write CI environment file
+        shell: bash
+        env:
+          STREAMDEK_API_URL_VAR: ${{ vars.STREAMDEK_API_URL }}
+          STREAMDEK_API_URL_SECRET: ${{ secrets.STREAMDEK_API_URL }}
+          EXPO_PUBLIC_API_BASE_URL_VAR: ${{ vars.EXPO_PUBLIC_API_BASE_URL }}
+          EXPO_PUBLIC_API_BASE_URL_SECRET: ${{ secrets.EXPO_PUBLIC_API_BASE_URL }}
+          EXPO_PUBLIC_APP_ENV: production
+        run: |
+          set -Eeuo pipefail
+
+          api_url="${STREAMDEK_API_URL_VAR:-${STREAMDEK_API_URL_SECRET:-${EXPO_PUBLIC_API_BASE_URL_VAR:-${EXPO_PUBLIC_API_BASE_URL_SECRET:-}}}}"
+
+          if [ -z "$api_url" ]; then
+            echo "STREAMDEK_API_URL repository variable or secret is required."
+            exit 1
+          fi
+
+          {
+            printf 'STREAMDEK_API_URL=%s\n' "$api_url"
+            printf 'EXPO_PUBLIC_API_BASE_URL=%s\n' "$api_url"
+            printf 'EXPO_PUBLIC_APP_ENV=%s\n' "$EXPO_PUBLIC_APP_ENV"
+          } > .env
+
+      - name: Install JavaScript dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [ -f "package-lock.json" ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Decode Android keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          for required_secret in ANDROID_KEYSTORE_BASE64 ANDROID_STORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!required_secret:-}" ]; then
+              echo "$required_secret secret is required."
+              exit 1
+            fi
+          done
+          if ! printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "${{ steps.android.outputs.app_dir }}/streamdek-release.jks"; then
+            echo "ANDROID_KEYSTORE_BASE64 is not valid base64."
+            exit 1
+          fi
+
+      - name: Build release APK
+        working-directory: ${{ steps.android.outputs.project_dir }}
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PATH: streamdek-release.jks
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          STREAMDEK_VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          STREAMDEK_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          set -Eeuo pipefail
+          ./gradlew --no-daemon clean assembleRelease
+
+      - name: Collect APK
+        id: apk
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p dist
+          apk_path="$(find "${{ steps.android.outputs.app_dir }}/build/outputs/apk/release" -name '*.apk' -print -quit)"
+          if [ -z "${apk_path:-}" ]; then
+            echo "Release APK was not produced."
+            exit 1
+          fi
+          release_apk="dist/streamdek-${{ github.ref_name }}.apk"
+          cp "$apk_path" "$release_apk"
+          echo "apk_path=$release_apk" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamdek-${{ github.ref_name }}-apk
+          path: ${{ steps.apk.outputs.apk_path }}
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.apk.outputs.apk_path }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true

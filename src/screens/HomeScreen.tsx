@@ -884,23 +884,23 @@ export const HomeScreen = ({ navigation }: any) => {
       combined.push(item);
     };
 
-    for (let round = 0; round < 3 && combined.length < 12; round++) {
+    for (let round = 0; round < 3 && combined.length < 5; round++) {
       for (const bucket of buckets) {
         addItem(bucket[round]);
-        if (combined.length >= 12) break;
+        if (combined.length >= 5) break;
       }
     }
 
-    if (combined.length < 12) {
+    if (combined.length < 5) {
       for (const bucket of buckets) {
-        for (let i = 3; i < bucket.length && combined.length < 12; i++) {
+        for (let i = 3; i < bucket.length && combined.length < 5; i++) {
           addItem(bucket[i]);
         }
-        if (combined.length >= 12) break;
+        if (combined.length >= 5) break;
       }
     }
 
-    const nextHeroItems = combined.slice(0, 12);
+    const nextHeroItems = combined.slice(0, 5);
     const currentKey = heroItems[heroIndexRef.current] ? getHeroItemKey(heroItems[heroIndexRef.current]) : null;
     const nextIndex = currentKey
       ? nextHeroItems.findIndex(item => getHeroItemKey(item) === currentKey)
@@ -908,7 +908,7 @@ export const HomeScreen = ({ navigation }: any) => {
     const resolvedIndex = nextIndex >= 0 ? nextIndex : 0;
 
     setHeroItems(nextHeroItems);
-    heroLengthRef.current = Math.min(combined.length, 12);
+    heroLengthRef.current = Math.min(combined.length, 5);
     heroIndexRef.current = resolvedIndex;
     heroItemKeyRef.current = nextHeroItems[resolvedIndex] ? getHeroItemKey(nextHeroItems[resolvedIndex]) : null;
     setHeroIndex(resolvedIndex);
@@ -1083,7 +1083,7 @@ export const HomeScreen = ({ navigation }: any) => {
       if (heroLengthRef.current <= 1) return;
       const next = (heroIndexRef.current + 1) % heroLengthRef.current;
       slideTo(next);
-    }, 15_000);
+    }, 2_000);
   }, [slideTo]);
 
   const heroPanResponder = useRef(

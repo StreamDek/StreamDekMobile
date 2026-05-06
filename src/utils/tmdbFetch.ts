@@ -279,6 +279,22 @@ async function dispatchDirect(path: string, apiKey: string): Promise<any> {
     return { results: (data.results ?? []).map((i: any) => normalizeListItem(i, 'tv')) };
   }
 
+  // /tmdb/networks — watch providers as streaming network cards
+  if (path === '/tmdb/networks') {
+    const [movieProviders, tvProviders] = await Promise.all([
+      get(`${TMDB_BASE}/watch/providers/movie?${base}&watch_region=US`).catch(() => ({ results: [] })),
+      get(`${TMDB_BASE}/watch/providers/tv?${base}&watch_region=US`).catch(() => ({ results: [] })),
+    ]);
+    const seen = new Set<number>();
+    const results: any[] = [];
+    for (const p of [...(movieProviders.results ?? []), ...(tvProviders.results ?? [])]) {
+      if (seen.has(p.provider_id)) continue;
+      seen.add(p.provider_id);
+      results.push({ id: p.provider_id, name: p.provider_name, logo: img(p.logo_path, 'w500') });
+    }
+    return { results: results.slice(0, 30) };
+  }
+
   // Unhandled — fall through to backend
   const r = await fetch(`${API_BASE}${path}`);
   if (!r.ok) throw new Error(`Backend ${r.status}`);

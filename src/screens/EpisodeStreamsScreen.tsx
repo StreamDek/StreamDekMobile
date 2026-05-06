@@ -20,6 +20,7 @@ import { useWatched } from '../context/WatchedContext';
 import { useStreamSelectionSettings } from '../context/StreamSelectionContext';
 import { useWatchProgress, episodeProgressKey } from '../context/WatchProgressContext';
 import { ConfirmSheet } from '../components/ConfirmSheet';
+import { ActionSheet } from '../components/ActionSheet';
 import { PrimaryActionButton, getPrimaryActionPalette } from '../components/PrimaryActionButton';
 import { StackBottomNav, BOTTOM_NAV_HEIGHT } from '../components/StackBottomNav';
 import { selectBestStream, sortStreams, scoreStream } from '../utils/streamSelection';
@@ -689,24 +690,6 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
       );
     }
 
-    if (!user) {
-      return (
-        <View style={styles.emptyWrap}>
-          <View style={[styles.emptyIcon, { backgroundColor: colors.accent + '18' }]}>
-            <Ionicons name="person-circle-outline" size={34} color={colors.accent} />
-          </View>
-          <Text style={styles.emptyTitle}>{t('streams_sign_in_title')}</Text>
-          <Text style={styles.emptyDesc}>{t('streams_sign_in_desc')}</Text>
-          <TouchableOpacity style={styles.emptyBtn} onPress={() => navigation.navigate('Auth')} activeOpacity={0.85}>
-            <Text style={styles.emptyBtnText}>{t('streams_sign_in_btn')}</Text>
-          </TouchableOpacity>
-          <Text style={{ color: colors.mutedText, fontSize: 11, textAlign: 'center', marginTop: 16, lineHeight: 17 }}>
-            Supports Real-Debrid, AllDebrid, Premiumize and any Stremio-compatible addon.
-          </Text>
-        </View>
-      );
-    }
-
     if (!hasStreamSources) {
       return (
         <View style={styles.emptyWrap}>
@@ -947,7 +930,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
           })()}
 
           {/* Play best stream button */}
-          {user && hasStreamSources && (() => {
+          {hasStreamSources && (() => {
             const ready = streams.length > 0;
             const searching = (loading || pendingAddons > 0) && !ready;
             const buttonProgress = episodeProgress != null && episodeProgress < 100 ? episodeProgress : null;
@@ -1036,16 +1019,31 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
         {renderContent()}
       </ScrollView>
 
-        {/* Debrid required sheet */}
-        <ConfirmSheet
+        <ActionSheet
           visible={debridSheet}
           onClose={() => setDebridSheet(false)}
-          icon="flash-outline"
           title={t('streams_debrid_required_title')}
-          message={t('streams_debrid_required_desc')}
-          confirmLabel={t('streams_setup_debrid')}
-          cancelLabel={t('common_cancel')}
-          onConfirm={() => navigation.navigate('Addons', { initialTab: 'debrid' })}
+          subtitle={t('streams_debrid_required_desc')}
+          actions={[
+            {
+              label: 'Find Direct Sources',
+              icon: 'extension-puzzle-outline',
+              variant: 'accent',
+              onPress: () => navigation.navigate('Addons', { initialTab: 'addons' }),
+            },
+            {
+              label: t('streams_setup_debrid'),
+              icon: 'flash-outline',
+              variant: 'default',
+              onPress: () => navigation.navigate('Addons', { initialTab: 'debrid' }),
+            },
+            {
+              label: t('common_cancel'),
+              icon: 'close-outline',
+              variant: 'cancel',
+              onPress: () => {},
+            },
+          ]}
         />
 
         {/* Debrid resolving overlay */}

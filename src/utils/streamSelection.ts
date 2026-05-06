@@ -166,6 +166,10 @@ export function isLikelyPlayableVideoStream(stream: AddonStream): boolean {
   return extensions.some(ext => VALID_VIDEO_EXTENSIONS.has(ext));
 }
 
+export function isAllowedPlaybackStream(stream: AddonStream): boolean {
+  return Boolean(stream.url || stream.cachedBy.length > 0);
+}
+
 function hasHdr(text: string): boolean {
   return (
     text.includes('HDR10+') ||
@@ -401,6 +405,7 @@ function preferredQualityScore(text: string, parsedQuality: string | null, prefe
 // Main scoring function - Higher score = Higher rank in the list
 export function scoreStream(stream: AddonStream, options?: StreamScoreOptions): number {
   if (!isLikelyPlayableVideoStream(stream)) return -10000; // Immediate filter
+  if (!isAllowedPlaybackStream(stream)) return -10000; // Raw torrents are not allowed
   const text = streamText(stream);
   if (BLACKLISTED_CODECS.some(codec => text.includes(codec))) return -5000; // Block bad codecs
 

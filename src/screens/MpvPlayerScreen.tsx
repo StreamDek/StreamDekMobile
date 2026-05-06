@@ -40,9 +40,9 @@ import { ScrobblePayload, useTrakt } from '../context/TraktContext';
 import { useWatched } from '../context/WatchedContext';
 import { useWatchProgress } from '../context/WatchProgressContext';
 import { scoreStream } from '../utils/streamSelection';
+import { isAllowedPlaybackStream } from '../utils/streamSelection';
 import { parseStream } from '../utils/streamParser';
 import { Storage } from '../utils/storage';
-import { createLocalTorrentPlaybackUrl } from '../utils/torrentServerClient';
 import { useSubtitles } from '../context/SubtitleContext';
 import { SubtitleResult } from '../services/subtitles/SubtitleProvider';
 import { useWatchlistRemove, WatchlistRemoveItem } from '../hooks/useWatchlistRemove';
@@ -51,6 +51,7 @@ import {
   progressFileStorageKey,
   progressIndexStorageKey,
 } from '../utils/profileStorage';
+import { ConfirmSheet } from '../components/ConfirmSheet';
 
 const MAGIC_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
@@ -66,6 +67,7 @@ const MPV_LOADING_MESSAGES = [
   'Swapping reels and hoping for fewer gremlins...',
   'Cueing up a different cut...',
 ];
+const GUEST_ACCOUNT_PROMPT_SHOWN_KEY = 'streamdek_guest_account_prompt_shown';
 
 type ResizeMode = 'contain' | 'cover' | 'stretch';
 type MpvSourceOption = {
@@ -263,7 +265,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const { saveProgress, clearProgress } = useWatchProgress();
   const storageOwnerId = getProfileStorageOwnerId(user?.uid ?? null, activeProfile?.id ?? null);
   const legacyOwnerId = user?.uid ?? null;
-  const { accounts: debridAccounts, resolveStream, streamTorrent } = useDebrid();
+  const { accounts: debridAccounts, resolveStream } = useDebrid();
   const { config: serverConfig } = useTorrentServer();
   const {
     decoderMode,
@@ -423,6 +425,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const [paused, setPaused] = useState(false);
   const [progressBarWidth, setProgressBarWidth] = useState(1);
   const progressBarWidthRef = useRef(1);
+  const guestPromptHandledRef = useRef(false);
   const [showControls, setShowControls] = useState(true);
   const [loading, setLoading] = useState(true);
   const [startupTrackSelectionReady, setStartupTrackSelectionReady] = useState(false);
@@ -452,6 +455,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const [showLoadingOverlay, setShowLoadingOverlay] = useState(true);
   const [resolvedStreamUrl, setResolvedStreamUrl] = useState<string | null>(initialResolvedStreamUrl);
   const [resolvedSourceStreams, setResolvedSourceStreams] = useState<AddonStream[]>([]);
+  const [showGuestAccountPrompt, setShowGuestAccountPrompt] = useState(false);
   const [activeSourceIdentityState, setActiveSourceIdentityState] = useState<string>(() => {
     const routeIdentity = normalizeSourceIdentity(routeActiveSourceIdentity);
     if (routeIdentity) return routeIdentity;
@@ -775,11 +779,12 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const resolveSourceStreamUrl = useCallback(async (stream: AddonStream): Promise<string | null> => {
     if (stream.url) return stream.url;
     if (!stream.infoHash) return null;
+    if (!isAllowedPlaybackStream(stream)) return null;
 
     const hint = stream.behaviorHints?.filename;
     const magnet = `magnet:?xt=urn:btih:${stream.infoHash}${hint ? `&dn=${encodeURIComponent(hint)}` : ''}`;
 
-    if (debridAccounts.length > 0) {
+    if (stream.cachedBy.length > 0 && debridAccounts.length > 0) {
       try {
         const resolved = await resolveStream(stream.infoHash, magnet, hint);
         if (resolved?.url) return resolved.url;
@@ -788,24 +793,8 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
       }
     }
 
-    if (serverConfig.streamingMode === 'server') {
-      try {
-        const localStreamUrl = await createLocalTorrentPlaybackUrl(stream.infoHash, magnet, hint);
-        if (localStreamUrl) return localStreamUrl;
-      } catch {
-        // Ignore and keep fallback chain.
-      }
-    }
-
-    try {
-      const backendStreamUrl = await streamTorrent(stream.infoHash, magnet, hint);
-      if (backendStreamUrl) return backendStreamUrl;
-    } catch {
-      // Ignore failure.
-    }
-
     return null;
-  }, [debridAccounts.length, resolveStream, serverConfig.streamingMode, streamTorrent]);
+  }, [debridAccounts.length, resolveStream]);
 
   useEffect(() => {
     if (!resolveOnMount || resolvedStreamUrl) return;
@@ -1015,6 +1004,24 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
       cancelled = true;
     };
   }, [forceStartFromBeginning, progressKey, resumeFrom, storageOwnerId]);
+
+  useEffect(() => {
+    if (user || guestPromptHandledRef.current || loading || error || currentTime <= 0) {
+      return;
+    }
+
+    guestPromptHandledRef.current = true;
+    void (async () => {
+      try {
+        const alreadyShown = await Storage.getItem(GUEST_ACCOUNT_PROMPT_SHOWN_KEY);
+        if (alreadyShown) return;
+        await Storage.setItem(GUEST_ACCOUNT_PROMPT_SHOWN_KEY, '1');
+        setShowGuestAccountPrompt(true);
+      } catch {
+        // Ignore prompt persistence failures.
+      }
+    })();
+  }, [currentTime, error, loading, user]);
 
   const mpvNativeViewAvailable = isMpvNativeViewAvailable();
   const canRenderNativeMpv = mpvNativeViewAvailable && typeof resolvedStreamUrl === 'string' && resolvedStreamUrl.length > 0;
@@ -2259,6 +2266,19 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
           </View>
         </View>
       </Modal>
+      <ConfirmSheet
+        visible={showGuestAccountPrompt}
+        onClose={() => setShowGuestAccountPrompt(false)}
+        icon="person-add-outline"
+        title="Create an account"
+        message="Sync with TV, save your add-ons, and connect Trakt without interrupting guest playback."
+        confirmLabel="Create Account"
+        cancelLabel="Not Now"
+        onConfirm={() => {
+          setShowGuestAccountPrompt(false);
+          navigation.navigate('Auth');
+        }}
+      />
     </View>
   );
 };

@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { API_BASE } from '../constants/api';
 import { tmdbFetch } from '../utils/tmdbFetch';
+import { fetchMetadataCatalog } from '../utils/metadataCatalogFetch';
 import { Storage } from '../utils/storage';
 import { MediaCard } from '../components/MediaCard';
 import { ActionSheet } from '../components/ActionSheet';
@@ -167,6 +168,14 @@ export const BrowseScreen = ({ navigation, route }: any) => {
   // Build the correct endpoint depending on whether a genre is selected
   const buildUrl = useCallback((pageNum: number, genre: Genre | null, options?: { contentType?: 'all' | 'movie' | 'tv' }) => {
     if (endpoint) {
+      if (String(endpoint).startsWith('/cinemeta/')) {
+        const params = new URLSearchParams();
+        const skip = Math.max(0, (pageNum - 1) * 100);
+        if (skip > 0) params.set('skip', String(skip));
+        return params.size > 0
+          ? `${endpoint}${String(endpoint).includes('?') ? '&' : '?'}${params.toString()}`
+          : endpoint;
+      }
       const params = new URLSearchParams();
       params.set('page', String(pageNum));
       if (isNetworkBrowse) {
@@ -185,9 +194,15 @@ export const BrowseScreen = ({ navigation, route }: any) => {
 
   const fetchPage = useCallback(async (pageNum: number, genre: Genre | null, append = false, options?: { contentType?: 'all' | 'movie' | 'tv' }) => {
     try {
-      const res  = await tmdbFetch(buildUrl(pageNum, genre, options));
-      if (!res.ok) return false;
-      const data = await res.json();
+      const url = buildUrl(pageNum, genre, options);
+      const data = endpoint && String(endpoint).startsWith('/cinemeta/')
+        ? await fetchMetadataCatalog(url)
+        : await (async () => {
+          const res  = await tmdbFetch(url);
+          if (!res.ok) return null;
+          return res.json();
+        })();
+      if (!data) return false;
       setTotalPages(data.total_pages || 1);
       if (append) setItems(prev => [...prev, ...(data.results || [])]);
       else        setItems(data.results || []);
@@ -197,7 +212,7 @@ export const BrowseScreen = ({ navigation, route }: any) => {
       console.error('Browse fetch failed:', e);
       return false;
     }
-  }, [buildUrl]);
+  }, [buildUrl, endpoint]);
 
   useEffect(() => {
     let cancelled = false;

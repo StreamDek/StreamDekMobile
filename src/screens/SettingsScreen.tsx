@@ -45,19 +45,40 @@ type HomeSection = {
   enabled: boolean;
 };
 
-const DEFAULT_SECTIONS: HomeSection[] = [
-  { id: 'networks', endpoint: '/tmdb/networks', enabled: true },
-  { id: 'trending_movie', endpoint: '/tmdb/trending/movie', enabled: true },
-  { id: 'trending_tv', endpoint: '/tmdb/trending/tv', enabled: true },
-  { id: 'documentaries', endpoint: '/tmdb/discover?type=movie&genre_id=99&sort_by=popularity.desc', enabled: false },
-  { id: 'popular_movie', endpoint: '/tmdb/popular/movie', enabled: false },
-  { id: 'popular_tv', endpoint: '/tmdb/popular/tv', enabled: false },
-];
+const CURRENT_YEAR = new Date().getFullYear();
+
+function getDefaultSections(provider: 'cinemeta' | 'tmdb'): HomeSection[] {
+  if (provider === 'cinemeta') {
+    return [
+      { id: 'networks', endpoint: '/tmdb/networks', enabled: true },
+      { id: 'featured_movie', endpoint: '/cinemeta/catalog/movie/imdbRating', enabled: true },
+      { id: 'featured_tv', endpoint: '/cinemeta/catalog/series/imdbRating', enabled: true },
+      { id: 'popular_movie', endpoint: '/cinemeta/catalog/movie/top', enabled: true },
+      { id: 'popular_tv', endpoint: '/cinemeta/catalog/series/top', enabled: true },
+      { id: 'documentaries', endpoint: '/cinemeta/catalog/movie/top?genre=Documentary', enabled: false },
+      { id: 'new_movie', endpoint: `/cinemeta/catalog/movie/year?genre=${CURRENT_YEAR}`, enabled: false },
+      { id: 'new_tv', endpoint: `/cinemeta/catalog/series/year?genre=${CURRENT_YEAR}`, enabled: false },
+    ];
+  }
+
+  return [
+    { id: 'networks', endpoint: '/tmdb/networks', enabled: true },
+    { id: 'trending_movie', endpoint: '/tmdb/trending/movie', enabled: true },
+    { id: 'trending_tv', endpoint: '/tmdb/trending/tv', enabled: true },
+    { id: 'documentaries', endpoint: '/tmdb/discover?type=movie&genre_id=99&sort_by=popularity.desc', enabled: false },
+    { id: 'popular_movie', endpoint: '/tmdb/popular/movie', enabled: false },
+    { id: 'popular_tv', endpoint: '/tmdb/popular/tv', enabled: false },
+  ];
+}
 
 const SETTINGS_KEY = 'home_sections';
 
 // Map section id → translation key
 const SECTION_TITLE_KEY: Record<string, any> = {
+  featured_movie: 'Featured Movies',
+  featured_tv: 'Featured Series',
+  new_movie: 'New Movies',
+  new_tv: 'New Series',
   popular_movie: 'section_popular_movies',
   popular_tv: 'section_popular_tv',
   trending_movie: 'section_trending_movies',
@@ -597,7 +618,14 @@ export const SettingsScreen = ({ navigation }: any) => {
     setVividAmbientEnabled,
     isReady: displaySettingsReady,
   } = useDisplaySettings();
-  const { tmdbKeyEnabled, tmdbApiKey, setTmdbApiKey, setTmdbKeyEnabled } = useTmdbApiKey();
+  const {
+    tmdbKeyEnabled,
+    tmdbApiKey,
+    metadataProvider,
+    setTmdbApiKey,
+    setTmdbKeyEnabled,
+    setMetadataProvider,
+  } = useTmdbApiKey();
   const { profiles, activeProfile: activeStreamProfile, clearActiveProfile } = useProfile();
   const [tmdbKeyInput, setTmdbKeyInput] = React.useState('');
   React.useEffect(() => { setTmdbKeyInput(tmdbApiKey); }, [tmdbApiKey]);
@@ -647,8 +675,9 @@ export const SettingsScreen = ({ navigation }: any) => {
   const { colors } = theme;
   const styles = useMemo(() => makeStyles(colors, resolvedAppearance), [colors, resolvedAppearance]);
   const visibleThemes = THEMES;
+  const defaultSections = useMemo(() => getDefaultSections(metadataProvider), [metadataProvider]);
 
-  const [sections, setSections] = useState(DEFAULT_SECTIONS);
+  const [sections, setSections] = useState(defaultSections);
   const [themeOpen, setThemeOpen] = useState(false);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [pageStyleOpen, setPageStyleOpen] = useState(false);
@@ -797,15 +826,15 @@ export const SettingsScreen = ({ navigation }: any) => {
         const savedSections: any[] = JSON.parse(resolvedValue);
         const savedMap = new Map(savedSections.map(s => [s.id, s]));
         const known = savedSections
-          .filter(s => DEFAULT_SECTIONS.find(d => d.id === s.id))
-          .map(s => ({ ...DEFAULT_SECTIONS.find(d => d.id === s.id)!, enabled: s.enabled }));
-        const newOnes = DEFAULT_SECTIONS.filter(d => !savedMap.has(d.id));
+          .filter(s => defaultSections.find(d => d.id === s.id))
+          .map(s => ({ ...defaultSections.find(d => d.id === s.id)!, enabled: s.enabled }));
+        const newOnes = defaultSections.filter(d => !savedMap.has(d.id));
         setSections([...known, ...newOnes]);
       } else {
-        setSections(DEFAULT_SECTIONS);
+        setSections(defaultSections);
       }
     });
-  }, [sectionSettingsKey]);
+  }, [defaultSections, sectionSettingsKey]);
 
   useEffect(() => {
     void refreshTorrentStatus();
@@ -955,6 +984,30 @@ export const SettingsScreen = ({ navigation }: any) => {
     const deviceType = String(device.deviceType ?? '').toLowerCase();
     return deviceType === 'tv' || platform.includes('tv');
   });
+  const tmdbStorageTitle = user ? 'TMDB Key Storage' : 'Local TMDB Key';
+  const tmdbStorageSubtitle = user
+    ? 'Saved locally on this device first, then synced to your signed-in account.'
+    : 'Saved only on this device for now. Sign in later if you want it synced across devices.';
+  const metadataProviderLabel = metadataProvider === 'tmdb' ? 'StreamDek Catalog' : 'Cinemeta';
+  const metadataProviderSubtitle = metadataProvider === 'tmdb'
+    ? (user
+      ? 'StreamDek Catalog active. Using your TMDB key with account sync.'
+      : 'StreamDek Catalog active. Using your TMDB key stored on this device.')
+    : 'Built-in Cinemeta catalog with zero setup. Selected by default.';
+  const tmdbKeyRequired = metadataProvider === 'tmdb' && !tmdbApiKey.trim();
+
+  const handleMetadataProviderSelect = React.useCallback(async (provider: 'cinemeta' | 'tmdb') => {
+    await setMetadataProvider(provider);
+  }, [setMetadataProvider]);
+
+  const handleSaveTmdbKey = React.useCallback(async () => {
+    const key = tmdbKeyInput.trim();
+    await setTmdbApiKey(key);
+    await setTmdbKeyEnabled(key.length > 0);
+    if (key.length > 0 && metadataProvider !== 'tmdb') {
+      await setMetadataProvider('tmdb');
+    }
+  }, [metadataProvider, setMetadataProvider, setTmdbApiKey, setTmdbKeyEnabled, tmdbKeyInput]);
 
   const handleDisconnectDevice = async (deviceId: string, deviceName: string) => {
     setDisconnectModal({ id: deviceId, name: deviceName });
@@ -1289,6 +1342,25 @@ export const SettingsScreen = ({ navigation }: any) => {
             />
           )}
 
+          <View style={styles.divider} />
+          <NavRow
+            icon="extension-puzzle-outline"
+            label={t('settings_addons')}
+            subtitle={t('settings_addons_sub')}
+            iconColor={ic('#00b4d8')}
+            c={colors}
+            onPress={() => navigation.navigate('Addons')}
+          />
+          <View style={styles.divider} />
+          <NavRow
+            icon="film-outline"
+            label="Catalog & Metadata"
+            subtitle={`${metadataProviderLabel} selected. ${metadataProviderSubtitle}`}
+            iconColor={ic('#f59e0b')}
+            c={colors}
+            onPress={() => setTmdbModalOpen(true)}
+          />
+
           {user && (
             <>
               {false ? (
@@ -1339,17 +1411,6 @@ export const SettingsScreen = ({ navigation }: any) => {
                 iconColor={ic('#ed1c24')}
                 c={colors}
                 onPress={() => navigation.navigate('TraktSettings')}
-              />
-              <View style={styles.divider} />
-              <NavRow icon="extension-puzzle-outline" label={t('settings_addons')} subtitle={t('settings_addons_sub')} iconColor={ic('#00b4d8')} c={colors} onPress={() => navigation.navigate('Addons')} />
-              <View style={styles.divider} />
-              <NavRow
-                icon="film-outline"
-                label="TMDB API Key"
-                subtitle="Metadata Enrichment"
-                iconColor={ic('#f59e0b')}
-                c={colors}
-                onPress={() => setTmdbModalOpen(true)}
               />
               <View style={styles.divider} />
               <NavRow
@@ -1624,9 +1685,11 @@ export const SettingsScreen = ({ navigation }: any) => {
                       <Ionicons name="chevron-down" size={14} color={colors.accentSoft} />
                     </TouchableOpacity>
                   </View>
-                  <Text style={styles.layoutSectionTitle}>
-                    {section.id === 'documentaries' ? 'Documentaries' : t(SECTION_TITLE_KEY[section.id])}
-                  </Text>
+                      <Text style={styles.layoutSectionTitle}>
+                        {typeof SECTION_TITLE_KEY[section.id] === 'string' && SECTION_TITLE_KEY[section.id].startsWith('section_')
+                          ? t(SECTION_TITLE_KEY[section.id])
+                          : (SECTION_TITLE_KEY[section.id] ?? section.id)}
+                      </Text>
                   <AppleToggle
                     value={section.enabled}
                     onValueChange={() => toggle(section.id)}
@@ -2513,7 +2576,7 @@ export const SettingsScreen = ({ navigation }: any) => {
           <View style={{ backgroundColor: colors.cardBg, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: insets.bottom + 16, borderTopWidth: 1, borderColor: colors.border }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingTop: 20, paddingBottom: 16 }}>
               <Ionicons name="film-outline" size={22} color={ic('#f59e0b')} style={{ marginRight: 10 }} />
-              <Text style={{ flex: 1, color: colors.textPrimary, fontSize: 18, fontWeight: '800' }}>TMDB API Key</Text>
+              <Text style={{ flex: 1, color: colors.textPrimary, fontSize: 18, fontWeight: '800' }}>Catalog & Metadata</Text>
               <TouchableOpacity onPress={() => setTmdbModalOpen(false)} activeOpacity={0.75}
                 style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: colors.border, justifyContent: 'center', alignItems: 'center' }}>
                 <Ionicons name="close" size={18} color={colors.textPrimary} />
@@ -2521,61 +2584,121 @@ export const SettingsScreen = ({ navigation }: any) => {
             </View>
             <ScrollView style={{ maxHeight: 420 }} contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 8 }} showsVerticalScrollIndicator={false}>
               <View style={[styles.card, { marginBottom: 0 }]}>
-                <View style={styles.optionRow}>
-                  <View style={styles.optionInfo}>
-                    <Text style={styles.optionTitle}>Use Account TMDB Key</Text>
-                    <Text style={styles.optionSub}>Saved to the logged-in account and reused across your devices.</Text>
+                <View style={{ paddingHorizontal: 18, paddingTop: 18, paddingBottom: 8, gap: 10 }}>
+                  <Text style={[styles.optionTitle, { fontSize: 14 }]}>Choose your catalog source</Text>
+                  <View style={{ gap: 10 }}>
+                    <TouchableOpacity
+                      activeOpacity={0.82}
+                      onPress={() => { void handleMetadataProviderSelect('cinemeta'); }}
+                      style={[
+                        styles.pickerOption,
+                        metadataProvider === 'cinemeta' && { borderColor: colors.toggleOn, backgroundColor: colors.accent + '14' },
+                      ]}
+                    >
+                      <View style={styles.pickerOptionTextWrap}>
+                        <Text style={styles.pickerOptionTitle}>Cinemeta</Text>
+                        <Text style={styles.pickerOptionSub}>Built-in catalog with no sign-in and no API key required.</Text>
+                      </View>
+                      {metadataProvider === 'cinemeta' ? (
+                        <Ionicons name="checkmark-circle" size={20} color={colors.toggleOn} />
+                      ) : (
+                        <Ionicons name="chevron-forward" size={18} color={colors.placeholder} />
+                      )}
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      activeOpacity={0.82}
+                      onPress={() => { void handleMetadataProviderSelect('tmdb'); }}
+                      style={[
+                        styles.pickerOption,
+                        metadataProvider === 'tmdb' && { borderColor: colors.toggleOn, backgroundColor: colors.accent + '14' },
+                      ]}
+                    >
+                      <View style={styles.pickerOptionTextWrap}>
+                        <Text style={styles.pickerOptionTitle}>StreamDek Catalog</Text>
+                        <Text style={styles.pickerOptionSub}>
+                          {user
+                            ? 'Richer catalog powered by your TMDB key. Saved on device and synced to your account.'
+                            : 'Richer catalog powered by your TMDB key. Saved on this device until you sign in.'}
+                        </Text>
+                      </View>
+                      {metadataProvider === 'tmdb' ? (
+                        <Ionicons name="checkmark-circle" size={20} color={colors.toggleOn} />
+                      ) : (
+                        <Ionicons name="chevron-forward" size={18} color={colors.placeholder} />
+                      )}
+                    </TouchableOpacity>
                   </View>
-                  <AppleToggle
-                    value={tmdbKeyEnabled}
-                    onValueChange={value => { void setTmdbKeyEnabled(value); }}
-                    onColor={colors.toggleOn}
-                  />
                 </View>
-                <View style={styles.dividerFull} />
-                <View style={{ paddingHorizontal: 18, paddingVertical: 14, gap: 10 }}>
-                  <Text style={[styles.optionTitle, { fontSize: 14 }]}>TMDB API Key (v3 Auth)</Text>
-                  <TextInput
-                    value={tmdbKeyInput}
-                    onChangeText={setTmdbKeyInput}
-                    placeholder="Paste your TMDB API key here"
-                    placeholderTextColor={colors.placeholder}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    returnKeyType="done"
-                    style={[styles.inlineCode, {
-                      fontSize: 13,
-                      paddingVertical: 12,
-                      paddingHorizontal: 12,
-                      borderRadius: 12,
-                      color: colors.textPrimary,
-                      minHeight: 46,
-                    }]}
-                  />
-                  <TouchableOpacity
-                    style={[
-                      styles.rowActionBtn,
-                      {
-                        minHeight: 46,
-                        justifyContent: 'center',
-                        alignSelf: 'stretch',
-                        backgroundColor: resolvedAppearance === 'light' && theme.id === 'monochrome'
-                          ? colors.accent
-                          : (resolvedAppearance === 'light' ? '#16a34a' : '#22c55e'),
-                        borderColor: resolvedAppearance === 'light' && theme.id === 'monochrome'
-                          ? 'rgba(17,24,39,0.18)'
-                          : (resolvedAppearance === 'light' ? '#16a34a' : '#22c55e'),
-                      },
-                    ]}
-                    onPress={() => { void setTmdbApiKey(tmdbKeyInput.trim()); }}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={[styles.rowActionText, { textAlign: 'center', width: '100%', color: resolvedAppearance === 'light' && theme.id === 'monochrome' ? '#111111' : '#ffffff' }]}>{t('settings_save')}</Text>
-                  </TouchableOpacity>
-                  <Text style={styles.rowHint}>
-                    Get a free API key at <Text style={{ color: colors.accentSoft }} onPress={() => { void Linking.openURL('https://www.themoviedb.org/settings/api'); }}>themoviedb.org/settings/api</Text>. When enabled, metadata enrichment uses your API key and is more robust.
-                  </Text>
-                </View>
+                {metadataProvider === 'tmdb' ? (
+                  <>
+                    <View style={styles.dividerFull} />
+                    <View style={styles.optionRow}>
+                      <View style={styles.optionInfo}>
+                        <Text style={styles.optionTitle}>{tmdbStorageTitle}</Text>
+                        <Text style={styles.optionSub}>{tmdbStorageSubtitle}</Text>
+                      </View>
+                      <AppleToggle
+                        value={tmdbKeyEnabled}
+                        onValueChange={value => { void setTmdbKeyEnabled(value); }}
+                        onColor={colors.toggleOn}
+                      />
+                    </View>
+                    <View style={styles.dividerFull} />
+                    <View style={{ paddingHorizontal: 18, paddingVertical: 14, gap: 10 }}>
+                      <Text style={[styles.optionTitle, { fontSize: 14 }]}>TMDB API Key (v3 Auth)</Text>
+                      {tmdbKeyRequired ? (
+                        <View style={{ borderRadius: 12, borderWidth: 1, borderColor: '#f59e0b55', backgroundColor: '#f59e0b14', paddingHorizontal: 12, paddingVertical: 10 }}>
+                          <Text style={{ color: ic('#f59e0b'), fontSize: 12, fontWeight: '700', marginBottom: 2 }}>
+                            TMDB needs your API key
+                          </Text>
+                          <Text style={{ color: colors.textSecondary, fontSize: 12, lineHeight: 18 }}>
+                            Paste a TMDB v3 API key below to finish switching from Cinemeta to TMDB.
+                          </Text>
+                        </View>
+                      ) : null}
+                      <TextInput
+                        value={tmdbKeyInput}
+                        onChangeText={setTmdbKeyInput}
+                        placeholder="Paste your TMDB API key here"
+                        placeholderTextColor={colors.placeholder}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        returnKeyType="done"
+                        style={[styles.inlineCode, {
+                          fontSize: 13,
+                          paddingVertical: 12,
+                          paddingHorizontal: 12,
+                          borderRadius: 12,
+                          color: colors.textPrimary,
+                          minHeight: 46,
+                        }]}
+                      />
+                      <TouchableOpacity
+                        style={[
+                          styles.rowActionBtn,
+                          {
+                            minHeight: 46,
+                            justifyContent: 'center',
+                            alignSelf: 'stretch',
+                            backgroundColor: resolvedAppearance === 'light' && theme.id === 'monochrome'
+                              ? colors.accent
+                              : (resolvedAppearance === 'light' ? '#16a34a' : '#22c55e'),
+                            borderColor: resolvedAppearance === 'light' && theme.id === 'monochrome'
+                              ? 'rgba(17,24,39,0.18)'
+                              : (resolvedAppearance === 'light' ? '#16a34a' : '#22c55e'),
+                          },
+                        ]}
+                        onPress={() => { void handleSaveTmdbKey(); }}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={[styles.rowActionText, { textAlign: 'center', width: '100%', color: resolvedAppearance === 'light' && theme.id === 'monochrome' ? '#111111' : '#ffffff' }]}>{t('settings_save')}</Text>
+                      </TouchableOpacity>
+                      <Text style={styles.rowHint}>
+                        Get a free API key at <Text style={{ color: colors.accentSoft }} onPress={() => { void Linking.openURL('https://www.themoviedb.org/settings/api'); }}>themoviedb.org/settings/api</Text>. TMDB keys always save locally on this device first. If you sign in, the same key is also synced to your account so it follows you to other devices.
+                      </Text>
+                    </View>
+                  </>
+                ) : null}
               </View>
             </ScrollView>
           </View>

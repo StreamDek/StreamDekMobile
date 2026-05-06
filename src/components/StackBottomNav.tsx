@@ -116,9 +116,7 @@ export const StackBottomNav: React.FC<Props> = ({ activeTab, blurTarget, onTabPr
   const hasMeasuredInitialPillRef = useRef(false);
   const [tabLayouts, setTabLayouts] = useState<Record<string, { x: number; width: number }>>({});
 
-  const visibleTabs = TABS.filter(tab =>
-    (tab.name !== 'Watchlist' && tab.name !== 'ContinueWatching') || !!user,
-  );
+  const visibleTabs = TABS;
 
   const profileAvatar = activeProfile
     ? PROFILE_AVATARS[Math.min(activeProfile.avatarIndex, PROFILE_AVATARS.length - 1)]

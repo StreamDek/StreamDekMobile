@@ -3,7 +3,7 @@ import { useFocusEffect, useScrollToTop } from '@react-navigation/native';
 import {
   View, Text, StyleSheet, RefreshControl,
   Animated, Easing, PanResponder, StatusBar, TouchableOpacity,
-  ScrollView, Dimensions, Share,
+  ScrollView, Dimensions, Share, BackHandler,
   Image as RNImage,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -13,6 +13,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Storage } from '../utils/storage';
 import { API_BASE } from '../constants/api';
 import { tmdbFetch } from '../utils/tmdbFetch';
+import { fetchMetadataCatalog } from '../utils/metadataCatalogFetch';
 import { SectionStrip } from '../components/SectionStrip';
 import { NetworkStrip } from '../components/NetworkStrip';
 import { ActionSheet } from '../components/ActionSheet';
@@ -46,10 +47,12 @@ import { RatingBadge } from '../components/RatingBadge';
 import { ContinueWatchingCard } from '../components/ContinueWatchingCard';
 import { useDisplaySettings } from '../context/DisplaySettingsContext';
 import { getProfileStorageOwnerId, profileScopedStorageKey, progressIndexStorageKey } from '../utils/profileStorage';
+import { useTmdbApiKey } from '../context/TmdbApiKeyContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const HERO_HEIGHT = 616;
 const DOCUMENTARY_SECTION = { id: 'documentaries', title: 'Documentaries', endpoint: '/tmdb/discover?type=movie&genre_id=99&sort_by=popularity.desc', enabled: false };
+const CURRENT_YEAR = new Date().getFullYear();
 
 function formatContinueTime(positionSec?: number | null): string | null {
   if (!positionSec || !Number.isFinite(positionSec) || positionSec <= 0) return null;
@@ -570,20 +573,36 @@ export const HomeScreen = ({ navigation }: any) => {
   const { uiStyle } = useUIStyle();
   const { continueWatchingStyle, vividAmbientEnabled } = useDisplaySettings();
   const { setAppReady } = useAppReady();
+  const { metadataProvider } = useTmdbApiKey();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const isDarkAppearance = resolvedAppearance === 'dark';
   const isMonochromeDark = isDarkAppearance;
   const heroSectionHeight = uiStyle === 'glass' ? HERO_HEIGHT + 36 : HERO_HEIGHT;
   const { isMovieWatched, isSeriesWatched, toggleMovieWatched, markAllEpisodesWatched, unmarkSeriesWatched } = useWatched();
 
-  const defaultSections = useMemo(() => [
-    { id: 'networks',      title: t('section_networks'),        endpoint: '/tmdb/networks',       enabled: true },
-    { id: 'trending_movie', title: t('section_trending_movies'), endpoint: '/tmdb/trending/movie',  enabled: true },
-    { id: 'trending_tv',   title: t('section_trending_tv'),     endpoint: '/tmdb/trending/tv',     enabled: true },
-    DOCUMENTARY_SECTION,
-    { id: 'popular_movie',  title: t('section_popular_movies'),  endpoint: '/tmdb/popular/movie',   enabled: false },
-    { id: 'popular_tv',    title: t('section_popular_tv'),      endpoint: '/tmdb/popular/tv',      enabled: false },
-  ], [t]);
+  const defaultSections = useMemo(() => {
+    if (metadataProvider === 'cinemeta') {
+      return [
+        { id: 'networks', title: t('section_networks'), endpoint: '/tmdb/networks', enabled: true },
+        { id: 'featured_movie', title: 'Featured Movies', endpoint: '/cinemeta/catalog/movie/imdbRating', enabled: true },
+        { id: 'featured_tv', title: 'Featured Series', endpoint: '/cinemeta/catalog/series/imdbRating', enabled: true },
+        { id: 'popular_movie', title: t('section_popular_movies'), endpoint: '/cinemeta/catalog/movie/top', enabled: true },
+        { id: 'popular_tv', title: t('section_popular_tv'), endpoint: '/cinemeta/catalog/series/top', enabled: true },
+        { id: 'documentaries', title: 'Documentaries', endpoint: '/cinemeta/catalog/movie/top?genre=Documentary', enabled: false },
+        { id: 'new_movie', title: 'New Movies', endpoint: `/cinemeta/catalog/movie/year?genre=${CURRENT_YEAR}`, enabled: false },
+        { id: 'new_tv', title: 'New Series', endpoint: `/cinemeta/catalog/series/year?genre=${CURRENT_YEAR}`, enabled: false },
+      ];
+    }
+
+    return [
+      { id: 'networks', title: t('section_networks'), endpoint: '/tmdb/networks', enabled: true },
+      { id: 'trending_movie', title: t('section_trending_movies'), endpoint: '/tmdb/trending/movie', enabled: true },
+      { id: 'trending_tv', title: t('section_trending_tv'), endpoint: '/tmdb/trending/tv', enabled: true },
+      DOCUMENTARY_SECTION,
+      { id: 'popular_movie', title: t('section_popular_movies'), endpoint: '/tmdb/popular/movie', enabled: false },
+      { id: 'popular_tv', title: t('section_popular_tv'), endpoint: '/tmdb/popular/tv', enabled: false },
+    ];
+  }, [metadataProvider, t]);
 
   const {
     isConnected: traktConnected,
@@ -740,23 +759,20 @@ export const HomeScreen = ({ navigation }: any) => {
     }
   }, [user, storageOwnerId]);
 
-  const fetchTmdbSections = useCallback(async (activeSections: typeof sections) => {
-    const results: Record<string, any[]> = {};
+  const fetchCatalogSections = useCallback(async (activeSections: typeof sections) => {
     let fetchedAny = false;
     await Promise.all(
       activeSections.filter(s => s.enabled).map(async (s) => {
         try {
-          const res = await tmdbFetch(s.endpoint);
-          if (!res.ok) return;
-          const data = await res.json();
+          const data = await fetchMetadataCatalog(s.endpoint);
           fetchedAny = true;
-          results[s.id] = data.results || [];
-        } catch {}
+          setSectionData(prev => ({ ...prev, [s.id]: data.results || [] }));
+        } catch {
+          // Mark section as settled (empty) so the skeleton doesn't hang indefinitely.
+          setSectionData(prev => prev[s.id] === undefined ? { ...prev, [s.id]: [] } : prev);
+        }
       })
     );
-    if (Object.keys(results).length > 0) {
-      setSectionData(prev => ({ ...prev, ...results }));
-    }
     return fetchedAny;
   }, []);
 
@@ -766,11 +782,25 @@ export const HomeScreen = ({ navigation }: any) => {
     refreshRecommendations();
   }, [traktConnected, user, refreshTrending, refreshRecommendations]);
 
+  // Clear stale data and reload when the catalog provider switches
+  const prevProviderRef = useRef(metadataProvider);
+  useEffect(() => {
+    if (prevProviderRef.current === metadataProvider) return;
+    prevProviderRef.current = metadataProvider;
+    // Immediately adopt new provider's default section list so the correct
+    // skeleton rows appear while the async saved-config load is in-flight.
+    setSections(defaultSections);
+    setSectionData({});
+    void loadSectionConfig().then(resolvedSections => {
+      void fetchCatalogSections(resolvedSections);
+    });
+  }, [metadataProvider, defaultSections, loadSectionConfig, fetchCatalogSections]);
+
   useEffect(() => {
     let active = true;
     const init = async () => {
       const resolvedSections = await loadSectionConfig();
-      const tmdbLoaded = active ? await fetchTmdbSections(resolvedSections) : false;
+      const tmdbLoaded = active ? await fetchCatalogSections(resolvedSections) : false;
       if (active) {
         await Promise.all([loadWatchlist(), loadWatchlistRemovals()]);
         await loadLocalProgress();
@@ -780,13 +810,13 @@ export const HomeScreen = ({ navigation }: any) => {
     };
     init();
     return () => { active = false; };
-  }, [fetchTmdbSections, loadSectionConfig, loadWatchlistRemovals, setAppReady, user?.uid, activeProfile?.id]);
+  }, [fetchCatalogSections, loadSectionConfig, loadWatchlistRemovals, setAppReady, user?.uid, activeProfile?.id]);
 
   useFocusEffect(
     useCallback(() => {
-      const timer = setTimeout(() => {
-        void loadSectionConfig().then(resolvedSections => {
-          void fetchTmdbSections(resolvedSections);
+        const timer = setTimeout(() => {
+          void loadSectionConfig().then(resolvedSections => {
+          void fetchCatalogSections(resolvedSections);
         });
         loadWatchlist();
         loadLocalProgress();
@@ -803,13 +833,24 @@ export const HomeScreen = ({ navigation }: any) => {
         clearTimeout(timer);
         clearTimeout(timer2);
       };
-  }, [user, activeProfile?.id, traktConnected, fetchTraktSections, refreshContinueWatching, refreshWatchlist, loadWatchlistRemovals, loadWatchlist, loadLocalProgress, fetchTmdbSections])
+  }, [user, activeProfile?.id, traktConnected, fetchTraktSections, refreshContinueWatching, refreshWatchlist, loadWatchlistRemovals, loadWatchlist, loadLocalProgress, fetchCatalogSections, loadSectionConfig])
   );
 
   useEffect(() => {
     if (sections.length === 0) return;
-    void fetchTmdbSections(sections);
-  }, [sections, fetchTmdbSections]);
+    void fetchCatalogSections(sections);
+  }, [sections, fetchCatalogSections]);
+
+  // Home is the root tab — exit the app when the hardware back is pressed here.
+  useFocusEffect(
+    useCallback(() => {
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        BackHandler.exitApp();
+        return true;
+      });
+      return () => sub.remove();
+    }, [])
+  );
 
   // Sync user-specific content whenever auth state changes
   const prevUser = useRef<typeof user>(undefined);
@@ -850,14 +891,16 @@ export const HomeScreen = ({ navigation }: any) => {
   }, [traktConnected, fetchTraktSections, refreshContinueWatching, refreshWatchlist]);
 
   useEffect(() => {
-      const trendingMovies = (sectionData['trending_movie'] || []).slice(0, 6).map(i => ({ ...i, type: 'movie' }));
-      const trendingTv = (sectionData['trending_tv'] || []).slice(0, 6).map(i => ({ ...i, type: 'tv' }));
+      const heroMovieId = metadataProvider === 'cinemeta' ? 'featured_movie' : 'trending_movie';
+      const heroTvId    = metadataProvider === 'cinemeta' ? 'featured_tv'    : 'trending_tv';
+      const trendingMovies = (sectionData[heroMovieId] || []).slice(0, 8).map(i => ({ ...i, type: 'movie' }));
+      const trendingTv = (sectionData[heroTvId] || []).slice(0, 8).map(i => ({ ...i, type: 'tv' }));
       const watchlistItems = combinedWatchlist
         .map(i => ({ ...i, type: i.type === 'tv' ? 'tv' : 'movie' }))
-        .slice(0, 6);
+        .slice(0, 8);
       const continueItems = allContinueWatching
         .map(i => ({ ...i, type: i.type === 'tv' ? 'tv' : 'movie' }))
-        .slice(0, 6);
+        .slice(0, 8);
     const isWatchedHeroItem = (item: any) => (
       item?.type === 'tv'
         ? isSeriesWatched(Number(item.id))
@@ -884,19 +927,10 @@ export const HomeScreen = ({ navigation }: any) => {
       combined.push(item);
     };
 
-    for (let round = 0; round < 3 && combined.length < 5; round++) {
+    for (let round = 0; round < 8 && combined.length < 8; round++) {
       for (const bucket of buckets) {
         addItem(bucket[round]);
-        if (combined.length >= 5) break;
-      }
-    }
-
-    if (combined.length < 5) {
-      for (const bucket of buckets) {
-        for (let i = 3; i < bucket.length && combined.length < 5; i++) {
-          addItem(bucket[i]);
-        }
-        if (combined.length >= 5) break;
+        if (combined.length >= 8) break;
       }
     }
 
@@ -908,7 +942,7 @@ export const HomeScreen = ({ navigation }: any) => {
     const resolvedIndex = nextIndex >= 0 ? nextIndex : 0;
 
     setHeroItems(nextHeroItems);
-    heroLengthRef.current = Math.min(combined.length, 5);
+    heroLengthRef.current = nextHeroItems.length;
     heroIndexRef.current = resolvedIndex;
     heroItemKeyRef.current = nextHeroItems[resolvedIndex] ? getHeroItemKey(nextHeroItems[resolvedIndex]) : null;
     setHeroIndex(resolvedIndex);
@@ -921,7 +955,7 @@ export const HomeScreen = ({ navigation }: any) => {
       easing: Easing.linear,
       useNativeDriver: true,
     }).start();
-  }, [sectionData, combinedWatchlist, allContinueWatching, isMovieWatched, isSeriesWatched, heroFadeIn, heroScale]);
+  }, [sectionData, combinedWatchlist, allContinueWatching, isMovieWatched, isSeriesWatched, heroFadeIn, heroScale, metadataProvider]);
 
   useEffect(() => {
     if (heroItems.length === 0) return;
@@ -1111,7 +1145,7 @@ export const HomeScreen = ({ navigation }: any) => {
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     const [tmdbLoaded] = await Promise.all([
-      fetchTmdbSections(sections),
+      fetchCatalogSections(sections),
       fetchTraktSections(),
       loadWatchlist(),
       loadWatchlistRemovals(),
@@ -1120,7 +1154,7 @@ export const HomeScreen = ({ navigation }: any) => {
     ]);
     if (tmdbLoaded) setLoading(false);
     setRefreshing(false);
-  }, [fetchTmdbSections, fetchTraktSections, loadWatchlist, loadWatchlistRemovals, loadLocalProgress, traktConnected, refreshContinueWatching, refreshWatchlist, sections]);
+  }, [fetchCatalogSections, fetchTraktSections, loadWatchlist, loadWatchlistRemovals, loadLocalProgress, traktConnected, refreshContinueWatching, refreshWatchlist, sections]);
 
   const handleItemPress = useCallback((item: any) => {
     navigation.navigate('Detail', { movieId: item.id, type: item.type || 'movie' });
@@ -1178,20 +1212,20 @@ export const HomeScreen = ({ navigation }: any) => {
   }, [handleItemPress, isMovieWatched, isSeriesWatched]);
 
   const handleViewAll = useCallback((sectionId: string, title: string) => {
-    if (sectionId === 'documentaries') {
-      navigation.navigate('Browse', { title, endpoint: DOCUMENTARY_SECTION.endpoint });
+    const section = sections.find(candidate => candidate.id === sectionId);
+    if (section?.endpoint) {
+      navigation.navigate('Browse', { title, endpoint: section.endpoint });
       return;
     }
     const type = sectionId.includes('tv') ? 'tv' : 'movie';
     navigation.navigate('Browse', { type, title });
-  }, [navigation]);
+  }, [navigation, sections]);
 
   const handleNetworkPress = useCallback((item: any) => {
     navigation.navigate('Browse', { title: item.name, endpoint: `/tmdb/network/${item.id}` });
   }, [navigation]);
 
   const toggleWatchlist = useCallback(async (item: any) => {
-    if (!user) { navigation.navigate('Auth'); return; }
     const itemId = String(item.id);
     const current = await readWatchlistItems(storageOwnerId, legacyOwnerId);
     const exists = current.some((i: any) => watchlistItemMatchesId(i, itemId));
@@ -1463,7 +1497,7 @@ export const HomeScreen = ({ navigation }: any) => {
             !isDarkAppearance && styles.heroIconPillLight,
           ]}
           activeOpacity={0.8}
-          onPress={() => { if (!user) { navigation.navigate('Auth'); return; } if (item.type !== 'tv') { void toggleMovieWatched(Number(item.id), item.imdbId, item.title, item.year); } else { setSeriesWatchConfirmItem(item); } }}
+          onPress={() => { if (item.type !== 'tv') { void toggleMovieWatched(Number(item.id), item.imdbId, item.title, item.year); } else { setSeriesWatchConfirmItem(item); } }}
         >
           <Ionicons name={watched ? 'checkmark-circle' : 'checkmark-circle-outline'} size={16} color={isMonochromeDark ? '#ffffff' : watchedIconColor} />
         </TouchableOpacity>
@@ -1710,7 +1744,6 @@ export const HomeScreen = ({ navigation }: any) => {
     const currentKey = `${currentHero.type}_${currentHero.id}`;
     return heroBackdrops[currentKey] ?? getHeroBackgroundUri(currentHero);
   }, [heroBackdrops, heroIndex, heroItems]);
-
   return (
     <View style={{ flex: 1 }}>
       <BlurTargetView ref={blurTargetRef} style={{ flex: 1 }}>
@@ -1792,9 +1825,14 @@ export const HomeScreen = ({ navigation }: any) => {
           />
         )}
         {sections.filter(s => s.enabled).map(s => {
+          const sData = sectionData[s.id];
+          // sData===undefined means the fetch hasn't landed yet — show skeleton.
+          // sData===[] means it completed but was empty — hide to avoid ghost headers.
+          const isLoading = loading || sData === undefined;
+          if (!isLoading && (!sData || sData.length === 0)) return null;
           const title = defaultSections.find(d => d.id === s.id)?.title ?? s.title;
-          if (s.id === 'networks') return <NetworkStrip key={s.id} title={title} data={sectionData[s.id] || []} loading={loading} onNetworkPress={handleNetworkPress} />;
-          return <SectionStrip key={s.id} title={title} data={sectionData[s.id] || []} loading={loading} onViewAll={() => handleViewAll(s.id, title)} onItemPress={handleItemPress} onItemLongPress={handleLongPress} />;
+          if (s.id === 'networks') return <NetworkStrip key={s.id} title={title} data={sData ?? []} loading={isLoading} onNetworkPress={handleNetworkPress} />;
+          return <SectionStrip key={s.id} title={title} data={sData ?? []} loading={isLoading} onViewAll={() => handleViewAll(s.id, title)} onItemPress={handleItemPress} onItemLongPress={handleLongPress} />;
         })}
         {traktConnected && traktRecommendations.length > 0 && <SectionStrip title={t('section_recommended')} data={traktRecommendations} loading={false} onViewAll={() => navigation.navigate('TraktCollection', { mode: 'recommended' })} onItemPress={handleItemPress} onItemLongPress={handleLongPress} />}
         {user && traktConnected && traktTrending.length > 0 && <SectionStrip title={t('section_trakt_trending')} data={traktTrending} loading={false} onViewAll={() => navigation.navigate('TraktCollection', { mode: 'trending' })} onItemPress={handleItemPress} onItemLongPress={handleLongPress} />}

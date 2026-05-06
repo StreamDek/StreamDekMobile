@@ -571,7 +571,7 @@ export const AddonsScreen = ({ navigation, route }: any) => {
               <View style={styles.modalHandle} />
               <Text style={styles.modalTitle}>{t('addons_connect_provider', { name: selectedProvider?.label ?? '' })}</Text>
               <Text style={styles.modalSubtitle}>
-                {t('media_sign_in_unlock')}
+                Debrid is optional and helps turn cached torrents into instant direct links.
                 {'\n'}{t('addons_secure_note')}
               </Text>
               {debridError ? <Text style={styles.errorText}>{debridError}</Text> : null}

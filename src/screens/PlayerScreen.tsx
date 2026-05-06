@@ -53,6 +53,7 @@ import { useTorrentServer } from '../context/TorrentServerContext';
 import { useStreamSelectionSettings } from '../context/StreamSelectionContext';
 import { usePlaybackSettings } from '../context/PlaybackSettingsContext';
 import { useWatchProgress } from '../context/WatchProgressContext';
+import { ConfirmSheet } from '../components/ConfirmSheet';
 import {
     getProfileStorageOwnerId,
     progressFileStorageKey,
@@ -62,7 +63,8 @@ import { useDisplaySettings } from '../context/DisplaySettingsContext';
 import { pickBestAudioTrack, scoreStream } from '../utils/streamSelection';
 import { Storage } from '../utils/storage';
 import { postClientLog } from '../utils/clientLog';
-import { createLocalProxyUrl, createLocalTorrentPlaybackUrl } from '../utils/torrentServerClient';
+import { createLocalProxyUrl } from '../utils/torrentServerClient';
+import { isAllowedPlaybackStream } from '../utils/streamSelection';
 import { parseStream } from '../utils/streamParser';
 import { getMpvNativeViewAvailabilityDiagnostics, isMpvNativeViewAvailable } from '../components/MpvPlayer';
 
@@ -127,6 +129,7 @@ type ExternalPlayerCandidate = {
 type PlayerDrawerSection = 'sources' | 'tracks' | 'speed' | 'screen' | 'diagnostics';
 type Media3ContentType = 'auto' | 'progressive' | 'hls' | 'dash' | 'smoothStreaming';
 const SUBTITLE_OFF_PREFERENCE_KEY = '__off__';
+const GUEST_ACCOUNT_PROMPT_SHOWN_KEY = 'streamdek_guest_account_prompt_shown';
 
 type TrackPreferenceLike = {
     id?: string;
@@ -562,7 +565,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const { user } = useAuth();
     const { activeProfile } = useProfile();
     const { fetchStreams } = useAddons();
-    const { accounts: debridAccounts, resolveStream, unrestrictLink, streamTorrent } = useDebrid();
+    const { accounts: debridAccounts, resolveStream, unrestrictLink } = useDebrid();
     const { saveProgress, clearProgress } = useWatchProgress();
     const storageOwnerId = getProfileStorageOwnerId(user?.uid ?? null, activeProfile?.id ?? null);
 
@@ -594,6 +597,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const [isPlaying, setIsPlaying] = useState(true);
     const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
     const [isHandingOffToMpv, setIsHandingOffToMpv] = useState(false);
+    const [showGuestAccountPrompt, setShowGuestAccountPrompt] = useState(false);
     const isPausedPlayback = shouldUseEmbeddedVideoPlayer && !loading && !isPlaying && !isHandingOffToMpv;
     const castNativeButtonAvailable = !!UIManager.getViewManagerConfig?.('RNGoogleCastButton');
     const drawerTranslateX = useRef(new Animated.Value(360)).current;
@@ -666,6 +670,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const preferredSaveBlockedRef = useRef(false);
     const preferredSavedForCurrentSourceRef = useRef(false);
     const validatedDurationForCurrentSourceRef = useRef(false);
+    const guestPromptHandledRef = useRef(false);
 
     useEffect(() => {
         if (Platform.OS !== 'android') return;
@@ -677,6 +682,26 @@ export const PlayerScreen = ({ route, navigation }: any) => {
             prioritizeTimeOverSizeThreshold: true,
         };
     }, [player]);
+
+    useEffect(() => {
+        if (user || guestPromptHandledRef.current || loading || isError || currentTime <= 0) {
+            return;
+        }
+
+        guestPromptHandledRef.current = true;
+        void (async () => {
+            try {
+                const alreadyShown = await Storage.getItem(GUEST_ACCOUNT_PROMPT_SHOWN_KEY);
+                if (alreadyShown) return;
+                await Storage.setItem(GUEST_ACCOUNT_PROMPT_SHOWN_KEY, '1');
+                if (isMountedRef.current) {
+                    setShowGuestAccountPrompt(true);
+                }
+            } catch {
+                // Ignore prompt persistence failures.
+            }
+        })();
+    }, [currentTime, isError, loading, user]);
 
     const controlsTimerRef = useRef<any>(null);
     const didAutoOpenSourcesRef = useRef(false);
@@ -1431,13 +1456,13 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                 return stream.url;
             }
             if (stream.infoHash) {
+                if (!isAllowedPlaybackStream(stream)) {
+                    logPlayerEvent('warn', `[Player] Blocked raw torrent source for ${describeStream(stream, streamIndex, totalStreams)}`);
+                    return null;
+                }
                 const hint = stream.behaviorHints?.filename;
                 const magnet = `magnet:?xt=urn:btih:${stream.infoHash}`;
-                const shouldTryLocalTorrentPlayback = serverConfig.streamingMode === 'server';
-                const isUncachedServerModeSource = shouldTryLocalTorrentPlayback && stream.cachedBy.length === 0;
-                const shouldPreferPremiumResolver = isUncachedServerModeSource && debridAccounts.length > 0;
-
-                if (shouldPreferPremiumResolver) {
+                if (stream.cachedBy.length > 0 && debridAccounts.length > 0) {
                     logPlayerEvent('info', `[Player] Trying premium resolver for ${describeStream(stream, streamIndex, totalStreams)}`);
                     let res = null;
                     try {
@@ -1451,46 +1476,6 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                         return res.url;
                     }
                     logPlayerEvent('info', `[Player] Premium resolver returned no URL for ${describeStream(stream, streamIndex, totalStreams)}`);
-                }
-
-                if (shouldTryLocalTorrentPlayback) {
-                    const localLogLabel = isUncachedServerModeSource && shouldPreferPremiumResolver
-                        ? 'Trying local playback URL after premium resolver miss for'
-                        : isUncachedServerModeSource
-                            ? 'Trying local playback URL first for uncached server-mode source'
-                            : 'Trying local playback URL for';
-                    logPlayerEvent('info', `[Player] ${localLogLabel} ${describeStream(stream, streamIndex, totalStreams)}`);
-                    const localTorrentUrl = await createLocalTorrentPlaybackUrl(stream.infoHash, magnet, hint);
-                    if (!isCurrentAttempt()) return null;
-                    if (localTorrentUrl) {
-                        logPlayerEvent('info', `[Player] Local playback URL succeeded for ${describeStream(stream, streamIndex, totalStreams)}`);
-                        return localTorrentUrl;
-                    }
-                    logPlayerEvent('warn', `[Player] Local playback URL unavailable for ${describeStream(stream, streamIndex, totalStreams)}`);
-                }
-
-                if (!shouldPreferPremiumResolver && debridAccounts.length > 0) {
-                    logPlayerEvent('info', `[Player] Trying premium resolver for ${describeStream(stream, streamIndex, totalStreams)}`);
-                    let res = null;
-                    try {
-                        res = await resolveStream(stream.infoHash, magnet, hint, { maxSize: PREFERRED_SIZE_LIMIT });
-                    } catch (error: any) {
-                        logDebridFailures('Premium resolver failed', error?.failures);
-                    }
-                    if (!isCurrentAttempt()) return null;
-                    if (res?.url) {
-                        logPlayerEvent('info', `[Player] Premium resolver succeeded for ${describeStream(stream, streamIndex, totalStreams)} (${res.filesize} bytes)`);
-                        return res.url;
-                    }
-                    logPlayerEvent('info', `[Player] Premium resolver returned no URL for ${describeStream(stream, streamIndex, totalStreams)}`);
-                }
-
-                logPlayerEvent('info', `[Player] Trying backend stream URL for ${describeStream(stream, streamIndex, totalStreams)}`);
-                const backendTorrentUrl = await streamTorrent(stream.infoHash, magnet, hint);
-                if (!isCurrentAttempt()) return null;
-                if (backendTorrentUrl) {
-                    logPlayerEvent('info', `[Player] Backend stream URL succeeded for ${describeStream(stream, streamIndex, totalStreams)}`);
-                    return backendTorrentUrl;
                 }
             }
         } catch (e) {
@@ -1498,7 +1483,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         }
         logPlayerEvent('info', `[Player] Resolution failed for ${describeStream(stream, streamIndex, totalStreams)}`);
         return null;
-    }, [debridAccounts, resolveStream, serverConfig.streamingMode, streamTorrent, logDebridFailures, logPlayerEvent]);
+    }, [debridAccounts, logDebridFailures, logPlayerEvent, resolveStream]);
 
     const resolveStreamToUrlWithTimeout = useCallback(async (
         stream: AddonStream,
@@ -2729,6 +2714,19 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                     />
                 </>
             )}
+            <ConfirmSheet
+                visible={showGuestAccountPrompt}
+                onClose={() => setShowGuestAccountPrompt(false)}
+                icon="person-add-outline"
+                title="Create an account"
+                message="Sync with TV, save your add-ons, and connect Trakt without interrupting guest playback."
+                confirmLabel="Create Account"
+                cancelLabel="Not Now"
+                onConfirm={() => {
+                    setShowGuestAccountPrompt(false);
+                    navigation.navigate('Auth');
+                }}
+            />
             {!shouldUseEmbeddedVideoPlayer && loading && (
                 <View style={styles.overlay} pointerEvents="none">
                     {loadingArtworkUri && <Image source={{ uri: loadingArtworkUri }} style={styles.backdropBg} />}

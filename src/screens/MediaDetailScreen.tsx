@@ -1032,7 +1032,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const { getProgress, clearProgress, clearProgressIndexEntry } = useWatchProgress();
   const storageOwnerId = getProfileStorageOwnerId(user?.uid, activeProfile?.id);
   const legacyOwnerId = user?.uid ?? null;
-  const watchlistKey = user ? storageOwnerId : null;
+  const watchlistKey = storageOwnerId;
 
   const insets = useSafeAreaInsets();
   const cacheKey = `${type}/${movieId}`;
@@ -1108,17 +1108,15 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const ultraActive = ultraEntitled && ultraBoostEnabled;
   const hasStreamSources = hasEnabledAddons || ultraActive;
   const sourceCount = addons.filter((a: any) => a.enabled).length + (ultraActive ? 1 : 0);
-  const shouldPreloadStreams = isMovieDetail && !!user && !!media && !addonsLoading && hasStreamSources;
+  const shouldPreloadStreams = isMovieDetail && !!media && !addonsLoading && hasStreamSources;
   // Always start as false — the reset effect below will set it to true once
   // we know whether a preload is actually needed (after media + user are ready).
   const [streamsLoadComplete, setStreamsLoadComplete] = useState(false);
   const streamsFetchingForPlayback = isMovieDetail
-    && !!user
     && !!media
     && hasStreamSources
     && (!streamsFetchedRef.current || streamsLoading || !streamsLoadComplete);
   const streamsTabLocked = isMovieDetail
-    && !!user
     && !!media
     && (addonsLoading || streamsFetchingForPlayback);
   const isUnreleased = useMemo(() => {
@@ -1318,7 +1316,6 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   }, [detailHeroUri, media, movieId, navigation, resumeFromSec, streams, type]);
 
   const handlePrimaryPlayPress = useCallback(() => {
-    if (!user) { navigation.navigate('Auth'); return; }
     if (watched) {
       setPlayChoiceVisible(true);
       return;
@@ -1333,7 +1330,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
       return;
     }
     navigateToMoviePlayer(false);
-  }, [navigation, navigateToMoviePlayer, type, user, watched, useGlassDetailLayout]);
+  }, [navigation, navigateToMoviePlayer, type, watched, useGlassDetailLayout]);
 
   const handleContinuePlay = useCallback(() => {
     setPlayChoiceVisible(false);
@@ -1404,12 +1401,10 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     && (streamsTabLocked || streamsLoading || streamsPending > 0 || addonsLoading);
   const glassStreamsLoading = showStreamsTab
     && streams.length === 0
-    && !!user
     && hasStreamSources
     && (streamsTabLocked || streamsLoading || streamsPending > 0 || addonsLoading || !streamsFetchStarted || !streamsLoadComplete);
   const glassStreamsSettledEmpty = showStreamsTab
     && streams.length === 0
-    && !!user
     && hasStreamSources
     && streamsFetchStarted
     && streamsLoadComplete
@@ -1417,8 +1412,11 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     && streamsPending === 0
     && !streamsTabLocked
     && !addonsLoading;
+  const noStreamsFound = isMovieDetail && glassStreamsSettledEmpty;
   const primaryPlayLabel = playButtonLocked
     ? 'Loading streams'
+    : noStreamsFound
+    ? '(No Streams)'
     : isUnreleased
     ? 'Unreleased'
     : type === 'tv'
@@ -1611,7 +1609,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     setStreamsPending(0);
     setStreamsFetchStarted(false);
 
-    if (!user || !isMovieDetail) {
+    if (!isMovieDetail) {
       setStreamsLoadComplete(true);
       setStreamsLoading(false);
       return;
@@ -1632,7 +1630,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     setStreamsLoadComplete(false);
     setStreamsLoading(true);
     setStreamsFetchKey(k => k + 1);
-  }, [movieId, user?.uid, media?.id, isMovieDetail, addonsLoading, hasStreamSources]);
+  }, [movieId, media?.id, isMovieDetail, addonsLoading, hasStreamSources]);
 
   useEffect(() => {
     if (useGlassDetailLayout && activeTab === 'streams') {
@@ -1661,7 +1659,6 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
 
   // Unified save: saves to Trakt (if connected) + local storage
   const toggleSave = useCallback(async () => {
-    if (!user) { navigation.navigate('Auth'); return; }
     if (!media) return;
     setWlLoading(true);
     const optimistic = !inWatchlist;
@@ -1680,21 +1677,19 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
         await refreshWatchlist();
       }
 
-      if (watchlistKey) {
-        const current = await readWatchlistItems(storageOwnerId, legacyOwnerId);
-        const next = inWatchlist
-          ? current.filter((i: any) => !watchlistItemMatchesId(i, movieId))
-          : [...current, normalizeWatchlistItem({
-              id: String(movieId),
-              tmdbId: Number(movieId),
-              title: media.title,
-              type,
-              poster: media.poster,
-              rating: media.rating,
-              year: media.year,
-            })];
-        await writeWatchlistItems(storageOwnerId, next);
-      }
+      const current = await readWatchlistItems(storageOwnerId, legacyOwnerId);
+      const next = inWatchlist
+        ? current.filter((i: any) => !watchlistItemMatchesId(i, movieId))
+        : [...current, normalizeWatchlistItem({
+            id: String(movieId),
+            tmdbId: Number(movieId),
+            title: media.title,
+            type,
+            poster: media.poster,
+            rating: media.rating,
+            year: media.year,
+          })];
+      await writeWatchlistItems(storageOwnerId, next);
 
       const nextRemovalIds = inWatchlist
         ? Array.from(new Set([...watchlistRemovalIds, String(movieId)]))
@@ -1705,10 +1700,9 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
       setInWatchlist(!optimistic); // revert on error
     }
     setWlLoading(false);
-  }, [legacyOwnerId, user, isConnected, media, inWatchlist, movieId, type, watchlistKey, refreshWatchlist, navigation, storageOwnerId, watchlistRemovalIds]);
+  }, [activeProfile?.id, inWatchlist, isConnected, legacyOwnerId, media, movieId, refreshWatchlist, storageOwnerId, type, user, watchlistRemovalIds]);
 
   const handleToggleWatched = useCallback(async () => {
-    if (!user) { navigation.navigate('Auth'); return; }
     if (!media) return;
     if (type === 'tv') {
       if ((media.seasons || []).length === 0) return;
@@ -1719,7 +1713,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
       clearProgressIndexEntry(movieProgressKey(Number(movieId)));
       setLocalProgress(null);
     }
-  }, [user, media, type, movieId, toggleMovieWatched, clearProgress, clearProgressIndexEntry, navigation]);
+  }, [media, type, movieId, toggleMovieWatched, clearProgress, clearProgressIndexEntry]);
 
   const playStream = useCallback(async (stream: AddonStream) => {
     const pKey = movieProgressKey(Number(movieId));
@@ -1960,16 +1954,26 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
         )}
       />
 
-      {/* Debrid required — info sheet */}
-      <ConfirmSheet
+      <ActionSheet
         visible={debridSheet}
         onClose={() => setDebridSheet(false)}
-        icon="flash-outline"
         title={t('streams_debrid_req')}
-        message={t('streams_debrid_msg')}
-        confirmLabel={t('streams_setup_debrid')}
-        cancelLabel={t('common_cancel')}
-        onConfirm={() => navigation.navigate('Addons', { initialTab: 'debrid' })}
+        subtitle={t('streams_debrid_msg')}
+        actions={[
+          {
+            label: 'Find Direct Sources',
+            icon: 'extension-puzzle-outline',
+            variant: 'accent',
+            onPress: () => navigation.navigate('Addons', { initialTab: 'addons' }),
+          },
+          {
+            label: t('streams_setup_debrid'),
+            icon: 'flash-outline',
+            variant: 'default',
+            onPress: () => navigation.navigate('Addons', { initialTab: 'debrid' }),
+          },
+          { label: t('common_cancel'), icon: 'close-outline', variant: 'cancel', onPress: () => {} },
+        ]}
       />
 
       <ActionSheet
@@ -2182,9 +2186,11 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                       label={primaryPlayLabel}
                       leading={playButtonLocked
                         ? <ActivityIndicator size="small" color={primaryActionPalette.textColor} />
+                        : noStreamsFound
+                        ? <Ionicons name="cloud-offline-outline" size={16} color={primaryActionPalette.textColor} />
                         : <Ionicons name="play" size={16} color={primaryActionPalette.textColor} />}
-                      disabled={playButtonLocked || isUnreleased}
-                      activeOpacity={(playButtonLocked || isUnreleased) ? 1 : 0.85}
+                      disabled={playButtonLocked || isUnreleased || noStreamsFound}
+                      activeOpacity={(playButtonLocked || isUnreleased || noStreamsFound) ? 1 : 0.85}
                       onPress={handlePrimaryPlayPress}
                     />
                   </View>
@@ -2199,9 +2205,11 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                     label={primaryPlayLabel}
                     leading={playButtonLocked
                       ? <ActivityIndicator size="small" color={primaryActionPalette.textColor} />
+                      : noStreamsFound
+                      ? <Ionicons name="cloud-offline-outline" size={16} color={primaryActionPalette.textColor} />
                       : <Ionicons name="play" size={16} color={primaryActionPalette.textColor} />}
-                    disabled={playButtonLocked || isUnreleased}
-                    activeOpacity={(playButtonLocked || isUnreleased) ? 1 : 0.85}
+                    disabled={playButtonLocked || isUnreleased || noStreamsFound}
+                    activeOpacity={(playButtonLocked || isUnreleased || noStreamsFound) ? 1 : 0.85}
                     onPress={handlePrimaryPlayPress}
                   />
                 )}
@@ -2252,9 +2260,11 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                     label={primaryPlayLabel}
                     leading={playButtonLocked
                       ? <ActivityIndicator size="small" color={primaryActionPalette.textColor} />
+                      : noStreamsFound
+                      ? <Ionicons name="cloud-offline-outline" size={16} color={primaryActionPalette.textColor} />
                       : <Ionicons name="play" size={16} color={primaryActionPalette.textColor} />}
-                    disabled={playButtonLocked || isUnreleased}
-                    activeOpacity={(playButtonLocked || isUnreleased) ? 1 : 0.85}
+                    disabled={playButtonLocked || isUnreleased || noStreamsFound}
+                    activeOpacity={(playButtonLocked || isUnreleased || noStreamsFound) ? 1 : 0.85}
                     onPress={handlePrimaryPlayPress}
                   />
                 </View>
@@ -3114,23 +3124,23 @@ function StreamsTab({
   }
 
   // ── Not logged in ──────────────────────────────────────────────────────────
-  if (!user) {
+  if (!user && !hasStreamSources) {
     return (
       <View style={{ alignItems: 'center', paddingHorizontal: 8, paddingTop: 32, paddingBottom: 24 }}>
         <View style={{
           width: 64, height: 64, borderRadius: 32, backgroundColor: colors.accent + '18',
           justifyContent: 'center', alignItems: 'center', marginBottom: 20,
         }}>
-          <Ionicons name="person-circle-outline" size={34} color={colors.textPrimary} />
+          <Ionicons name="extension-puzzle-outline" size={34} color={colors.textPrimary} />
         </View>
         <Text style={{ color: colors.textPrimary, fontSize: 17, fontWeight: '800', textAlign: 'center', marginBottom: 10 }}>
-          {t('media_sign_in_unlock')}
+          {t('streams_no_addons_title')}
         </Text>
         <Text style={{ color: colors.subText, fontSize: 13, textAlign: 'center', lineHeight: 20, marginBottom: 28, maxWidth: 280 }}>
-          {t('media_sign_in_unlock_sub')}
+          {t('streams_no_addons_desc')}
         </Text>
         <TouchableOpacity
-          onPress={() => navigation.navigate('Auth')}
+          onPress={() => navigation.navigate('Addons')}
           activeOpacity={0.85}
           style={{
             backgroundColor: colors.accent,
@@ -3147,7 +3157,7 @@ function StreamsTab({
             elevation: isLightAppearance ? 1 : 0,
           }}
         >
-          <Text style={{ color: colors.buttonText, fontSize: 15, fontWeight: '800' }}>{t('media_sign_in_btn')}</Text>
+          <Text style={{ color: colors.buttonText, fontSize: 15, fontWeight: '800' }}>{t('streams_setup_addons_btn')}</Text>
         </TouchableOpacity>
         <Text style={{ color: colors.mutedText, fontSize: 11, textAlign: 'center', lineHeight: 17, maxWidth: 260 }}>
           {t('media_supports_debrid')}

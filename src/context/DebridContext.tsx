@@ -5,6 +5,9 @@ import { API_BASE } from '../constants/api';
 import { useAuth } from './AuthContext';
 import { useLanguage } from './LanguageContext';
 import { buildAuthHeaders } from '../utils/authHeaders';
+import { getSharedCachedAsync, invalidateSharedCache } from '../utils/sharedDataCache';
+
+const DEBRID_STATE_TTL_MS = 20_000;
 
 
 export type DebridProviderName = 'real-debrid' | 'alldebrid' | 'premiumize' | 'torbox' | 'debrid-link';
@@ -120,6 +123,7 @@ export const DebridProvider = ({ children }: { children: React.ReactNode }) => {
       });
       const data = await res.json();
       if (!res.ok) return { success: false, error: data.error ?? t('error_add_account_failed') };
+      invalidateSharedCache(`debrid:accounts:${user.uid}`);
       await refreshAccounts();
       return { success: true, username: data.username };
     } catch {
@@ -135,6 +139,7 @@ export const DebridProvider = ({ children }: { children: React.ReactNode }) => {
         headers: await buildAuthHeaders(user, { includeContentType: false }),
       });
       if (!res.ok) return false;
+      invalidateSharedCache(`debrid:accounts:${user.uid}`);
       await refreshAccounts();
       return true;
     } catch {
@@ -158,6 +163,7 @@ export const DebridProvider = ({ children }: { children: React.ReactNode }) => {
         headers: await buildAuthHeaders(user),
         body: JSON.stringify({ order: orderedProviders }),
     }).then(() => {
+      invalidateSharedCache(`debrid:accounts:${user.uid}`);
       void refreshAccounts();
     }).catch(() => {
       setAccounts(previousAccounts);

@@ -327,16 +327,14 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
     const playableOnly = incoming.filter(
       stream => isAllowedPlaybackStream(stream) || stream.streamdekAllowRawTorrent === true,
     );
-    if (!streamSelectionEnabled) return playableOnly;
+    const rankingOptions = streamSelectionEnabled ? streamScoreOptions : undefined;
 
-    // Apply local stream rules before results hit UI state/cache. This keeps
-    // third-party addons aligned with StreamDek Ultra for playable checks,
-    // preferred quality ordering, and the hard max-file-size constraint.
+    // Keep the stream list intelligently ordered even when the explicit stream
+    // selection preference is off. User-facing settings only add extra caps and
+    // biasing; the baseline scorer still picks sensible sources.
     return sortStreams(
-      playableOnly.filter(
-        stream => stream.streamdekAllowRawTorrent === true || scoreStream(stream, streamScoreOptions) > -10000,
-      ),
-      streamScoreOptions,
+      playableOnly.filter(stream => scoreStream(stream, rankingOptions) > -10000),
+      rankingOptions,
     );
   }, [streamScoreOptions, streamSelectionEnabled]);
 

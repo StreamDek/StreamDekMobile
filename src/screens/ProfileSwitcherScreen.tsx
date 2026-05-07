@@ -13,6 +13,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Asset } from 'expo-asset';
+import { Image as ExpoImage } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -150,6 +152,20 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
       cancelled = true;
     };
   }, [asOverlay, heroOpacity, heroScale, step]);
+
+  useEffect(() => {
+    void Promise.all(
+      PROFILE_AVATARS.map(avatar => Asset.fromModule(avatar.image).downloadAsync().catch(() => undefined)),
+    );
+  }, []);
+
+  useEffect(() => {
+    const heroBackdrops = launchHeroItems
+      .map(item => item.backdrop)
+      .filter((uri): uri is string => typeof uri === 'string' && uri.length > 0);
+    if (heroBackdrops.length === 0) return;
+    void ExpoImage.prefetch(Array.from(new Set(heroBackdrops)), 'memory-disk');
+  }, [launchHeroItems]);
 
   const advanceLaunchHero = useCallback(() => {
     setLaunchHeroIndex(currentIndex => {

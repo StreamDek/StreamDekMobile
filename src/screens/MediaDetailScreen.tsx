@@ -348,7 +348,7 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     zIndex: 2,
     width: '100%',
     backgroundColor: 'transparent',
-    marginTop: isLightAppearance ? -22 : -16,
+    marginTop: -16,
   },
   classicTitleBlock: {
     height: 52,
@@ -442,7 +442,7 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     paddingHorizontal: 14,
     gap: 10,
     marginBottom: 24,
-    marginTop: isLightAppearance ? 4 : 2,
+    marginTop: 2,
     flexWrap: 'wrap',
   },
   classicActionRow: {
@@ -451,7 +451,7 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     gap: 10,
     paddingHorizontal: 14,
     marginBottom: 12,
-    marginTop: isLightAppearance ? 10 : 8,
+    marginTop: 8,
   },
   classicActionRowLeft: {
     flex: 1,
@@ -1394,7 +1394,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
         ? playBtnLoadingDetails[playBtnLoadingDetailIndex % playBtnLoadingDetails.length]
         : STREAM_LOADING_PHRASES[playBtnLoadingDetailIndex % STREAM_LOADING_PHRASES.length])
     : null;
-  const playButtonLocked = isMovieDetail && streamsTabLocked;
+  const playButtonLocked = isMovieDetail && streams.length === 0 && streamsTabLocked;
   const showStreamsTab = type !== 'tv' && !isUnreleased && showStreamsList;
   const streamsTabLoadingIndicator = showStreamsTab
     && streams.length === 0
@@ -2419,6 +2419,11 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
             >
               {(['all', ...addonNames] as string[]).map(name => {
                 const active = (addonNames.includes(selectedAddon) ? selectedAddon : 'all') === name;
+                const label = name === 'all'
+                  ? t('media_all_sources')
+                  : (name.trim().toLowerCase() === 'ultra boost' || name.trim().toLowerCase() === 'streamdek ultra' || name.trim().toLowerCase() === 'sd ultra'
+                    ? 'SD ultra'
+                    : name);
                 return (
                   <TouchableOpacity
                     key={name}
@@ -2437,7 +2442,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                       fontWeight: active ? '700' : '600',
                       color: active ? (isMonochromeDark ? colors.textPrimary : (isLightAppearance ? colors.textPrimary : colors.accentSoft)) : colors.textPrimary,
                     }}>
-                      {name === 'all' ? t('media_all_sources') : name}
+                      {label}
                     </Text>
                   </TouchableOpacity>
                 );
@@ -3095,6 +3100,15 @@ function StreamsTab({
   const enabledAddons = addons.filter(a => a.enabled);
   const hasStreamSources = enabledAddons.length > 0 || ultraActive;
   const streamSourceCount = enabledAddons.length + (ultraActive ? 1 : 0);
+  const getStreamSourceLabel = useMemo(() => {
+    return (name: string) => {
+      const normalized = name.trim().toLowerCase();
+      if (normalized === 'ultra boost' || normalized === 'streamdek ultra' || normalized === 'sd ultra') {
+        return 'SD ultra';
+      }
+      return name;
+    };
+  }, []);
   const {
     enabled: streamSelectionEnabled,
     preferredQuality,
@@ -3347,7 +3361,7 @@ function StreamsTab({
           {/* Hide the section header when filtered to a single addon — it's redundant */}
           {safeAddon === 'all' && (
             <Text style={{ color: colors.textPrimary, fontSize: 11, fontWeight: '700', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: 8 }}>
-              {addonName}
+              {getStreamSourceLabel(addonName)}
             </Text>
           )}
           {addonStreams.map((stream, idx) => (

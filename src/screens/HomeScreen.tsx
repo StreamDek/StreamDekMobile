@@ -418,10 +418,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     justifyContent: 'center' as const,
     backgroundColor: 'rgba(255,255,255,0.08)',
   },
-  heroGlassImageScrim: {
-    ...StyleSheet.absoluteFillObject,
-    bottom: -2,
-  } as any,
   heroGlassPosterFallbackText: {
     color: '#ffffff',
     fontSize: 13,
@@ -660,6 +656,12 @@ export const HomeScreen = ({ navigation }: any) => {
   const heroTransitionDirectionRef = useRef<1 | -1>(1);
   const homeScrollViewRef = useRef<ScrollView>(null);
   useScrollToTop(homeScrollViewRef);
+
+  const resolveHeroBackdropUri = useCallback((item: any | null | undefined) => {
+    if (!item) return null;
+    const key = `${item.type}_${item.id}`;
+    return heroBackdrops[key] ?? getHeroBackgroundUri(item);
+  }, [heroBackdrops]);
 
   // Merge Trakt watchlist with local watchlist (dedup by id, minus pending removals)
   const combinedWatchlist = useMemo(() => {
@@ -962,7 +964,7 @@ export const HomeScreen = ({ navigation }: any) => {
     void Image.prefetch(
       [
         ...heroItems
-          .map(getHeroBackgroundUri)
+          .map(resolveHeroBackdropUri)
           .filter((uri): uri is string => typeof uri === 'string' && uri.length > 0),
         ...heroItems
           .map(item => heroLogos[`${item.type}_${item.id}`])
@@ -970,7 +972,7 @@ export const HomeScreen = ({ navigation }: any) => {
       ],
       'memory-disk',
     );
-  }, [heroItems, heroLogos]);
+  }, [heroItems, heroLogos, resolveHeroBackdropUri]);
 
   useEffect(() => {
     const sectionImages = Object.values(sectionData)
@@ -1022,6 +1024,13 @@ export const HomeScreen = ({ navigation }: any) => {
         }
       }));
 
+      if (cancelled) return;
+
+      const metadataImages = results.flatMap(result => [result.logo, result.backdrop])
+        .filter((uri): uri is string => typeof uri === 'string' && uri.length > 0);
+      if (metadataImages.length > 0) {
+        await Image.prefetch(Array.from(new Set(metadataImages)), 'memory-disk').catch(() => undefined);
+      }
       if (cancelled) return;
 
       setHeroLogos(prev => {
@@ -1540,14 +1549,6 @@ export const HomeScreen = ({ navigation }: any) => {
                   </Text>
                 </View>
               )}
-              <LinearGradient
-                colors={isDarkAppearance
-                  ? ['rgba(4,6,10,0.08)', 'rgba(4,6,10,0.22)', 'rgba(4,6,10,0.82)']
-                  : ['rgba(255,255,255,0.04)', 'rgba(255,255,255,0.10)', 'rgba(8,12,20,0.62)']}
-                locations={[0, 0.45, 1]}
-                style={styles.heroGlassImageScrim}
-                pointerEvents="none"
-              />
             </View>
             <View style={styles.heroGlassInfo}>
               <View style={styles.heroGlassTop} />
@@ -1673,8 +1674,7 @@ export const HomeScreen = ({ navigation }: any) => {
     const item = heroItems[index];
     if (!item) return null;
     const glass = uiStyle === 'glass';
-    const key = `${item.type}_${item.id}`;
-    const backgroundUri = heroBackdrops[key] ?? getHeroBackgroundUri(item);
+    const backgroundUri = resolveHeroBackdropUri(item);
     const imagePosition = item.type === 'tv' ? { top: '30%' } : { top: '28%' };
     const scale = isOverlay ? Animated.multiply(heroScale, heroScrollScale) : heroScrollScale;
     const opacity = isOverlay ? heroFadeIn : 1;
@@ -1740,22 +1740,34 @@ export const HomeScreen = ({ navigation }: any) => {
 
   const activeAmbientBackdropUri = useMemo(() => {
     const currentHero = heroItems[heroIndex];
-    if (!currentHero) return null;
-    const currentKey = `${currentHero.type}_${currentHero.id}`;
-    return heroBackdrops[currentKey] ?? getHeroBackgroundUri(currentHero);
-  }, [heroBackdrops, heroIndex, heroItems]);
+    return resolveHeroBackdropUri(currentHero);
+  }, [heroIndex, heroItems, resolveHeroBackdropUri]);
+  const previousAmbientBackdropUri = useMemo(() => {
+    const previousHero = heroPrevIndex != null ? heroItems[heroPrevIndex] : null;
+    return resolveHeroBackdropUri(previousHero);
+  }, [heroItems, heroPrevIndex, resolveHeroBackdropUri]);
   return (
     <View style={{ flex: 1 }}>
       <BlurTargetView ref={blurTargetRef} style={{ flex: 1 }}>
     <View style={styles.container}>
       {(uiStyle === 'glass' || vividAmbientEnabled) && activeAmbientBackdropUri ? (
         <View pointerEvents="none" style={styles.ambientBackdrop}>
-          <RNImage
-            source={{ uri: activeAmbientBackdropUri }}
-            style={[styles.ambientBackdropImage, uiStyle === 'glass' && { opacity: isDarkAppearance ? 0.72 : 0.62 }]}
-            resizeMode="cover"
-            blurRadius={uiStyle === 'glass' ? 28 : 20}
-          />
+          {previousAmbientBackdropUri ? (
+            <RNImage
+              source={{ uri: previousAmbientBackdropUri }}
+              style={[styles.ambientBackdropImage, uiStyle === 'glass' && { opacity: isDarkAppearance ? 0.72 : 0.62 }]}
+              resizeMode="cover"
+              blurRadius={uiStyle === 'glass' ? 28 : 20}
+            />
+          ) : null}
+          <Animated.View style={[StyleSheet.absoluteFillObject, { opacity: heroFadeIn }]}>
+            <RNImage
+              source={{ uri: activeAmbientBackdropUri }}
+              style={[styles.ambientBackdropImage, uiStyle === 'glass' && { opacity: isDarkAppearance ? 0.72 : 0.62 }]}
+              resizeMode="cover"
+              blurRadius={uiStyle === 'glass' ? 28 : 20}
+            />
+          </Animated.View>
           <LinearGradient
             colors={uiStyle === 'glass'
               ? (isDarkAppearance

@@ -1118,6 +1118,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     && (!streamsFetchedRef.current || streamsLoading || !streamsLoadComplete);
   const streamsTabLocked = isMovieDetail
     && !!media
+    && streams.length === 0
     && (addonsLoading || streamsFetchingForPlayback);
   const isUnreleased = useMemo(() => {
     const raw = media?.releaseDate ?? media?.firstAirDate ?? null;

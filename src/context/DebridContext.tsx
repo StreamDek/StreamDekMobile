@@ -59,7 +59,7 @@ interface DebridContextType {
   /** Test an API key without saving it. */
   testKey(provider: DebridProviderName, apiKey: string): Promise<{ valid: boolean; username?: string }>;
   /** Resolve a torrent hash + magnet link to a direct stream URL. */
-  resolveStream(infoHash: string, magnetLink: string, filename?: string, options?: { maxSize?: number }): Promise<DebridResolvedStream | null>;
+  resolveStream(infoHash: string, magnetLink: string, filename?: string, options?: { maxSize?: number; providerHint?: DebridProviderName }): Promise<DebridResolvedStream | null>;
   /** Unrestrict a premium hoster URL. */
   unrestrictLink(url: string): Promise<DebridResolvedStream | null>;
   /**
@@ -184,7 +184,7 @@ export const DebridProvider = ({ children }: { children: React.ReactNode }) => {
     infoHash: string,
     magnetLink: string,
     filename?: string,
-    options?: { maxSize?: number },
+    options?: { maxSize?: number; providerHint?: DebridProviderName },
   ): Promise<DebridResolvedStream | null> => {
     if (!user) return null;
     try {
@@ -196,6 +196,7 @@ export const DebridProvider = ({ children }: { children: React.ReactNode }) => {
           magnetLink,
           ...(filename ? { filename } : {}),
           ...(options?.maxSize ? { maxSize: options.maxSize } : {}),
+          ...(options?.providerHint ? { providerHint: options.providerHint } : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));

@@ -63,7 +63,7 @@ import { useDisplaySettings } from '../context/DisplaySettingsContext';
 import { pickBestAudioTrack, scoreStream } from '../utils/streamSelection';
 import { Storage } from '../utils/storage';
 import { postClientLog } from '../utils/clientLog';
-import { createLocalProxyUrl } from '../utils/torrentServerClient';
+import { createLocalProxyUrl, createLocalTorrentPlaybackUrl } from '../utils/torrentServerClient';
 import { parseStream } from '../utils/streamParser';
 import { getMpvNativeViewAvailabilityDiagnostics, isMpvNativeViewAvailable } from '../components/MpvPlayer';
 
@@ -564,7 +564,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const { user } = useAuth();
     const { activeProfile } = useProfile();
     const { fetchStreams } = useAddons();
-    const { accounts: debridAccounts, resolveStream, unrestrictLink } = useDebrid();
+    const { accounts: debridAccounts, resolveStream, unrestrictLink, streamTorrent } = useDebrid();
     const { saveProgress, clearProgress } = useWatchProgress();
     const storageOwnerId = getProfileStorageOwnerId(user?.uid ?? null, activeProfile?.id ?? null);
 
@@ -1465,7 +1465,10 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                         const maxSizeBytes = streamSelectionEnabled && maxFileSizeGB > 0
                             ? Math.round(maxFileSizeGB * 1024 * 1024 * 1024)
                             : PREFERRED_SIZE_LIMIT;
-                        res = await resolveStream(stream.infoHash, magnet, hint, { maxSize: maxSizeBytes });
+                        res = await resolveStream(stream.infoHash, magnet, hint, {
+                            maxSize: maxSizeBytes,
+                            providerHint: stream.cachedBy[0],
+                        });
                     } catch (error: any) {
                         logDebridFailures('Premium resolver failed', error?.failures);
                     }
@@ -1476,13 +1479,32 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                     }
                     logPlayerEvent('info', `[Player] Premium resolver returned no URL for ${describeStream(stream, streamIndex, totalStreams)}`);
                 }
+
+                if (serverConfig.streamingMode === 'server') {
+                    logPlayerEvent('info', `[Player] Trying local playback URL for ${describeStream(stream, streamIndex, totalStreams)}`);
+                    const localTorrentUrl = await createLocalTorrentPlaybackUrl(stream.infoHash, magnet, hint);
+                    if (!isCurrentAttempt()) return null;
+                    if (localTorrentUrl) {
+                        logPlayerEvent('info', `[Player] Local playback URL succeeded for ${describeStream(stream, streamIndex, totalStreams)}`);
+                        return localTorrentUrl;
+                    }
+                    logPlayerEvent('warn', `[Player] Local playback URL unavailable for ${describeStream(stream, streamIndex, totalStreams)}`);
+                }
+
+                logPlayerEvent('info', `[Player] Trying backend stream URL for ${describeStream(stream, streamIndex, totalStreams)}`);
+                const backendTorrentUrl = await streamTorrent(stream.infoHash, magnet, hint);
+                if (!isCurrentAttempt()) return null;
+                if (backendTorrentUrl) {
+                    logPlayerEvent('info', `[Player] Backend stream URL succeeded for ${describeStream(stream, streamIndex, totalStreams)}`);
+                    return backendTorrentUrl;
+                }
             }
         } catch (e) {
             logPlayerEvent('error', "[Player] Resolution error", { error: e instanceof Error ? e.message : String(e) });
         }
         logPlayerEvent('info', `[Player] Resolution failed for ${describeStream(stream, streamIndex, totalStreams)}`);
         return null;
-    }, [debridAccounts, logDebridFailures, logPlayerEvent, resolveStream]);
+    }, [debridAccounts, logDebridFailures, logPlayerEvent, resolveStream, serverConfig.streamingMode, streamTorrent]);
 
     const resolveStreamToUrlWithTimeout = useCallback(async (
         stream: AddonStream,

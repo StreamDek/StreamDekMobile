@@ -19,6 +19,11 @@ import { getMobileClientIdentityHeaders } from '../utils/clientIdentity';
 const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 const ULTRA_BOOST_STORAGE_KEY = 'streamdek_ultra_boost_enabled';
 
+export interface UltraManifestMeta {
+  name: string;
+  version: string;
+}
+
 
 export interface AddonManifest {
   id: string;
@@ -69,6 +74,7 @@ interface AddonContextType {
   isLoading: boolean;
   ultraEntitled: boolean;
   ultraBoostEnabled: boolean;
+  ultraManifest: UltraManifestMeta | null;
   setUltraBoostEnabled(enabled: boolean): Promise<void>;
   refreshUltraEntitlement(): Promise<void>;
   installAddon(url: string): Promise<{ success: boolean; error?: string }>;
@@ -103,6 +109,7 @@ const AddonContext = createContext<AddonContextType>({
   isLoading: false,
   ultraEntitled: false,
   ultraBoostEnabled: false,
+  ultraManifest: null,
   setUltraBoostEnabled: async () => {},
   refreshUltraEntitlement: async () => {},
   installAddon:            async () => ({ success: false }),
@@ -175,6 +182,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [ultraEntitled, setUltraEntitled] = useState(false);
   const [ultraBoostEnabled, setUltraBoostEnabledState] = useState(false);
+  const [ultraManifest, setUltraManifest] = useState<UltraManifestMeta | null>(null);
 
   // In-memory stream cache — survives re-renders, cleared on unmount
   const streamCache = useRef<Map<string, CacheEntry>>(new Map());
@@ -193,6 +201,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
     if (!user) {
       setUltraEntitled(false);
       setUltraBoostEnabledState(false);
+      setUltraManifest(null);
       return;
     }
 
@@ -203,11 +212,18 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
       if (!res.ok) {
         setUltraEntitled(false);
         setUltraBoostEnabledState(false);
+        setUltraManifest(null);
         return;
       }
 
       const data = await res.json();
       const entitled = !!data.ultra;
+      const manifest = data?.manifest;
+      setUltraManifest(
+        manifest && typeof manifest.name === 'string' && typeof manifest.version === 'string'
+          ? { name: manifest.name, version: manifest.version }
+          : null,
+      );
       setUltraEntitled(entitled);
       if (!entitled) {
         setUltraBoostEnabledState(false);
@@ -219,6 +235,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
     } catch {
       setUltraEntitled(false);
       setUltraBoostEnabledState(false);
+      setUltraManifest(null);
     }
   }, [buildAddonHeaders, user]);
 
@@ -476,7 +493,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
   return (
     <AddonContext.Provider value={{
       addons, isLoading,
-      ultraEntitled, ultraBoostEnabled, setUltraBoostEnabled, refreshUltraEntitlement,
+      ultraEntitled, ultraBoostEnabled, ultraManifest, setUltraBoostEnabled, refreshUltraEntitlement,
       installAddon, uninstallAddon, toggleAddon,
       fetchStreams, fetchStreamsProgressive, refreshAddons, reorderAddons,
     }}>

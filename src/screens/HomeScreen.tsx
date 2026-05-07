@@ -53,6 +53,7 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const HERO_HEIGHT = 616;
 const DOCUMENTARY_SECTION = { id: 'documentaries', title: 'Documentaries', endpoint: '/tmdb/discover?type=movie&genre_id=99&sort_by=popularity.desc', enabled: false };
 const CURRENT_YEAR = new Date().getFullYear();
+const HOME_SECTION_CACHE_KEY = 'home_section_cache';
 
 function formatContinueTime(positionSec?: number | null): string | null {
   if (!positionSec || !Number.isFinite(positionSec) || positionSec <= 0) return null;
@@ -629,6 +630,7 @@ export const HomeScreen = ({ navigation }: any) => {
   }, [activeProfileId]);
   const legacyOwnerId = user?.uid ?? null;
   const sectionSettingsKey = profileScopedStorageKey('home_sections', user?.uid, activeProfile?.id);
+  const sectionCacheKey = profileScopedStorageKey(`${HOME_SECTION_CACHE_KEY}:${metadataProvider}`, user?.uid, activeProfile?.id);
 
   const [longPressItem,          setLongPressItem]          = useState<any | null>(null);
   const [seriesWatchConfirmItem, setSeriesWatchConfirmItem] = useState<any | null>(null);
@@ -656,6 +658,9 @@ export const HomeScreen = ({ navigation }: any) => {
   const heroTransitionDirectionRef = useRef<1 | -1>(1);
   const homeScrollViewRef = useRef<ScrollView>(null);
   useScrollToTop(homeScrollViewRef);
+  const heroMetadataFetchedRef = useRef<Set<string>>(new Set());
+  const hasCompletedInitialHomeLoadRef = useRef(false);
+  const lastAutoFetchKeyRef = useRef<string | null>(null);
 
   const resolveHeroBackdropUri = useCallback((item: any | null | undefined) => {
     if (!item) return null;
@@ -673,7 +678,6 @@ export const HomeScreen = ({ navigation }: any) => {
     return uniqueItemsById(mergeWatchlistItems(traktMapped, localOnly));
   }, [traktWatchlist, watchlist, pendingWatchlistRemovals, watchlistRemovalIds]);
   const allContinueWatching = useMemo(() => {
-    if (!user) return [];
     const byId = new Map<string, any>();
     for (const item of [...continueWatching, ...localContinueWatching]) {
       const key = String(item?.tmdbId ?? item?.id ?? '');
@@ -682,7 +686,7 @@ export const HomeScreen = ({ navigation }: any) => {
       byId.set(key, current ? mergeMediaEntries(item, current) : mergeMediaEntries(item, {}));
     }
     return Array.from(byId.values());
-  }, [user, continueWatching, localContinueWatching]);
+  }, [continueWatching, localContinueWatching]);
   const scrollY = useRef(new Animated.Value(0)).current;
   const headerOpacity = scrollY.interpolate({ inputRange: [0, 80], outputRange: [1, 0.92], extrapolate: 'clamp' });
   const heroScrollScale = scrollY.interpolate({
@@ -721,21 +725,22 @@ export const HomeScreen = ({ navigation }: any) => {
   }, [defaultSections, sectionSettingsKey]);
 
   const loadWatchlist = useCallback(async () => {
-    if (!user) { setWatchlist([]); return; }
     try {
       setWatchlist(await readWatchlistItems(storageOwnerId, legacyOwnerId));
-    } catch {}
-  }, [user, storageOwnerId, legacyOwnerId]);
+    } catch {
+      setWatchlist([]);
+    }
+  }, [storageOwnerId, legacyOwnerId]);
 
   const loadWatchlistRemovals = useCallback(async () => {
-    if (!user) { setWatchlistRemovalIds([]); return; }
     try {
       setWatchlistRemovalIds(await readWatchlistRemovalIds(storageOwnerId, legacyOwnerId));
-    } catch {}
-  }, [legacyOwnerId, storageOwnerId, user]);
+    } catch {
+      setWatchlistRemovalIds([]);
+    }
+  }, [legacyOwnerId, storageOwnerId]);
 
   const loadLocalProgress = useCallback(async () => {
-    if (!user) { setLocalContinueWatching([]); return; }
     try {
       const indexKey = progressIndexStorageKey(storageOwnerId);
       const raw = await Storage.getItem(indexKey);
@@ -759,24 +764,58 @@ export const HomeScreen = ({ navigation }: any) => {
     } catch {
       setLocalContinueWatching([]);
     }
-  }, [user, storageOwnerId]);
+  }, [storageOwnerId]);
+
+  const loadCachedSectionData = useCallback(async () => {
+    try {
+      const raw = await Storage.getItem(sectionCacheKey);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed as Record<string, any[]> : null;
+    } catch {
+      return null;
+    }
+  }, [sectionCacheKey]);
 
   const fetchCatalogSections = useCallback(async (activeSections: typeof sections) => {
+    if (activeSections.length === 0) {
+      setLoading(false);
+      return false;
+    }
+
     let fetchedAny = false;
+    const nextResults: Record<string, any[]> = {};
+    let firstSettled = false;
     await Promise.all(
       activeSections.filter(s => s.enabled).map(async (s) => {
         try {
           const data = await fetchMetadataCatalog(s.endpoint);
           fetchedAny = true;
+          nextResults[s.id] = data.results || [];
           setSectionData(prev => ({ ...prev, [s.id]: data.results || [] }));
+          if (!firstSettled) {
+            firstSettled = true;
+            setLoading(false);
+          }
         } catch {
           // Mark section as settled (empty) so the skeleton doesn't hang indefinitely.
+          nextResults[s.id] = [];
           setSectionData(prev => prev[s.id] === undefined ? { ...prev, [s.id]: [] } : prev);
+          if (!firstSettled) {
+            firstSettled = true;
+            setLoading(false);
+          }
         }
       })
     );
+    if (Object.keys(nextResults).length > 0) {
+      void Storage.setItem(sectionCacheKey, JSON.stringify(nextResults)).catch(() => undefined);
+    }
+    if (!firstSettled) {
+      setLoading(false);
+    }
     return fetchedAny;
-  }, []);
+  }, [sectionCacheKey]);
 
   const fetchTraktSections = useCallback(async () => {
     if (!traktConnected || !user) return;
@@ -789,37 +828,52 @@ export const HomeScreen = ({ navigation }: any) => {
   useEffect(() => {
     if (prevProviderRef.current === metadataProvider) return;
     prevProviderRef.current = metadataProvider;
-    // Immediately adopt new provider's default section list so the correct
-    // skeleton rows appear while the async saved-config load is in-flight.
+    hasCompletedInitialHomeLoadRef.current = false;
     setSections(defaultSections);
-    setSectionData({});
-    void loadSectionConfig().then(resolvedSections => {
-      void fetchCatalogSections(resolvedSections);
-    });
-  }, [metadataProvider, defaultSections, loadSectionConfig, fetchCatalogSections]);
+    setLoading(true);
+    void (async () => {
+      const cached = await loadCachedSectionData();
+      if (cached && Object.keys(cached).length > 0) {
+        setSectionData(cached);
+        setLoading(false);
+      } else {
+        setSectionData({});
+      }
+      await loadSectionConfig();
+    })();
+  }, [defaultSections, loadCachedSectionData, loadSectionConfig, metadataProvider]);
 
   useEffect(() => {
     let active = true;
     const init = async () => {
-      const resolvedSections = await loadSectionConfig();
-      const tmdbLoaded = active ? await fetchCatalogSections(resolvedSections) : false;
-      if (active) {
-        await Promise.all([loadWatchlist(), loadWatchlistRemovals()]);
-        await loadLocalProgress();
-        setLoading(!tmdbLoaded);
-        setAppReady(true);
+      const [resolvedSections, cachedSectionData] = await Promise.all([
+        loadSectionConfig(),
+        loadCachedSectionData(),
+      ]);
+      if (!active) return;
+      if (cachedSectionData && Object.keys(cachedSectionData).length > 0) {
+        setSectionData(cachedSectionData);
+        setLoading(false);
       }
+      await Promise.all([loadWatchlist(), loadWatchlistRemovals(), loadLocalProgress()]);
+      if (!active) return;
+      setSections(resolvedSections);
+      setAppReady(true);
     };
     init();
     return () => { active = false; };
-  }, [fetchCatalogSections, loadSectionConfig, loadWatchlistRemovals, setAppReady, user?.uid, activeProfile?.id]);
+  }, [loadCachedSectionData, loadLocalProgress, loadSectionConfig, loadWatchlist, loadWatchlistRemovals, setAppReady, user?.uid, activeProfile?.id]);
 
   useFocusEffect(
     useCallback(() => {
-        const timer = setTimeout(() => {
+      const timer = setTimeout(() => {
+        if (hasCompletedInitialHomeLoadRef.current) {
           void loadSectionConfig().then(resolvedSections => {
-          void fetchCatalogSections(resolvedSections);
-        });
+            void fetchCatalogSections(resolvedSections);
+          });
+        } else {
+          hasCompletedInitialHomeLoadRef.current = true;
+        }
         loadWatchlist();
         loadLocalProgress();
         if (traktConnected && user) {
@@ -835,13 +889,16 @@ export const HomeScreen = ({ navigation }: any) => {
         clearTimeout(timer);
         clearTimeout(timer2);
       };
-  }, [user, activeProfile?.id, traktConnected, fetchTraktSections, refreshContinueWatching, refreshWatchlist, loadWatchlistRemovals, loadWatchlist, loadLocalProgress, fetchCatalogSections, loadSectionConfig])
+  }, [user, activeProfile?.id, traktConnected, fetchTraktSections, refreshContinueWatching, refreshWatchlist, loadWatchlist, loadLocalProgress, fetchCatalogSections, loadSectionConfig])
   );
 
   useEffect(() => {
     if (sections.length === 0) return;
+    const fetchKey = `${metadataProvider}:${sections.map(section => `${section.id}:${section.enabled ? 1 : 0}:${section.endpoint}`).join('|')}`;
+    if (lastAutoFetchKeyRef.current === fetchKey) return;
+    lastAutoFetchKeyRef.current = fetchKey;
     void fetchCatalogSections(sections);
-  }, [sections, fetchCatalogSections]);
+  }, [fetchCatalogSections, metadataProvider, sections]);
 
   // Home is the root tab — exit the app when the hardware back is pressed here.
   useFocusEffect(
@@ -989,10 +1046,12 @@ export const HomeScreen = ({ navigation }: any) => {
   useEffect(() => {
     if (heroItems.length === 0) return;
     let cancelled = false;
+    const itemsToEnrich = heroItems.filter(item => !heroMetadataFetchedRef.current.has(`${item.type}_${item.id}`));
+    if (itemsToEnrich.length === 0) return;
 
     setHeroLogoStates(prev => {
       const next = { ...prev };
-      for (const item of heroItems) {
+      for (const item of itemsToEnrich) {
         const key = `${item.type}_${item.id}`;
         if (next[key] !== 'loaded') {
           next[key] = 'loading';
@@ -1002,7 +1061,7 @@ export const HomeScreen = ({ navigation }: any) => {
     });
 
     const loadHeroMetadata = async () => {
-      const results = await Promise.all(heroItems.map(async (item) => {
+      const results = await Promise.all(itemsToEnrich.map(async (item) => {
         const key = `${item.type}_${item.id}`;
         try {
           const res = await tmdbFetch(`/tmdb/details/${item.type}/${item.id}`);
@@ -1068,6 +1127,9 @@ export const HomeScreen = ({ navigation }: any) => {
         }
         return next;
       });
+      for (const result of results) {
+        heroMetadataFetchedRef.current.add(result.key);
+      }
     };
 
     void loadHeroMetadata();

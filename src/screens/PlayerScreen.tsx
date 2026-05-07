@@ -64,7 +64,6 @@ import { pickBestAudioTrack, scoreStream } from '../utils/streamSelection';
 import { Storage } from '../utils/storage';
 import { postClientLog } from '../utils/clientLog';
 import { createLocalProxyUrl } from '../utils/torrentServerClient';
-import { isAllowedPlaybackStream } from '../utils/streamSelection';
 import { parseStream } from '../utils/streamParser';
 import { getMpvNativeViewAvailabilityDiagnostics, isMpvNativeViewAvailable } from '../components/MpvPlayer';
 
@@ -1210,21 +1209,22 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     }, []);
 
     const getRankedStreams = useCallback((streams: AddonStream[]): AddonStream[] => {
-        if (!streamSelectionEnabled) {
-            return [...streams];
-        }
         const preferQuickStart = serverConfig.streamingMode === 'server';
+        const baseOptions = streamSelectionEnabled
+            ? {
+                preferredQuality,
+                maxFileSizeGB: maxFileSizeGB > 0 ? maxFileSizeGB : undefined,
+            }
+            : {};
         return [...streams].sort((a, b) => (
             scoreStream(b, {
                 preferQuickStart,
-                preferredQuality,
-                maxFileSizeGB: maxFileSizeGB > 0 ? maxFileSizeGB : undefined,
+                ...baseOptions,
                 sessionPenalty: getSessionPenalty(b),
             })
             - scoreStream(a, {
                 preferQuickStart,
-                preferredQuality,
-                maxFileSizeGB: maxFileSizeGB > 0 ? maxFileSizeGB : undefined,
+                ...baseOptions,
                 sessionPenalty: getSessionPenalty(a),
             })
         ));
@@ -1456,17 +1456,16 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                 return stream.url;
             }
             if (stream.infoHash) {
-                if (!isAllowedPlaybackStream(stream)) {
-                    logPlayerEvent('warn', `[Player] Blocked raw torrent source for ${describeStream(stream, streamIndex, totalStreams)}`);
-                    return null;
-                }
                 const hint = stream.behaviorHints?.filename;
                 const magnet = `magnet:?xt=urn:btih:${stream.infoHash}`;
-                if (stream.cachedBy.length > 0 && debridAccounts.length > 0) {
+                if (debridAccounts.length > 0) {
                     logPlayerEvent('info', `[Player] Trying premium resolver for ${describeStream(stream, streamIndex, totalStreams)}`);
                     let res = null;
                     try {
-                        res = await resolveStream(stream.infoHash, magnet, hint, { maxSize: PREFERRED_SIZE_LIMIT });
+                        const maxSizeBytes = streamSelectionEnabled && maxFileSizeGB > 0
+                            ? Math.round(maxFileSizeGB * 1024 * 1024 * 1024)
+                            : PREFERRED_SIZE_LIMIT;
+                        res = await resolveStream(stream.infoHash, magnet, hint, { maxSize: maxSizeBytes });
                     } catch (error: any) {
                         logDebridFailures('Premium resolver failed', error?.failures);
                     }

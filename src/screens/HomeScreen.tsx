@@ -3,7 +3,7 @@ import { useFocusEffect, useScrollToTop } from '@react-navigation/native';
 import {
   View, Text, StyleSheet, RefreshControl,
   Animated, Easing, PanResponder, StatusBar, TouchableOpacity,
-  ScrollView, Dimensions, Share, BackHandler,
+  FlatList, Dimensions, Share, BackHandler,
   Image as RNImage,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -48,12 +48,16 @@ import { ContinueWatchingCard } from '../components/ContinueWatchingCard';
 import { useDisplaySettings } from '../context/DisplaySettingsContext';
 import { getProfileStorageOwnerId, profileScopedStorageKey, progressIndexStorageKey } from '../utils/profileStorage';
 import { useTmdbApiKey } from '../context/TmdbApiKeyContext';
+import { getDeviceProfile } from '../utils/deviceProfile';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const HERO_HEIGHT = 616;
 const DOCUMENTARY_SECTION = { id: 'documentaries', title: 'Documentaries', endpoint: '/tmdb/discover?type=movie&genre_id=99&sort_by=popularity.desc', enabled: false };
 const CURRENT_YEAR = new Date().getFullYear();
 const HOME_SECTION_CACHE_KEY = 'home_section_cache';
+const homeSectionMemoryCache = new Map<string, Record<string, any[]>>();
+const SECTION_UPDATE_FLUSH_MS = 80;
+const AnimatedFlatList = Animated.createAnimatedComponent(FlatList<any>);
 
 function formatContinueTime(positionSec?: number | null): string | null {
   if (!positionSec || !Number.isFinite(positionSec) || positionSec <= 0) return null;
@@ -586,8 +590,8 @@ export const HomeScreen = ({ navigation }: any) => {
         { id: 'popular_movie', title: t('section_popular_movies'), endpoint: '/cinemeta/catalog/movie/top', enabled: true },
         { id: 'popular_tv', title: t('section_popular_tv'), endpoint: '/cinemeta/catalog/series/top', enabled: true },
         { id: 'documentaries', title: 'Documentaries', endpoint: '/cinemeta/catalog/movie/top?genre=Documentary', enabled: false },
-        { id: 'new_movie', title: 'New Movies', endpoint: `/cinemeta/catalog/movie/year?genre=${CURRENT_YEAR}`, enabled: false },
-        { id: 'new_tv', title: 'New Series', endpoint: `/cinemeta/catalog/series/year?genre=${CURRENT_YEAR}`, enabled: false },
+        { id: 'new_movie', title: 'New Movies', endpoint: `/cinemeta/catalog/movie/year/${CURRENT_YEAR}`, enabled: false },
+        { id: 'new_tv', title: 'New Series', endpoint: `/cinemeta/catalog/series/year/${CURRENT_YEAR}`, enabled: false },
       ];
     }
 
@@ -656,11 +660,13 @@ export const HomeScreen = ({ navigation }: any) => {
   const heroTimerRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const heroLengthRef = useRef(0);
   const heroTransitionDirectionRef = useRef<1 | -1>(1);
-  const homeScrollViewRef = useRef<ScrollView>(null);
-  useScrollToTop(homeScrollViewRef);
+  const deviceProfile = useMemo(() => getDeviceProfile(), []);
+  const homeListRef = useRef<FlatList<any>>(null);
+  useScrollToTop(homeListRef);
   const heroMetadataFetchedRef = useRef<Set<string>>(new Set());
   const hasCompletedInitialHomeLoadRef = useRef(false);
   const lastAutoFetchKeyRef = useRef<string | null>(null);
+  const sectionFetchRequestIdRef = useRef(0);
 
   const resolveHeroBackdropUri = useCallback((item: any | null | undefined) => {
     if (!item) return null;
@@ -767,55 +773,106 @@ export const HomeScreen = ({ navigation }: any) => {
   }, [storageOwnerId]);
 
   const loadCachedSectionData = useCallback(async () => {
+    const memoryCached = homeSectionMemoryCache.get(sectionCacheKey);
+    if (memoryCached) return memoryCached;
     try {
       const raw = await Storage.getItem(sectionCacheKey);
       if (!raw) return null;
       const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === 'object' ? parsed as Record<string, any[]> : null;
+      const resolved = parsed && typeof parsed === 'object' ? parsed as Record<string, any[]> : null;
+      if (resolved) homeSectionMemoryCache.set(sectionCacheKey, resolved);
+      return resolved;
     } catch {
       return null;
     }
   }, [sectionCacheKey]);
 
   const fetchCatalogSections = useCallback(async (activeSections: typeof sections) => {
-    if (activeSections.length === 0) {
+    const enabledSections = activeSections.filter(s => s.enabled);
+    const priorityWindow = deviceProfile.performanceClass === 'low' ? 2 : 3;
+    const prioritySections = enabledSections.slice(0, priorityWindow);
+    const backgroundSections = enabledSections.slice(priorityWindow);
+    const requestId = ++sectionFetchRequestIdRef.current;
+
+    if (enabledSections.length === 0) {
       setLoading(false);
       return false;
     }
 
     let fetchedAny = false;
     const nextResults: Record<string, any[]> = {};
+    const pendingUpdates: Record<string, any[]> = {};
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    let latestSnapshot: Record<string, any[]> | null = null;
     let firstSettled = false;
-    await Promise.all(
-      activeSections.filter(s => s.enabled).map(async (s) => {
+
+    const flushPendingUpdates = () => {
+      flushTimer = null;
+      if (sectionFetchRequestIdRef.current !== requestId) return;
+      const entries = Object.entries(pendingUpdates);
+      if (entries.length === 0) return;
+      for (const [key] of entries) delete pendingUpdates[key];
+      setSectionData(prev => {
+        const merged = { ...prev };
+        for (const [key, value] of entries) {
+          merged[key] = value;
+        }
+        latestSnapshot = merged;
+        return merged;
+      });
+    };
+
+    const queueSectionUpdate = (sectionId: string, rows: any[]) => {
+      pendingUpdates[sectionId] = rows;
+      if (!flushTimer) {
+        flushTimer = setTimeout(flushPendingUpdates, SECTION_UPDATE_FLUSH_MS);
+      }
+    };
+
+    const fetchSection = async (s: typeof enabledSections[number]) => {
         try {
           const data = await fetchMetadataCatalog(s.endpoint);
+          if (sectionFetchRequestIdRef.current !== requestId) return;
           fetchedAny = true;
           nextResults[s.id] = data.results || [];
-          setSectionData(prev => ({ ...prev, [s.id]: data.results || [] }));
+          queueSectionUpdate(s.id, data.results || []);
           if (!firstSettled) {
             firstSettled = true;
             setLoading(false);
           }
         } catch {
+          if (sectionFetchRequestIdRef.current !== requestId) return;
           // Mark section as settled (empty) so the skeleton doesn't hang indefinitely.
           nextResults[s.id] = [];
-          setSectionData(prev => prev[s.id] === undefined ? { ...prev, [s.id]: [] } : prev);
+          queueSectionUpdate(s.id, []);
           if (!firstSettled) {
             firstSettled = true;
             setLoading(false);
           }
         }
-      })
-    );
+    };
+
+    await Promise.all(prioritySections.map(fetchSection));
+    await Promise.all(backgroundSections.map(fetchSection));
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushPendingUpdates();
+    }
+    if (sectionFetchRequestIdRef.current !== requestId) return fetchedAny;
+
     if (Object.keys(nextResults).length > 0) {
-      void Storage.setItem(sectionCacheKey, JSON.stringify(nextResults)).catch(() => undefined);
+      const snapshot = latestSnapshot ?? {
+        ...homeSectionMemoryCache.get(sectionCacheKey),
+        ...nextResults,
+      };
+      homeSectionMemoryCache.set(sectionCacheKey, snapshot);
+      void Storage.setItem(sectionCacheKey, JSON.stringify(snapshot)).catch(() => undefined);
     }
     if (!firstSettled) {
       setLoading(false);
     }
     return fetchedAny;
-  }, [sectionCacheKey]);
+  }, [deviceProfile.performanceClass, sectionCacheKey]);
 
   const fetchTraktSections = useCallback(async () => {
     if (!traktConnected || !user) return;
@@ -829,8 +886,9 @@ export const HomeScreen = ({ navigation }: any) => {
     if (prevProviderRef.current === metadataProvider) return;
     prevProviderRef.current = metadataProvider;
     hasCompletedInitialHomeLoadRef.current = false;
+    sectionFetchRequestIdRef.current += 1;
+    lastAutoFetchKeyRef.current = null;
     setSections(defaultSections);
-    setLoading(true);
     void (async () => {
       const cached = await loadCachedSectionData();
       if (cached && Object.keys(cached).length > 0) {
@@ -838,6 +896,7 @@ export const HomeScreen = ({ navigation }: any) => {
         setLoading(false);
       } else {
         setSectionData({});
+        setLoading(true);
       }
       await loadSectionConfig();
     })();
@@ -855,10 +914,9 @@ export const HomeScreen = ({ navigation }: any) => {
         setSectionData(cachedSectionData);
         setLoading(false);
       }
-      await Promise.all([loadWatchlist(), loadWatchlistRemovals(), loadLocalProgress()]);
-      if (!active) return;
       setSections(resolvedSections);
       setAppReady(true);
+      void Promise.all([loadWatchlist(), loadWatchlistRemovals(), loadLocalProgress()]);
     };
     init();
     return () => { active = false; };
@@ -868,28 +926,22 @@ export const HomeScreen = ({ navigation }: any) => {
     useCallback(() => {
       const timer = setTimeout(() => {
         if (hasCompletedInitialHomeLoadRef.current) {
-          void loadSectionConfig().then(resolvedSections => {
-            void fetchCatalogSections(resolvedSections);
-          });
+          void fetchCatalogSections(sections);
         } else {
           hasCompletedInitialHomeLoadRef.current = true;
         }
-        loadWatchlist();
-        loadLocalProgress();
+        void loadWatchlist();
+        void loadLocalProgress();
         if (traktConnected && user) {
-          fetchTraktSections();
-          refreshContinueWatching();
-          refreshWatchlist();
+          void fetchTraktSections();
+          void refreshContinueWatching();
+          void refreshWatchlist();
         }
       }, 100);
-      const timer2 = setTimeout(() => {
-        loadLocalProgress();
-      }, 600);
       return () => {
         clearTimeout(timer);
-        clearTimeout(timer2);
       };
-  }, [user, activeProfile?.id, traktConnected, fetchTraktSections, refreshContinueWatching, refreshWatchlist, loadWatchlist, loadLocalProgress, fetchCatalogSections, loadSectionConfig])
+  }, [user, activeProfile?.id, traktConnected, fetchTraktSections, refreshContinueWatching, refreshWatchlist, loadWatchlist, loadLocalProgress, fetchCatalogSections, sections])
   );
 
   useEffect(() => {
@@ -1009,44 +1061,47 @@ export const HomeScreen = ({ navigation }: any) => {
     heroFadeIn.setValue(1);
     heroScale.setValue(1.015);
     Animated.timing(heroScale, {
-      toValue: 1.06,
-      duration: 14000,
+      toValue: deviceProfile.enableExtendedAnimations ? 1.06 : 1.03,
+      duration: deviceProfile.enableExtendedAnimations ? 14000 : 7000,
       easing: Easing.linear,
       useNativeDriver: true,
     }).start();
-  }, [sectionData, combinedWatchlist, allContinueWatching, isMovieWatched, isSeriesWatched, heroFadeIn, heroScale, metadataProvider]);
+  }, [deviceProfile.enableExtendedAnimations, sectionData, combinedWatchlist, allContinueWatching, isMovieWatched, isSeriesWatched, heroFadeIn, heroScale, metadataProvider]);
 
   useEffect(() => {
     if (heroItems.length === 0) return;
+    const prioritizedHeroItems = heroItems.slice(0, deviceProfile.heroPrefetchCount);
     void Image.prefetch(
       [
-        ...heroItems
+        ...prioritizedHeroItems
           .map(resolveHeroBackdropUri)
           .filter((uri): uri is string => typeof uri === 'string' && uri.length > 0),
-        ...heroItems
+        ...prioritizedHeroItems
           .map(item => heroLogos[`${item.type}_${item.id}`])
           .filter((uri): uri is string => typeof uri === 'string' && uri.length > 0),
       ],
       'memory-disk',
     );
-  }, [heroItems, heroLogos, resolveHeroBackdropUri]);
+  }, [deviceProfile.heroPrefetchCount, heroItems, heroLogos, resolveHeroBackdropUri]);
 
   useEffect(() => {
     const sectionImages = Object.values(sectionData)
       .flat()
-      .slice(0, 36)
+      .slice(0, deviceProfile.sectionPrefetchCount)
       .flatMap((item: any) => [item?.poster, item?.backdrop])
       .filter((uri): uri is string => typeof uri === 'string' && uri.length > 0);
 
     if (sectionImages.length > 0) {
       void Image.prefetch(Array.from(new Set(sectionImages)), 'memory-disk');
     }
-  }, [sectionData]);
+  }, [deviceProfile.sectionPrefetchCount, sectionData]);
 
   useEffect(() => {
     if (heroItems.length === 0) return;
     let cancelled = false;
-    const itemsToEnrich = heroItems.filter(item => !heroMetadataFetchedRef.current.has(`${item.type}_${item.id}`));
+    const itemsToEnrich = heroItems
+      .slice(0, deviceProfile.heroPrefetchCount)
+      .filter(item => !heroMetadataFetchedRef.current.has(`${item.type}_${item.id}`));
     if (itemsToEnrich.length === 0) return;
 
     setHeroLogoStates(prev => {
@@ -1136,7 +1191,7 @@ export const HomeScreen = ({ navigation }: any) => {
     return () => {
       cancelled = true;
     };
-  }, [heroItems]);
+  }, [deviceProfile.heroPrefetchCount, heroItems]);
 
   const slideTo = useCallback((index: number) => {
     if (heroLengthRef.current <= 0) {
@@ -1172,15 +1227,15 @@ export const HomeScreen = ({ navigation }: any) => {
         useNativeDriver: true,
       }),
       Animated.timing(heroScale, {
-        toValue: 1.06,
-        duration: 14000,
+        toValue: deviceProfile.enableExtendedAnimations ? 1.06 : 1.03,
+        duration: deviceProfile.enableExtendedAnimations ? 14000 : 7000,
         easing: Easing.linear,
         useNativeDriver: true,
       }),
     ]).start(() => {
       setHeroPrevIndex(null);
     });
-  }, [heroContentAnim, heroFadeIn, heroItems, heroScale]);
+  }, [deviceProfile.enableExtendedAnimations, heroContentAnim, heroFadeIn, heroItems, heroScale]);
 
   const startHeroTimer = useCallback(() => {
     if (heroTimerRef.current) clearInterval(heroTimerRef.current);
@@ -1808,6 +1863,142 @@ export const HomeScreen = ({ navigation }: any) => {
     const previousHero = heroPrevIndex != null ? heroItems[heroPrevIndex] : null;
     return resolveHeroBackdropUri(previousHero);
   }, [heroItems, heroPrevIndex, resolveHeroBackdropUri]);
+  const homeRows = useMemo(() => {
+    const rows: Array<any> = [];
+
+    if (user && allContinueWatching.length > 0) {
+      rows.push({ key: 'continue', kind: 'continue' });
+    }
+
+    for (const section of sections.filter(s => s.enabled)) {
+      const sData = sectionData[section.id];
+      const isLoading = loading || sData === undefined;
+      if (!isLoading && (!sData || sData.length === 0)) continue;
+      const title = defaultSections.find(d => d.id === section.id)?.title ?? section.title;
+      rows.push({
+        key: `section:${section.id}`,
+        kind: section.id === 'networks' ? 'networks' : 'section',
+        sectionId: section.id,
+        title,
+        data: sData ?? [],
+        loading: isLoading,
+      });
+    }
+
+    if (traktConnected && traktRecommendations.length > 0) {
+      rows.push({ key: 'trakt:recommended', kind: 'traktRecommended' });
+    }
+    if (user && traktConnected && traktTrending.length > 0) {
+      rows.push({ key: 'trakt:trending', kind: 'traktTrending' });
+    }
+    if (combinedWatchlist.length > 0) {
+      rows.push({ key: 'watchlist', kind: 'watchlist' });
+    }
+
+    return rows;
+  }, [
+    allContinueWatching,
+    combinedWatchlist,
+    defaultSections,
+    loading,
+    sectionData,
+    sections,
+    traktConnected,
+    traktRecommendations,
+    traktTrending,
+    user,
+  ]);
+
+  const renderHomeRow = useCallback(({ item }: { item: any }) => {
+    switch (item.kind) {
+      case 'continue':
+        return (
+          <SectionStrip
+            title={t('section_continue')}
+            data={allContinueWatching}
+            loading={false}
+            onViewAll={() => navigation.navigate('ContinueWatching')}
+            onItemPress={handleItemPress}
+            onItemLongPress={handleLongPress}
+            renderCard={(rowItem: any) => (
+              <ContinueWatchingCard
+                item={rowItem}
+                cardStyle={continueWatchingStyle}
+                onPress={() => handleItemPress(rowItem)}
+                onLongPress={() => handleLongPress(rowItem)}
+              />
+            )}
+          />
+        );
+      case 'networks':
+        return (
+          <NetworkStrip
+            title={item.title}
+            data={item.data}
+            loading={item.loading}
+            onNetworkPress={handleNetworkPress}
+          />
+        );
+      case 'section':
+        return (
+          <SectionStrip
+            title={item.title}
+            data={item.data}
+            loading={item.loading}
+            onViewAll={() => handleViewAll(item.sectionId, item.title)}
+            onItemPress={handleItemPress}
+            onItemLongPress={handleLongPress}
+          />
+        );
+      case 'traktRecommended':
+        return (
+          <SectionStrip
+            title={t('section_recommended')}
+            data={traktRecommendations}
+            loading={false}
+            onViewAll={() => navigation.navigate('TraktCollection', { mode: 'recommended' })}
+            onItemPress={handleItemPress}
+            onItemLongPress={handleLongPress}
+          />
+        );
+      case 'traktTrending':
+        return (
+          <SectionStrip
+            title={t('section_trakt_trending')}
+            data={traktTrending}
+            loading={false}
+            onViewAll={() => navigation.navigate('TraktCollection', { mode: 'trending' })}
+            onItemPress={handleItemPress}
+            onItemLongPress={handleLongPress}
+          />
+        );
+      case 'watchlist':
+        return (
+          <SectionStrip
+            title={t('section_watchlist')}
+            data={combinedWatchlist}
+            loading={false}
+            onViewAll={() => navigation.navigate('Watchlist')}
+            onItemPress={handleItemPress}
+            onItemLongPress={handleLongPress}
+          />
+        );
+      default:
+        return null;
+    }
+  }, [
+    allContinueWatching,
+    combinedWatchlist,
+    continueWatchingStyle,
+    handleItemPress,
+    handleLongPress,
+    handleNetworkPress,
+    handleViewAll,
+    navigation,
+    t,
+    traktRecommendations,
+    traktTrending,
+  ]);
   return (
     <View style={{ flex: 1 }}>
       <BlurTargetView ref={blurTargetRef} style={{ flex: 1 }}>
@@ -1819,7 +2010,7 @@ export const HomeScreen = ({ navigation }: any) => {
               source={{ uri: previousAmbientBackdropUri }}
               style={[styles.ambientBackdropImage, uiStyle === 'glass' && { opacity: isDarkAppearance ? 0.72 : 0.62 }]}
               resizeMode="cover"
-              blurRadius={uiStyle === 'glass' ? 28 : 20}
+              blurRadius={deviceProfile.enableHeavyBlur ? (uiStyle === 'glass' ? 28 : 20) : 10}
             />
           ) : null}
           <Animated.View style={[StyleSheet.absoluteFillObject, { opacity: heroFadeIn }]}>
@@ -1827,7 +2018,7 @@ export const HomeScreen = ({ navigation }: any) => {
               source={{ uri: activeAmbientBackdropUri }}
               style={[styles.ambientBackdropImage, uiStyle === 'glass' && { opacity: isDarkAppearance ? 0.72 : 0.62 }]}
               resizeMode="cover"
-              blurRadius={uiStyle === 'glass' ? 28 : 20}
+              blurRadius={deviceProfile.enableHeavyBlur ? (uiStyle === 'glass' ? 28 : 20) : 10}
             />
           </Animated.View>
           <LinearGradient
@@ -1851,8 +2042,21 @@ export const HomeScreen = ({ navigation }: any) => {
           pointerEvents="none"
         />
       )}
-      <Animated.ScrollView ref={homeScrollViewRef as any} onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })} scrollEventThrottle={16} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 12 }}>
-        {heroItems.length > 0 && (
+      <AnimatedFlatList
+        ref={homeListRef as any}
+        data={homeRows}
+        keyExtractor={(item: any) => item.key}
+        renderItem={renderHomeRow}
+        onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
+        scrollEventThrottle={16}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 12 }}
+        initialNumToRender={deviceProfile.performanceClass === 'low' ? 3 : 5}
+        maxToRenderPerBatch={deviceProfile.performanceClass === 'low' ? 4 : 6}
+        windowSize={deviceProfile.performanceClass === 'low' ? 5 : 7}
+        removeClippedSubviews={deviceProfile.isTv}
+        ListHeaderComponent={heroItems.length > 0 ? (
           <View style={{ marginBottom: uiStyle === 'glass' ? 24 : 18 }}>
             <View style={{ height: heroSectionHeight }} {...heroPanResponder.panHandlers}>
               <TouchableOpacity activeOpacity={1} onPress={() => handleItemPress(heroItems[heroIndex])} style={StyleSheet.absoluteFill}>
@@ -1879,39 +2083,8 @@ export const HomeScreen = ({ navigation }: any) => {
               ))}
             </View>
           </View>
-        )}
-        {user && allContinueWatching.length > 0 && (
-          <SectionStrip
-            title={t('section_continue')}
-            data={allContinueWatching}
-            loading={false}
-            onViewAll={() => navigation.navigate('ContinueWatching')}
-            onItemPress={handleItemPress}
-            onItemLongPress={handleLongPress}
-            renderCard={item => (
-              <ContinueWatchingCard
-                item={item}
-                cardStyle={continueWatchingStyle}
-                onPress={() => handleItemPress(item)}
-                onLongPress={() => handleLongPress(item)}
-              />
-            )}
-          />
-        )}
-        {sections.filter(s => s.enabled).map(s => {
-          const sData = sectionData[s.id];
-          // sData===undefined means the fetch hasn't landed yet — show skeleton.
-          // sData===[] means it completed but was empty — hide to avoid ghost headers.
-          const isLoading = loading || sData === undefined;
-          if (!isLoading && (!sData || sData.length === 0)) return null;
-          const title = defaultSections.find(d => d.id === s.id)?.title ?? s.title;
-          if (s.id === 'networks') return <NetworkStrip key={s.id} title={title} data={sData ?? []} loading={isLoading} onNetworkPress={handleNetworkPress} />;
-          return <SectionStrip key={s.id} title={title} data={sData ?? []} loading={isLoading} onViewAll={() => handleViewAll(s.id, title)} onItemPress={handleItemPress} onItemLongPress={handleLongPress} />;
-        })}
-        {traktConnected && traktRecommendations.length > 0 && <SectionStrip title={t('section_recommended')} data={traktRecommendations} loading={false} onViewAll={() => navigation.navigate('TraktCollection', { mode: 'recommended' })} onItemPress={handleItemPress} onItemLongPress={handleLongPress} />}
-        {user && traktConnected && traktTrending.length > 0 && <SectionStrip title={t('section_trakt_trending')} data={traktTrending} loading={false} onViewAll={() => navigation.navigate('TraktCollection', { mode: 'trending' })} onItemPress={handleItemPress} onItemLongPress={handleLongPress} />}
-        {combinedWatchlist.length > 0 && <SectionStrip title={t('section_watchlist')} data={combinedWatchlist} loading={false} onViewAll={() => navigation.navigate('Watchlist')} onItemPress={handleItemPress} onItemLongPress={handleLongPress} />}
-      </Animated.ScrollView>
+        ) : null}
+      />
       <ActionSheet visible={!!longPressItem} onClose={() => setLongPressItem(null)} title={longPressItem?.title} subtitle={longPressItem?.year ? String(longPressItem.year) : undefined} actions={buildLongPressActions(longPressItem)} />
       <ActionSheet
         visible={!!heroPlayChoiceItem}
@@ -1953,3 +2126,4 @@ export const HomeScreen = ({ navigation }: any) => {
     </View>
   );
 };
+

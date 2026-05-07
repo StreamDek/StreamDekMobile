@@ -47,7 +47,7 @@ const makeStyles = (c: ThemeColors, bgRgba: string, navHeight: number, isLightAp
   container: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 14 },
   shell: {
     borderRadius: 30,
-    backgroundColor: 'transparent',
+    backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.08)' : 'rgba(15,23,42,0.10)',
     borderWidth: 1,
     borderColor: isLightAppearance ? 'rgba(255,255,255,0.72)' : 'rgba(255,255,255,0.18)',
     overflow: 'hidden',

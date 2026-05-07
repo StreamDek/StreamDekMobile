@@ -42,7 +42,7 @@ import { useWatchProgress } from '../context/WatchProgressContext';
 import { scoreStream } from '../utils/streamSelection';
 import { parseStream } from '../utils/streamParser';
 import { Storage } from '../utils/storage';
-import { createLocalTorrentPlaybackUrl } from '../utils/torrentServerClient';
+import { resolvePlayableStreamUrl } from '../services/playback/streamResolution';
 import { useSubtitles } from '../context/SubtitleContext';
 import { SubtitleResult } from '../services/subtitles/SubtitleProvider';
 import { useWatchlistRemove, WatchlistRemoveItem } from '../hooks/useWatchlistRemove';
@@ -780,48 +780,15 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   }, [streamSelectionEnabled, maxFileSizeGB, preferredQuality]);
 
   const resolveSourceStreamUrl = useCallback(async (stream: AddonStream): Promise<string | null> => {
-    if (stream.url) return stream.url;
-    if (!stream.infoHash) return null;
-
-    const hint = stream.behaviorHints?.filename;
-    const magnet = `magnet:?xt=urn:btih:${stream.infoHash}${hint ? `&dn=${encodeURIComponent(hint)}` : ''}`;
-
-    if (debridAccounts.length > 0) {
-      try {
-        const maxSizeBytes = streamSelectionEnabled && maxFileSizeGB > 0
-          ? Math.round(maxFileSizeGB * 1024 * 1024 * 1024)
-          : undefined;
-        const resolved = await resolveStream(
-          stream.infoHash,
-          magnet,
-          hint,
-          maxSizeBytes || stream.cachedBy[0]
-            ? { ...(maxSizeBytes ? { maxSize: maxSizeBytes } : {}), ...(stream.cachedBy[0] ? { providerHint: stream.cachedBy[0] } : {}) }
-            : undefined,
-        );
-        if (resolved?.url) return resolved.url;
-      } catch {
-        // Ignore and keep fallback chain.
-      }
-    }
-
-    if (serverConfig.streamingMode === 'server') {
-      try {
-        const localStreamUrl = await createLocalTorrentPlaybackUrl(stream.infoHash, magnet, hint);
-        if (localStreamUrl) return localStreamUrl;
-      } catch {
-        // Ignore and keep fallback chain.
-      }
-    }
-
-    try {
-      const backendStreamUrl = await streamTorrent(stream.infoHash, magnet, hint);
-      if (backendStreamUrl) return backendStreamUrl;
-    } catch {
-      // Ignore failure.
-    }
-
-    return null;
+    return resolvePlayableStreamUrl({
+      stream,
+      debridAccountCount: debridAccounts.length,
+      resolveStream,
+      streamTorrent,
+      streamingMode: serverConfig.streamingMode,
+      streamSelectionEnabled,
+      maxFileSizeGB,
+    });
   }, [debridAccounts.length, maxFileSizeGB, resolveStream, serverConfig.streamingMode, streamSelectionEnabled, streamTorrent]);
 
   useEffect(() => {

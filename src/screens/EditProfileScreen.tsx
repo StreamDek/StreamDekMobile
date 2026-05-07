@@ -36,6 +36,9 @@ export function EditProfileScreen() {
   const { theme, resolvedAppearance } = useTheme();
   const c = theme.colors;
   const isLightMonochrome = resolvedAppearance === 'light' && theme.id === 'monochrome';
+  const visibleAccent = resolvedAppearance === 'light' && (theme.id === 'monochrome' || c.accent === '#ffffff' || c.accent === '#fff')
+    ? c.textPrimary
+    : c.accent;
 
   const { profiles, createProfile, updateProfile, setProfilePin, setDefaultProfile } = useProfile();
 
@@ -179,13 +182,13 @@ export function EditProfileScreen() {
                     activeOpacity={0.75}
                     style={[
                       styles.avatarOption,
-                      selected && { borderColor: c.accent, borderWidth: 2.5 },
+                      selected && { borderColor: visibleAccent, borderWidth: 2.5 },
                     ]}
                   >
                     <Image source={av.image} style={styles.avatarImg} />
                     {selected && (
-                      <View style={[styles.avatarCheck, { backgroundColor: c.accent }]}>
-                        <Ionicons name="checkmark" size={10} color="#fff" />
+                      <View style={[styles.avatarCheck, { backgroundColor: visibleAccent, borderColor: c.bg, borderWidth: 2 }]}>
+                        <Ionicons name="checkmark" size={10} color={c.buttonText} />
                       </View>
                     )}
                   </TouchableOpacity>

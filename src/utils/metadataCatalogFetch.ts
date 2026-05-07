@@ -1,6 +1,8 @@
 import { tmdbFetch } from './tmdbFetch';
+import { getSharedCachedAsync } from './sharedDataCache';
 
 const CINEMETA_BASE = 'https://v3-cinemeta.strem.io';
+const METADATA_CATALOG_TTL_MS = 30_000;
 
 export interface MetadataCatalogItem {
   id: string;
@@ -70,23 +72,33 @@ function buildCinemetaUrl(endpoint: string): string {
 }
 
 export async function fetchMetadataCatalog(endpoint: string): Promise<MetadataCatalogResponse> {
-  if (!endpoint.startsWith('/cinemeta/')) {
-    const response = await tmdbFetch(endpoint);
-    if (!response.ok) throw new Error('TMDB catalog fetch failed');
-    const data = await response.json();
-    return {
-      results: data?.results ?? [],
-      total_pages: data?.total_pages,
-    };
-  }
+  return getSharedCachedAsync(
+    `catalog:${endpoint}`,
+    METADATA_CATALOG_TTL_MS,
+    async () => {
+      let result: MetadataCatalogResponse;
 
-  const response = await fetch(buildCinemetaUrl(endpoint));
-  if (!response.ok) throw new Error(`Cinemeta catalog fetch failed: ${response.status}`);
-  const data = await response.json();
-  const metas = Array.isArray(data?.metas) ? data.metas : [];
+      if (!endpoint.startsWith('/cinemeta/')) {
+        const response = await tmdbFetch(endpoint);
+        if (!response.ok) throw new Error('TMDB catalog fetch failed');
+        const data = await response.json();
+        result = {
+          results: data?.results ?? [],
+          total_pages: data?.total_pages,
+        };
+      } else {
+        const response = await fetch(buildCinemetaUrl(endpoint));
+        if (!response.ok) throw new Error(`Cinemeta catalog fetch failed: ${response.status}`);
+        const data = await response.json();
+        const metas = Array.isArray(data?.metas) ? data.metas : [];
 
-  return {
-    results: metas.map(normalizeCinemetaItem).filter((item: MetadataCatalogItem) => item.id.length > 0),
-    total_pages: data?.hasMore ? 2 : 1,
-  };
+        result = {
+          results: metas.map(normalizeCinemetaItem).filter((item: MetadataCatalogItem) => item.id.length > 0),
+          total_pages: data?.hasMore ? 2 : 1,
+        };
+      }
+
+      return result;
+    },
+  );
 }

@@ -63,7 +63,8 @@ import { useDisplaySettings } from '../context/DisplaySettingsContext';
 import { pickBestAudioTrack, scoreStream } from '../utils/streamSelection';
 import { Storage } from '../utils/storage';
 import { postClientLog } from '../utils/clientLog';
-import { createLocalProxyUrl, createLocalTorrentPlaybackUrl } from '../utils/torrentServerClient';
+import { createLocalProxyUrl } from '../utils/torrentServerClient';
+import { resolvePlayableStreamUrl } from '../services/playback/streamResolution';
 import { parseStream } from '../utils/streamParser';
 import { getMpvNativeViewAvailabilityDiagnostics, isMpvNativeViewAvailable } from '../components/MpvPlayer';
 
@@ -1449,55 +1450,41 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         const isCurrentAttempt = () => attemptId === latestResolveAttemptIdRef.current;
         logPlayerEvent('info', `[Player] Resolving ${describeStream(stream, streamIndex, totalStreams)}`);
         try {
+            const resolved = await resolvePlayableStreamUrl({
+                stream,
+                debridAccountCount: debridAccounts.length,
+                resolveStream,
+                streamTorrent,
+                streamingMode: serverConfig.streamingMode,
+                streamSelectionEnabled,
+                maxFileSizeGB,
+                defaultMaxSizeBytes: PREFERRED_SIZE_LIMIT,
+                shouldContinue: isCurrentAttempt,
+                onDebridFailures: (label, failures) => logDebridFailures(label, failures),
+                onStep: (step) => {
+                    if (step === 'direct-url') {
+                        logPlayerEvent('info', `[Player] Source already has direct URL for ${describeStream(stream, streamIndex, totalStreams)}`);
+                    } else if (step === 'debrid-resolve') {
+                        logPlayerEvent('info', `[Player] Trying premium resolver for ${describeStream(stream, streamIndex, totalStreams)}`);
+                    } else if (step === 'local-torrent') {
+                        logPlayerEvent('info', `[Player] Trying local playback URL for ${describeStream(stream, streamIndex, totalStreams)}`);
+                    } else if (step === 'backend-torrent') {
+                        logPlayerEvent('info', `[Player] Trying backend stream URL for ${describeStream(stream, streamIndex, totalStreams)}`);
+                    }
+                },
+                onWarn: (warning) => {
+                    if (warning === 'local-torrent-unavailable') {
+                        logPlayerEvent('warn', `[Player] Local playback URL unavailable for ${describeStream(stream, streamIndex, totalStreams)}`);
+                    }
+                },
+                onError: (message, error) => {
+                    logPlayerEvent('error', `[Player] ${message}`, { error: error instanceof Error ? error.message : String(error) });
+                },
+            });
             if (!isCurrentAttempt()) return null;
-
-            if (stream.url) {
-                logPlayerEvent('info', `[Player] Source already has direct URL for ${describeStream(stream, streamIndex, totalStreams)}`);
-                return stream.url;
-            }
-            if (stream.infoHash) {
-                const hint = stream.behaviorHints?.filename;
-                const magnet = `magnet:?xt=urn:btih:${stream.infoHash}`;
-                if (debridAccounts.length > 0) {
-                    logPlayerEvent('info', `[Player] Trying premium resolver for ${describeStream(stream, streamIndex, totalStreams)}`);
-                    let res = null;
-                    try {
-                        const maxSizeBytes = streamSelectionEnabled && maxFileSizeGB > 0
-                            ? Math.round(maxFileSizeGB * 1024 * 1024 * 1024)
-                            : PREFERRED_SIZE_LIMIT;
-                        res = await resolveStream(stream.infoHash, magnet, hint, {
-                            maxSize: maxSizeBytes,
-                            providerHint: stream.cachedBy[0],
-                        });
-                    } catch (error: any) {
-                        logDebridFailures('Premium resolver failed', error?.failures);
-                    }
-                    if (!isCurrentAttempt()) return null;
-                    if (res?.url) {
-                        logPlayerEvent('info', `[Player] Premium resolver succeeded for ${describeStream(stream, streamIndex, totalStreams)} (${res.filesize} bytes)`);
-                        return res.url;
-                    }
-                    logPlayerEvent('info', `[Player] Premium resolver returned no URL for ${describeStream(stream, streamIndex, totalStreams)}`);
-                }
-
-                if (serverConfig.streamingMode === 'server') {
-                    logPlayerEvent('info', `[Player] Trying local playback URL for ${describeStream(stream, streamIndex, totalStreams)}`);
-                    const localTorrentUrl = await createLocalTorrentPlaybackUrl(stream.infoHash, magnet, hint);
-                    if (!isCurrentAttempt()) return null;
-                    if (localTorrentUrl) {
-                        logPlayerEvent('info', `[Player] Local playback URL succeeded for ${describeStream(stream, streamIndex, totalStreams)}`);
-                        return localTorrentUrl;
-                    }
-                    logPlayerEvent('warn', `[Player] Local playback URL unavailable for ${describeStream(stream, streamIndex, totalStreams)}`);
-                }
-
-                logPlayerEvent('info', `[Player] Trying backend stream URL for ${describeStream(stream, streamIndex, totalStreams)}`);
-                const backendTorrentUrl = await streamTorrent(stream.infoHash, magnet, hint);
-                if (!isCurrentAttempt()) return null;
-                if (backendTorrentUrl) {
-                    logPlayerEvent('info', `[Player] Backend stream URL succeeded for ${describeStream(stream, streamIndex, totalStreams)}`);
-                    return backendTorrentUrl;
-                }
+            if (resolved) {
+                logPlayerEvent('info', `[Player] Resolution succeeded for ${describeStream(stream, streamIndex, totalStreams)}`);
+                return resolved;
             }
         } catch (e) {
             logPlayerEvent('error', "[Player] Resolution error", { error: e instanceof Error ? e.message : String(e) });

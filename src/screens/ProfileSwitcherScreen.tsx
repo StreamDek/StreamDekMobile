@@ -34,6 +34,7 @@ import {
 } from '../utils/profileApi';
 import { peekProfileLaunchBootstrap, type ProfileLaunchHeroItem } from '../utils/profileLaunchBootstrap';
 import { COMMON_SUBTITLE_LANGUAGES } from '../services/subtitles/SubtitleProvider';
+import { getDeviceProfile } from '../utils/deviceProfile';
 
 type Step = 'grid' | 'pin' | 'manage' | 'edit';
 
@@ -54,6 +55,7 @@ interface Props {
 }
 
 export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
+  const deviceProfile = getDeviceProfile();
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
@@ -73,6 +75,10 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
   const destructiveText = isLight ? '#dc2626' : '#fca5a5';
   const saveButtonBg = c.accent;
   const saveButtonText = c.buttonText;
+  const selectionAccent = isLight && (theme.id === 'monochrome' || c.accent === '#ffffff' || c.accent === '#fff')
+    ? c.textPrimary
+    : c.accent;
+  const selectionBadgeBorder = isLight ? pageBg : 'rgba(0,0,0,0.82)';
 
   const {
     profiles, loadingProfiles, profilesReady, activeProfile, profileSwitching,
@@ -100,8 +106,18 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
     ]).start();
   }, []);
 
+  const finishSelection = useCallback(() => {
+    onDismiss?.();
+    if (!asOverlay && navigation.canGoBack()) {
+      navigation.goBack();
+      return;
+    }
+    navigation.navigate('Main', { screen: 'Home' });
+  }, [asOverlay, navigation, onDismiss]);
+
   useEffect(() => {
     if (!(asOverlay && step === 'grid')) return;
+    if (preloadedLaunchBootstrap?.heroItems?.length) return;
     let cancelled = false;
 
     (async () => {
@@ -122,7 +138,7 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
           ...((tvJson?.results ?? []) as any[]).map(item => ({ ...item, type: 'tv' as const })),
         ]
           .filter(item => !!(item.backdrop ?? item.poster))
-          .slice(0, 10)
+          .slice(0, deviceProfile.heroPrefetchCount + 2)
           .map(item => ({
             id: `${item.type}:${item.tmdbId ?? item.id}`,
             type: item.type,
@@ -151,7 +167,7 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [asOverlay, heroOpacity, heroScale, step]);
+  }, [asOverlay, deviceProfile.heroPrefetchCount, heroOpacity, heroScale, preloadedLaunchBootstrap?.heroItems?.length, step]);
 
   useEffect(() => {
     void Promise.all(
@@ -224,11 +240,10 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
       goToStep('pin', () => { setTargetProfile(profile); setPin(''); setPinError(''); });
     } else {
       void setActiveProfile(profile).then(() => {
-        navigation.navigate('Main', { screen: 'Home' });
-        onDismiss?.();
+        finishSelection();
       });
     }
-  }, [goToStep, navigation, onDismiss, setActiveProfile]);
+  }, [finishSelection, goToStep, setActiveProfile]);
 
   useEffect(() => {
     if (pin.length !== 4 || !targetProfile) return;
@@ -239,14 +254,13 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
       setPinLoading(false);
       if (valid) {
         void setActiveProfile(targetProfile).then(() => {
-          navigation.navigate('Main', { screen: 'Home' });
-          onDismiss?.();
+          finishSelection();
         });
       }
       else { setPinError('Incorrect PIN. Try again.'); setPin(''); }
     });
     return () => { cancelled = true; };
-  }, [navigation, onDismiss, pin, setActiveProfile, targetProfile]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [finishSelection, pin, setActiveProfile, targetProfile]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Delete state — separate visibility from id so onClose() doesn't race onConfirm() ──
   const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false);
@@ -455,8 +469,8 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
                         </View>
                       ) : null}
                       {profile.id === activeProfile?.id ? (
-                        <View style={[S.launchActiveBadge, compactProfiles && S.launchActiveBadgeCompact]}>
-                          <Ionicons name="checkmark" size={compactProfiles ? 10 : 11} color="#fff" />
+                        <View style={[S.launchActiveBadge, compactProfiles && S.launchActiveBadgeCompact, { backgroundColor: selectionAccent, borderColor: selectionBadgeBorder }]}>
+                          <Ionicons name="checkmark" size={compactProfiles ? 10 : 11} color={c.buttonText} />
                         </View>
                       ) : null}
                     </View>
@@ -492,7 +506,11 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
                 <View style={S.avatarWrapper}>
                   <Image source={avatarFor(profile).image} style={S.avatarLg} />
                   {profile.hasPinSet && <View style={[S.lockBadge, { backgroundColor: isLight ? 'rgba(17,24,39,0.82)' : 'rgba(0,0,0,0.85)', borderColor: pageBg }]}><Ionicons name="lock-closed" size={13} color="#fff" /></View>}
-                  {profile.id === activeProfile?.id && <View style={S.activeBadge}><Ionicons name="checkmark" size={11} color="#fff" /></View>}
+                  {profile.id === activeProfile?.id && (
+                    <View style={[S.activeBadge, { backgroundColor: selectionAccent, borderColor: selectionBadgeBorder }]}>
+                      <Ionicons name="checkmark" size={11} color={c.buttonText} />
+                    </View>
+                  )}
                 </View>
                 <Text style={[S.profileName, { color: secondaryText }]} numberOfLines={1}>{profile.name}</Text>
               </TouchableOpacity>
@@ -503,7 +521,21 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
           <Text style={[S.manageBtnText, { color: secondaryText }]}>Manage Profiles</Text>
         </TouchableOpacity>
         {!asOverlay && (
-          <TouchableOpacity onPress={onDismiss} style={S.cancelBtn} activeOpacity={0.7}>
+          <TouchableOpacity
+            onPress={() => {
+              if (onDismiss) {
+                onDismiss();
+                return;
+              }
+              if (navigation.canGoBack()) {
+                navigation.goBack();
+                return;
+              }
+              navigation.navigate('Main', { screen: 'Settings' });
+            }}
+            style={S.cancelBtn}
+            activeOpacity={0.7}
+          >
             <Text style={[S.cancelBtnText, { color: tertiaryText }]}>Cancel</Text>
           </TouchableOpacity>
         )}
@@ -626,9 +658,24 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
             {PROFILE_AVATARS.map(av => {
               const sel = av.id === editAvatar;
               return (
-                <TouchableOpacity key={av.id} onPress={() => setEditAvatar(av.id)} activeOpacity={0.75} style={[S.avatarPickerOption, sel && S.avatarPickerOptionSelected]}>
+                <TouchableOpacity
+                  key={av.id}
+                  onPress={() => setEditAvatar(av.id)}
+                  activeOpacity={0.75}
+                  style={[
+                    S.avatarPickerOption,
+                    sel && [
+                      S.avatarPickerOptionSelected,
+                      { borderColor: selectionAccent },
+                    ],
+                  ]}
+                >
                   <Image source={av.image} style={S.avatarPickerImg} />
-                  {sel && <View style={[S.avatarCheck, { backgroundColor: c.accent }]}><Ionicons name="checkmark" size={10} color="#fff" /></View>}
+                  {sel && (
+                    <View style={[S.avatarCheck, { backgroundColor: selectionAccent, borderColor: selectionBadgeBorder, borderWidth: 2 }]}>
+                      <Ionicons name="checkmark" size={10} color={c.buttonText} />
+                    </View>
+                  )}
                 </TouchableOpacity>
               );
             })}

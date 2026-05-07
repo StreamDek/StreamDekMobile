@@ -15,9 +15,11 @@ import type { StreamScoreOptions } from '../utils/streamSelection';
 import { useStreamSelectionSettings } from './StreamSelectionContext';
 import { buildAuthHeaders } from '../utils/authHeaders';
 import { getMobileClientIdentityHeaders } from '../utils/clientIdentity';
+import { getSharedCachedAsync, invalidateSharedCache } from '../utils/sharedDataCache';
 
 const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 const ULTRA_BOOST_STORAGE_KEY = 'streamdek_ultra_boost_enabled';
+const ADDON_STATE_TTL_MS = 20_000;
 
 export interface UltraManifestMeta {
   name: string;
@@ -206,17 +208,19 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
     }
 
     try {
-      const res = await fetch(`${API_BASE}/addons/ultra/entitlement`, {
-        headers: await buildAddonHeaders({ includeContentType: false }),
-      });
-      if (!res.ok) {
-        setUltraEntitled(false);
-        setUltraBoostEnabledState(false);
-        setUltraManifest(null);
-        return;
-      }
-
-      const data = await res.json();
+      const data = await getSharedCachedAsync(
+        `addons:ultra:${user.uid}`,
+        ADDON_STATE_TTL_MS,
+        async () => {
+          const res = await fetch(`${API_BASE}/addons/ultra/entitlement`, {
+            headers: await buildAddonHeaders({ includeContentType: false }),
+          });
+          if (!res.ok) {
+            throw new Error('Ultra entitlement unavailable');
+          }
+          return res.json();
+        },
+      );
       const entitled = !!data.ultra;
       const manifest = data?.manifest;
       setUltraManifest(
@@ -251,16 +255,22 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
   const refreshAddons = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/addons/manifests`, {
-        headers: await buildAddonHeaders({ includeContentType: false }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setAddons(data ?? []);
-      }
+      const scopeKey = user ? `addons:manifests:${user.uid}` : 'addons:manifests:guest';
+      const data = await getSharedCachedAsync(
+        scopeKey,
+        ADDON_STATE_TTL_MS,
+        async () => {
+          const res = await fetch(`${API_BASE}/addons/manifests`, {
+            headers: await buildAddonHeaders({ includeContentType: false }),
+          });
+          if (!res.ok) return [];
+          return res.json();
+        },
+      );
+      setAddons(data ?? []);
     } catch { /* keep stale list on network error */ }
     finally { setIsLoading(false); }
-  }, [buildAddonHeaders]);
+  }, [buildAddonHeaders, user]);
 
   useEffect(() => { refreshAddons(); }, [refreshAddons]);
 
@@ -281,6 +291,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
           error: normalizeAddonMutationError(data?.error, t),
         };
       }
+      invalidateSharedCache('addons:manifests:');
       await refreshAddons();
       return { success: true };
     } catch {
@@ -298,6 +309,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
     }).catch(() => {
       setAddons(previousAddons);
     });
+    invalidateSharedCache('addons:manifests:');
     void refreshAddons();
   }, [addons, buildAddonHeaders, refreshAddons]);
 
@@ -311,6 +323,8 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
       method: 'POST',
       headers: await buildAddonHeaders(),
       body: JSON.stringify({ id, enabled }),
+    }).then(() => {
+      invalidateSharedCache('addons:manifests:');
     }).catch(() => {
       setAddons(previousAddons);
     });
@@ -330,6 +344,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
         headers: await buildAddonHeaders(),
         body: JSON.stringify({ order: orderedIds }),
       });
+      invalidateSharedCache('addons:manifests:');
     } catch {
       await refreshAddons(); // revert on failure
     }

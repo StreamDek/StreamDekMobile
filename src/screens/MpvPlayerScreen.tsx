@@ -40,9 +40,9 @@ import { ScrobblePayload, useTrakt } from '../context/TraktContext';
 import { useWatched } from '../context/WatchedContext';
 import { useWatchProgress } from '../context/WatchProgressContext';
 import { scoreStream } from '../utils/streamSelection';
-import { isAllowedPlaybackStream } from '../utils/streamSelection';
 import { parseStream } from '../utils/streamParser';
 import { Storage } from '../utils/storage';
+import { createLocalTorrentPlaybackUrl } from '../utils/torrentServerClient';
 import { useSubtitles } from '../context/SubtitleContext';
 import { SubtitleResult } from '../services/subtitles/SubtitleProvider';
 import { useWatchlistRemove, WatchlistRemoveItem } from '../hooks/useWatchlistRemove';
@@ -58,6 +58,7 @@ const MAGIC_HEADERS = {
 };
 
 const MIN_WATCH_SECONDS_TO_REMEMBER_SOURCE = 12;
+const MIN_ACCEPTABLE_STREAM_DURATION_SEC = 5 * 60;
 const CONTROLS_AUTO_HIDE_MS = 3500;
 const MPV_LOADING_MESSAGES = [
   'Searching the shelves for a decent print...',
@@ -265,7 +266,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const { saveProgress, clearProgress } = useWatchProgress();
   const storageOwnerId = getProfileStorageOwnerId(user?.uid ?? null, activeProfile?.id ?? null);
   const legacyOwnerId = user?.uid ?? null;
-  const { accounts: debridAccounts, resolveStream } = useDebrid();
+  const { accounts: debridAccounts, resolveStream, streamTorrent } = useDebrid();
   const { config: serverConfig } = useTorrentServer();
   const {
     decoderMode,
@@ -399,6 +400,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const rememberedSourceSavedRef = useRef(false);
   /** Stores the stream state to revert to if an in-player source switch fails. */
   const sourceSwitchBackupRef = useRef<{ url: string; identity: string; resumeAt: number } | null>(null);
+  const rejectedShortSourceKeysRef = useRef<Set<string>>(new Set());
   const sourceResolverInFlightRef = useRef(false);
   const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const skipPortraitOnBlurRef = useRef(false);
@@ -771,30 +773,56 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   }, [resolveOnMount, resolvedStreamUrl]);
 
   const rankStreams = useCallback((streams: AddonStream[]): AddonStream[] => {
-    if (!streamSelectionEnabled) return [...streams];
-    const opts = { preferQuickStart: true, maxFileSizeGB: maxFileSizeGB > 0 ? maxFileSizeGB : undefined, preferredQuality };
+    const opts = streamSelectionEnabled
+      ? { preferQuickStart: true, maxFileSizeGB: maxFileSizeGB > 0 ? maxFileSizeGB : undefined, preferredQuality }
+      : { preferQuickStart: true };
     return [...streams].sort((a, b) => scoreStream(b, opts) - scoreStream(a, opts));
   }, [streamSelectionEnabled, maxFileSizeGB, preferredQuality]);
 
   const resolveSourceStreamUrl = useCallback(async (stream: AddonStream): Promise<string | null> => {
     if (stream.url) return stream.url;
     if (!stream.infoHash) return null;
-    if (!isAllowedPlaybackStream(stream)) return null;
 
     const hint = stream.behaviorHints?.filename;
     const magnet = `magnet:?xt=urn:btih:${stream.infoHash}${hint ? `&dn=${encodeURIComponent(hint)}` : ''}`;
 
-    if (stream.cachedBy.length > 0 && debridAccounts.length > 0) {
+    if (debridAccounts.length > 0) {
       try {
-        const resolved = await resolveStream(stream.infoHash, magnet, hint);
+        const maxSizeBytes = streamSelectionEnabled && maxFileSizeGB > 0
+          ? Math.round(maxFileSizeGB * 1024 * 1024 * 1024)
+          : undefined;
+        const resolved = await resolveStream(
+          stream.infoHash,
+          magnet,
+          hint,
+          maxSizeBytes || stream.cachedBy[0]
+            ? { ...(maxSizeBytes ? { maxSize: maxSizeBytes } : {}), ...(stream.cachedBy[0] ? { providerHint: stream.cachedBy[0] } : {}) }
+            : undefined,
+        );
         if (resolved?.url) return resolved.url;
       } catch {
         // Ignore and keep fallback chain.
       }
     }
 
+    if (serverConfig.streamingMode === 'server') {
+      try {
+        const localStreamUrl = await createLocalTorrentPlaybackUrl(stream.infoHash, magnet, hint);
+        if (localStreamUrl) return localStreamUrl;
+      } catch {
+        // Ignore and keep fallback chain.
+      }
+    }
+
+    try {
+      const backendStreamUrl = await streamTorrent(stream.infoHash, magnet, hint);
+      if (backendStreamUrl) return backendStreamUrl;
+    } catch {
+      // Ignore failure.
+    }
+
     return null;
-  }, [debridAccounts.length, resolveStream]);
+  }, [debridAccounts.length, maxFileSizeGB, resolveStream, serverConfig.streamingMode, streamSelectionEnabled, streamTorrent]);
 
   useEffect(() => {
     if (!resolveOnMount || resolvedStreamUrl) return;
@@ -1030,6 +1058,26 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     // Source loaded successfully — clear any pending switch backup
     sourceSwitchBackupRef.current = null;
     const loadedDuration = Number(event?.nativeEvent?.duration ?? 0);
+    if (
+      shortSourceFilterEnabled
+      && Number.isFinite(loadedDuration)
+      && loadedDuration > 0
+      && loadedDuration < MIN_ACCEPTABLE_STREAM_DURATION_SEC
+    ) {
+      const activeKey = activeSourceIdentity;
+      if (activeKey) {
+        rejectedShortSourceKeysRef.current.add(activeKey);
+      }
+      const fallbackStream = resolvedSourceStreams.find(stream => {
+        const key = streamIdentityKey(stream);
+        return !!key && key !== activeKey && !rejectedShortSourceKeysRef.current.has(key);
+      });
+      if (fallbackStream) {
+        setSwitchToast('This source was too short — trying another one.');
+        void switchToResolvedStream(fallbackStream, effectiveResumeFrom);
+        return;
+      }
+    }
     setDuration(Number.isFinite(loadedDuration) ? loadedDuration : 0);
     if (!didSeekInitialResume && effectiveResumeFrom > 0) {
       playerRef.current?.seekTo(effectiveResumeFrom);
@@ -1380,6 +1428,41 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     Number.isFinite(currentTime) ? currentTime : 0,
   ), [currentTime]);
 
+  const switchToResolvedStream = useCallback(async (
+    targetStream: AddonStream,
+    resumeAt: number,
+    options?: {
+      sourceIdentityOverride?: string;
+      failureToast?: string;
+    },
+  ) => {
+    const nextUrl = await resolveSourceStreamUrl(targetStream);
+    if (!nextUrl) {
+      if (options?.failureToast) {
+        setSwitchToast(options.failureToast);
+      }
+      return false;
+    }
+
+    sourceSwitchBackupRef.current = {
+      url: resolvedStreamUrl ?? '',
+      identity: activeSourceIdentity,
+      resumeAt,
+    };
+
+    rememberedSourceSavedRef.current = false;
+    setError(null);
+    setLoading(true);
+    setShowLoadingOverlay(true);
+    setDuration(0);
+    setCurrentTime(0);
+    setDidSeekInitialResume(false);
+    setEffectiveResumeFrom(resumeAt);
+    setActiveSourceIdentityState(options?.sourceIdentityOverride ?? streamIdentityKey(targetStream));
+    setResolvedStreamUrl(nextUrl);
+    return true;
+  }, [activeSourceIdentity, resolveSourceStreamUrl, resolvedStreamUrl]);
+
   const cycleResizeMode = () => {
     setResizeMode(current => {
       if (current === 'cover') return 'contain';
@@ -1425,29 +1508,10 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
         void (async () => {
           const resumeAt = getResumePosition();
           await persistRememberedSource();
-          const nextUrl = await resolveSourceStreamUrl(targetStream);
-          if (!nextUrl) {
-            setSwitchToast("Couldn't resolve this source — try a different one.");
-            return;
-          }
-
-          // Save backup so handleError can revert if the new source fails to play
-          sourceSwitchBackupRef.current = {
-            url: resolvedStreamUrl ?? '',
-            identity: activeSourceIdentity,
-            resumeAt,
-          };
-
-          rememberedSourceSavedRef.current = false;
-          setError(null);
-          setLoading(true);
-          setShowLoadingOverlay(true);
-          setDuration(0);
-          setCurrentTime(0);
-          setDidSeekInitialResume(false);
-          setEffectiveResumeFrom(resumeAt);
-          setActiveSourceIdentityState(sourceOption.identity);
-          setResolvedStreamUrl(nextUrl);
+          await switchToResolvedStream(targetStream, resumeAt, {
+            sourceIdentityOverride: sourceOption.identity,
+            failureToast: "Couldn't resolve this source — try a different one.",
+          });
         })();
         return;
       }
@@ -1481,11 +1545,10 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     currentTime,
     navigation,
     persistRememberedSource,
-    resolveSourceStreamUrl,
     resolvedSourceStreams,
-    resolvedStreamUrl,
     returnToPlayerParams,
     forceStartFromBeginning,
+    switchToResolvedStream,
   ]);
 
   const controlsVisible = (showControls || !!error || loading) && !anyPopupOpen;
@@ -1651,7 +1714,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
 
       {!!error && (
         <View style={[StyleSheet.absoluteFill, styles.centered]}>
-          <Text style={styles.errorTitle}>MPV Playback Error</Text>
+          <Text style={styles.errorTitle}>Player Error</Text>
           <Text style={styles.errorMessage}>{error}</Text>
         </View>
       )}

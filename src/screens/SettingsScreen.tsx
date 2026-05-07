@@ -340,6 +340,7 @@ const makeStyles = (c: ThemeColors, resolvedAppearance: 'dark' | 'light') => {
       backgroundColor: c.cardBg,
       borderRadius: 22,
       padding: 18,
+      maxHeight: '82%',
       borderWidth: 1,
       borderColor: c.border,
       gap: 8,
@@ -350,6 +351,8 @@ const makeStyles = (c: ThemeColors, resolvedAppearance: 'dark' | 'light') => {
       elevation: 18,
     },
     pickerHeader: { gap: 4, paddingHorizontal: 4, paddingBottom: 8 },
+    pickerOptionsScroll: { maxHeight: 420 },
+    pickerOptionsContent: { gap: 8, paddingBottom: 4 },
     pickerTitle: { color: c.textPrimary, fontSize: 18, fontWeight: '800' },
     pickerSub: { color: c.textSecondary, fontSize: 12, lineHeight: 18 },
     pickerOption: {
@@ -366,6 +369,26 @@ const makeStyles = (c: ThemeColors, resolvedAppearance: 'dark' | 'light') => {
     pickerOptionTextWrap: { flex: 1, gap: 2 },
     pickerOptionTitle: { color: c.textPrimary, fontSize: 14, fontWeight: '700' },
     pickerOptionSub: { color: c.textSecondary, fontSize: 12, lineHeight: 17 },
+    themePickerSwatchWrap: {
+      width: 52,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    themePickerSwatchOuter: {
+      width: 34,
+      height: 34,
+      borderRadius: 17,
+      borderWidth: 1,
+      borderColor: c.border,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: resolvedAppearance === 'light' ? c.cardBgElevated : c.cardBg,
+    },
+    themePickerSwatchInner: {
+      width: 20,
+      height: 20,
+      borderRadius: 10,
+    },
     pageStylePreview: {
       width: 66,
       height: 86,
@@ -525,6 +548,7 @@ function PickerModal({
   colors,
   resolvedAppearance,
   styles,
+  renderPreview,
 }: {
   visible: boolean;
   title: string;
@@ -536,11 +560,38 @@ function PickerModal({
   colors: ThemeColors;
   resolvedAppearance: 'dark' | 'light';
   styles: ReturnType<typeof makeStyles>;
+  renderPreview?: (option: { value: string | number; label: string; description: string }, active: boolean) => React.ReactNode;
 }) {
   const isLightMode = resolvedAppearance === 'light';
   const activeBorderColor = isLightMode ? 'rgba(17,24,39,0.28)' : colors.accent;
   const activeBackgroundColor = isLightMode ? 'rgba(17,24,39,0.08)' : colors.accent + '14';
   const activeCheckColor = isLightMode ? '#111111' : colors.accent;
+  const showScroll = options.length > 6;
+  const optionsContent = (
+    <>
+      {options.map(option => {
+        const active = option.value === selectedValue;
+        return (
+          <TouchableOpacity
+            key={String(option.value)}
+            style={[
+              styles.pickerOption,
+              active && { borderColor: activeBorderColor, backgroundColor: activeBackgroundColor },
+            ]}
+            onPress={() => onSelect(option.value)}
+            activeOpacity={0.8}
+          >
+            {renderPreview ? renderPreview(option, active) : null}
+            <View style={styles.pickerOptionTextWrap}>
+              <Text style={styles.pickerOptionTitle}>{option.label}</Text>
+              <Text style={styles.pickerOptionSub}>{option.description}</Text>
+            </View>
+            {active && <Ionicons name="checkmark-circle" size={22} color={activeCheckColor} />}
+          </TouchableOpacity>
+        );
+      })}
+    </>
+  );
 
   return (
     <Modal visible={visible} transparent animationType="fade" statusBarTranslucent onRequestClose={onClose}>
@@ -551,27 +602,19 @@ function PickerModal({
             <Text style={styles.pickerSub}>{subtitle}</Text>
           </View>
 
-          {options.map(option => {
-            const active = option.value === selectedValue;
-            return (
-              <TouchableOpacity
-                key={String(option.value)}
-                style={[
-                  styles.pickerOption,
-                  active && { borderColor: activeBorderColor, backgroundColor: activeBackgroundColor },
-                ]}
-                onPress={() => onSelect(option.value)}
-                activeOpacity={0.8}
-              >
-                <PageStyleWireframe value={option.value} styles={styles} />
-                <View style={styles.pickerOptionTextWrap}>
-                  <Text style={styles.pickerOptionTitle}>{option.label}</Text>
-                  <Text style={styles.pickerOptionSub}>{option.description}</Text>
-                </View>
-                {active && <Ionicons name="checkmark-circle" size={22} color={activeCheckColor} />}
-              </TouchableOpacity>
-            );
-          })}
+          {showScroll ? (
+            <ScrollView
+              style={styles.pickerOptionsScroll}
+              contentContainerStyle={styles.pickerOptionsContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {optionsContent}
+            </ScrollView>
+          ) : (
+            <View style={styles.pickerOptionsContent}>
+              {optionsContent}
+            </View>
+          )}
 
           <TouchableOpacity style={styles.pickerCloseBtn} onPress={onClose} activeOpacity={0.8}>
             <Text style={styles.pickerCloseText}>Close</Text>
@@ -678,15 +721,13 @@ export const SettingsScreen = ({ navigation }: any) => {
   const defaultSections = useMemo(() => getDefaultSections(metadataProvider), [metadataProvider]);
 
   const [sections, setSections] = useState(defaultSections);
-  const [themeOpen, setThemeOpen] = useState(false);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [pageStyleOpen, setPageStyleOpen] = useState(false);
   const [layoutOpen, setLayoutOpen] = useState(false);
-  const [langOpen, setLangOpen] = useState(false);
   const [cwStyleOpen, setCwStyleOpen] = useState(false);
   const [playerOpen, setPlayerOpen] = useState(false);
   const [tmdbModalOpen, setTmdbModalOpen] = useState(false);
-  const [pickerModal, setPickerModal] = useState<'profile' | 'cache' | 'decoder' | 'surface' | 'quality' | 'fileSize' | null>(null);
+  const [pickerModal, setPickerModal] = useState<'profile' | 'cache' | 'decoder' | 'surface' | 'quality' | 'fileSize' | 'theme' | 'language' | null>(null);
   const [signOutModal, setSignOutModal] = useState(false);
   const [legalModal, setLegalModal] = useState(false);
 
@@ -699,10 +740,6 @@ export const SettingsScreen = ({ navigation }: any) => {
         }
         if (appearanceOpen) {
           setAppearanceOpen(false);
-          return true;
-        }
-        if (themeOpen) {
-          setThemeOpen(false);
           return true;
         }
         if (cwStyleOpen) {
@@ -730,7 +767,7 @@ export const SettingsScreen = ({ navigation }: any) => {
       });
 
       return () => subscription.remove();
-    }, [appearanceOpen, cwStyleOpen, legalModal, navigation, pageStyleOpen, pickerModal, signOutModal, themeOpen, tmdbModalOpen]),
+    }, [appearanceOpen, cwStyleOpen, legalModal, navigation, pageStyleOpen, pickerModal, signOutModal, tmdbModalOpen]),
   );
   const [disconnectModal, setDisconnectModal] = useState<{ id: string; name: string } | null>(null);
   const [disconnectingDeviceId, setDisconnectingDeviceId] = useState<string | null>(null);
@@ -747,7 +784,8 @@ export const SettingsScreen = ({ navigation }: any) => {
   const synopsisIcon = featureIcon('#22d3ee');
   const themeIcon = featureIcon('#f7b731');
   const settingsCheckColor = lightMonoContrast ? '#111111' : colors.accent;
-  const accountIconColor = lightMonoContrast ? '#111111' : (isLightMode ? '#111827' : colors.toggleOn);
+  const accountIconColor = isLightMode ? '#111111' : colors.toggleOn;
+  const accountIconBackground = isLightMode ? 'rgba(17,24,39,0.10)' : colors.accent + '22';
   const [headerHeight, setHeaderHeight] = useState(0);
   const [syncRefreshing, setSyncRefreshing] = useState(false);
   const [profileName, setProfileName] = useState<string | null>(null);
@@ -784,6 +822,16 @@ export const SettingsScreen = ({ navigation }: any) => {
     { value: 'light', label: t('settings_light'), description: t('settings_light_sub') },
     { value: 'system', label: t('settings_system'), description: t('settings_system_sub') },
   ];
+  const themePickerOptions = visibleThemes.map(th => ({
+    value: th.id,
+    label: th.name,
+    description: th.description,
+  }));
+  const languagePickerOptions = LANGUAGES.map(lang => ({
+    value: lang.code,
+    label: `${lang.flag} ${lang.name}`,
+    description: lang.englishName,
+  }));
   const pageStyleOptions = [
     { value: 'classic', label: t('settings_page_style_classic'), description: t('settings_page_style_sub') },
     { value: 'centered', label: t('settings_page_style_centered'), description: t('settings_page_style_sub') },
@@ -813,6 +861,12 @@ export const SettingsScreen = ({ navigation }: any) => {
     { value: '1080p', label: '1080p', description: 'Prefer full HD and avoid unnecessary 4K streams.' },
     { value: '720p', label: '720p', description: 'Prefer smaller HD streams.' },
   ];
+  const getThemeAccentColor = (themeId: string) => {
+    if (themeId === 'monochrome') {
+      return resolvedAppearance === 'light' ? '#111111' : '#ffffff';
+    }
+    return THEMES.find(item => item.id === themeId)?.swatch ?? colors.accent;
+  };
   const activeDecoderLabel = decoderPickerOptions.find(option => option.value === decoderMode)?.label ?? 'Auto';
   const activeSurfaceLabel = surfacePickerOptions.find(option => option.value === renderSurface)?.label ?? 'Standard';
 
@@ -1217,6 +1271,55 @@ export const SettingsScreen = ({ navigation }: any) => {
       />
 
       <PickerModal
+        visible={pickerModal === 'theme'}
+        title={t('settings_theme')}
+        subtitle="Choose the colour theme used across the app."
+        options={themePickerOptions}
+        selectedValue={theme.id}
+        resolvedAppearance={resolvedAppearance}
+        onSelect={value => {
+          void setThemeId(value as any);
+          setPickerModal(null);
+        }}
+        onClose={() => setPickerModal(null)}
+        colors={colors}
+        styles={styles}
+        renderPreview={(option, active) => (
+          <View style={styles.themePickerSwatchWrap}>
+            <View
+              style={[
+                styles.themePickerSwatchOuter,
+                active && { borderColor: getThemeAccentColor(String(option.value)) },
+              ]}
+            >
+              <View
+                style={[
+                  styles.themePickerSwatchInner,
+                  { backgroundColor: getThemeAccentColor(String(option.value)) },
+                ]}
+              />
+            </View>
+          </View>
+        )}
+      />
+
+      <PickerModal
+        visible={pickerModal === 'language'}
+        title={t('settings_language')}
+        subtitle="Choose the language used for the app interface."
+        options={languagePickerOptions}
+        selectedValue={language.code}
+        resolvedAppearance={resolvedAppearance}
+        onSelect={value => {
+          setLanguage(value as any);
+          setPickerModal(null);
+        }}
+        onClose={() => setPickerModal(null)}
+        colors={colors}
+        styles={styles}
+      />
+
+      <PickerModal
         visible={pageStyleOpen}
         title={t('settings_page_style')}
         subtitle={t('settings_page_style_sub')}
@@ -1230,6 +1333,7 @@ export const SettingsScreen = ({ navigation }: any) => {
         onClose={() => setPageStyleOpen(false)}
         colors={colors}
         styles={styles}
+        renderPreview={option => <PageStyleWireframe value={option.value} styles={styles} />}
       />
 
       {/* Sticky header */}
@@ -1314,9 +1418,9 @@ export const SettingsScreen = ({ navigation }: any) => {
           {user ? (
             <>
               <View style={styles.row}>
-                <View style={[styles.rowIcon, { backgroundColor: lightMonoContrast ? 'rgba(17,24,39,0.08)' : colors.accent + '22' }]}>
-                  <View style={[styles.avatarCircle, lightMonoContrast && { backgroundColor: '#111111' }]}>
-                    <Text style={[styles.avatarLetter, lightMonoContrast && { color: '#ffffff' }]}>{(user.email ?? '?')[0].toUpperCase()}</Text>
+                <View style={[styles.rowIcon, { backgroundColor: accountIconBackground }]}>
+                  <View style={[styles.avatarCircle, isLightMode && { backgroundColor: '#111111' }]}>
+                    <Text style={[styles.avatarLetter, isLightMode && { color: '#ffffff' }]}>{(user.email ?? '?')[0].toUpperCase()}</Text>
                   </View>
                 </View>
                 <View style={styles.rowInfo}>
@@ -1350,15 +1454,6 @@ export const SettingsScreen = ({ navigation }: any) => {
             iconColor={ic('#00b4d8')}
             c={colors}
             onPress={() => navigation.navigate('Addons')}
-          />
-          <View style={styles.divider} />
-          <NavRow
-            icon="film-outline"
-            label="Catalog & Metadata"
-            subtitle={`${metadataProviderLabel} selected. ${metadataProviderSubtitle}`}
-            iconColor={ic('#f59e0b')}
-            c={colors}
-            onPress={() => setTmdbModalOpen(true)}
           />
 
           {user && (
@@ -1600,61 +1695,78 @@ export const SettingsScreen = ({ navigation }: any) => {
         )}
         <SectionHeader title="General" c={colors} />
         <View style={styles.card}>
-          <View style={{ paddingHorizontal: 16, paddingTop: 16, paddingBottom: 10 }}>
-            <Text style={styles.optionTitle}>{t('settings_appearance_home')}</Text>
-            <Text style={styles.optionSub}>
-              {t('settings_home_display_sub')}
-            </Text>
-          </View>
-          <View style={styles.dividerFull} />
-          <TouchableOpacity style={styles.collapseHeader} onPress={() => setLangOpen(v => !v)} activeOpacity={0.7}>
+          <TouchableOpacity style={styles.optionRow} onPress={() => setPickerModal('language')} activeOpacity={0.7}>
             <View style={[styles.rowIcon, { backgroundColor: ic('#9b5de5') + '22' }]}>
               <Ionicons name="language-outline" size={18} color={ic('#9b5de5')} />
             </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.collapseLabel}>{t('settings_language')}</Text>
-              <Text style={{ color: colors.mutedText, fontSize: 12, marginTop: 1 }}>
+            <View style={styles.optionInfo}>
+              <Text style={styles.optionTitle}>{t('settings_language')}</Text>
+              <Text style={styles.optionSub}>
                 {language.flag}  {language.name}
               </Text>
             </View>
-            <Ionicons name={langOpen ? 'chevron-up' : 'chevron-down'} size={16} color={colors.placeholder} />
+            <Ionicons name="chevron-forward" size={16} color={colors.placeholder} />
           </TouchableOpacity>
-
-          {langOpen && LANGUAGES.map(lang => {
-            const isActive = lang.code === language.code;
-            const isLightModeActive = isActive && resolvedAppearance === 'light';
-            return (
-              <TouchableOpacity
-                key={lang.code}
-                style={[
-                  styles.langRow,
-                  isLightModeActive && {
-                    backgroundColor: 'rgba(17,24,39,0.05)',
-                    borderColor: 'rgba(17,24,39,0.14)',
-                  },
-                ]}
-                onPress={() => setLanguage(lang.code)}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.langFlag}>{lang.flag}</Text>
-                <View style={styles.langInfo}>
-                  <Text style={styles.langName}>{lang.name}</Text>
-                  <Text style={styles.langSub}>{lang.englishName}</Text>
-                </View>
-                {isActive && (
-                  <Ionicons
-                    name="checkmark-circle"
-                    size={22}
-                    color={resolvedAppearance === 'light' ? '#111111' : colors.accent}
-                  />
-                )}
-              </TouchableOpacity>
-            );
-          })}
 
           <View style={styles.dividerFull} />
 
-          {/* Home Layout — collapsible */}
+          <TouchableOpacity style={styles.optionRow} onPress={() => setAppearanceOpen(true)} activeOpacity={0.7}>
+            <View style={[styles.rowIcon, { backgroundColor: appearanceIcon.backgroundColor }]}>
+              <Ionicons name="moon-outline" size={18} color={appearanceIcon.iconColor} />
+            </View>
+            <View style={styles.optionInfo}>
+              <Text style={styles.optionTitle}>{t('settings_appearance')}</Text>
+              <Text style={styles.optionSub}>{t('settings_appearance_sub')}</Text>
+            </View>
+            <Text style={styles.optionValue}>
+              {appearance === 'dark' ? t('settings_dark') : appearance === 'light' ? t('settings_light') : t('settings_system')}
+            </Text>
+            <Ionicons name="chevron-forward" size={16} color={colors.placeholder} />
+          </TouchableOpacity>
+
+          <View style={styles.dividerFull} />
+
+          <TouchableOpacity style={styles.optionRow} onPress={() => setPickerModal('theme')} activeOpacity={0.7}>
+            <View style={[styles.rowIcon, { backgroundColor: themeIcon.backgroundColor }]}>
+              <Ionicons name="color-palette-outline" size={18} color={themeIcon.iconColor} />
+            </View>
+            <View style={styles.optionInfo}>
+              <Text style={styles.optionTitle}>{t('settings_theme')}</Text>
+              <Text style={styles.optionSub}>{theme.name}</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={colors.placeholder} />
+          </TouchableOpacity>
+
+          <View style={styles.optionRow}>
+            <View style={[styles.rowIcon, { backgroundColor: featureIcon('#6366f1').backgroundColor }]}>
+              <Ionicons name="grid-outline" size={18} color={featureIcon('#6366f1').iconColor} />
+            </View>
+            <View style={styles.optionInfo}>
+              <Text style={styles.optionTitle}>Show Navigation Labels</Text>
+              <Text style={styles.optionSub}>Display tab names below the nav icons.</Text>
+            </View>
+            <AppleToggle
+              value={showNavLabels}
+              onValueChange={value => { void setShowNavLabels(value); }}
+              disabled={!displaySettingsReady}
+              onColor={colors.toggleOn}
+            />
+          </View>
+        </View>
+
+        <SectionHeader title="Home and Appearance" c={colors} />
+        <View style={styles.card}>
+          <NavRow
+            icon="film-outline"
+            label="Catalog & Metadata"
+            subtitle={`${metadataProviderLabel} selected. ${metadataProviderSubtitle}`}
+            iconColor={ic('#f59e0b')}
+            c={colors}
+            onPress={() => setTmdbModalOpen(true)}
+          />
+
+          <View style={styles.dividerFull} />
+
           <TouchableOpacity style={styles.collapseHeader} onPress={() => setLayoutOpen(v => !v)} activeOpacity={0.7}>
             <View style={[styles.rowIcon, { backgroundColor: ic('#f7b731') + '22' }]}>
               <Ionicons name="apps-outline" size={18} color={ic('#f7b731')} />
@@ -1685,11 +1797,11 @@ export const SettingsScreen = ({ navigation }: any) => {
                       <Ionicons name="chevron-down" size={14} color={colors.accentSoft} />
                     </TouchableOpacity>
                   </View>
-                      <Text style={styles.layoutSectionTitle}>
-                        {typeof SECTION_TITLE_KEY[section.id] === 'string' && SECTION_TITLE_KEY[section.id].startsWith('section_')
-                          ? t(SECTION_TITLE_KEY[section.id])
-                          : (SECTION_TITLE_KEY[section.id] ?? section.id)}
-                      </Text>
+                  <Text style={styles.layoutSectionTitle}>
+                    {typeof SECTION_TITLE_KEY[section.id] === 'string' && SECTION_TITLE_KEY[section.id].startsWith('section_')
+                      ? t(SECTION_TITLE_KEY[section.id])
+                      : (SECTION_TITLE_KEY[section.id] ?? section.id)}
+                  </Text>
                   <AppleToggle
                     value={section.enabled}
                     onValueChange={() => toggle(section.id)}
@@ -1702,7 +1814,6 @@ export const SettingsScreen = ({ navigation }: any) => {
 
           <View style={styles.dividerFull} />
 
-          {/* Continue Watching style picker — immediately after Home Layout */}
           <TouchableOpacity
             style={styles.row}
             onPress={() => setCwStyleOpen(true)}
@@ -1734,48 +1845,6 @@ export const SettingsScreen = ({ navigation }: any) => {
             <Ionicons name="chevron-forward" size={16} color={colors.placeholder} />
           </TouchableOpacity>
 
-          <View style={styles.dividerFull} />
-
-          <TouchableOpacity style={styles.collapseHeader} onPress={() => setThemeOpen(v => !v)} activeOpacity={0.7}>
-            <View style={[styles.rowIcon, { backgroundColor: themeIcon.backgroundColor }]}>
-              <Ionicons name="color-palette-outline" size={18} color={themeIcon.iconColor} />
-            </View>
-            <Text style={styles.collapseLabel}>{t('settings_theme')}</Text>
-            <Text style={styles.collapseValue}>{theme.name}</Text>
-            <Ionicons name={themeOpen ? 'chevron-up' : 'chevron-down'} size={16} color={colors.placeholder} />
-          </TouchableOpacity>
-
-          {themeOpen && visibleThemes.map(th => {
-            const isActive = th.id === theme.id;
-            const swatchColor = th.id === 'monochrome'
-              ? (resolvedAppearance === 'light' ? '#000000' : '#ffffff')
-              : th.swatch;
-            return (
-              <TouchableOpacity key={th.id} style={styles.themeRow} onPress={() => setThemeId(th.id)} activeOpacity={0.7}>
-                <View style={[styles.themeSwatch, { backgroundColor: swatchColor, borderColor: isActive ? swatchColor : 'transparent' }]} />
-                <View style={styles.themeInfo}>
-                  <Text style={styles.themeName}>{th.name}</Text>
-                  <Text style={styles.themeDesc}>{th.description}</Text>
-                </View>
-                {isActive && <Ionicons name="checkmark-circle" size={22} color={settingsCheckColor} />}
-              </TouchableOpacity>
-            );
-          })}
-
-          <TouchableOpacity style={styles.optionRow} onPress={() => setAppearanceOpen(true)} activeOpacity={0.7}>
-            <View style={[styles.rowIcon, { backgroundColor: appearanceIcon.backgroundColor }]}>
-              <Ionicons name="moon-outline" size={18} color={appearanceIcon.iconColor} />
-            </View>
-            <View style={styles.optionInfo}>
-              <Text style={styles.optionTitle}>{t('settings_appearance')}</Text>
-              <Text style={styles.optionSub}>{t('settings_appearance_sub')}</Text>
-            </View>
-            <Text style={styles.optionValue}>
-              {appearance === 'dark' ? t('settings_dark') : appearance === 'light' ? t('settings_light') : t('settings_system')}
-            </Text>
-            <Ionicons name="chevron-forward" size={16} color={colors.placeholder} />
-          </TouchableOpacity>
-
           <View style={styles.optionRow}>
             <View style={[styles.rowIcon, { backgroundColor: synopsisIcon.backgroundColor }]}>
               <Ionicons name="reader-outline" size={18} color={synopsisIcon.iconColor} />
@@ -1802,22 +1871,6 @@ export const SettingsScreen = ({ navigation }: any) => {
             <AppleToggle
               value={vividAmbientEnabled}
               onValueChange={value => { void setVividAmbientEnabled(value); }}
-              disabled={!displaySettingsReady}
-              onColor={colors.toggleOn}
-            />
-          </View>
-
-          <View style={styles.optionRow}>
-            <View style={[styles.rowIcon, { backgroundColor: featureIcon('#6366f1').backgroundColor }]}>
-              <Ionicons name="grid-outline" size={18} color={featureIcon('#6366f1').iconColor} />
-            </View>
-            <View style={styles.optionInfo}>
-              <Text style={styles.optionTitle}>Show Navigation Labels</Text>
-              <Text style={styles.optionSub}>Display tab names below the nav icons.</Text>
-            </View>
-            <AppleToggle
-              value={showNavLabels}
-              onValueChange={value => { void setShowNavLabels(value); }}
               disabled={!displaySettingsReady}
               onColor={colors.toggleOn}
             />

@@ -1,6 +1,6 @@
 {
   "name": "streamdek-mobile",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "main": "index.ts",
   "scripts": {
     "start": "node ./scripts/expo-with-env.js start --mode development",
@@ -35,6 +35,7 @@
     "expo-file-system": "~55.0.14",
     "expo-image": "~55.0.8",
     "expo-linear-gradient": "~55.0.11",
+    "expo-network": "~55.0.13",
     "expo-screen-orientation": "~55.0.11",
     "expo-splash-screen": "~0.29.24",
     "expo-status-bar": "~55.0.5",

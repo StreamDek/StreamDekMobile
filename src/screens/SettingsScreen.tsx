@@ -62,7 +62,6 @@ function getVisibleIconColor(color: string, resolvedAppearance: 'dark' | 'light'
 }
 
 type PickerKind = 'appearance' | 'theme' | 'language' | 'quality' | 'fileSize' | 'pageStyle' | 'continueStyle' | 'metadataProvider' | 'decoder' | 'surface' | null;
-
 function makeStyles(c: ThemeColors) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: c.bg },
@@ -221,8 +220,8 @@ function PickerModal({
                   ]}
                   activeOpacity={0.82}
                   onPress={() => {
-                    onSelect(option.value);
                     onClose();
+                    requestAnimationFrame(() => onSelect(option.value));
                   }}
                 >
                   {renderPreview
@@ -293,7 +292,7 @@ export function SettingsScreen({ navigation, route }: any) {
     { value: 'light', label: 'Light', description: 'Always use light appearance.' },
   ];
   const qualityOptions: PickerOption[] = [
-    { value: '4K', label: '4K', description: 'Prefer 4K streams first.' },
+    { value: '4k', label: '4K', description: 'Prefer 4K streams first.' },
     { value: '1080p', label: '1080p', description: 'Prefer Full HD streams first.' },
     { value: '720p', label: '720p', description: 'Prefer HD streams first.' },
     { value: 'best', label: 'Best Available', description: 'Use StreamDek ranking without a fixed resolution target.' },
@@ -398,7 +397,15 @@ export function SettingsScreen({ navigation, route }: any) {
       case 'language': setLanguage(value as any); break;
       case 'quality': void setPreferredQuality(value as any); break;
       case 'fileSize': void setMaxFileSizeGB(Number(value)); break;
-      case 'pageStyle': void setUiStyle(value as any); break;
+      case 'pageStyle':
+        void setUiStyle(value as any);
+        requestAnimationFrame(() => {
+          navigation.reset({
+            index: 0,
+            routes: [{ name: 'Main', params: { screen: 'Home' } }],
+          });
+        });
+        break;
       case 'continueStyle': void setContinueWatchingStyle(value as any); break;
       case 'metadataProvider': void setMetadataProvider(value as any); break;
       case 'decoder': void setDecoderMode(value as any); break;

@@ -33,7 +33,7 @@ import { useStreamSelectionSettings } from '../context/StreamSelectionContext';
 import { useWatched } from '../context/WatchedContext';
 import { movieProgressKey, episodeProgressKey, useWatchProgress } from '../context/WatchProgressContext';
 import { buildAuthHeaders } from '../utils/authHeaders';
-import { scoreStream } from '../utils/streamSelection';
+import { sortStreams } from '../utils/streamSelection';
 import {
   normalizeWatchlistItem,
   readWatchlistItems,
@@ -1047,7 +1047,6 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
   const [showDescriptionMore, setShowDescriptionMore] = useState(false);
   const [inWatchlist, setInWatchlist] = useState(false);
-  const [wlLoading,   setWlLoading]   = useState(false);
   const [vimeoKey, setVimeoKey] = useState<string | null>(() => detailCache.get(cacheKey)?.vimeoKey ?? null);
   useEffect(() => {
     setHeroBackdropHeight(uiStyle === 'centered' ? 465 : 345);
@@ -1074,6 +1073,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const [streamsPending, setStreamsPending]   = useState(0);
   const [streamsFetchStarted, setStreamsFetchStarted] = useState(false);
   const streamsAbortRef  = useRef<AbortController | null>(null);
+  const resolveAbortRef = useRef<AbortController | null>(null);
   const streamsRequestIdRef = useRef(0);
   const scrollViewRef    = useRef<any>(null);
   const blurTargetRef = useRef<View | null>(null);
@@ -1661,25 +1661,13 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   // Unified save: saves to Trakt (if connected) + local storage
   const toggleSave = useCallback(async () => {
     if (!media) return;
-    setWlLoading(true);
-    const optimistic = !inWatchlist;
+    const wasInWatchlist = inWatchlist;
+    const optimistic = !wasInWatchlist;
     setInWatchlist(optimistic);
 
     try {
-      if (isConnected) {
-        const endpoint = inWatchlist ? '/trakt/sync/watchlist/remove' : '/trakt/sync/watchlist/add';
-        const entry = { title: media.title, year: parseInt(String(media.year)) || undefined, ids: { tmdb: Number(movieId) } };
-        const payload = type === 'movie' ? { movies: [entry], shows: [] } : { movies: [], shows: [entry] };
-          await fetch(`${API_BASE}${endpoint}`, {
-            method: 'POST',
-            headers: await buildAuthHeaders(user, { profileId: activeProfile?.id }),
-            body: JSON.stringify(payload),
-          });
-        await refreshWatchlist();
-      }
-
       const current = await readWatchlistItems(storageOwnerId, legacyOwnerId);
-      const next = inWatchlist
+      const next = wasInWatchlist
         ? current.filter((i: any) => !watchlistItemMatchesId(i, movieId))
         : [...current, normalizeWatchlistItem({
             id: String(movieId),
@@ -1692,15 +1680,30 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
           })];
       await writeWatchlistItems(storageOwnerId, next);
 
-      const nextRemovalIds = inWatchlist
+      const nextRemovalIds = wasInWatchlist
         ? Array.from(new Set([...watchlistRemovalIds, String(movieId)]))
         : watchlistRemovalIds.filter(id => id !== String(movieId));
       setWatchlistRemovalIds(nextRemovalIds);
       await writeWatchlistRemovalIds(storageOwnerId, nextRemovalIds);
+
+      if (isConnected) {
+        const endpoint = wasInWatchlist ? '/trakt/sync/watchlist/remove' : '/trakt/sync/watchlist/add';
+        const entry = { title: media.title, year: parseInt(String(media.year)) || undefined, ids: { tmdb: Number(movieId) } };
+        const payload = type === 'movie' ? { movies: [entry], shows: [] } : { movies: [], shows: [entry] };
+        void (async () => {
+          try {
+            await fetch(`${API_BASE}${endpoint}`, {
+              method: 'POST',
+              headers: await buildAuthHeaders(user, { profileId: activeProfile?.id }),
+              body: JSON.stringify(payload),
+            });
+            await refreshWatchlist();
+          } catch {}
+        })();
+      }
     } catch {
       setInWatchlist(!optimistic); // revert on error
     }
-    setWlLoading(false);
   }, [activeProfile?.id, inWatchlist, isConnected, legacyOwnerId, media, movieId, refreshWatchlist, storageOwnerId, type, user, watchlistRemovalIds]);
 
   const handleToggleWatched = useCallback(async () => {
@@ -1715,6 +1718,12 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
       setLocalProgress(null);
     }
   }, [media, type, movieId, toggleMovieWatched, clearProgress, clearProgressIndexEntry]);
+
+  const cancelResolvingStream = useCallback(() => {
+    resolveAbortRef.current?.abort();
+    resolveAbortRef.current = null;
+    setResolvingStream(false);
+  }, []);
 
   const playStream = useCallback(async (stream: AddonStream) => {
     const pKey = movieProgressKey(Number(movieId));
@@ -1765,12 +1774,19 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
         setDebridSheet(true);
         return;
       }
+      resolveAbortRef.current?.abort();
+      const controller = new AbortController();
+      resolveAbortRef.current = controller;
       setResolvingStream(true);
       const hint    = stream.behaviorHints?.filename;
       const magnet  = `magnet:?xt=urn:btih:${stream.infoHash}${hint ? `&dn=${encodeURIComponent(hint)}` : ''}`;
-      const resolved = await resolveStream(stream.infoHash, magnet, hint);
-      setResolvingStream(false);
-      if (resolved) {
+      try {
+        const resolved = await resolveStream(stream.infoHash, magnet, hint, { signal: controller.signal });
+        if (resolveAbortRef.current === controller) {
+          resolveAbortRef.current = null;
+        }
+        setResolvingStream(false);
+        if (resolved) {
         navigation.navigate('Player', {
           movieId,
           imdbId: media?.imdbId ?? undefined,
@@ -1804,6 +1820,15 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
             progressKey: pKey,
           },
         });
+      }
+      } catch (error: any) {
+        if (resolveAbortRef.current === controller) {
+          resolveAbortRef.current = null;
+        }
+        setResolvingStream(false);
+        if (error?.name === 'AbortError') {
+          return;
+        }
       }
     }
   }, [navigation, movieId, media, debridAccounts, resolveStream, type, resumeFromSec, detailHeroUri]);
@@ -2275,21 +2300,17 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                       <Text style={styles.trailerBtnText}>{t('media_show_trailer')}</Text>
                     </TouchableOpacity>
                   )}
-                  <TouchableOpacity
-                    style={[styles.watchlistBtn, inWatchlist && styles.watchlistBtnActive]}
-                    activeOpacity={0.85}
-                    onPress={toggleSave}
-                    disabled={wlLoading}
-                  >
-                    {wlLoading
-                      ? <ActivityIndicator size="small" color={colors.accentSoft} />
-                      : <Ionicons
-                          name={inWatchlist ? 'bookmark' : 'bookmark-outline'}
-                          size={18}
-                          color={inWatchlist ? (isLightAppearance ? colors.textPrimary : colors.accentSoft) : detailMutedIcon}
-                        />
-                    }
-                  </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.watchlistBtn, inWatchlist && styles.watchlistBtnActive]}
+                      activeOpacity={0.85}
+                      onPress={toggleSave}
+                    >
+                      <Ionicons
+                        name={inWatchlist ? 'bookmark' : 'bookmark-outline'}
+                        size={18}
+                        color={inWatchlist ? (isLightAppearance ? colors.textPrimary : colors.accentSoft) : detailMutedIcon}
+                      />
+                    </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.watchedBtn, watched && styles.watchedBtnActive]}
                     activeOpacity={0.85}
@@ -2351,17 +2372,13 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                   <Ionicons name="film-outline" size={17} color={colors.accentSoft} />
                 </TouchableOpacity>
               )}
-              <TouchableOpacity
-                style={[styles.centeredPill, inWatchlist && styles.centeredPillActive]}
-                activeOpacity={0.85}
-                onPress={toggleSave}
-                disabled={wlLoading}
-              >
-                {wlLoading
-                  ? <ActivityIndicator size="small" color={colors.accentSoft} />
-                  : <Ionicons name={inWatchlist ? 'bookmark' : 'bookmark-outline'} size={17} color={inWatchlist ? colors.accentSoft : detailMutedIcon} />
-                }
-              </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.centeredPill, inWatchlist && styles.centeredPillActive]}
+                  activeOpacity={0.85}
+                  onPress={toggleSave}
+                >
+                  <Ionicons name={inWatchlist ? 'bookmark' : 'bookmark-outline'} size={17} color={inWatchlist ? colors.accentSoft : detailMutedIcon} />
+                </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.centeredPill, watched && styles.centeredPillWatchedActive]}
                 activeOpacity={0.85}
@@ -3021,9 +3038,9 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
         </Animated.ScrollView>
       </View>
         {/* Debrid resolution loading modal */}
-        <Modal visible={resolvingStream} transparent animationType="fade">
-          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'center', alignItems: 'center', padding: 32 }}>
-            <View style={{
+        <Modal visible={resolvingStream} transparent animationType="fade" onRequestClose={cancelResolvingStream}>
+          <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'center', alignItems: 'center', padding: 32 }} onPress={cancelResolvingStream}>
+            <Pressable onPress={() => {}} style={{
               backgroundColor: isLightAppearance ? '#ffffff' : colors.cardBgElevated ?? colors.cardBg,
               borderRadius: 16, padding: 28, alignItems: 'center', width: '100%',
               borderWidth: 1, borderColor: colors.border,
@@ -3031,11 +3048,25 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
             }}>
               <ActivityIndicator size="large" color={colors.textPrimary} style={{ marginBottom: 16 }} />
               <Text style={{ color: isLightAppearance ? '#111111' : colors.textPrimary, fontSize: 16, fontWeight: '700', marginBottom: 6 }}>{t('media_resolving')}</Text>
-              <Text style={{ color: isLightAppearance ? '#555555' : colors.mutedText, fontSize: 13, textAlign: 'center' }}>
+              <Text style={{ color: isLightAppearance ? '#555555' : colors.mutedText, fontSize: 13, textAlign: 'center', marginBottom: 18 }}>
                 {t('media_resolving_sub')}
               </Text>
-            </View>
-          </View>
+              <TouchableOpacity
+                onPress={cancelResolvingStream}
+                activeOpacity={0.85}
+                style={{
+                  borderRadius: 12,
+                  paddingVertical: 12,
+                  paddingHorizontal: 18,
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  backgroundColor: isLightAppearance ? colors.cardBg : colors.inputBg,
+                }}
+              >
+                <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '700' }}>Cancel</Text>
+              </TouchableOpacity>
+            </Pressable>
+          </Pressable>
         </Modal>
         </PageWrapper>
         {!useGlassDetailLayout ? (
@@ -3254,24 +3285,7 @@ function StreamsTab({
     ? streams
     : streams.filter(s => s.addonName === safeAddon);
 
-  // Sort by debrid priority, then the shared stream scorer so third-party
-  // addons obey the same preferred-quality/max-size rules in the detail list.
-  const QUALITY_RANK: Record<string, number> = { '4K': 4, '1080p': 3, '720p': 2, '480p': 1 };
-  const sortedVisibleStreams = [...visibleStreams].sort((a, b) => {
-    const aCached = a.cachedBy.length > 0;
-    const bCached = b.cachedBy.length > 0;
-    if (bCached !== aCached) return bCached ? 1 : -1;
-    if (aCached && bCached) {
-      const aIdx = debridAccounts.findIndex(acc => acc.provider === a.cachedBy[0]);
-      const bIdx = debridAccounts.findIndex(acc => acc.provider === b.cachedBy[0]);
-      const diff = (aIdx === -1 ? 999 : aIdx) - (bIdx === -1 ? 999 : bIdx);
-      if (diff !== 0) return diff;
-    }
-    if (streamSelectionEnabled) {
-      return scoreStream(b, streamOptions) - scoreStream(a, streamOptions);
-    }
-    return (QUALITY_RANK[b.quality ?? ''] ?? 0) - (QUALITY_RANK[a.quality ?? ''] ?? 0);
-  }).slice(0, 20);
+  const sortedVisibleStreams = sortStreams(visibleStreams, streamOptions).slice(0, 20);
 
   // Group visible streams by addon name
   const grouped: Record<string, AddonStream[]> = {};

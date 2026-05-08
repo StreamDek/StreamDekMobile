@@ -46,6 +46,7 @@ import { resolvePlayableStreamUrl } from '../services/playback/streamResolution'
 import { useSubtitles } from '../context/SubtitleContext';
 import { SubtitleResult } from '../services/subtitles/SubtitleProvider';
 import { useWatchlistRemove, WatchlistRemoveItem } from '../hooks/useWatchlistRemove';
+import { isExpoGoRuntime } from '../utils/runtime';
 import {
   getProfileStorageOwnerId,
   progressFileStorageKey,
@@ -255,6 +256,7 @@ function buildPayload(movieId: string, type: string, title?: string, year?: numb
 }
 
 export const MpvPlayerScreen = ({ route, navigation }: any) => {
+  const expoGoRuntime = isExpoGoRuntime();
   const insets = useSafeAreaInsets();
   const { scrobble, isConnected, watchlist } = useTrakt();
   const { user } = useAuth();
@@ -263,6 +265,11 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const { removeFromWatchlist } = useWatchlistRemove();
   const { fetchStreams } = useAddons();
   const subtitle = useSubtitles();
+
+  useEffect(() => {
+    if (!expoGoRuntime) return;
+    navigation.replace('Player', route.params ?? {});
+  }, [expoGoRuntime, navigation, route.params]);
   const { saveProgress, clearProgress } = useWatchProgress();
   const storageOwnerId = getProfileStorageOwnerId(user?.uid ?? null, activeProfile?.id ?? null);
   const legacyOwnerId = user?.uid ?? null;
@@ -773,11 +780,9 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   }, [resolveOnMount, resolvedStreamUrl]);
 
   const rankStreams = useCallback((streams: AddonStream[]): AddonStream[] => {
-    const opts = streamSelectionEnabled
-      ? { preferQuickStart: true, maxFileSizeGB: maxFileSizeGB > 0 ? maxFileSizeGB : undefined, preferredQuality }
-      : { preferQuickStart: true };
+    const opts = { preferQuickStart: true, maxFileSizeGB: maxFileSizeGB > 0 ? maxFileSizeGB : undefined, preferredQuality };
     return [...streams].sort((a, b) => scoreStream(b, opts) - scoreStream(a, opts));
-  }, [streamSelectionEnabled, maxFileSizeGB, preferredQuality]);
+  }, [maxFileSizeGB, preferredQuality]);
 
   const resolveSourceStreamUrl = useCallback(async (stream: AddonStream): Promise<string | null> => {
     return resolvePlayableStreamUrl({

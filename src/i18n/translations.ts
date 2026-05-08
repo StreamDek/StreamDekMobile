@@ -193,9 +193,9 @@ const en = {
 
   // -- Home sections ------------------------------------------------------------
   section_popular_movies:  'Popular Movies',
-  section_popular_tv:      'Popular TV Series',
+  section_popular_tv:      'Popular Series',
   section_trending_movies: 'Trending Movies',
-  section_trending_tv:     'Trending TV Series',
+  section_trending_tv:     'Trending Series',
   section_networks:        'Networks',
   section_continue:        'Continue Watching',
   section_recommended:     'Recommended for You',
@@ -204,7 +204,7 @@ const en = {
 
   // -- Home hero ----------------------------------------------------------------
   home_movie_badge: 'Movie',
-  home_tv_badge:    'TV Series',
+  home_tv_badge:    'Series',
   home_play:        'Play',
   home_continue_btn: 'Continue',
   home_play_now_btn: 'Play Now',

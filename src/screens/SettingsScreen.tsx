@@ -32,6 +32,7 @@ import { useDebrid } from '../context/DebridContext';
 import { useTrakt } from '../context/TraktContext';
 import { fetchAccountBootstrap } from '../utils/accountPreferences';
 import { invalidateSharedCache } from '../utils/sharedDataCache';
+import { checkSyncAllowed, getSyncOverCellular, setSyncOverCellular } from '../utils/cellularGuard';
 import {
   CinematicSkeleton,
   GlassSkeleton,
@@ -270,9 +271,19 @@ export function SettingsScreen({ navigation, route }: any) {
   const [picker, setPicker] = useState<PickerKind>(null);
   const [tmdbDraft, setTmdbDraft] = useState(tmdbApiKey);
   const [syncRefreshing, setSyncRefreshing] = useState(false);
+  const [syncOverCellular, setSyncOverCellularState] = useState(false);
   const safeIconColor = React.useCallback((color: string) => getVisibleIconColor(color, resolvedAppearance, theme.id, colors.textPrimary), [colors.textPrimary, resolvedAppearance, theme.id]);
 
   React.useEffect(() => { setTmdbDraft(tmdbApiKey); }, [tmdbApiKey]);
+
+  React.useEffect(() => {
+    void getSyncOverCellular().then(setSyncOverCellularState);
+  }, []);
+
+  const handleSetSyncOverCellular = React.useCallback(async (value: boolean) => {
+    setSyncOverCellularState(value);
+    await setSyncOverCellular(value);
+  }, []);
 
   const themeOptions = THEMES.map(item => ({ value: item.id, label: item.name, description: item.description, accentColor: item.swatch ?? colors.accent }));
   const languageOptions = LANGUAGES.map(item => ({ value: item.code, label: `${item.flag} ${item.name}` }));
@@ -398,16 +409,32 @@ export function SettingsScreen({ navigation, route }: any) {
 
   const handleRefreshSync = React.useCallback(async () => {
     if (!user || syncRefreshing) return;
+
+    const guard = await checkSyncAllowed();
+    if (!guard.allowed) {
+      if (guard.reason === 'offline') return;
+      // cellular_blocked — user has sync-over-cellular disabled; skip silently
+      return;
+    }
+
     setSyncRefreshing(true);
     try {
       invalidateSharedCache(`bootstrap:${user.uid}:`);
       invalidateSharedCache('addons:manifests:');
-      await Promise.allSettled([
+      const [bootstrap] = await Promise.allSettled([
         fetchAccountBootstrap(user),
         refreshAddons(),
         refreshAccounts(),
         checkStatus(),
       ]);
+      // Persist syncOverCellular from server preferences so the device stays in sync
+      if (bootstrap.status === 'fulfilled' && bootstrap.value) {
+        const serverPref = bootstrap.value.preferences?.app?.syncOverCellular;
+        if (typeof serverPref === 'boolean') {
+          await setSyncOverCellular(serverPref);
+          setSyncOverCellularState(serverPref);
+        }
+      }
     } finally {
       setSyncRefreshing(false);
     }
@@ -441,6 +468,8 @@ export function SettingsScreen({ navigation, route }: any) {
                     <SettingRow icon="color-palette-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_theme')} subtitle="Choose the colour theme used across the app." value={theme.name} onPress={() => setPicker('theme')} />
                     <View style={styles.divider} />
                     <SettingRow icon="grid-outline" iconColor={safeIconColor('#6366f1')} label="Show Navigation Labels" subtitle="Display tab names below the nav icons." right={<AppleToggle value={showNavLabels} onValueChange={value => { void setShowNavLabels(value); }} onColor={colors.toggleOn} />} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="cellular-outline" iconColor={safeIconColor('#0ea5e9')} label="Sync on Cellular" subtitle="Allow account and addon sync when not on Wi-Fi." right={<AppleToggle value={syncOverCellular} onValueChange={handleSetSyncOverCellular} onColor={colors.toggleOn} />} />
                   </View>
 
                   <Text style={styles.sectionTitle}>Playback</Text>

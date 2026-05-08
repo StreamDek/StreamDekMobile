@@ -49,6 +49,7 @@ import { useDisplaySettings } from '../context/DisplaySettingsContext';
 import { getProfileStorageOwnerId, profileScopedStorageKey, progressIndexStorageKey } from '../utils/profileStorage';
 import { useTmdbApiKey } from '../context/TmdbApiKeyContext';
 import { getDeviceProfile } from '../utils/deviceProfile';
+import { invalidateSharedCache } from '../utils/sharedDataCache';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const HERO_HEIGHT = 616;
@@ -885,6 +886,7 @@ export const HomeScreen = ({ navigation }: any) => {
   useEffect(() => {
     if (prevProviderRef.current === metadataProvider) return;
     prevProviderRef.current = metadataProvider;
+    invalidateSharedCache('catalog:');
     hasCompletedInitialHomeLoadRef.current = false;
     sectionFetchRequestIdRef.current += 1;
     lastAutoFetchKeyRef.current = null;

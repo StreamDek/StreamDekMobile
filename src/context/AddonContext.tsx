@@ -359,16 +359,15 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
     const playableOnly = incoming.filter(
       stream => isAllowedPlaybackStream(stream) || stream.streamdekAllowRawTorrent === true,
     );
-    const rankingOptions = streamSelectionEnabled ? streamScoreOptions : undefined;
+    const rankingOptions = streamScoreOptions;
 
-    // Keep the stream list intelligently ordered even when the explicit stream
-    // selection preference is off. User-facing settings only add extra caps and
-    // biasing; the baseline scorer still picks sensible sources.
+    // Preferred quality and max size should always affect ordering/filtering.
+    // The smart-selection toggle only affects extra playback heuristics elsewhere.
     return sortStreams(
       playableOnly.filter(stream => scoreStream(stream, rankingOptions) > -10000),
       rankingOptions,
     );
-  }, [streamScoreOptions, streamSelectionEnabled]);
+  }, [streamScoreOptions]);
 
   const shouldFetchUltra = ultraEntitled && ultraBoostEnabled;
 
@@ -432,9 +431,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
       .filter(a => a.enabled)
       .sort((a, b) => a.position - b.position);
     const enabledAddonKey = enabledAddons.map(a => `${a.id}:${a.position}`).join(',');
-    const selectionKey = streamSelectionEnabled
-      ? `${preferredQuality}:${maxFileSizeGB}`
-      : 'selection-off';
+    const selectionKey = `${preferredQuality}:${maxFileSizeGB}:${streamSelectionEnabled ? 'smart-on' : 'smart-off'}`;
     const ultraKey = shouldFetchUltra ? 'ultra-on' : 'ultra-off';
     const cacheKey = `${type}:${videoId}:${enabledAddonKey}:${selectionKey}:${ultraKey}`;
     const cached   = streamCache.current.get(cacheKey);

@@ -53,7 +53,7 @@ export async function resolvePlayableStreamUrl({
     if (debridAccountCount > 0) {
       onStep?.('debrid-resolve');
       try {
-        const maxSizeBytes = streamSelectionEnabled && maxFileSizeGB > 0
+        const maxSizeBytes = maxFileSizeGB > 0
           ? Math.round(maxFileSizeGB * 1024 * 1024 * 1024)
           : defaultMaxSizeBytes;
         const resolved = await resolveStream(

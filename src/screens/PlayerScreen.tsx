@@ -67,6 +67,7 @@ import { createLocalProxyUrl } from '../utils/torrentServerClient';
 import { resolvePlayableStreamUrl } from '../services/playback/streamResolution';
 import { parseStream } from '../utils/streamParser';
 import { getMpvNativeViewAvailabilityDiagnostics, isMpvNativeViewAvailable } from '../components/MpvPlayer';
+import { isExpoGoRuntime } from '../utils/runtime';
 
 // ── Constants & Helpers ──────────────────────────────────────────────────────
 
@@ -531,7 +532,8 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     } = usePlaybackSettings();
     const insets = useSafeAreaInsets();
     const { pictureInPictureEnabled } = useDisplaySettings();
-    const shouldUseEmbeddedVideoPlayer = false; // MPV is the only player
+    const expoGoRuntime = isExpoGoRuntime();
+    const shouldUseEmbeddedVideoPlayer = expoGoRuntime;
     const [runtimePlaybackConfig, setRuntimePlaybackConfig] = useState<RuntimePlaybackConfig>(() => (
         preferredRuntimePlaybackConfig(decoderMode, renderSurface)
     ));
@@ -1211,12 +1213,10 @@ export const PlayerScreen = ({ route, navigation }: any) => {
 
     const getRankedStreams = useCallback((streams: AddonStream[]): AddonStream[] => {
         const preferQuickStart = serverConfig.streamingMode === 'server';
-        const baseOptions = streamSelectionEnabled
-            ? {
-                preferredQuality,
-                maxFileSizeGB: maxFileSizeGB > 0 ? maxFileSizeGB : undefined,
-            }
-            : {};
+        const baseOptions = {
+            preferredQuality,
+            maxFileSizeGB: maxFileSizeGB > 0 ? maxFileSizeGB : undefined,
+        };
         return [...streams].sort((a, b) => (
             scoreStream(b, {
                 preferQuickStart,
@@ -2865,7 +2865,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                             <Text style={styles.timeLabel}>{formatTime(duration)}</Text>
                         </View>
                         <View style={styles.quickMenuRow}>
-                            {mpvQuickActionVisible && shouldUseEmbeddedVideoPlayer && (
+                            {mpvQuickActionVisible && shouldUseEmbeddedVideoPlayer && !expoGoRuntime && (
                                 <TouchableOpacity
                                     style={styles.quickMenuButton}
                                     onPress={handleEmbeddedMpvPress}

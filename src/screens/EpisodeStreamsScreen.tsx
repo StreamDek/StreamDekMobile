@@ -25,6 +25,7 @@ import { PrimaryActionButton, getPrimaryActionPalette } from '../components/Prim
 import { StackBottomNav, BOTTOM_NAV_HEIGHT } from '../components/StackBottomNav';
 import { selectBestStream, sortStreams, scoreStream } from '../utils/streamSelection';
 import { parseStream, formatSeeds } from '../utils/streamParser';
+import { isExpoGoRuntime } from '../utils/runtime';
 
 const IMG_HEIGHT = 230;
 
@@ -358,6 +359,7 @@ function StreamRow({ stream, colors, onPlay, isLightAppearance, glass = false }:
 // ── Screen ────────────────────────────────────────────────────────────────────
 
 export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
+  const expoGoRuntime = isExpoGoRuntime();
   const {
     showId, showTitle, showPoster, showBackdrop, imdbId,
     season, episodeNumber, episodeName, episodeOverview, episodeReleaseDate, episodeRuntime,
@@ -413,20 +415,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
     maxFileSizeGB: maxFileSizeGB > 0 ? maxFileSizeGB : undefined,
   }), [maxFileSizeGB, preferredQuality]);
 
-  const sortedVisibleStreams = (streamSelectionEnabled
-    ? [...visibleStreams].sort((a, b) => {
-        const aCached = a.cachedBy.length > 0;
-        const bCached = b.cachedBy.length > 0;
-        if (bCached !== aCached) return bCached ? 1 : -1;
-        if (aCached && bCached) {
-          const aIdx = debridAccounts.findIndex(acc => acc.provider === a.cachedBy[0]);
-          const bIdx = debridAccounts.findIndex(acc => acc.provider === b.cachedBy[0]);
-          const diff = (aIdx === -1 ? 999 : aIdx) - (bIdx === -1 ? 999 : bIdx);
-          if (diff !== 0) return diff;
-        }
-        return scoreStream(b, streamOptions) - scoreStream(a, streamOptions);
-      })
-    : [...visibleStreams]).slice(0, 20);
+  const sortedVisibleStreams = sortStreams(visibleStreams, streamOptions).slice(0, 20);
 
   const grouped: Record<string, AddonStream[]> = {};
   for (const s of sortedVisibleStreams) {
@@ -617,10 +606,10 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
   // skipping the intermediate PlayerScreen so the loading overlay shows at once.
   const playBestStream = useCallback(() => {
     if (streams.length === 0) return;
-    const best = streamSelectionEnabled ? selectBestStream(streams, streamOptions) : streams[0];
+    const best = selectBestStream(streams, streamOptions);
     if (!best) return;
 
-    const sortedAll = streamSelectionEnabled ? sortStreams(streams, streamOptions) : [...streams];
+    const sortedAll = sortStreams(streams, streamOptions);
 
     const sharedParams = {
       title: playerTitle,
@@ -647,7 +636,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
     };
 
     if (best.url) {
-      navigation.navigate('MpvPlayer', {
+      navigation.navigate(expoGoRuntime ? 'Player' : 'MpvPlayer', {
         ...sharedParams,
         streamUrl:    best.url,
         sourceStreams: sortedAll,
@@ -665,14 +654,14 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
         best.infoHash ?? best.url ?? best.behaviorHints?.filename ?? best.title ?? best.name ?? ''
       ).trim().replace(/\s+/g, ' ').toLowerCase();
 
-      navigation.navigate('MpvPlayer', {
+      navigation.navigate(expoGoRuntime ? 'Player' : 'MpvPlayer', {
         ...sharedParams,
         resolveOnMount:          true,
         sourceStreams:            sortedAll,
         preferredSourceIdentity,
       });
     }
-  }, [streams, debridAccounts.length, navigation, playerTitle, season, episodeNumber,
+  }, [expoGoRuntime, streams, debridAccounts.length, navigation, playerTitle, season, episodeNumber,
       backdropUri, showPoster, imdbId, showId, streamSelectionEnabled, resolvedProgressKey, streamOptions]);
 
   // ── Render helpers ─────────────────────────────────────────────────────────

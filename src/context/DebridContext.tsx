@@ -62,7 +62,7 @@ interface DebridContextType {
   /** Test an API key without saving it. */
   testKey(provider: DebridProviderName, apiKey: string): Promise<{ valid: boolean; username?: string }>;
   /** Resolve a torrent hash + magnet link to a direct stream URL. */
-  resolveStream(infoHash: string, magnetLink: string, filename?: string, options?: { maxSize?: number; providerHint?: DebridProviderName }): Promise<DebridResolvedStream | null>;
+  resolveStream(infoHash: string, magnetLink: string, filename?: string, options?: { maxSize?: number; providerHint?: DebridProviderName; signal?: AbortSignal }): Promise<DebridResolvedStream | null>;
   /** Unrestrict a premium hoster URL. */
   unrestrictLink(url: string): Promise<DebridResolvedStream | null>;
   /**
@@ -190,13 +190,14 @@ export const DebridProvider = ({ children }: { children: React.ReactNode }) => {
     infoHash: string,
     magnetLink: string,
     filename?: string,
-    options?: { maxSize?: number; providerHint?: DebridProviderName },
+    options?: { maxSize?: number; providerHint?: DebridProviderName; signal?: AbortSignal },
   ): Promise<DebridResolvedStream | null> => {
     if (!user) return null;
     try {
       const res = await fetch(`${API_BASE}/debrid/resolve`, {
         method: 'POST',
         headers: await buildAuthHeaders(user),
+        signal: options?.signal,
         body: JSON.stringify({
           infoHash,
           magnetLink,

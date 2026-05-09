@@ -20,6 +20,7 @@ import { useProfile } from '../context/ProfileContext';
 import { useAddons } from '../context/AddonContext';
 import { useDebrid } from '../context/DebridContext';
 import { useTrakt } from '../context/TraktContext';
+import { useLanguage } from '../context/LanguageContext';
 import { PROFILE_AVATARS } from '../utils/profileApi';
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
@@ -122,6 +123,7 @@ export function SettingsShellScreen({ navigation }: any) {
   const { addons, ultraEntitled, ultraBoostEnabled } = useAddons();
   const { accounts } = useDebrid();
   const { isConnected: traktConnected } = useTrakt();
+  const { t } = useLanguage();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const appVersion = Constants.expoConfig?.version ?? '0.0.0';
 
@@ -144,97 +146,97 @@ export function SettingsShellScreen({ navigation }: any) {
             }}
           >
             <View style={styles.content}>
-              <Text style={styles.heading}>Settings</Text>
-              <Text style={styles.subheading}>Instant navigation at the top level. Detailed configuration lives in dedicated pages.</Text>
+              <Text style={styles.heading}>{t('settings_title')}</Text>
+              <Text style={styles.subheading}>{t('settings_shell_subheading')}</Text>
 
-              <Text style={styles.sectionTitle}>Profiles</Text>
+              <Text style={styles.sectionTitle}>{t('settings_profiles_section')}</Text>
               <View style={styles.card}>
                 <NavRow
                   icon="swap-horizontal-outline"
                   iconColor={colors.accentSoft}
                   avatarSource={activeProfile ? PROFILE_AVATARS[Math.min(activeProfile.avatarIndex, PROFILE_AVATARS.length - 1)].image : undefined}
-                  label="Switch Profile"
-                  subtitle={activeProfile ? `Current: ${activeProfile.name}` : 'Open the profile selector immediately'}
+                  label={t('settings_switch_profile')}
+                  subtitle={activeProfile ? t('settings_switch_profile_current', { name: activeProfile.name }) : t('settings_switch_profile_sub')}
                   onPress={() => navigation.navigate('ProfileSwitcher')}
                 />
                 <View style={styles.divider} />
                 <NavRow
                   icon="people-outline"
                   iconColor="#2563eb"
-                  label="Manage Profiles"
-                  subtitle={`${profiles.length} profile${profiles.length !== 1 ? 's' : ''} available`}
+                  label={t('settings_manage_profiles')}
+                  subtitle={t('settings_manage_profiles_count', { n: profiles.length, suffix: profiles.length !== 1 ? 's' : '' })}
                   onPress={() => navigation.navigate('ManageProfiles')}
                 />
               </View>
 
-              <Text style={styles.sectionTitle}>Preferences</Text>
+              <Text style={styles.sectionTitle}>{t('settings_preferences_section')}</Text>
               <View style={styles.card}>
                 <NavRow
                   icon="settings-outline"
                   iconColor="#64748b"
-                  label="General, Playback and Subtitles"
-                  subtitle="Player behavior, quality, language, caching, and advanced app settings."
+                  label={t('settings_detail_general_playback')}
+                  subtitle={t('settings_general_playback_sub')}
                   onPress={() => navigation.navigate('SettingsDetail', { section: 'general-playback' })}
                 />
                 <View style={styles.divider} />
                 <NavRow
                   icon="color-palette-outline"
                   iconColor="#f59e0b"
-                  label="Home and Appearance"
-                  subtitle="Catalog, layout, page style, hero synopsis, and ambient background."
+                  label={t('settings_detail_home_appearance')}
+                  subtitle={t('settings_home_appearance_sub')}
                   onPress={() => navigation.navigate('SettingsDetail', { section: 'home-appearance' })}
                 />
               </View>
 
-              <Text style={styles.sectionTitle}>Services</Text>
+              <Text style={styles.sectionTitle}>{t('settings_services_section')}</Text>
               <View style={styles.card}>
                 <NavRow
                   icon="extension-puzzle-outline"
                   iconColor="#22c55e"
-                  label="Add-ons"
-                  subtitle={`${enabledAddonCount} source${enabledAddonCount !== 1 ? 's' : ''} active`}
+                  label={t('settings_addons_label')}
+                  subtitle={t('settings_addons_active_count', { n: enabledAddonCount, suffix: enabledAddonCount !== 1 ? 's' : '' })}
                   onPress={() => navigation.navigate('Addons')}
                 />
                 <View style={styles.divider} />
                 <NavRow
                   icon="cloud-outline"
                   iconColor="#38bdf8"
-                  label="Debrid Services"
-                  subtitle={accounts.length > 0 ? `${accounts.length} account${accounts.length !== 1 ? 's' : ''} connected` : 'Connect premium cache providers'}
+                  label={t('settings_debrid_services')}
+                  subtitle={accounts.length > 0 ? t('settings_debrid_connected_count', { n: accounts.length, suffix: accounts.length !== 1 ? 's' : '' }) : t('settings_debrid_services_sub')}
                   onPress={() => navigation.navigate('Addons', { initialTab: 'debrid' })}
                 />
                 <View style={styles.divider} />
                 <NavRow
                   icon="sync-outline"
                   iconColor="#a78bfa"
-                  label="Trakt"
-                  subtitle={traktConnected ? 'Connected and syncing' : 'Connect Trakt and sync your activity'}
+                  label={t('settings_trakt')}
+                  subtitle={traktConnected ? t('settings_trakt_connected_sub') : t('settings_trakt_disconnected_sub')}
                   onPress={() => navigation.navigate('TraktSettings')}
                 />
                 <View style={styles.divider} />
                 <NavRow
                   icon="tv-outline"
                   iconColor="#f97316"
-                  label="Link TV"
-                  subtitle="Pair your mobile app with the TV app"
+                  label={t('settings_link_tv')}
+                  subtitle={t('settings_link_tv_sub')}
                   onPress={() => navigation.navigate('LinkTv')}
                 />
               </View>
 
-              <Text style={styles.sectionTitle}>Account</Text>
+              <Text style={styles.sectionTitle}>{t('settings_account_section')}</Text>
               <View style={styles.card}>
                 <NavRow
                   icon="person-circle-outline"
                   iconColor={colors.mutedText}
-                  label="Account"
-                  subtitle={user ? (user.email ? `Signed in as ${user.email}` : 'Signed in · Settings syncing across devices') : 'Sign in to unlock cross-device sync, TV linking, and Trakt'}
+                  label={t('settings_account')}
+                  subtitle={user ? (user.email ? `${t('addons_signed_in_as')} ${user.email}` : t('settings_account_signed_in_generic')) : t('settings_account_signed_out_shell')}
                   onPress={() => navigation.navigate(user ? 'SettingsDetail' : 'Auth', user ? { section: 'account-services' } : undefined)}
                 />
               </View>
 
               <View style={styles.aboutBlock}>
-                <Text style={styles.aboutLine}>Made with ❤️ by Henryneo</Text>
-                <Text style={styles.aboutLine}>{`Version ${appVersion}`}</Text>
+                <Text style={styles.aboutLine}>{t('settings_made_with')}</Text>
+                <Text style={styles.aboutLine}>{t('settings_version_label', { version: appVersion })}</Text>
               </View>
             </View>
           </ScrollView>

@@ -936,6 +936,14 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         if (!loading || isError || !isForeground) {
             loadingLogoBreathAnim.setValue(1);
             loadingTextOpacity.setValue(1);
+            if (!pictureInPictureEnabled && shouldUseEmbeddedVideoPlayer) {
+                try {
+                    playerRef.current?.pause();
+                } catch {
+                    // Ignore best-effort pause failures while the app backgrounds.
+                }
+                setIsPlaying(false);
+            }
             return;
         }
 
@@ -1005,7 +1013,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
             }
             skipPortraitOnUnmountRef.current = false;
         };
-    }, [loading, navigation, pictureInPictureEnabled, shouldUseEmbeddedVideoPlayer]);
+    }, [loading, navigation, pictureInPictureEnabled, setIsPlaying, shouldUseEmbeddedVideoPlayer]);
 
     useEffect(() => { playerRef.current = player; }, [player]);
     useEffect(() => { allStreamsRef.current = allStreams; }, [allStreams]);
@@ -2733,13 +2741,13 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         <View style={styles.root}>
             {shouldUseEmbeddedVideoPlayer && (
                 <>
-                    <VideoView 
+                    <VideoView
                         ref={videoViewRef}
-                        style={StyleSheet.absoluteFill} 
-                        player={player} 
-                        contentFit={contentFit} 
+                        style={StyleSheet.absoluteFill}
+                        player={player}
+                        contentFit={contentFit}
                         surfaceType={effectiveSurfaceType}
-                        nativeControls={false} 
+                        nativeControls={false}
                         allowsPictureInPicture={pictureInPictureEnabled}
                         startsPictureInPictureAutomatically={pictureInPictureEnabled}
                         onFirstFrameRender={() => {

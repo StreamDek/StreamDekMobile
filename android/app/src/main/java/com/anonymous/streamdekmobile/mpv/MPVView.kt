@@ -326,6 +326,7 @@ class MPVView @JvmOverloads constructor(
     fun setPaused(nextPaused: Boolean) {
         if (isDestroyed) return
         paused = nextPaused
+        keepScreenOn = !nextPaused
         if (!initialized) return
         MPVLib.setPropertyBoolean("pause", nextPaused)
     }
@@ -600,7 +601,10 @@ class MPVView @JvmOverloads constructor(
                 logSubtitleState("FILE_LOADED")
                 dispatchTracksChanged()
                 if (!paused) {
+                    keepScreenOn = true
                     MPVLib.setPropertyBoolean("pause", false)
+                } else {
+                    keepScreenOn = false
                 }
             }
 

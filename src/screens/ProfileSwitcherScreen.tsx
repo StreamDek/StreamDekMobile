@@ -23,6 +23,7 @@ import { API_BASE } from '../constants/api';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { useProfile } from '../context/ProfileContext';
+import { useLanguage } from '../context/LanguageContext';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import { ActionSheet } from '../components/ActionSheet';
 import { RadialLoaderScreen } from '../components/RadialLoaderScreen';
@@ -60,6 +61,7 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { theme, resolvedAppearance } = useTheme();
+  const { t } = useLanguage();
   const c = theme.colors;
   const isLight = resolvedAppearance === 'light';
   const isLightMonochrome = isLight && theme.id === 'monochrome';
@@ -257,7 +259,7 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
           finishSelection();
         });
       }
-      else { setPinError('Incorrect PIN. Try again.'); setPin(''); }
+      else { setPinError(t('profile_pin_incorrect')); setPin(''); }
     });
     return () => { cancelled = true; };
   }, [finishSelection, pin, setActiveProfile, targetProfile]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -282,13 +284,13 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
     if (profile?.isDefault && fallbackProfile) {
       const promoteResult = await setDefaultProfile(fallbackProfile.id);
       if (promoteResult.error) {
-        Alert.alert('Unable to delete profile', promoteResult.error);
+        Alert.alert(t('profile_delete_failed'), promoteResult.error);
         return;
       }
     }
     const result = await deleteProfile(id);
     if (result.error) {
-      Alert.alert('Unable to delete profile', result.error);
+      Alert.alert(t('profile_delete_failed'), result.error);
       return;
     }
     setDeleteTargetId(null);
@@ -332,7 +334,7 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
 
   const handleSaveEdit = useCallback(async () => {
     const trimmed = editName.trim();
-    if (!trimmed) { setEditNameErr('Name is required.'); return; }
+    if (!trimmed) { setEditNameErr(t('profile_name_required')); return; }
     if (editShowPin && !editProfile?.hasPinSet && !editRemovingPin) {
       if (editPinVal.length !== PIN_LENGTH || editPinVal !== editPinConfirm) return;
     }
@@ -453,7 +455,7 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
                       <View style={[S.launchAddCircle, compactProfiles && S.launchAddCircleCompact]}>
                         <Ionicons name="add" size={compactProfiles ? 28 : 32} color="rgba(255,255,255,0.78)" />
                       </View>
-                      <Text style={[S.launchProfileName, compactProfiles && S.launchProfileNameCompact]}>Add Profile</Text>
+                      <Text style={[S.launchProfileName, compactProfiles && S.launchProfileNameCompact]}>{t('profile_add')}</Text>
                     </TouchableOpacity>
                   );
                 }
@@ -480,7 +482,7 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
               })}
             </View>
             <TouchableOpacity style={S.launchManageBtn} onPress={() => goToStep('manage')} activeOpacity={0.78}>
-              <Text style={S.launchManageText}>Manage Profiles</Text>
+              <Text style={S.launchManageText}>{t('profile_manage')}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -489,14 +491,14 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
 
     return (
       <ScrollView contentContainerStyle={[S.gridContent, { paddingTop: insets.top + 28, paddingBottom: insets.bottom + 32 }]} showsVerticalScrollIndicator={false}>
-        <Text style={[S.heading, { color: primaryText }]}>Who's watching?</Text>
+        <Text style={[S.heading, { color: primaryText }]}>{t('profile_heading')}</Text>
         <View style={S.profileGrid}>
           {allCards.map((card, idx) => {
             if (card.type === 'add') {
               return (
                 <TouchableOpacity key="add" style={S.profileCard} onPress={() => openEdit(null, 'grid')} activeOpacity={0.75}>
                   <View style={[S.addCircle, { backgroundColor: dashedBg, borderColor: dashedBorder }]}><Ionicons name="add" size={44} color={tertiaryText} /></View>
-                  <Text style={[S.profileName, { color: secondaryText }]}>Add Profile</Text>
+                  <Text style={[S.profileName, { color: secondaryText }]}>{t('profile_add')}</Text>
                 </TouchableOpacity>
               );
             }
@@ -518,7 +520,7 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
           })}
         </View>
         <TouchableOpacity style={[S.manageBtn, { borderColor: cardBorder, backgroundColor: isLight ? cardBg : 'transparent' }]} onPress={() => goToStep('manage')} activeOpacity={0.75}>
-          <Text style={[S.manageBtnText, { color: secondaryText }]}>Manage Profiles</Text>
+          <Text style={[S.manageBtnText, { color: secondaryText }]}>{t('profile_manage')}</Text>
         </TouchableOpacity>
         {!asOverlay && (
           <TouchableOpacity
@@ -589,7 +591,7 @@ export function ProfileSwitcherScreen({ asOverlay = false, onDismiss }: Props) {
         <TouchableOpacity style={S.backBtn} onPress={() => goToStep('grid')} activeOpacity={0.7}>
           <Ionicons name="arrow-back" size={22} color={iconColor} />
         </TouchableOpacity>
-        <Text style={[S.heading, { marginBottom: 28, color: primaryText }]}>Manage Profiles</Text>
+        <Text style={[S.heading, { marginBottom: 28, color: primaryText }]}>{t('profile_manage')}</Text>
         {profiles.map(profile => (
           <View key={profile.id} style={[S.manageRow, { borderBottomColor: cardBorder }]}>
             <Image source={avatarFor(profile).image} style={S.avatarSm} />

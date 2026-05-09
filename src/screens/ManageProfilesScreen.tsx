@@ -14,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { useTheme } from '../context/ThemeContext';
 import { useProfile } from '../context/ProfileContext';
+import { useLanguage } from '../context/LanguageContext';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import { MAX_PROFILES_PER_ACCOUNT, PROFILE_AVATARS, type StreamProfile } from '../utils/profileApi';
 
@@ -21,12 +22,12 @@ export function ManageProfilesScreen() {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
+  const { t } = useLanguage();
   const c = theme.colors;
   const isLightMonochrome = theme.resolvedAppearance === 'light' && theme.id === 'monochrome';
 
   const { profiles, loadingProfiles, activeProfile, deleteProfile, setDefaultProfile } = useProfile();
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  // Separate visibility from data so onClose() doesn't null-out the id before onConfirm() reads it
   const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [deleteTargetName, setDeleteTargetName] = useState('');
@@ -51,14 +52,14 @@ export function ManageProfilesScreen() {
       const promoteResult = await setDefaultProfile(fallbackProfile.id);
       if (promoteResult.error) {
         setDeletingId(null);
-        Alert.alert('Unable to delete profile', promoteResult.error);
+        Alert.alert(t('profile_delete_failed'), promoteResult.error);
         return;
       }
     }
     const result = await deleteProfile(id);
     setDeletingId(null);
     if (result.error) {
-      Alert.alert('Unable to delete profile', result.error);
+      Alert.alert(t('profile_delete_failed'), result.error);
       return;
     }
     setDeleteTargetId(null);
@@ -66,14 +67,13 @@ export function ManageProfilesScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: c.bg }]}>
-      {/* Header */}
       <View style={[styles.header, { paddingTop: insets.top + 16, borderBottomColor: c.border }]}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.7}>
           <Ionicons name="arrow-back" size={22} color={c.textPrimary} />
         </TouchableOpacity>
         <View style={styles.headerTitleWrap}>
-          <Text style={[styles.headerEyebrow, { color: c.mutedText }]}>Profiles</Text>
-          <Text style={[styles.headerTitle, { color: c.textPrimary }]}>Manage Profiles</Text>
+          <Text style={[styles.headerEyebrow, { color: c.mutedText }]}>{t('settings_profiles_section')}</Text>
+          <Text style={[styles.headerTitle, { color: c.textPrimary }]}>{t('profile_manage_title')}</Text>
         </View>
         {profiles.length < MAX_PROFILES_PER_ACCOUNT && (
           <TouchableOpacity
@@ -110,19 +110,19 @@ export function ManageProfilesScreen() {
                     )}
                     {isActive && (
                       <View style={[styles.badge, { backgroundColor: 'rgba(99,102,241,0.15)' }]}>
-                        <Text style={[styles.badgeText, { color: c.accentSoft }]}>Active</Text>
+                        <Text style={[styles.badgeText, { color: c.accentSoft }]}>{t('profile_active_badge')}</Text>
                       </View>
                     )}
                     {profile.isDefault && (
                       <View style={[styles.badge, { backgroundColor: c.border }]}>
-                        <Text style={[styles.badgeText, { color: c.mutedText }]}>Default</Text>
+                        <Text style={[styles.badgeText, { color: c.mutedText }]}>{t('profile_default_badge')}</Text>
                       </View>
                     )}
                   </View>
                   <Text style={[styles.sub, { color: c.mutedText }]}>
                     {[
-                      profile.hasPinSet ? 'PIN locked' : 'No PIN',
-                      profile.subtitleLanguage ? `Subs: ${profile.subtitleLanguage}` : null,
+                      profile.hasPinSet ? t('profile_pin_locked') : t('profile_no_pin'),
+                      profile.subtitleLanguage ? t('profile_subs_language', { language: profile.subtitleLanguage }) : null,
                     ].filter(Boolean).join(' · ')}
                   </Text>
                 </View>
@@ -137,7 +137,7 @@ export function ManageProfilesScreen() {
                         onPress={async () => {
                           const result = await setDefaultProfile(profile.id);
                           if (result.error) {
-                            Alert.alert('Unable to update profile', result.error);
+                            Alert.alert(t('profile_update_failed'), result.error);
                           }
                         }}
                         activeOpacity={0.7}
@@ -170,16 +170,16 @@ export function ManageProfilesScreen() {
           {profiles.length === 0 && (
             <View style={styles.emptyState}>
               <Ionicons name="person-circle-outline" size={64} color={c.mutedText} />
-              <Text style={[styles.emptyTitle, { color: c.textPrimary }]}>No profiles yet</Text>
+              <Text style={[styles.emptyTitle, { color: c.textPrimary }]}>{t('profile_none_title')}</Text>
               <Text style={[styles.emptySub, { color: c.mutedText }]}>
-                Create your first profile to get started.
+                {t('profile_none_sub')}
               </Text>
               <TouchableOpacity
                 style={[styles.emptyAddBtn, { backgroundColor: c.accent }]}
                 onPress={() => navigation.navigate('EditProfile', { profileId: null })}
                 activeOpacity={0.8}
               >
-                <Text style={[styles.emptyAddBtnText, { color: c.buttonText }]}>Create Profile</Text>
+                <Text style={[styles.emptyAddBtnText, { color: c.buttonText }]}>{t('profile_create')}</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -191,12 +191,12 @@ export function ManageProfilesScreen() {
               activeOpacity={0.75}
             >
               <Ionicons name="add-circle-outline" size={20} color={isLightMonochrome ? '#111111' : c.accent} />
-              <Text style={[styles.addRowBtnText, { color: isLightMonochrome ? '#111111' : c.accent }]}>Add New Profile</Text>
+              <Text style={[styles.addRowBtnText, { color: isLightMonochrome ? '#111111' : c.accent }]}>{t('profile_add_new')}</Text>
             </TouchableOpacity>
           )}
 
           <Text style={[styles.hint, { color: c.mutedText }]}>
-            Up to {MAX_PROFILES_PER_ACCOUNT} profiles per account. Each profile has its own language and PIN settings.
+            {t('profile_limit_hint', { n: MAX_PROFILES_PER_ACCOUNT })}
           </Text>
         </ScrollView>
       )}
@@ -204,10 +204,10 @@ export function ManageProfilesScreen() {
       <ConfirmSheet
         visible={deleteConfirmVisible}
         onClose={() => setDeleteConfirmVisible(false)}
-        title={`Delete "${deleteTargetName}"?`}
-        message="This profile and all its settings will be permanently removed."
+        title={t('profile_delete_title', { name: deleteTargetName })}
+        message={t('profile_delete_sub')}
         icon="trash-outline"
-        confirmLabel="Delete"
+        confirmLabel={t('common_delete')}
         variant="destructive"
         onConfirm={confirmDelete}
       />

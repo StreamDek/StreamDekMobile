@@ -19,6 +19,7 @@ import { useUIStyle } from '../context/UIStyleContext';
 import { useWatched } from '../context/WatchedContext';
 import { useStreamSelectionSettings } from '../context/StreamSelectionContext';
 import { useWatchProgress, episodeProgressKey } from '../context/WatchProgressContext';
+import { useAppLifecycle } from '../context/AppLifecycleContext';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import { ActionSheet } from '../components/ActionSheet';
 import { PrimaryActionButton, getPrimaryActionPalette } from '../components/PrimaryActionButton';
@@ -60,8 +61,8 @@ function ExpandableText({
   text,
   style,
   maxLines = 3,
-  moreLabel = 'Read more',
-  lessLabel = 'Show less',
+  moreLabel,
+  lessLabel,
   moreColor,
 }: {
   text?: string | null;
@@ -71,8 +72,11 @@ function ExpandableText({
   lessLabel?: string;
   moreColor?: string;
 }) {
+  const { t } = useLanguage();
   const [expanded, setExpanded] = useState(false);
   const [canExpand, setCanExpand] = useState(false);
+  const resolvedMoreLabel = moreLabel ?? t('media_more');
+  const resolvedLessLabel = lessLabel ?? t('media_less');
 
   if (!text) return null;
 
@@ -101,7 +105,7 @@ function ExpandableText({
           style={{ marginTop: 6, alignSelf: 'flex-start' }}
         >
           <Text style={{ color: moreColor ?? '#a89ff8', fontSize: 12, fontWeight: '700' }}>
-            {expanded ? lessLabel : moreLabel}
+            {expanded ? resolvedLessLabel : resolvedMoreLabel}
           </Text>
         </TouchableOpacity>
       )}
@@ -381,6 +385,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
   const { theme, resolvedAppearance } = useTheme();
   const { colors } = theme;
   const { t } = useLanguage();
+  const { isForeground } = useAppLifecycle();
   const { vividAmbientEnabled } = useDisplaySettings();
   const { uiStyle } = useUIStyle();
   const { enabled: streamSelectionEnabled, preferredQuality, maxFileSizeGB } = useStreamSelectionSettings();
@@ -484,6 +489,13 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
 
   // Cancel in-flight fetch on unmount
   useEffect(() => () => { abortRef.current?.abort(); }, []);
+
+  useEffect(() => {
+    if (isForeground) return;
+    abortRef.current?.abort();
+    setLoading(false);
+    setPendingAddons(0);
+  }, [isForeground]);
 
   // Stable ref so the focus listener always calls the latest version
   const fetchRef = useRef(fetchEpisodeStreams);
@@ -958,7 +970,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
                 activeOpacity={0.85}
                 onPress={playBestStream}
                 progressPct={buttonProgress}
-                label={searching ? 'Searching streams…' : 'Play Best Stream'}
+                label={searching ? t('media_searching_streams') : t('media_play_best_stream')}
                 labelStyle={disabled ? styles.playBtnTextDisabled : undefined}
                 leading={searching ? (
                   <ActivityIndicator size="small" color={disabled ? colors.mutedText : primaryPalette.textColor} />
@@ -984,9 +996,9 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
 
       {addonNames.length > 1 && (
         <View style={{
-          backgroundColor: isLightAppearance ? colors.bg + '80' : 'transparent',
-          borderBottomWidth: isLightAppearance ? StyleSheet.hairlineWidth : 0,
-          borderBottomColor: colors.border,
+          backgroundColor: useGlassDetailLayout ? 'transparent' : (isLightAppearance ? colors.bg + '80' : 'transparent'),
+          borderBottomWidth: useGlassDetailLayout ? 0 : (isLightAppearance ? StyleSheet.hairlineWidth : 0),
+          borderBottomColor: useGlassDetailLayout ? 'transparent' : colors.border,
         }}>
           <ScrollView
             horizontal
@@ -1035,7 +1047,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
           subtitle={t('streams_debrid_required_desc')}
           actions={[
             {
-              label: 'Find Direct Sources',
+              label: t('media_find_direct_sources'),
               icon: 'extension-puzzle-outline',
               variant: 'accent',
               onPress: () => navigation.navigate('Addons', { initialTab: 'addons' }),

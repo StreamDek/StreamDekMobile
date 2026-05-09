@@ -14,6 +14,7 @@ import { ActionSheet } from '../components/ActionSheet';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import { MediaCard } from '../components/MediaCard';
 import { useAuth } from '../context/AuthContext';
+import { useLanguage } from '../context/LanguageContext';
 import { useProfile } from '../context/ProfileContext';
 import { useTheme, ThemeColors } from '../context/ThemeContext';
 import { TraktItem } from '../context/TraktContext';
@@ -156,9 +157,22 @@ export const TraktCollectionScreen = ({ route, navigation }: any) => {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { activeProfile } = useProfile();
+  const { t } = useLanguage();
   const { theme: { colors }, resolvedAppearance } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const blurTargetRef = useRef<View | null>(null);
+  const translatedHeading = mode === 'trending' ? t('trakt_collection_trending') : t('trakt_collection_recommended');
+  const translatedEmptyTitle = mode === 'trending'
+    ? t('trakt_collection_trending_empty_title')
+    : t('trakt_collection_recommended_empty_title');
+  const translatedEmptyDesc = mode === 'trending'
+    ? t('trakt_collection_trending_empty_desc')
+    : t('trakt_collection_recommended_empty_desc');
+  const filters = useMemo(() => ([
+    { key: 'all' as const, label: t('watchlist_filter_all') },
+    { key: 'movie' as const, label: t('watchlist_filter_movies') },
+    { key: 'tv' as const, label: t('watchlist_filter_series') },
+  ]), [t]);
 
   const {
     longPressItem, setLongPressItem, handleLongPress, buildActions,
@@ -229,10 +243,10 @@ export const TraktCollectionScreen = ({ route, navigation }: any) => {
       <ConfirmSheet
         visible={!!seriesWatchConfirmItem}
         onClose={() => setSeriesWatchConfirmItem(null)}
-        title="Mark Series as Watched"
-        message="This will mark all episodes of this series as watched. Continue?"
-        confirmLabel="Mark Watched"
-        cancelLabel="Cancel"
+        title={t('watched_series_title')}
+        message={t('watched_series_msg')}
+        confirmLabel={t('watched_mark')}
+        cancelLabel={t('common_cancel')}
         onConfirm={() => { if (seriesWatchConfirmItem) handleSeriesMarkWatched(seriesWatchConfirmItem); }}
       />
 
@@ -245,7 +259,7 @@ export const TraktCollectionScreen = ({ route, navigation }: any) => {
           <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.8}>
             <Ionicons name="chevron-back" size={20} color={colors.accentSoft} />
           </TouchableOpacity>
-          <Text style={styles.heading} numberOfLines={1}>{cfg.heading}</Text>
+          <Text style={styles.heading} numberOfLines={1}>{translatedHeading}</Text>
           {total > 0 && (
             <View style={styles.countBadge}>
               <Text style={styles.countText}>{total}</Text>
@@ -254,7 +268,7 @@ export const TraktCollectionScreen = ({ route, navigation }: any) => {
         </View>
 
         <View style={styles.filterRow}>
-          {FILTERS.map(f => (
+          {filters.map(f => (
             <TouchableOpacity
               key={f.key}
               style={[styles.filterPill, filter === f.key && styles.filterPillOn]}
@@ -272,16 +286,20 @@ export const TraktCollectionScreen = ({ route, navigation }: any) => {
           <View style={styles.emptyIconWrap}>
             <Ionicons name={cfg.emptyIcon} size={40} color={colors.placeholder} />
           </View>
-          <Text style={styles.emptyTitle}>{cfg.emptyTitle}</Text>
-          <Text style={styles.emptyDesc}>{cfg.emptyDesc}</Text>
+          <Text style={styles.emptyTitle}>{translatedEmptyTitle}</Text>
+          <Text style={styles.emptyDesc}>{translatedEmptyDesc}</Text>
         </View>
       ) : displayItems.length === 0 ? (
         <View style={[styles.empty, { paddingTop: headerHeight }]}>
           <View style={styles.emptyIconWrap}>
             <Ionicons name={filter === 'movie' ? 'film-outline' : 'tv-outline'} size={40} color={colors.placeholder} />
           </View>
-          <Text style={styles.emptyTitle}>No {filter === 'movie' ? 'movies' : 'series'} here</Text>
-          <Text style={styles.emptyDesc}>Try switching to All or check back later.</Text>
+          <Text style={styles.emptyTitle}>
+            {t('trakt_collection_filtered_empty_title', {
+              type: filter === 'movie' ? t('watchlist_filter_movies').toLowerCase() : t('watchlist_filter_series').toLowerCase(),
+            })}
+          </Text>
+          <Text style={styles.emptyDesc}>{t('trakt_collection_filtered_empty_desc', { all: t('watchlist_filter_all') })}</Text>
         </View>
       ) : (
         <FlatList

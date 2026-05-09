@@ -20,6 +20,7 @@ import { useDisplaySettings } from '../context/DisplaySettingsContext';
 import Slider from '@react-native-community/slider';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
+import { useLanguage } from '../context/LanguageContext';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -66,14 +67,6 @@ const MAGIC_HEADERS = {
 const MIN_WATCH_SECONDS_TO_REMEMBER_SOURCE = 12;
 const MIN_ACCEPTABLE_STREAM_DURATION_SEC = 5 * 60;
 const CONTROLS_AUTO_HIDE_MS = 3500;
-const MPV_LOADING_MESSAGES = [
-  'Searching the shelves for a decent print...',
-  'Asking the projectionist for something less cursed...',
-  'Dusting off the reels and checking the labels...',
-  'Giving another print a screen test...',
-  'Swapping reels and hoping for fewer gremlins...',
-  'Cueing up a different cut...',
-];
 const GUEST_ACCOUNT_PROMPT_SHOWN_KEY = 'streamdek_guest_account_prompt_shown';
 
 type ResizeMode = 'contain' | 'cover' | 'stretch';
@@ -106,12 +99,6 @@ type MpvSessionState = {
   currentTime: number;
   duration: number;
   paused: boolean;
-};
-
-const RESIZE_MODE_LABELS: Record<ResizeMode, string> = {
-  contain: 'Fit',
-  cover: 'Fill',
-  stretch: 'Str',
 };
 
 const RESIZE_MODE_ICONS: Record<ResizeMode, React.ComponentProps<typeof Ionicons>['name']> = {
@@ -272,6 +259,7 @@ function buildPayload(movieId: string, type: string, title?: string, year?: numb
 export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const expoGoRuntime = isExpoGoRuntime();
   const insets = useSafeAreaInsets();
+  const { t } = useLanguage();
   const { scrobble, isConnected, watchlist } = useTrakt();
   const { user } = useAuth();
   const { activeProfile } = useProfile();
@@ -290,6 +278,19 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const legacyOwnerId = user?.uid ?? null;
   const { accounts: debridAccounts, resolveStream, streamTorrent } = useDebrid();
   const { config: serverConfig } = useTorrentServer();
+  const loadingMessages = useMemo(() => ([
+    t('mpv_loading_message_1'),
+    t('mpv_loading_message_2'),
+    t('mpv_loading_message_3'),
+    t('mpv_loading_message_4'),
+    t('mpv_loading_message_5'),
+    t('mpv_loading_message_6'),
+  ]), [t]);
+  const resizeModeLabels = useMemo<Record<ResizeMode, string>>(() => ({
+    contain: t('mpv_resize_fit'),
+    cover: t('mpv_resize_fill'),
+    stretch: t('mpv_resize_stretch'),
+  }), [t]);
   const {
     decoderMode,
     renderSurface,
@@ -458,7 +459,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     loading: true,
     loadingMessage: typeof initialLoadingMessage === 'string' && initialLoadingMessage.trim().length > 0
       ? initialLoadingMessage
-      : MPV_LOADING_MESSAGES[0],
+      : loadingMessages[0],
     error: null,
     currentTime: 0,
     duration: 0,
@@ -723,10 +724,13 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
         logoBreathAnim.stopAnimation();
         logoBreathAnim.setValue(1);
         loadingTextOpacity.setValue(1);
+        if (!pictureInPictureEnabled) {
+          setPaused(true);
+        }
       }
     });
     return () => sub.remove();
-  }, []);
+  }, [pictureInPictureEnabled, setPaused]);
 
   useEffect(() => {
     if (Platform.OS !== 'android' || !pictureInPictureEnabled) return;
@@ -843,7 +847,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     if (resolvedStreamUrl) return;
     if (resolveOnMount) return;
     setLoading(false);
-    setError('No stream URL is available for MPV playback.');
+    setError(t('mpv_error_no_stream_url'));
   }, [resolveOnMount, resolvedStreamUrl]);
 
   const rankStreams = useCallback((streams: AddonStream[]): AddonStream[] => {
@@ -878,7 +882,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
 
         const contentId = (imdbId && imdbId.trim().length > 0) ? imdbId : movieId;
         if (!contentId) {
-          setError('No source identifier was provided for MPV playback.');
+          setError(t('mpv_error_no_source_id'));
           setLoading(false);
           return;
         }
@@ -920,7 +924,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
         }
 
         if (!selected) {
-          setError('No playable sources were found for this title.');
+          setError(t('player_no_sources'));
           setLoading(false);
           return;
         }
@@ -931,7 +935,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
         const resolved = await resolveSourceStreamUrl(selected);
         if (cancelled) return;
         if (!resolved) {
-          setError('Could not resolve a playable URL for this source.');
+          setError(t('player_err_load'));
           setLoading(false);
           return;
         }
@@ -1003,8 +1007,8 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
         duration: FADE_MS,
         useNativeDriver: true,
       }).start(() => {
-        cursor = (cursor + 1) % MPV_LOADING_MESSAGES.length;
-        setLoadingMessage(MPV_LOADING_MESSAGES[cursor]);
+        cursor = (cursor + 1) % loadingMessages.length;
+        setLoadingMessage(loadingMessages[cursor]);
         Animated.timing(loadingTextOpacity, {
           toValue: 1,
           duration: FADE_MS,
@@ -1014,7 +1018,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     };
     const timer = setInterval(tick, HOLD_MS);
     return () => clearInterval(timer);
-  }, [error, isForeground, loading, loadingTextOpacity]);
+  }, [error, isForeground, loading, loadingMessages, loadingTextOpacity]);
 
   useEffect(() => {
     if (error) {
@@ -1314,7 +1318,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
       setSwitchToast('Could not play this source — still on your previous stream.');
       return;
     }
-    const message = String(event?.nativeEvent?.error ?? 'MPV playback failed.');
+    const message = String(event?.nativeEvent?.error ?? t('mpv_error_failed'));
     setError(message);
     setLoading(false);
   };
@@ -1636,30 +1640,30 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     [playbackRate],
   );
   const selectedAudioLabel = useMemo(() => {
-    if (selectedAudioTrackId == null) return 'Auto';
+    if (selectedAudioTrackId == null) return t('mpv_auto');
     const track = audioTracks.find(item => item.id === selectedAudioTrackId);
     return track ? getTrackLabel(track) : `Track ${selectedAudioTrackId}`;
-  }, [audioTracks, selectedAudioTrackId]);
+  }, [audioTracks, selectedAudioTrackId, t]);
   const selectedSubtitleLabel = useMemo(() => {
-    if (selectedSubtitleTrackId == null) return 'Off';
+    if (selectedSubtitleTrackId == null) return t('mpv_off');
     const track = subtitleTracks.find(item => item.id === selectedSubtitleTrackId);
     return track ? getTrackLabel(track) : `Track ${selectedSubtitleTrackId}`;
-  }, [selectedSubtitleTrackId, subtitleTracks]);
+  }, [selectedSubtitleTrackId, subtitleTracks, t]);
   const mediaInfoRows = useMemo(
     () => [
-      { label: 'Source', value: activeSourceOption?.name ?? 'Unknown' },
-      { label: 'Provider', value: activeSourceOption?.source ?? 'Unknown' },
-      { label: 'Quality', value: activeSourceOption?.quality ?? 'Unknown' },
-      { label: 'Playback Host', value: getUrlHost(resolvedStreamUrl) },
-      { label: 'Speed', value: speedLabel },
-      { label: 'Screen Mode', value: RESIZE_MODE_LABELS[resizeMode] },
-      { label: 'Decoder', value: decoderMode },
-      { label: 'Surface', value: renderSurface },
-      { label: 'Smart Stream Selection', value: streamSelectionEnabled ? 'Enabled' : 'Disabled' },
-      { label: 'Short Source Filter', value: shortSourceFilterEnabled ? 'Enabled' : 'Disabled' },
-      { label: 'Audio Track', value: selectedAudioLabel },
-      { label: 'Subtitle Track', value: selectedSubtitleLabel },
-      { label: 'Position', value: `${formatTime(currentTime)} / ${formatTime(duration)}` },
+      { label: t('mpv_info_source'), value: activeSourceOption?.name ?? t('mpv_unknown') },
+      { label: t('mpv_info_provider'), value: activeSourceOption?.source ?? t('mpv_unknown') },
+      { label: t('mpv_info_quality'), value: activeSourceOption?.quality ?? t('mpv_unknown') },
+      { label: t('mpv_info_playback_host'), value: getUrlHost(resolvedStreamUrl) },
+      { label: t('player_speed'), value: speedLabel },
+      { label: t('mpv_info_screen_mode'), value: resizeModeLabels[resizeMode] },
+      { label: t('mpv_info_decoder'), value: decoderMode },
+      { label: t('mpv_info_surface'), value: renderSurface },
+      { label: t('settings_stream_selection_logic'), value: streamSelectionEnabled ? t('mpv_enabled') : t('mpv_disabled') },
+      { label: t('settings_short_source_filter'), value: shortSourceFilterEnabled ? t('mpv_enabled') : t('mpv_disabled') },
+      { label: t('mpv_info_audio_track'), value: selectedAudioLabel },
+      { label: t('mpv_info_subtitle_track'), value: selectedSubtitleLabel },
+      { label: t('mpv_info_position'), value: `${formatTime(currentTime)} / ${formatTime(duration)}` },
     ],
     [
       activeSourceOption?.quality,
@@ -1677,6 +1681,8 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
       speedLabel,
       streamSelectionEnabled,
       resolvedStreamUrl,
+      resizeModeLabels,
+      t,
     ],
   );
 
@@ -1763,8 +1769,8 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
         />
       ) : !mpvNativeViewAvailable ? (
         <View style={[StyleSheet.absoluteFill, styles.centered]}>
-          <Text style={styles.errorTitle}>Embedded MPV Unavailable</Text>
-          <Text style={styles.errorMessage}>This Android build does not include the MPV native view yet.</Text>
+          <Text style={styles.errorTitle}>{t('mpv_unavailable_title')}</Text>
+          <Text style={styles.errorMessage}>{t('mpv_unavailable_sub')}</Text>
         </View>
       ) : (
         <View style={StyleSheet.absoluteFill} />
@@ -1778,7 +1784,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
             visible={showLoadingOverlay}
             artworkUri={loadingArtworkUri}
             titleLogoUri={titleLogoUri}
-            fallbackTitle={title ?? 'Playback'}
+            fallbackTitle={title ?? t('mpv_playback')}
             synopsis={resolvedSynopsis}
             loadingMessage={loadingMessage}
             logoBreathAnim={logoBreathAnim}
@@ -1792,7 +1798,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
 
       {!!error && (
         <View style={[StyleSheet.absoluteFill, styles.centered]}>
-          <Text style={styles.errorTitle}>Player Error</Text>
+          <Text style={styles.errorTitle}>{t('mpv_player_error')}</Text>
           <Text style={styles.errorMessage}>{error}</Text>
         </View>
       )}
@@ -1850,7 +1856,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
             <Image source={{ uri: titleLogoUri }} style={styles.logoImage} resizeMode="contain" />
           ) : (
             <Text style={styles.logoFallbackText} numberOfLines={2}>
-              {title ?? 'Playback'}
+              {title ?? t('mpv_playback')}
             </Text>
           )}
           {!!resolvedSynopsis && (
@@ -1967,7 +1973,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
               activeOpacity={0.85}
             >
               <Ionicons name={RESIZE_MODE_ICONS[resizeMode]} size={21} color="#fff" />
-              <Text style={styles.dockRateText}>{RESIZE_MODE_LABELS[resizeMode]}</Text>
+              <Text style={styles.dockRateText}>{resizeModeLabels[resizeMode]}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.dockBtn}
@@ -2029,14 +2035,14 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
           <Pressable style={styles.modalBackdrop} onPress={() => setShowAudioModal(false)} />
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Audio</Text>
+              <Text style={styles.modalTitle}>{t('player_audio')}</Text>
               <TouchableOpacity onPress={() => setShowAudioModal(false)}>
                 <Ionicons name="close" size={22} color="rgba(255,255,255,0.8)" />
               </TouchableOpacity>
             </View>
             <ScrollView style={styles.modalList} showsVerticalScrollIndicator={false}>
               {audioTracks.length === 0 ? (
-                <Text style={styles.subTabEmptyText}>No audio tracks detected</Text>
+                <Text style={styles.subTabEmptyText}>{t('player_no_audio_tracks')}</Text>
               ) : (
                 audioTracks.map(track => {
                   const selected = selectedAudioTrackId === track.id;
@@ -2068,7 +2074,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
           <Pressable style={styles.modalBackdrop} onPress={() => setShowTrackPicker(false)} />
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Subtitles</Text>
+              <Text style={styles.modalTitle}>{t('player_subtitles')}</Text>
               <TouchableOpacity onPress={() => setShowTrackPicker(false)}>
                 <Ionicons name="close" size={22} color="rgba(255,255,255,0.8)" />
               </TouchableOpacity>
@@ -2084,7 +2090,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
                   activeOpacity={0.8}
                 >
                   <Text style={[styles.subTabText, subTab === tab && styles.subTabTextActive]}>
-                    {tab === 'builtin' ? 'Built-in' : tab === 'addons' ? 'Addons' : 'Style'}
+                    {tab === 'builtin' ? t('mpv_subtitles_builtin') : tab === 'addons' ? t('mpv_subtitles_addons') : t('mpv_subtitles_style')}
                   </Text>
                 </TouchableOpacity>
               ))}
@@ -2120,7 +2126,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
                         ? styles.subTrackItemNoneActiveText
                         : null,
                     ]}>
-                      None
+                      {t('profile_none')}
                     </Text>
                   </TouchableOpacity>
 
@@ -2147,7 +2153,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
                   })}
 
                   {subtitleTracks.length === 0 && (
-                    <Text style={styles.subTabEmptyText}>No embedded subtitle tracks found</Text>
+                    <Text style={styles.subTabEmptyText}>{t('mpv_no_embedded_subtitles')}</Text>
                   )}
                 </>
               )}
@@ -2246,10 +2252,10 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
                   <View style={styles.subStyleSection}>
                     <View style={styles.subStyleSectionHeader}>
                       <Ionicons name="text-outline" size={15} color="rgba(255,255,255,0.55)" />
-                      <Text style={styles.subStyleSectionTitle}>Font Size</Text>
+                      <Text style={styles.subStyleSectionTitle}>{t('mpv_font_size')}</Text>
                     </View>
                     <View style={styles.subStyleRow}>
-                      <Text style={styles.subStyleLabel}>Font Size</Text>
+                      <Text style={styles.subStyleLabel}>{t('mpv_font_size')}</Text>
                       <View style={styles.subStyleStepper}>
                         <TouchableOpacity
                           style={styles.subStyleStepBtn}
@@ -2282,10 +2288,10 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
                   <View style={styles.subStyleSection}>
                     <View style={styles.subStyleSectionHeader}>
                       <Ionicons name="options-outline" size={15} color="rgba(255,255,255,0.55)" />
-                      <Text style={styles.subStyleSectionTitle}>Position</Text>
+                      <Text style={styles.subStyleSectionTitle}>{t('mpv_position')}</Text>
                     </View>
                     <View style={styles.subPosRow}>
-                      {([{ label: 'Bottom', value: 90 }, { label: 'Centre', value: 50 }, { label: 'Top', value: 10 }] as { label: string; value: number }[]).map(opt => (
+                      {([{ label: t('mpv_position_bottom'), value: 90 }, { label: t('mpv_position_center'), value: 50 }, { label: t('mpv_position_top'), value: 10 }] as { label: string; value: number }[]).map(opt => (
                         <TouchableOpacity
                           key={opt.label}
                           style={[styles.subPosBtn, subPos === opt.value && styles.subPosBtnActive]}
@@ -2307,7 +2313,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
                   <View style={styles.subStyleSection}>
                     <View style={styles.subStyleSectionHeader}>
                       <Ionicons name="color-palette-outline" size={15} color="rgba(255,255,255,0.55)" />
-                      <Text style={styles.subStyleSectionTitle}>Text Color</Text>
+                      <Text style={styles.subStyleSectionTitle}>{t('mpv_text_color')}</Text>
                     </View>
                     <View style={styles.subColorRow}>
                       {([
@@ -2341,7 +2347,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
                     <View style={styles.subStyleSection}>
                       <View style={styles.subStyleSectionHeader}>
                         <Ionicons name="time-outline" size={15} color="rgba(255,255,255,0.55)" />
-                        <Text style={styles.subStyleSectionTitle}>Delay</Text>
+                        <Text style={styles.subStyleSectionTitle}>{t('mpv_delay')}</Text>
                       </View>
                       <View style={styles.delayRow}>
                         {([-0.5, -0.1] as const).map(delta => (
@@ -2374,7 +2380,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
                           onPress={() => subtitle.setDelay(0)}
                           activeOpacity={0.8}
                         >
-                          <Text style={styles.delayBtnText}>Reset</Text>
+                          <Text style={styles.delayBtnText}>{t('common_reset')}</Text>
                         </TouchableOpacity>
                       </View>
                     </View>
@@ -2391,7 +2397,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
           <Pressable style={styles.modalBackdrop} onPress={() => setShowInfoModal(false)} />
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Media Info</Text>
+              <Text style={styles.modalTitle}>{t('mpv_media_info')}</Text>
               <TouchableOpacity onPress={() => setShowInfoModal(false)}>
                 <Ionicons name="close" size={22} color="rgba(255,255,255,0.8)" />
               </TouchableOpacity>
@@ -2411,10 +2417,10 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
         visible={showGuestAccountPrompt}
         onClose={() => setShowGuestAccountPrompt(false)}
         icon="person-add-outline"
-        title="Create an account"
-        message="Sync with TV, save your add-ons, and connect Trakt without interrupting guest playback."
-        confirmLabel="Create Account"
-        cancelLabel="Not Now"
+        title={t('guest_prompt_title')}
+        message={t('guest_prompt_message')}
+        confirmLabel={t('guest_prompt_confirm')}
+        cancelLabel={t('guest_prompt_cancel')}
         onConfirm={() => {
           setShowGuestAccountPrompt(false);
           navigation.navigate('Auth');

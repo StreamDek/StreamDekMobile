@@ -55,7 +55,7 @@ import { IdleTaskHandle, runIdle } from '../utils/idleTask';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const HERO_HEIGHT = 616;
-const DOCUMENTARY_SECTION = { id: 'documentaries', title: 'Documentaries', endpoint: '/tmdb/discover?type=movie&genre_id=99&sort_by=popularity.desc', enabled: false };
+const DOCUMENTARY_SECTION_ID = 'documentaries';
 const CURRENT_YEAR = new Date().getFullYear();
 const HOME_SECTION_CACHE_KEY = 'home_section_cache';
 const homeSectionMemoryCache = new Map<string, Record<string, any[]>>();
@@ -589,13 +589,13 @@ export const HomeScreen = ({ navigation }: any) => {
     if (metadataProvider === 'cinemeta') {
       return [
         { id: 'networks', title: t('section_networks'), endpoint: '/tmdb/networks', enabled: true },
-        { id: 'featured_movie', title: 'Featured Movies', endpoint: '/cinemeta/catalog/movie/imdbRating', enabled: true },
-        { id: 'featured_tv', title: 'Featured Series', endpoint: '/cinemeta/catalog/series/imdbRating', enabled: true },
+        { id: 'featured_movie', title: t('section_featured_movies'), endpoint: '/cinemeta/catalog/movie/imdbRating', enabled: true },
+        { id: 'featured_tv', title: t('section_featured_series'), endpoint: '/cinemeta/catalog/series/imdbRating', enabled: true },
         { id: 'popular_movie', title: t('section_popular_movies'), endpoint: '/cinemeta/catalog/movie/top', enabled: true },
         { id: 'popular_tv', title: t('section_popular_tv'), endpoint: '/cinemeta/catalog/series/top', enabled: true },
-        { id: 'documentaries', title: 'Documentaries', endpoint: '/cinemeta/catalog/movie/top?genre=Documentary', enabled: false },
-        { id: 'new_movie', title: 'New Movies', endpoint: `/cinemeta/catalog/movie/year/${CURRENT_YEAR}`, enabled: false },
-        { id: 'new_tv', title: 'New Series', endpoint: `/cinemeta/catalog/series/year/${CURRENT_YEAR}`, enabled: false },
+        { id: DOCUMENTARY_SECTION_ID, title: t('section_documentaries'), endpoint: '/cinemeta/catalog/movie/top?genre=Documentary', enabled: false },
+        { id: 'new_movie', title: t('section_new_movies'), endpoint: `/cinemeta/catalog/movie/year/${CURRENT_YEAR}`, enabled: false },
+        { id: 'new_tv', title: t('section_new_series'), endpoint: `/cinemeta/catalog/series/year/${CURRENT_YEAR}`, enabled: false },
       ];
     }
 
@@ -603,7 +603,7 @@ export const HomeScreen = ({ navigation }: any) => {
       { id: 'networks', title: t('section_networks'), endpoint: '/tmdb/networks', enabled: true },
       { id: 'trending_movie', title: t('section_trending_movies'), endpoint: '/tmdb/trending/movie', enabled: true },
       { id: 'trending_tv', title: t('section_trending_tv'), endpoint: '/tmdb/trending/tv', enabled: true },
-      DOCUMENTARY_SECTION,
+      { id: DOCUMENTARY_SECTION_ID, title: t('section_documentaries'), endpoint: '/tmdb/discover?type=movie&genre_id=99&sort_by=popularity.desc', enabled: false },
       { id: 'popular_movie', title: t('section_popular_movies'), endpoint: '/tmdb/popular/movie', enabled: false },
       { id: 'popular_tv', title: t('section_popular_tv'), endpoint: '/tmdb/popular/tv', enabled: false },
     ];

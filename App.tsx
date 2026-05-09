@@ -43,6 +43,7 @@ import { UIStyleProvider } from './src/context/UIStyleContext';
 import { DisplaySettingsProvider } from './src/context/DisplaySettingsContext';
 import { TmdbApiKeyProvider } from './src/context/TmdbApiKeyContext';
 import { ProfileProvider, useProfile } from './src/context/ProfileContext';
+import { AppLifecycleProvider } from './src/context/AppLifecycleContext';
 import { ProfileSwitcherScreen } from './src/screens/ProfileSwitcherScreen';
 import { ManageProfilesScreen } from './src/screens/ManageProfilesScreen';
 import { EditProfileScreen } from './src/screens/EditProfileScreen';
@@ -308,26 +309,28 @@ export default function App() {
               <DisplaySettingsProvider>
               <LanguageProvider>
                 <TraktProvider>
-                  <WatchProgressProvider>
-                    <WatchedProvider>
-                      <TorrentServerProvider>
-                        <StreamSelectionProvider>
-                          <PlaybackSettingsProvider>
-                            <SubtitleProvider>
-                            <DebridProvider>
-                              <AddonProvider>
-                                <TmdbApiKeyProvider>
-                                  <AppNavigation />
-                                  <AnimatedSplash />
-                                </TmdbApiKeyProvider>
-                              </AddonProvider>
-                            </DebridProvider>
-                            </SubtitleProvider>
-                          </PlaybackSettingsProvider>
-                        </StreamSelectionProvider>
-                      </TorrentServerProvider>
-                    </WatchedProvider>
-                  </WatchProgressProvider>
+                  <AppLifecycleProvider>
+                    <WatchProgressProvider>
+                      <WatchedProvider>
+                        <TorrentServerProvider>
+                          <StreamSelectionProvider>
+                            <PlaybackSettingsProvider>
+                              <SubtitleProvider>
+                              <DebridProvider>
+                                <AddonProvider>
+                                  <TmdbApiKeyProvider>
+                                    <AppNavigation />
+                                    <AnimatedSplash />
+                                  </TmdbApiKeyProvider>
+                                </AddonProvider>
+                              </DebridProvider>
+                              </SubtitleProvider>
+                            </PlaybackSettingsProvider>
+                          </StreamSelectionProvider>
+                        </TorrentServerProvider>
+                      </WatchedProvider>
+                    </WatchProgressProvider>
+                  </AppLifecycleProvider>
                 </TraktProvider>
               </LanguageProvider>
               </DisplaySettingsProvider>

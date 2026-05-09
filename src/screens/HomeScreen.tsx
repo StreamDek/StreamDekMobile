@@ -3,7 +3,7 @@ import { useFocusEffect, useScrollToTop } from '@react-navigation/native';
 import {
   View, Text, StyleSheet, RefreshControl,
   Animated, Easing, PanResponder, StatusBar, TouchableOpacity,
-  FlatList, Dimensions, Share, BackHandler,
+  FlatList, Dimensions, Share, BackHandler, AppState,
   Image as RNImage,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -30,6 +30,7 @@ import { useUIStyle } from '../context/UIStyleContext';
 import { useTrakt } from '../context/TraktContext';
 import { useLanguage } from '../context/LanguageContext';
 import { useWatched } from '../context/WatchedContext';
+import { useAppLifecycle } from '../context/AppLifecycleContext';
 import { movieProgressKey } from '../context/WatchProgressContext';
 import { useAppReady } from '../context/AppReadyContext';
 import { buildAuthHeaders } from '../utils/authHeaders';
@@ -50,6 +51,7 @@ import { getProfileStorageOwnerId, profileScopedStorageKey, progressIndexStorage
 import { useTmdbApiKey } from '../context/TmdbApiKeyContext';
 import { getDeviceProfile } from '../utils/deviceProfile';
 import { invalidateSharedCache } from '../utils/sharedDataCache';
+import { IdleTaskHandle, runIdle } from '../utils/idleTask';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const HERO_HEIGHT = 616;
@@ -572,6 +574,7 @@ export const HomeScreen = ({ navigation }: any) => {
   const { theme, appearance, resolvedAppearance, showHeroSynopsis } = useTheme();
   const { colors } = theme;
   const { t } = useLanguage();
+  const { isForeground } = useAppLifecycle();
   const { uiStyle } = useUIStyle();
   const { continueWatchingStyle, vividAmbientEnabled } = useDisplaySettings();
   const { setAppReady } = useAppReady();
@@ -662,12 +665,27 @@ export const HomeScreen = ({ navigation }: any) => {
   const heroLengthRef = useRef(0);
   const heroTransitionDirectionRef = useRef<1 | -1>(1);
   const deviceProfile = useMemo(() => getDeviceProfile(), []);
+  const appStateRef = useRef(AppState.currentState);
+  const homeFocusedRef = useRef(false);
+  const backgroundFetchIdleRef = useRef<IdleTaskHandle | null>(null);
+  const heroPrefetchIdleRef = useRef<IdleTaskHandle | null>(null);
+  const sectionPrefetchIdleRef = useRef<IdleTaskHandle | null>(null);
+  const heroMetadataIdleRef = useRef<IdleTaskHandle | null>(null);
   const homeListRef = useRef<FlatList<any>>(null);
   useScrollToTop(homeListRef);
   const heroMetadataFetchedRef = useRef<Set<string>>(new Set());
   const hasCompletedInitialHomeLoadRef = useRef(false);
   const lastAutoFetchKeyRef = useRef<string | null>(null);
   const sectionFetchRequestIdRef = useRef(0);
+
+  useFocusEffect(
+    useCallback(() => {
+      homeFocusedRef.current = true;
+      return () => {
+        homeFocusedRef.current = false;
+      };
+    }, []),
+  );
 
   const resolveHeroBackdropUri = useCallback((item: any | null | undefined) => {
     if (!item) return null;
@@ -854,7 +872,20 @@ export const HomeScreen = ({ navigation }: any) => {
     };
 
     await Promise.all(prioritySections.map(fetchSection));
-    await Promise.all(backgroundSections.map(fetchSection));
+    if (backgroundSections.length > 0) {
+      await new Promise<void>(resolve => {
+        backgroundFetchIdleRef.current?.cancel();
+        backgroundFetchIdleRef.current = runIdle(async () => {
+          if (!isForeground || !homeFocusedRef.current) {
+            resolve();
+            return;
+          }
+          await Promise.all(backgroundSections.map(fetchSection));
+          resolve();
+        }, { timeoutMs: 1400 });
+      });
+      backgroundFetchIdleRef.current = null;
+    }
     if (flushTimer) {
       clearTimeout(flushTimer);
       flushPendingUpdates();
@@ -873,7 +904,7 @@ export const HomeScreen = ({ navigation }: any) => {
       setLoading(false);
     }
     return fetchedAny;
-  }, [deviceProfile.performanceClass, sectionCacheKey]);
+  }, [deviceProfile.performanceClass, isForeground, sectionCacheKey]);
 
   const fetchTraktSections = useCallback(async () => {
     if (!traktConnected || !user) return;
@@ -1071,22 +1102,32 @@ export const HomeScreen = ({ navigation }: any) => {
   }, [deviceProfile.enableExtendedAnimations, sectionData, combinedWatchlist, allContinueWatching, isMovieWatched, isSeriesWatched, heroFadeIn, heroScale, metadataProvider]);
 
   useEffect(() => {
+    heroPrefetchIdleRef.current?.cancel();
+    if (!isForeground || !homeFocusedRef.current) return;
     if (heroItems.length === 0) return;
     const prioritizedHeroItems = heroItems.slice(0, deviceProfile.heroPrefetchCount);
-    void Image.prefetch(
-      [
-        ...prioritizedHeroItems
-          .map(resolveHeroBackdropUri)
-          .filter((uri): uri is string => typeof uri === 'string' && uri.length > 0),
-        ...prioritizedHeroItems
-          .map(item => heroLogos[`${item.type}_${item.id}`])
-          .filter((uri): uri is string => typeof uri === 'string' && uri.length > 0),
-      ],
-      'memory-disk',
-    );
-  }, [deviceProfile.heroPrefetchCount, heroItems, heroLogos, resolveHeroBackdropUri]);
+    heroPrefetchIdleRef.current = runIdle(async () => {
+      await Image.prefetch(
+        [
+          ...prioritizedHeroItems
+            .map(resolveHeroBackdropUri)
+            .filter((uri): uri is string => typeof uri === 'string' && uri.length > 0),
+          ...prioritizedHeroItems
+            .map(item => heroLogos[`${item.type}_${item.id}`])
+            .filter((uri): uri is string => typeof uri === 'string' && uri.length > 0),
+        ],
+        'memory-disk',
+      );
+    }, { timeoutMs: 1000 });
+    return () => {
+      heroPrefetchIdleRef.current?.cancel();
+      heroPrefetchIdleRef.current = null;
+    };
+  }, [deviceProfile.heroPrefetchCount, heroItems, heroLogos, isForeground, resolveHeroBackdropUri]);
 
   useEffect(() => {
+    sectionPrefetchIdleRef.current?.cancel();
+    if (!isForeground || !homeFocusedRef.current) return;
     const sectionImages = Object.values(sectionData)
       .flat()
       .slice(0, deviceProfile.sectionPrefetchCount)
@@ -1094,11 +1135,22 @@ export const HomeScreen = ({ navigation }: any) => {
       .filter((uri): uri is string => typeof uri === 'string' && uri.length > 0);
 
     if (sectionImages.length > 0) {
-      void Image.prefetch(Array.from(new Set(sectionImages)), 'memory-disk');
+      sectionPrefetchIdleRef.current = runIdle(
+        async () => {
+          await Image.prefetch(Array.from(new Set(sectionImages)), 'memory-disk');
+        },
+        { timeoutMs: 1200 },
+      );
     }
-  }, [deviceProfile.sectionPrefetchCount, sectionData]);
+    return () => {
+      sectionPrefetchIdleRef.current?.cancel();
+      sectionPrefetchIdleRef.current = null;
+    };
+  }, [deviceProfile.sectionPrefetchCount, isForeground, sectionData]);
 
   useEffect(() => {
+    heroMetadataIdleRef.current?.cancel();
+    if (!isForeground || !homeFocusedRef.current) return;
     if (heroItems.length === 0) return;
     let cancelled = false;
     const itemsToEnrich = heroItems
@@ -1189,11 +1241,13 @@ export const HomeScreen = ({ navigation }: any) => {
       }
     };
 
-    void loadHeroMetadata();
+    heroMetadataIdleRef.current = runIdle(loadHeroMetadata, { timeoutMs: 1500 });
     return () => {
       cancelled = true;
+      heroMetadataIdleRef.current?.cancel();
+      heroMetadataIdleRef.current = null;
     };
-  }, [deviceProfile.heroPrefetchCount, heroItems]);
+  }, [deviceProfile.heroPrefetchCount, heroItems, isForeground]);
 
   const slideTo = useCallback((index: number) => {
     if (heroLengthRef.current <= 0) {
@@ -1240,8 +1294,10 @@ export const HomeScreen = ({ navigation }: any) => {
   }, [deviceProfile.enableExtendedAnimations, heroContentAnim, heroFadeIn, heroItems, heroScale]);
 
   const startHeroTimer = useCallback(() => {
+    if (appStateRef.current !== 'active') return;
     if (heroTimerRef.current) clearInterval(heroTimerRef.current);
     heroTimerRef.current = setInterval(() => {
+      if (appStateRef.current !== 'active') return;
       if (heroLengthRef.current <= 1) return;
       const next = (heroIndexRef.current + 1) % heroLengthRef.current;
       slideTo(next);
@@ -1269,6 +1325,19 @@ export const HomeScreen = ({ navigation }: any) => {
     startHeroTimer();
     return () => { if (heroTimerRef.current) clearInterval(heroTimerRef.current); };
   }, [heroItems, startHeroTimer]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', state => {
+      appStateRef.current = state;
+      if (state === 'active') {
+        startHeroTimer();
+      } else if (heroTimerRef.current) {
+        clearInterval(heroTimerRef.current);
+        heroTimerRef.current = null;
+      }
+    });
+    return () => sub.remove();
+  }, [startHeroTimer]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);

@@ -165,10 +165,10 @@ function normalizeSeason(data: any): any {
 }
 
 // ── Path → TMDB direct dispatch ───────────────────────────────────────────────
-async function dispatchDirect(path: string, apiKey: string): Promise<any> {
+async function dispatchDirect(path: string, apiKey: string, signal?: AbortSignal): Promise<any> {
   const base   = `api_key=${apiKey}&language=en-US`;
   const get    = async (url: string) => {
-    const r = await fetch(url);
+    const r = await fetch(url, signal ? { signal } : undefined);
     if (!r.ok) throw new Error(`TMDB ${r.status}`);
     return r.json();
   };
@@ -296,7 +296,7 @@ async function dispatchDirect(path: string, apiKey: string): Promise<any> {
   }
 
   // Unhandled — fall through to backend
-  const r = await fetch(`${API_BASE}${path}`);
+  const r = await fetch(`${API_BASE}${path}`, signal ? { signal } : undefined);
   if (!r.ok) throw new Error(`Backend ${r.status}`);
   return r.json();
 }
@@ -318,21 +318,25 @@ function isCacheable(path: string): boolean {
   );
 }
 
-async function fetchLive(path: string): Promise<any> {
+async function fetchLive(path: string, signal?: AbortSignal): Promise<any> {
   if (_activeKey) {
     try {
-      return await dispatchDirect(path, _activeKey);
+      return await dispatchDirect(path, _activeKey, signal);
     } catch {
       // fall through to backend
     }
   }
-  const r = await fetch(`${API_BASE}${path}`);
+  const r = await fetch(`${API_BASE}${path}`, signal ? { signal } : undefined);
   if (!r.ok) throw new Error(`Backend ${r.status}`);
   return r.json();
 }
 
-export async function tmdbFetch(path: string): Promise<TmdbResponse> {
+export async function tmdbFetch(path: string, options?: { signal?: AbortSignal }): Promise<TmdbResponse> {
   try {
+    if (options?.signal) {
+      const data = await fetchLive(path, options.signal);
+      return { ok: true, status: 200, json: async () => data };
+    }
     if (isCacheable(path)) {
       const data = await cachedFetch(`tmdb${path}`, () => fetchLive(path));
       return { ok: true, status: 200, json: async () => data };

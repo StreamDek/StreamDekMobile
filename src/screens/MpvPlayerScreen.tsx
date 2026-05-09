@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Animated,
   AppState,
+  BackHandler,
   Image,
   Modal,
   NativeModules,
@@ -39,10 +40,13 @@ import { useTorrentServer } from '../context/TorrentServerContext';
 import { ScrobblePayload, useTrakt } from '../context/TraktContext';
 import { useWatched } from '../context/WatchedContext';
 import { useWatchProgress } from '../context/WatchProgressContext';
+import { useAppLifecycle } from '../context/AppLifecycleContext';
 import { scoreStream } from '../utils/streamSelection';
 import { parseStream } from '../utils/streamParser';
 import { Storage } from '../utils/storage';
 import { resolvePlayableStreamUrl } from '../services/playback/streamResolution';
+import { createPlaybackDiagnostics } from '../services/playback/playbackDiagnostics';
+import { createPlaybackSessionStore, usePlaybackSessionSelector } from '../services/playback/playbackSessionStore';
 import { useSubtitles } from '../context/SubtitleContext';
 import { SubtitleResult } from '../services/subtitles/SubtitleProvider';
 import { useWatchlistRemove, WatchlistRemoveItem } from '../hooks/useWatchlistRemove';
@@ -53,6 +57,7 @@ import {
   progressIndexStorageKey,
 } from '../utils/profileStorage';
 import { ConfirmSheet } from '../components/ConfirmSheet';
+import { PlaybackLoadingOverlay } from '../components/player/PlaybackLoadingOverlay';
 
 const MAGIC_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
@@ -92,6 +97,15 @@ type RememberedStreamChoice = {
   filename?: string;
   size?: string | null;
   quality?: string | null;
+};
+
+type MpvSessionState = {
+  loading: boolean;
+  loadingMessage: string;
+  error: string | null;
+  currentTime: number;
+  duration: number;
+  paused: boolean;
 };
 
 const RESIZE_MODE_LABELS: Record<ResizeMode, string> = {
@@ -265,12 +279,13 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const { removeFromWatchlist } = useWatchlistRemove();
   const { fetchStreams } = useAddons();
   const subtitle = useSubtitles();
+  const { appState, isForeground } = useAppLifecycle();
 
   useEffect(() => {
     if (!expoGoRuntime) return;
     navigation.replace('Player', route.params ?? {});
   }, [expoGoRuntime, navigation, route.params]);
-  const { saveProgress, clearProgress } = useWatchProgress();
+  const { saveProgress, flushProgress, clearProgress } = useWatchProgress();
   const storageOwnerId = getProfileStorageOwnerId(user?.uid ?? null, activeProfile?.id ?? null);
   const legacyOwnerId = user?.uid ?? null;
   const { accounts: debridAccounts, resolveStream, streamTorrent } = useDebrid();
@@ -422,8 +437,16 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const playbackDurRef = useRef(0);
   const playbackCompletedRef = useRef(false);
   const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const appStateRef = useRef(appState);
   const scrobbledStartRef = useRef(false);
   const watchThresholdFiredRef = useRef(false);
+  const diagnosticsMetaRef = useRef({
+    userId: user?.uid ?? null,
+    type: type === 'tv' ? 'tv' : 'movie',
+    title: title ?? null,
+    imdbId: imdbId ?? null,
+    movieId: movieId ?? null,
+  });
   const payloadRef = useRef({
     movieId,
     type: type === 'tv' ? 'tv' : 'movie',
@@ -431,17 +454,35 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     year,
   });
 
-  const [paused, setPaused] = useState(false);
+  const sessionStoreRef = useRef(createPlaybackSessionStore<MpvSessionState>({
+    loading: true,
+    loadingMessage: typeof initialLoadingMessage === 'string' && initialLoadingMessage.trim().length > 0
+      ? initialLoadingMessage
+      : MPV_LOADING_MESSAGES[0],
+    error: null,
+    currentTime: 0,
+    duration: 0,
+    paused: false,
+  }));
+  const sessionStore = sessionStoreRef.current;
+  const paused = usePlaybackSessionSelector(sessionStore, state => state.paused);
+  const loading = usePlaybackSessionSelector(sessionStore, state => state.loading);
+  const error = usePlaybackSessionSelector(sessionStore, state => state.error);
+  const currentTime = usePlaybackSessionSelector(sessionStore, state => state.currentTime);
+  const duration = usePlaybackSessionSelector(sessionStore, state => state.duration);
+  const loadingMessage = usePlaybackSessionSelector(sessionStore, state => state.loadingMessage);
+  const setPaused = useCallback((value: boolean) => sessionStore.setState({ paused: value }), [sessionStore]);
+  const setLoading = useCallback((value: boolean) => sessionStore.setState({ loading: value }), [sessionStore]);
+  const setError = useCallback((value: string | null) => sessionStore.setState({ error: value }), [sessionStore]);
+  const setCurrentTime = useCallback((value: number) => sessionStore.setState({ currentTime: value }), [sessionStore]);
+  const setDuration = useCallback((value: number) => sessionStore.setState({ duration: value }), [sessionStore]);
+  const setLoadingMessage = useCallback((value: string) => sessionStore.setState({ loadingMessage: value }), [sessionStore]);
   const [progressBarWidth, setProgressBarWidth] = useState(1);
   const progressBarWidthRef = useRef(1);
   const guestPromptHandledRef = useRef(false);
   const [showControls, setShowControls] = useState(true);
-  const [loading, setLoading] = useState(true);
   const [startupTrackSelectionReady, setStartupTrackSelectionReady] = useState(false);
   const [watchlistBannerItem, setWatchlistBannerItem] = useState<WatchlistRemoveItem | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
   const [didSeekInitialResume, setDidSeekInitialResume] = useState(false);
   const [isSeeking, setIsSeeking] = useState(false);
   const [effectiveResumeFrom, setEffectiveResumeFrom] = useState(() => (
@@ -453,6 +494,8 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const [subtitleTracks, setSubtitleTracks] = useState<MpvTrack[]>([]);
   const [selectedAudioTrackId, setSelectedAudioTrackId] = useState<number | null>(null);
   const [selectedSubtitleTrackId, setSelectedSubtitleTrackId] = useState<number | null>(null);
+  const lastUiTimeRef = useRef(-1);
+  const lastUiDurationRef = useRef(-1);
   const [showTrackPicker, setShowTrackPicker] = useState(false);
   const [showAudioModal, setShowAudioModal] = useState(false);
   const [switchToast, setSwitchToast] = useState<string | null>(null);
@@ -470,12 +513,6 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     if (routeIdentity) return routeIdentity;
     return normalizeSourceIdentity(routePreferredSourceIdentity);
   });
-  const [loadingMessage, setLoadingMessage] = useState<string>(() => {
-    if (typeof initialLoadingMessage === 'string' && initialLoadingMessage.trim().length > 0) {
-      return initialLoadingMessage;
-    }
-    return MPV_LOADING_MESSAGES[0];
-  });
 
   const resolvedHeaders = useMemo(
     () => ({
@@ -484,12 +521,30 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     }),
     [headers],
   );
+  const logPlayerEvent = useMemo(
+    () => createPlaybackDiagnostics('MpvPlayer', diagnosticsMetaRef),
+    [],
+  );
   const routeSourceStreamsList = useMemo<AddonStream[]>(() => {
     if (!Array.isArray(routeSourceStreams)) return [];
     return routeSourceStreams.filter((candidate: unknown): candidate is AddonStream => (
       Boolean(candidate) && typeof candidate === 'object'
     ));
   }, [routeSourceStreams]);
+  useEffect(() => {
+    diagnosticsMetaRef.current = {
+      userId: user?.uid ?? null,
+      type: type === 'tv' ? 'tv' : 'movie',
+      title: title ?? null,
+      imdbId: imdbId ?? null,
+      movieId: movieId ?? null,
+    };
+  }, [user?.uid, type, title, imdbId, movieId]);
+
+  useEffect(() => {
+    appStateRef.current = appState;
+  }, [appState]);
+
   const sourceOptions = useMemo<MpvSourceOption[]>(() => {
     if (resolvedSourceStreams.length > 0) {
       return resolvedSourceStreams
@@ -660,6 +715,18 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
       NativeModules.PiPModule?.setEnabled(false);
     };
   }, [pictureInPictureEnabled]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', state => {
+      appStateRef.current = state;
+      if (state !== 'active') {
+        logoBreathAnim.stopAnimation();
+        logoBreathAnim.setValue(1);
+        loadingTextOpacity.setValue(1);
+      }
+    });
+    return () => sub.remove();
+  }, []);
 
   useEffect(() => {
     if (Platform.OS !== 'android' || !pictureInPictureEnabled) return;
@@ -911,7 +978,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
 
   // Breathing animation on the title logo/text while loading
   useEffect(() => {
-    if (!loading || !!error) {
+    if (!loading || !!error || !isForeground) {
       logoBreathAnim.setValue(1);
       return;
     }
@@ -923,10 +990,10 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     );
     anim.start();
     return () => anim.stop();
-  }, [error, loading, logoBreathAnim]);
+  }, [error, isForeground, loading, logoBreathAnim]);
 
   useEffect(() => {
-    if (!loading || !!error) return;
+    if (!loading || !!error || !isForeground) return;
     let cursor = 0;
     const FADE_MS = 300;
     const HOLD_MS = 4000;
@@ -947,7 +1014,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     };
     const timer = setInterval(tick, HOLD_MS);
     return () => clearInterval(timer);
-  }, [error, loading, loadingTextOpacity]);
+  }, [error, isForeground, loading, loadingTextOpacity]);
 
   useEffect(() => {
     if (error) {
@@ -1160,14 +1227,24 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
       playbackDurRef.current = nextDuration;
     }
     if (!isSeeking) {
-      setCurrentTime(nextCurrentTime);
+      const roundedTime = Math.floor(nextCurrentTime);
+      if (roundedTime !== lastUiTimeRef.current) {
+        lastUiTimeRef.current = roundedTime;
+        setCurrentTime(roundedTime);
+      }
     }
     if (Number.isFinite(nextDuration) && nextDuration > 0) {
-      setDuration(nextDuration);
+      const roundedDuration = Math.floor(nextDuration);
+      if (roundedDuration !== lastUiDurationRef.current) {
+        lastUiDurationRef.current = roundedDuration;
+        setDuration(roundedDuration);
+      }
     }
     if (!didSeekInitialResume && effectiveResumeFrom > 0 && Number.isFinite(nextDuration) && nextDuration > 0) {
       playerRef.current?.seekTo(effectiveResumeFrom);
-      setCurrentTime(effectiveResumeFrom);
+      const roundedResume = Math.floor(effectiveResumeFrom);
+      lastUiTimeRef.current = roundedResume;
+      setCurrentTime(roundedResume);
       setDidSeekInitialResume(true);
     }
     if (loading) setLoading(false);
@@ -1177,10 +1254,6 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
 
     if (progressKey && Number.isFinite(nextDuration) && nextDuration > 0 && nextCurrentTime - lastProgressSaveRef.current >= 10) {
       lastProgressSaveRef.current = nextCurrentTime;
-      void Storage.setItem(
-        progressFileStorageKey(storageOwnerId, progressKey),
-        JSON.stringify({ positionSec: nextCurrentTime, durationSec: nextDuration }),
-      );
       saveProgress(progressKey, nextCurrentTime, nextDuration);
       void saveToProgressIndex(storageOwnerId, {
         key: progressKey,
@@ -1446,6 +1519,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
 
   const closeMpvPlayer = () => {
     void persistRememberedSource();
+    flushProgress();
     if (scrobbledStartRef.current) {
       const cur = playbackPosRef.current;
       const dur = playbackDurRef.current;
@@ -1459,6 +1533,32 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     skipPortraitOnBlurRef.current = false;
     navigation.goBack();
   };
+
+  useFocusEffect(
+    useCallback(() => {
+      if (Platform.OS !== 'android') return undefined;
+
+      const onHardwareBackPress = () => {
+        if (showInfoModal) {
+          setShowInfoModal(false);
+          return true;
+        }
+        if (showAudioModal) {
+          setShowAudioModal(false);
+          return true;
+        }
+        if (showTrackPicker) {
+          setShowTrackPicker(false);
+          return true;
+        }
+        closeMpvPlayer();
+        return true;
+      };
+
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onHardwareBackPress);
+      return () => subscription.remove();
+    }, [closeMpvPlayer, showAudioModal, showInfoModal, showTrackPicker]),
+  );
 
   const handlePlaybackEnded = useCallback(() => {
     playbackCompletedRef.current = true;
@@ -1590,7 +1690,14 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   }, [keepControlsAwake]);
 
   useEffect(() => {
-    if (!isConnected || !resolvedStreamUrl) return;
+    const shouldRunTraktPolling = isConnected && resolvedStreamUrl && !paused && appStateRef.current === 'active';
+    if (!shouldRunTraktPolling) {
+      if (progressTimerRef.current) {
+        clearInterval(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
+      return;
+    }
     if (!scrobbledStartRef.current) {
       const payload = payloadRef.current;
       void scrobble('start', buildPayload(payload.movieId, payload.type, payload.title, payload.year, 0));
@@ -1613,7 +1720,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
         progressTimerRef.current = null;
       }
     };
-  }, [isConnected, resolvedStreamUrl, scrobble]);
+  }, [isConnected, paused, resolvedStreamUrl, scrobble]);
 
   useEffect(() => {
     return () => {
@@ -1667,20 +1774,19 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
 
       {showLoadingOverlay && !error && mpvNativeViewAvailable && (
         <Animated.View style={[styles.loadingOverlay, { opacity: loadingOverlayOpacity }]}>
-          {!!loadingArtworkUri && <Image source={{ uri: loadingArtworkUri }} style={styles.loadingBackdropImage} />}
-          <View style={styles.loadingOverlayDim} />
-          <View style={styles.loadingContent}>
-            <Animated.View style={[styles.loadingTitleWrap, { opacity: logoBreathAnim }]}>
-              {titleLogoUri ? (
-                <Image source={{ uri: titleLogoUri }} style={styles.logoImage} resizeMode="contain" />
-              ) : (
-                <Text style={styles.logoFallbackText} numberOfLines={2}>{title ?? 'Playback'}</Text>
-              )}
-            </Animated.View>
-            <View style={styles.loadingSpinnerBlock}>
-              <Animated.Text style={[styles.loadingText, { opacity: loadingTextOpacity }]}>{loadingMessage}</Animated.Text>
-            </View>
-          </View>
+          <PlaybackLoadingOverlay
+            visible={showLoadingOverlay}
+            artworkUri={loadingArtworkUri}
+            titleLogoUri={titleLogoUri}
+            fallbackTitle={title ?? 'Playback'}
+            synopsis={resolvedSynopsis}
+            loadingMessage={loadingMessage}
+            logoBreathAnim={logoBreathAnim}
+            textOpacity={loadingTextOpacity}
+            accentColor="#8b5cf6"
+            textColor="#ffffff"
+            secondaryTextColor="rgba(255,255,255,0.82)"
+          />
         </Animated.View>
       )}
 
@@ -1783,7 +1889,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
             <TouchableOpacity
               style={styles.heroPlayBtn}
               onPress={() => {
-                setPaused(value => !value);
+                setPaused(!paused);
                 keepControlsAwake();
               }}
               activeOpacity={0.85}

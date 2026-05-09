@@ -45,7 +45,7 @@ import {
 import { StackBottomNav, BOTTOM_NAV_HEIGHT } from '../components/StackBottomNav';
 import { MediaDetailSkeleton } from '../components/Skeleton';
 import { RatingBadge } from '../components/RatingBadge';
-import { getProfileStorageOwnerId } from '../utils/profileStorage';
+import { getProfileStorageOwnerId, progressFileStorageKey } from '../utils/profileStorage';
 
 
 
@@ -90,7 +90,7 @@ async function openProvider(provider: { id: number; name: string }): Promise<voi
 
 /** Per-user individual progress file storage key — must match PlayerScreen. */
 function progressFileKey(uid: string | null, itemKey: string): string {
-  return uid ? `streamdek_progress_${uid}_${itemKey}` : `streamdek_progress_${itemKey}`;
+  return progressFileStorageKey(uid, itemKey);
 }
 
 function formatReleaseDate(value?: string | null): string | null {
@@ -293,8 +293,18 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     ...StyleSheet.absoluteFillObject,
     borderRadius: 24,
     borderWidth: 1,
-    borderColor: isLightAppearance ? 'rgba(255,255,255,0.48)' : 'rgba(255,255,255,0.14)',
-    backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.12)' : 'rgba(10,12,18,0.16)',
+    borderColor: isLightAppearance ? 'rgba(255,255,255,0.56)' : 'rgba(255,255,255,0.16)',
+    backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.08)' : 'rgba(10,12,18,0.10)',
+  },
+  backBtnGlassTint: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.06)' : 'rgba(15,23,42,0.08)',
+  },
+  backBtnGlassHighlight: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 24,
+    borderTopWidth: 1,
+    borderTopColor: isLightAppearance ? 'rgba(255,255,255,0.30)' : 'rgba(255,255,255,0.08)',
   },
   backdropGlassOverlay: {
     position: 'absolute',
@@ -537,6 +547,16 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   seasonShelfHeader: {
     marginBottom: 12,
   },
+  seasonShelfHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  seasonShelfHeaderInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
   seasonShelfTitle: {
     color: isLightAppearance ? c.textPrimary : '#e8e8f0',
     fontSize: 18,
@@ -547,6 +567,29 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     fontSize: 12,
     fontWeight: '600',
     marginTop: 3,
+  },
+  seasonWatchBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: isLightAppearance ? 'rgba(17,24,39,0.18)' : c.border,
+    backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.58)' : (vividAmbient ? c.inputBg + '99' : c.inputBg),
+  },
+  seasonWatchBtnActive: {
+    borderColor: isLightAppearance ? 'rgba(27,94,32,0.45)' : '#00e676',
+    backgroundColor: isLightAppearance ? 'rgba(27,94,32,0.12)' : '#00e67618',
+  },
+  seasonWatchBtnText: {
+    color: isLightAppearance ? c.textPrimary : c.subText,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  seasonWatchBtnTextActive: {
+    color: isLightAppearance ? '#1b5e20' : '#00e676',
   },
   episodeShelf: {
     marginHorizontal: -14,
@@ -1019,7 +1062,15 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const detailSecondaryText = isLightAppearance ? colors.textSecondary : colors.subText;
   const detailMutedIcon = isLightAppearance ? colors.textPrimary : '#e8e8f0';
   const { isConnected, continueWatching, watchlist: traktWatchlist, refreshWatchlist, refreshContinueWatching } = useTrakt();
-  const { isMovieWatched, isEpisodeWatched, toggleMovieWatched, toggleEpisodeWatched, markAllEpisodesWatched } = useWatched();
+  const {
+    isMovieWatched,
+    isEpisodeWatched,
+    toggleMovieWatched,
+    toggleEpisodeWatched,
+    markSeasonWatched,
+    unmarkSeasonWatched,
+    markAllEpisodesWatched,
+  } = useWatched();
   const {
     fetchStreamsProgressive,
     addons,
@@ -1140,8 +1191,12 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   useFocusEffect(
     useCallback(() => {
       const key = movieProgressKey(movieId);
+      const liveEntry = getProgress(key);
+      if (liveEntry && liveEntry.durationSec > 0) {
+        setLocalProgress({ positionSec: liveEntry.positionSec, durationSec: liveEntry.durationSec });
+      }
       // Each movie's progress is stored per-user — read the user-scoped file
-      Storage.getItem(progressFileKey(user?.uid ?? null, key)).then(raw => {
+      Storage.getItem(progressFileStorageKey(storageOwnerId, key)).then(raw => {
         if (!raw) { setLocalProgress(null); return; }
         try {
           const entry = JSON.parse(raw);
@@ -1157,7 +1212,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
       // Refresh Trakt continue-watching so it reflects any scrobbling that happened in Player
       if (isConnected) refreshContinueWatching();
       ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-    }, [movieId, user?.uid, isConnected, refreshContinueWatching]),
+    }, [movieId, getProgress, isConnected, refreshContinueWatching, storageOwnerId]),
   );
 
   useEffect(() => {
@@ -1179,33 +1234,39 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     return typeof found?.progress === 'number' ? found.progress : null;
   }, [continueWatching, movieId, isConnected]);
 
-  const localProgressPct = localProgress
-    ? (localProgress.positionSec / localProgress.durationSec) * 100
+  const liveMovieProgress = getProgress(movieProgressKey(movieId));
+
+  const effectiveLocalProgress = liveMovieProgress && liveMovieProgress.durationSec > 0
+    ? { positionSec: liveMovieProgress.positionSec, durationSec: liveMovieProgress.durationSec }
+    : localProgress;
+
+  const localProgressPct = effectiveLocalProgress
+    ? (effectiveLocalProgress.positionSec / effectiveLocalProgress.durationSec) * 100
     : null;
 
   /**
    * The progress percentage to display for movies in the primary CTA.
-   * Prefers Trakt. Falls back to local storage.
+   * Prefers fresh local device progress. Falls back to Trakt.
    * Returns null if no progress or if content is complete (>= 95 %).
    */
   const movieDisplayProgress: number | null = (() => {
-    if (traktProgress != null && traktProgress > 0 && traktProgress < 95) return traktProgress;
     if (localProgressPct != null && localProgressPct > 0 && localProgressPct < 95) return localProgressPct;
+    if (traktProgress != null && traktProgress > 0 && traktProgress < 95) return traktProgress;
     return null;
   })();
 
   /**
    * Seconds to seek to when resuming playback.
-   * Trakt: approximate from progress% × runtime.
    * Local: exact stored position.
+   * Trakt: approximate from progress% × runtime.
    */
   const resumeFromSec: number | undefined = (() => {
+    if (effectiveLocalProgress && localProgressPct != null && localProgressPct > 0 && localProgressPct < 95) {
+      return effectiveLocalProgress.positionSec;
+    }
     if (traktProgress != null && traktProgress > 0 && traktProgress < 95) {
       const runtimeSec = media?.runtime ? media.runtime * 60 : 0;
       if (runtimeSec > 0) return Math.round((traktProgress / 100) * runtimeSec);
-    }
-    if (localProgress && localProgressPct != null && localProgressPct > 0 && localProgressPct < 95) {
-      return localProgress.positionSec;
     }
     return undefined;
   })();
@@ -1865,6 +1926,30 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const selectedSeasonInfo = useMemo(() => (
     (media?.seasons || []).find((season: any) => Number(season.season_number) === Number(selectedSeason))
   ), [media?.seasons, selectedSeason]);
+  const selectedSeasonEpisodeCount = useMemo(() => {
+    const explicitCount = Number(selectedSeasonInfo?.episode_count ?? 0);
+    if (Number.isFinite(explicitCount) && explicitCount > 0) return explicitCount;
+    return episodes.length;
+  }, [episodes.length, selectedSeasonInfo?.episode_count]);
+  const selectedSeasonWatched = useMemo(() => {
+    if (type !== 'tv' || selectedSeasonEpisodeCount <= 0) return false;
+    return Array.from({ length: selectedSeasonEpisodeCount }, (_, index) => index + 1)
+      .every(epNumber => isEpisodeWatched(Number(movieId), Number(selectedSeason), epNumber));
+  }, [isEpisodeWatched, movieId, selectedSeason, selectedSeasonEpisodeCount, type]);
+  const handleToggleSeasonWatched = useCallback(async () => {
+    if (!media || type !== 'tv' || selectedSeasonEpisodeCount <= 0) return;
+    if (selectedSeasonWatched) {
+      unmarkSeasonWatched(Number(movieId), Number(selectedSeason));
+      return;
+    }
+    await markSeasonWatched(
+      Number(movieId),
+      media.imdbId ?? undefined,
+      media.title,
+      Number(selectedSeason),
+      selectedSeasonEpisodeCount,
+    );
+  }, [markSeasonWatched, media, movieId, selectedSeason, selectedSeasonEpisodeCount, selectedSeasonWatched, type, unmarkSeasonWatched]);
 
   if (loading) return (
     <MediaDetailSkeleton
@@ -1912,7 +1997,9 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                 blurTarget={Platform.OS === 'android' ? blurTargetRef : undefined}
                 style={StyleSheet.absoluteFillObject}
               />
+              <View pointerEvents="none" style={styles.backBtnGlassTint} />
               <View pointerEvents="none" style={styles.glassBackSurface} />
+              <View pointerEvents="none" style={styles.backBtnGlassHighlight} />
               <Ionicons name="chevron-back" size={24} color={isLightAppearance ? colors.textPrimary : '#fff'} />
             </TouchableOpacity>
           ) : null}
@@ -2485,14 +2572,34 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
               ))}
             </ScrollView>
             <View style={styles.seasonShelfHeader}>
-              <Text style={styles.seasonShelfTitle} numberOfLines={1}>
-                {selectedSeasonInfo?.name || `Season ${selectedSeason}`}
-              </Text>
-              <Text style={styles.seasonShelfMeta}>
-                {episodesLoading
-                  ? 'Loading episodes'
-                  : `${episodes.length || selectedSeasonInfo?.episode_count || 0} episode${(episodes.length || selectedSeasonInfo?.episode_count || 0) === 1 ? '' : 's'} - swipe to browse`}
-              </Text>
+              <View style={styles.seasonShelfHeaderRow}>
+                <View style={styles.seasonShelfHeaderInfo}>
+                  <Text style={styles.seasonShelfTitle} numberOfLines={1}>
+                    {selectedSeasonInfo?.name || `Season ${selectedSeason}`}
+                  </Text>
+                  <Text style={styles.seasonShelfMeta}>
+                    {episodesLoading
+                      ? 'Loading episodes'
+                      : `${episodes.length || selectedSeasonInfo?.episode_count || 0} episode${(episodes.length || selectedSeasonInfo?.episode_count || 0) === 1 ? '' : 's'} - swipe to browse`}
+                  </Text>
+                </View>
+                {selectedSeasonEpisodeCount > 0 ? (
+                  <TouchableOpacity
+                    activeOpacity={0.82}
+                    onPress={() => { void handleToggleSeasonWatched(); }}
+                    style={[styles.seasonWatchBtn, selectedSeasonWatched && styles.seasonWatchBtnActive]}
+                  >
+                    <Ionicons
+                      name={selectedSeasonWatched ? 'checkmark-circle' : 'checkmark-circle-outline'}
+                      size={14}
+                      color={selectedSeasonWatched ? (isLightAppearance ? '#1b5e20' : '#00e676') : colors.mutedText}
+                    />
+                    <Text style={[styles.seasonWatchBtnText, selectedSeasonWatched && styles.seasonWatchBtnTextActive]}>
+                      {selectedSeasonWatched ? 'Season Watched' : 'Mark Season Watched'}
+                    </Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
             </View>
             {episodesLoading ? (
               <ActivityIndicator color={colors.accent} style={{ margin: 30 }} />
@@ -2919,14 +3026,34 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                 ))}
               </ScrollView>
               <View style={styles.seasonShelfHeader}>
-                <Text style={styles.seasonShelfTitle} numberOfLines={1}>
-                  {selectedSeasonInfo?.name || `Season ${selectedSeason}`}
-                </Text>
-                <Text style={styles.seasonShelfMeta}>
-                  {episodesLoading
-                    ? 'Loading episodes'
-                    : `${episodes.length || selectedSeasonInfo?.episode_count || 0} episode${(episodes.length || selectedSeasonInfo?.episode_count || 0) === 1 ? '' : 's'} - swipe to browse`}
-                </Text>
+                <View style={styles.seasonShelfHeaderRow}>
+                  <View style={styles.seasonShelfHeaderInfo}>
+                    <Text style={styles.seasonShelfTitle} numberOfLines={1}>
+                      {selectedSeasonInfo?.name || `Season ${selectedSeason}`}
+                    </Text>
+                    <Text style={styles.seasonShelfMeta}>
+                      {episodesLoading
+                        ? 'Loading episodes'
+                        : `${episodes.length || selectedSeasonInfo?.episode_count || 0} episode${(episodes.length || selectedSeasonInfo?.episode_count || 0) === 1 ? '' : 's'} - swipe to browse`}
+                    </Text>
+                  </View>
+                  {selectedSeasonEpisodeCount > 0 ? (
+                    <TouchableOpacity
+                      activeOpacity={0.82}
+                      onPress={() => { void handleToggleSeasonWatched(); }}
+                      style={[styles.seasonWatchBtn, selectedSeasonWatched && styles.seasonWatchBtnActive]}
+                    >
+                      <Ionicons
+                        name={selectedSeasonWatched ? 'checkmark-circle' : 'checkmark-circle-outline'}
+                        size={14}
+                        color={selectedSeasonWatched ? (isLightAppearance ? '#1b5e20' : '#00e676') : colors.mutedText}
+                      />
+                      <Text style={[styles.seasonWatchBtnText, selectedSeasonWatched && styles.seasonWatchBtnTextActive]}>
+                        {selectedSeasonWatched ? 'Season Watched' : 'Mark Season Watched'}
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
               </View>
               {episodesLoading ? (
                 <ActivityIndicator color={colors.accent} style={{ margin: 30 }} />
@@ -3078,26 +3205,9 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
               blurTarget={Platform.OS === 'android' ? blurTargetRef : undefined}
               style={StyleSheet.absoluteFillObject}
             />
-            <View
-              pointerEvents="none"
-              style={[
-                StyleSheet.absoluteFillObject,
-                {
-                  backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.08)' : 'rgba(10,12,18,0.10)',
-                },
-              ]}
-            />
-            <View
-              pointerEvents="none"
-              style={[
-                StyleSheet.absoluteFillObject,
-                {
-                  borderRadius: 24,
-                  borderTopWidth: 1,
-                  borderTopColor: isLightAppearance ? 'rgba(255,255,255,0.56)' : 'rgba(255,255,255,0.16)',
-                },
-              ]}
-            />
+            <View pointerEvents="none" style={styles.backBtnGlassTint} />
+            <View pointerEvents="none" style={styles.glassBackSurface} />
+            <View pointerEvents="none" style={styles.backBtnGlassHighlight} />
             <Ionicons name="chevron-back" size={24} color={isLightAppearance ? colors.textPrimary : '#fff'} />
           </TouchableOpacity>
         ) : null}

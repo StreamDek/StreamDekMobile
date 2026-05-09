@@ -29,9 +29,9 @@ export function getDeviceProfile(): DeviceProfile {
   cachedProfile = {
     isTv,
     performanceClass,
-    heroPrefetchCount: performanceClass === 'low' ? 4 : performanceClass === 'medium' ? 6 : 8,
-    sectionPrefetchCount: performanceClass === 'low' ? 12 : performanceClass === 'medium' ? 24 : 36,
-    enableHeavyBlur: performanceClass !== 'low',
+    heroPrefetchCount: performanceClass === 'low' ? 2 : performanceClass === 'medium' ? 4 : 6,
+    sectionPrefetchCount: performanceClass === 'low' ? 6 : performanceClass === 'medium' ? 12 : 24,
+    enableHeavyBlur: performanceClass === 'high',
     enableExtendedAnimations: performanceClass === 'high',
   };
 

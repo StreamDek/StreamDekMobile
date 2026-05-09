@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import {
   View,
   Text,
@@ -7,8 +7,6 @@ import {
   TouchableOpacity,
   ScrollView,
   StatusBar,
-  Modal,
-  Pressable,
 } from 'react-native';
 import Constants from 'expo-constants';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -22,11 +20,9 @@ import { useProfile } from '../context/ProfileContext';
 import { useAddons } from '../context/AddonContext';
 import { useDebrid } from '../context/DebridContext';
 import { useTrakt } from '../context/TraktContext';
-import { useLanguage } from '../context/LanguageContext';
 import { PROFILE_AVATARS } from '../utils/profileApi';
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
-type InfoKind = 'about' | 'legal' | null;
 
 function makeStyles(c: ThemeColors) {
   return StyleSheet.create({
@@ -61,21 +57,8 @@ function makeStyles(c: ThemeColors) {
     rowLabel: { color: c.textPrimary, fontSize: 16, fontWeight: '700' },
     rowSubtitle: { color: c.textSecondary, fontSize: 13, marginTop: 3, lineHeight: 18 },
     rowValue: { color: c.textSecondary, fontSize: 13, fontWeight: '600' },
-    modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' },
-    modalCard: {
-      backgroundColor: c.cardBg,
-      borderTopLeftRadius: 26,
-      borderTopRightRadius: 26,
-      borderTopWidth: 1,
-      borderColor: c.border,
-      paddingHorizontal: 20,
-      paddingTop: 20,
-    },
-    modalTitle: { color: c.textPrimary, fontSize: 19, fontWeight: '800' },
-    modalSub: { color: c.textSecondary, fontSize: 13, lineHeight: 18, marginTop: 6, marginBottom: 14 },
-    infoSection: { gap: 8, marginTop: 12 },
-    infoHeading: { color: c.textPrimary, fontSize: 14, fontWeight: '800' },
-    infoBody: { color: c.textSecondary, fontSize: 13, lineHeight: 19 },
+    aboutBlock: { marginBottom: 6, alignItems: 'center' },
+    aboutLine: { color: c.textSecondary, fontSize: 13, lineHeight: 20, textAlign: 'center' },
   });
 }
 
@@ -133,7 +116,6 @@ export function SettingsShellScreen({ navigation }: any) {
   const blurTargetRef = React.useRef<View | null>(null);
   const insets = useSafeAreaInsets();
   const { theme, resolvedAppearance } = useTheme();
-  const { t } = useLanguage();
   const { colors } = theme;
   const { user } = useAuth();
   const { profiles, activeProfile } = useProfile();
@@ -141,7 +123,6 @@ export function SettingsShellScreen({ navigation }: any) {
   const { accounts } = useDebrid();
   const { isConnected: traktConnected } = useTrakt();
   const styles = useMemo(() => makeStyles(colors), [colors]);
-  const [infoModal, setInfoModal] = useState<InfoKind>(null);
   const appVersion = Constants.expoConfig?.version ?? '0.0.0';
 
   const enabledAddonCount = addons.filter(addon => addon.enabled).length + (ultraEntitled && ultraBoostEnabled ? 1 : 0);
@@ -251,73 +232,14 @@ export function SettingsShellScreen({ navigation }: any) {
                 />
               </View>
 
-              <Text style={styles.sectionTitle}>About StreamDek</Text>
-              <View style={styles.card}>
-                <NavRow
-                  icon="information-circle-outline"
-                  iconColor="#22c55e"
-                  label={t('settings_about')}
-                  subtitle="App version, build information, and release identity."
-                  value={`v${appVersion}`}
-                  onPress={() => setInfoModal('about')}
-                />
-                <View style={styles.divider} />
-                <NavRow
-                  icon="document-text-outline"
-                  iconColor="#f97316"
-                  label={t('settings_legal')}
-                  subtitle="Terms, privacy, and legal notices for StreamDek."
-                  onPress={() => setInfoModal('legal')}
-                />
+              <View style={styles.aboutBlock}>
+                <Text style={styles.aboutLine}>Made with ❤️ by Henryneo</Text>
+                <Text style={styles.aboutLine}>{`Version ${appVersion}`}</Text>
               </View>
             </View>
           </ScrollView>
         </View>
       </BlurTargetView>
-      <Modal visible={infoModal !== null} transparent animationType="slide" statusBarTranslucent onRequestClose={() => setInfoModal(null)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setInfoModal(null)}>
-          <Pressable style={[styles.modalCard, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
-            <Text style={styles.modalTitle}>{infoModal === 'about' ? t('settings_about') : t('settings_legal')}</Text>
-            <Text style={styles.modalSub}>
-              {infoModal === 'about'
-                ? 'Version and release information for this app build.'
-                : 'Important information about how StreamDek works and your responsibilities when using third-party sources.'}
-            </Text>
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 4 }}>
-              {infoModal === 'about' ? (
-                <View style={styles.infoSection}>
-                  <Text style={styles.infoHeading}>{t('settings_version')}</Text>
-                  <Text style={styles.infoBody}>{`StreamDek v${appVersion}`}</Text>
-                </View>
-              ) : null}
-              {infoModal === 'legal' ? (
-                <>
-                  <View style={styles.infoSection}>
-                    <Text style={styles.infoHeading}>{t('settings_legal_nature_title')}</Text>
-                    <Text style={styles.infoBody}>{t('settings_legal_nature_body')}</Text>
-                  </View>
-                  <View style={styles.infoSection}>
-                    <Text style={styles.infoHeading}>{t('settings_legal_third_party_title')}</Text>
-                    <Text style={styles.infoBody}>{t('settings_legal_third_party_body')}</Text>
-                  </View>
-                  <View style={styles.infoSection}>
-                    <Text style={styles.infoHeading}>{t('settings_legal_user_title')}</Text>
-                    <Text style={styles.infoBody}>{t('settings_legal_user_body')}</Text>
-                  </View>
-                  <View style={styles.infoSection}>
-                    <Text style={styles.infoHeading}>{t('settings_legal_copyright_title')}</Text>
-                    <Text style={styles.infoBody}>{t('settings_legal_copyright_body')}</Text>
-                  </View>
-                  <View style={styles.infoSection}>
-                    <Text style={styles.infoHeading}>{t('settings_legal_warranty_title')}</Text>
-                    <Text style={styles.infoBody}>{t('settings_legal_warranty_body')}</Text>
-                  </View>
-                </>
-              ) : null}
-            </ScrollView>
-          </Pressable>
-        </Pressable>
-      </Modal>
       <StackBottomNav activeTab="Settings" blurTarget={blurTargetRef} />
     </View>
   );

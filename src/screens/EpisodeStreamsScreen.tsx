@@ -173,6 +173,16 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     shadowOffset: { width: 0, height: 8 },
     elevation: 10,
   },
+  backBtnGlassTint: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.06)' : 'rgba(15,23,42,0.08)',
+  },
+  backBtnGlassHighlight: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 24,
+    borderTopWidth: 1,
+    borderTopColor: isLightAppearance ? 'rgba(255,255,255,0.30)' : 'rgba(255,255,255,0.08)',
+  },
   titleSection: {
     paddingHorizontal: 20, paddingTop: 12, paddingBottom: 16,
     borderBottomColor: c.border,
@@ -530,6 +540,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
         imdbId,
         type: 'tv',
         title: playerTitle,
+        synopsis: episodeOverview ?? undefined,
         streamUrl: stream.url,
         activeStream: stream,
         streams,
@@ -548,6 +559,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
           imdbId,
           type: 'tv',
           title: playerTitle,
+          synopsis: episodeOverview ?? undefined,
           backdrop: backdropUri,
           poster: showPoster,
           season,
@@ -573,6 +585,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
           imdbId,
           type: 'tv',
           title: playerTitle,
+          synopsis: episodeOverview ?? undefined,
           streamUrl: resolved.url,
           activeStream: stream,
           streams,
@@ -613,6 +626,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
 
     const sharedParams = {
       title: playerTitle,
+      synopsis: episodeOverview ?? undefined,
       type: 'tv' as const,
       season,
       episode: episodeNumber,
@@ -627,6 +641,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
         imdbId,
         type: 'tv',
         title: playerTitle,
+        synopsis: episodeOverview ?? undefined,
         backdrop: backdropUri,
         poster: showPoster,
         season,
@@ -661,7 +676,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
         preferredSourceIdentity,
       });
     }
-  }, [expoGoRuntime, streams, debridAccounts.length, navigation, playerTitle, season, episodeNumber,
+  }, [expoGoRuntime, streams, debridAccounts.length, navigation, playerTitle, episodeOverview, season, episodeNumber,
       backdropUri, showPoster, imdbId, showId, streamSelectionEnabled, resolvedProgressKey, streamOptions]);
 
   // ── Render helpers ─────────────────────────────────────────────────────────
@@ -815,12 +830,17 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
             blurTarget={Platform.OS === 'android' ? blurTargetRef : undefined}
             style={StyleSheet.absoluteFillObject}
           />
+          <View pointerEvents="none" style={styles.backBtnGlassTint} />
           <View
             pointerEvents="none"
             style={[StyleSheet.absoluteFillObject, {
-              backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.45)' : 'rgba(10,12,18,0.18)',
+              borderRadius: 24,
+              borderWidth: 1,
+              borderColor: isLightAppearance ? 'rgba(255,255,255,0.56)' : 'rgba(255,255,255,0.16)',
+              backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.08)' : 'rgba(10,12,18,0.10)',
             }]}
           />
+          <View pointerEvents="none" style={styles.backBtnGlassHighlight} />
           <Ionicons name="chevron-back" size={20} color={isLightAppearance ? colors.textPrimary : '#ffffff'} />
         </TouchableOpacity>
         <PageWrapper

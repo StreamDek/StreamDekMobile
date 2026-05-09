@@ -119,6 +119,8 @@ export const BrowseScreen = ({ navigation, route }: any) => {
   const styles     = useMemo(() => makeStyles(colors), [colors]);
   const insets     = useSafeAreaInsets();
   const blurTargetRef = useRef<View | null>(null);
+  const requestAbortRef = useRef<AbortController | null>(null);
+  const genreAbortRef = useRef<AbortController | null>(null);
 
   const {
     longPressItem, setLongPressItem, handleLongPress, buildActions,
@@ -158,11 +160,15 @@ export const BrowseScreen = ({ navigation, route }: any) => {
 
   // Fetch genre list once on mount
   useEffect(() => {
+    genreAbortRef.current?.abort();
     if (endpoint) { setGenres([]); return; }
-    tmdbFetch(`/tmdb/genres/${type}`)
+    const controller = new AbortController();
+    genreAbortRef.current = controller;
+    tmdbFetch(`/tmdb/genres/${type}`, { signal: controller.signal })
       .then(r => r.json())
       .then(d => setGenres(d.genres ?? []))
       .catch(() => {});
+    return () => controller.abort();
   }, [type, endpoint]);
 
   // Build the correct endpoint depending on whether a genre is selected
@@ -193,12 +199,15 @@ export const BrowseScreen = ({ navigation, route }: any) => {
   }, [type, endpoint, isNetworkBrowse, contentType, sortMode]);
 
   const fetchPage = useCallback(async (pageNum: number, genre: Genre | null, append = false, options?: { contentType?: 'all' | 'movie' | 'tv' }) => {
+    requestAbortRef.current?.abort();
+    const controller = new AbortController();
+    requestAbortRef.current = controller;
     try {
       const url = buildUrl(pageNum, genre, options);
       const data = endpoint && String(endpoint).startsWith('/cinemeta/')
-        ? await fetchMetadataCatalog(url)
+        ? await fetchMetadataCatalog(url, { signal: controller.signal })
         : await (async () => {
-          const res  = await tmdbFetch(url);
+          const res  = await tmdbFetch(url, { signal: controller.signal });
           if (!res.ok) return null;
           return res.json();
         })();
@@ -209,8 +218,13 @@ export const BrowseScreen = ({ navigation, route }: any) => {
       setLoadedOnce(true);
       return true;
     } catch (e) {
+      if (controller.signal.aborted) return false;
       console.error('Browse fetch failed:', e);
       return false;
+    } finally {
+      if (requestAbortRef.current === controller) {
+        requestAbortRef.current = null;
+      }
     }
   }, [buildUrl, endpoint]);
 
@@ -224,6 +238,11 @@ export const BrowseScreen = ({ navigation, route }: any) => {
     })();
     return () => { cancelled = true; };
   }, [type, endpoint, fetchPage, contentType, sortMode, selectedGenre?.id]);
+
+  useEffect(() => () => {
+    requestAbortRef.current?.abort();
+    genreAbortRef.current?.abort();
+  }, []);
 
   const handleGenreSelect = useCallback((genre: Genre | null) => {
     setSelectedGenre(genre);

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -10,7 +10,10 @@ import {
   StatusBar,
   TextInput,
   ActivityIndicator,
+  Dimensions,
 } from 'react-native';
+import DraggableFlatList, { RenderItemParams } from 'react-native-draggable-flatlist';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurTargetView } from 'expo-blur';
@@ -27,12 +30,15 @@ import { useStreamSelectionSettings } from '../context/StreamSelectionContext';
 import { usePlaybackSettings } from '../context/PlaybackSettingsContext';
 import { useSubtitles } from '../context/SubtitleContext';
 import { useAuth } from '../context/AuthContext';
+import { useProfile } from '../context/ProfileContext';
 import { useAddons } from '../context/AddonContext';
 import { useDebrid } from '../context/DebridContext';
 import { useTrakt } from '../context/TraktContext';
 import { fetchAccountBootstrap } from '../utils/accountPreferences';
 import { invalidateSharedCache } from '../utils/sharedDataCache';
 import { checkSyncAllowed, getSyncOverCellular, setSyncOverCellular } from '../utils/cellularGuard';
+import { Storage } from '../utils/storage';
+import { profileScopedStorageKey } from '../utils/profileStorage';
 import {
   CinematicSkeleton,
   GlassSkeleton,
@@ -62,6 +68,8 @@ function getVisibleIconColor(color: string, resolvedAppearance: 'dark' | 'light'
 }
 
 type PickerKind = 'appearance' | 'theme' | 'language' | 'quality' | 'fileSize' | 'pageStyle' | 'continueStyle' | 'metadataProvider' | 'decoder' | 'surface' | null;
+type HomeLayoutSection = { id: string; title: string; endpoint: string; enabled: boolean };
+const CURRENT_YEAR = new Date().getFullYear();
 function makeStyles(c: ThemeColors) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: c.bg },
@@ -111,6 +119,10 @@ function makeStyles(c: ThemeColors) {
     optionSub: { color: c.textSecondary, fontSize: 12, lineHeight: 17, marginTop: 3 },
     accentSwatch: { width: 16, height: 16, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)' },
     modalScroll: { maxHeight: 420, marginTop: 14 },
+    layoutModalScroll: { marginTop: 14 },
+    layoutModalContent: { paddingBottom: 40 },
+    layoutFooterSpacer: { height: 120 },
+    layoutHint: { color: c.textSecondary, fontSize: 12, lineHeight: 17, marginTop: 2, marginBottom: 4 },
     helper: { color: c.textSecondary, fontSize: 12, lineHeight: 18, paddingHorizontal: 18, paddingBottom: 14 },
     actionButton: {
       marginTop: 10,
@@ -131,6 +143,27 @@ function makeStyles(c: ThemeColors) {
       color: c.textPrimary,
       fontSize: 13,
       fontFamily: 'monospace',
+    },
+    layoutRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      paddingVertical: 14,
+      paddingHorizontal: 4,
+    },
+    layoutGrip: {
+      width: 28,
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 4,
+    },
+    layoutInfo: { flex: 1 },
+    layoutLabel: { color: c.textPrimary, fontSize: 15, fontWeight: '700' },
+    layoutSub: { color: c.textSecondary, fontSize: 12, lineHeight: 17, marginTop: 3 },
+    layoutDivider: { height: 1, backgroundColor: c.borderSoft },
+    layoutDragActive: {
+      backgroundColor: c.cardBgElevated ?? c.cardBg,
+      borderRadius: 16,
     },
   });
 }
@@ -251,9 +284,11 @@ function PickerModal({
 export function SettingsScreen({ navigation, route }: any) {
   const blurTargetRef = React.useRef<View | null>(null);
   const insets = useSafeAreaInsets();
+  const windowHeight = Dimensions.get('window').height;
   const detailSection = route?.params?.section ?? 'general-playback';
   const title = SECTION_TITLES[detailSection] ?? 'Settings';
   const { user, signOut } = useAuth();
+  const { activeProfile } = useProfile();
   const { refreshAddons } = useAddons();
   const { refreshAccounts } = useDebrid();
   const { checkStatus } = useTrakt();
@@ -268,16 +303,76 @@ export function SettingsScreen({ navigation, route }: any) {
   const { colors } = theme;
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const [picker, setPicker] = useState<PickerKind>(null);
+  const [showHomeLayoutModal, setShowHomeLayoutModal] = useState(false);
+  const [homeLayoutSections, setHomeLayoutSections] = useState<HomeLayoutSection[]>([]);
   const [tmdbDraft, setTmdbDraft] = useState(tmdbApiKey);
   const [syncRefreshing, setSyncRefreshing] = useState(false);
   const [syncOverCellular, setSyncOverCellularState] = useState(false);
   const safeIconColor = React.useCallback((color: string) => getVisibleIconColor(color, resolvedAppearance, theme.id, colors.textPrimary), [colors.textPrimary, resolvedAppearance, theme.id]);
+  const homeSectionSettingsKey = profileScopedStorageKey('home_sections', user?.uid, activeProfile?.id);
+
+  const defaultHomeSections = useMemo<HomeLayoutSection[]>(() => {
+    if (metadataProvider === 'cinemeta') {
+      return [
+        { id: 'networks', title: t('section_networks'), endpoint: '/tmdb/networks', enabled: true },
+        { id: 'featured_movie', title: 'Featured Movies', endpoint: '/cinemeta/catalog/movie/imdbRating', enabled: true },
+        { id: 'featured_tv', title: 'Featured Series', endpoint: '/cinemeta/catalog/series/imdbRating', enabled: true },
+        { id: 'popular_movie', title: t('section_popular_movies'), endpoint: '/cinemeta/catalog/movie/top', enabled: true },
+        { id: 'popular_tv', title: t('section_popular_tv'), endpoint: '/cinemeta/catalog/series/top', enabled: true },
+        { id: 'documentaries', title: 'Documentaries', endpoint: '/cinemeta/catalog/movie/top?genre=Documentary', enabled: false },
+        { id: 'new_movie', title: 'New Movies', endpoint: `/cinemeta/catalog/movie/year/${CURRENT_YEAR}`, enabled: false },
+        { id: 'new_tv', title: 'New Series', endpoint: `/cinemeta/catalog/series/year/${CURRENT_YEAR}`, enabled: false },
+      ];
+    }
+
+    return [
+      { id: 'networks', title: t('section_networks'), endpoint: '/tmdb/networks', enabled: true },
+      { id: 'trending_movie', title: t('section_trending_movies'), endpoint: '/tmdb/trending/movie', enabled: true },
+      { id: 'trending_tv', title: t('section_trending_tv'), endpoint: '/tmdb/trending/tv', enabled: true },
+      { id: 'documentaries', title: 'Documentaries', endpoint: '/tmdb/discover?type=movie&genre_id=99&sort_by=popularity.desc', enabled: false },
+      { id: 'popular_movie', title: t('section_popular_movies'), endpoint: '/tmdb/popular/movie', enabled: false },
+      { id: 'popular_tv', title: t('section_popular_tv'), endpoint: '/tmdb/popular/tv', enabled: false },
+    ];
+  }, [metadataProvider, t]);
 
   React.useEffect(() => { setTmdbDraft(tmdbApiKey); }, [tmdbApiKey]);
 
   React.useEffect(() => {
     void getSyncOverCellular().then(setSyncOverCellularState);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const saved = await Storage.getItem(homeSectionSettingsKey) ?? await Storage.getItem('home_sections');
+        if (!saved) {
+          if (!cancelled) setHomeLayoutSections(defaultHomeSections);
+          return;
+        }
+        const parsed = JSON.parse(saved);
+        if (!Array.isArray(parsed)) {
+          if (!cancelled) setHomeLayoutSections(defaultHomeSections);
+          return;
+        }
+        const savedMap = new Map(parsed.map((section: any) => [section?.id, section]));
+        const known = parsed
+          .filter((section: any) => defaultHomeSections.find(def => def.id === section?.id))
+          .map((section: any) => ({
+            ...defaultHomeSections.find(def => def.id === section.id)!,
+            enabled: Boolean(section.enabled),
+          }));
+        const newOnes = defaultHomeSections.filter(def => !savedMap.has(def.id));
+        const next = [...known, ...newOnes];
+        if (!cancelled) setHomeLayoutSections(next);
+      } catch {
+        if (!cancelled) setHomeLayoutSections(defaultHomeSections);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [defaultHomeSections, homeSectionSettingsKey]);
 
   const handleSetSyncOverCellular = React.useCallback(async (value: boolean) => {
     setSyncOverCellularState(value);
@@ -447,6 +542,50 @@ export function SettingsScreen({ navigation, route }: any) {
     }
   }, [checkStatus, refreshAccounts, refreshAddons, syncRefreshing, user]);
 
+  const persistHomeLayoutSections = React.useCallback(async (sections: HomeLayoutSection[]) => {
+    setHomeLayoutSections(sections);
+    await Storage.setItem(homeSectionSettingsKey, JSON.stringify(sections.map(section => ({
+      id: section.id,
+      enabled: section.enabled,
+    }))));
+  }, [homeSectionSettingsKey]);
+
+  const toggleHomeLayoutSection = React.useCallback((id: string, enabled: boolean) => {
+    const next = homeLayoutSections.map(section => (
+      section.id === id ? { ...section, enabled } : section
+    ));
+    void persistHomeLayoutSections(next);
+  }, [homeLayoutSections, persistHomeLayoutSections]);
+
+  const handleHomeLayoutReorder = React.useCallback(({ data }: { data: HomeLayoutSection[] }) => {
+    void persistHomeLayoutSections(data);
+  }, [persistHomeLayoutSections]);
+
+  const renderHomeLayoutItem = React.useCallback(({ item, drag, isActive }: RenderItemParams<HomeLayoutSection>) => (
+    <View style={isActive ? styles.layoutDragActive : undefined}>
+      <View style={styles.layoutRow}>
+        <TouchableOpacity
+          onLongPress={drag}
+          delayLongPress={120}
+          activeOpacity={0.75}
+          style={styles.layoutGrip}
+        >
+          <Ionicons name="reorder-three-outline" size={18} color={colors.placeholder} />
+        </TouchableOpacity>
+        <View style={styles.layoutInfo}>
+          <Text style={styles.layoutLabel}>{item.title}</Text>
+          <Text style={styles.layoutSub}>{item.enabled ? 'Visible on Home' : 'Hidden from Home'}</Text>
+        </View>
+        <AppleToggle
+          value={item.enabled}
+          onValueChange={value => { toggleHomeLayoutSection(item.id, value); }}
+          onColor={colors.toggleOn}
+        />
+      </View>
+    </View>
+  ), [colors.placeholder, colors.toggleOn, styles.layoutDragActive, styles.layoutGrip, styles.layoutInfo, styles.layoutLabel, styles.layoutRow, styles.layoutSub, toggleHomeLayoutSection]);
+  const homeLayoutSheetMaxHeight = Math.min(720, Math.floor(windowHeight * 0.88));
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <BlurTargetView ref={blurTargetRef} style={{ flex: 1 }}>
@@ -514,6 +653,8 @@ export function SettingsScreen({ navigation, route }: any) {
                   <Text style={styles.sectionTitle}>Home and Appearance</Text>
                   <View style={styles.card}>
                     <SettingRow icon="film-outline" iconColor={safeIconColor('#f59e0b')} label="Catalog & Metadata" subtitle={metadataProvider === 'cinemeta' ? 'Cinemeta is active.' : 'TMDB is active.'} value={metadataProvider === 'cinemeta' ? 'Cinemeta' : 'TMDB'} onPress={() => setPicker('metadataProvider')} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="grid-outline" iconColor={safeIconColor('#38bdf8')} label="Home Layout" subtitle="Choose which rows appear on the Home screen." value={`${homeLayoutSections.filter(section => section.enabled).length} active`} onPress={() => setShowHomeLayoutModal(true)} />
                     <View style={styles.divider} />
                     <SettingRow icon="albums-outline" iconColor={safeIconColor('#22d3ee')} label={t('settings_page_style')} subtitle={t('settings_page_style_sub')} value={uiStyle === 'glass' ? 'Glassy Hero' : uiStyle === 'centered' ? 'Centered' : 'Classic'} onPress={() => setPicker('pageStyle')} />
                     <View style={styles.divider} />
@@ -597,6 +738,31 @@ export function SettingsScreen({ navigation, route }: any) {
         onClose={() => setPicker(null)}
         renderPreview={picker === 'pageStyle' ? renderPageStylePreview : picker === 'continueStyle' ? renderContinueStylePreview : undefined}
       />
+      <Modal visible={showHomeLayoutModal} transparent animationType="slide" statusBarTranslucent onRequestClose={() => setShowHomeLayoutModal(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setShowHomeLayoutModal(false)}>
+          <GestureHandlerRootView style={{ width: '100%' }}>
+          <Pressable style={[styles.modalCard, { paddingBottom: insets.bottom + 16, maxHeight: homeLayoutSheetMaxHeight }]} onPress={() => {}}>
+            <Text style={styles.modalTitle}>Home Layout</Text>
+            <Text style={styles.modalSub}>Choose which rows appear on Home and drag to reorder them. Changes apply in the background.</Text>
+            <Text style={styles.layoutHint}>Long-press the reorder handle to move a row.</Text>
+            <View style={[styles.layoutModalScroll, { maxHeight: homeLayoutSheetMaxHeight - 92, minHeight: Math.min(420, Math.floor(windowHeight * 0.52)) }]}>
+              <DraggableFlatList
+                data={homeLayoutSections}
+                keyExtractor={item => item.id}
+                renderItem={renderHomeLayoutItem}
+                onDragEnd={handleHomeLayoutReorder}
+                contentContainerStyle={styles.layoutModalContent}
+                showsVerticalScrollIndicator={false}
+                activationDistance={4}
+                autoscrollSpeed={180}
+                ItemSeparatorComponent={() => <View style={styles.layoutDivider} />}
+                ListFooterComponent={<View style={styles.layoutFooterSpacer} />}
+              />
+            </View>
+          </Pressable>
+          </GestureHandlerRootView>
+        </Pressable>
+      </Modal>
       <StackBottomNav activeTab="Settings" blurTarget={blurTargetRef} />
     </View>
   );

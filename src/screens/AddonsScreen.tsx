@@ -409,12 +409,12 @@ export const AddonsScreen = ({ navigation, route }: any) => {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.accent} />}
       >
         {/* ── Header ── */}
-        <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.7}>
+      <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.7}>
           <Ionicons name="chevron-back" size={20} color={colors.accentSoft} />
-          <Text style={styles.backText}>Settings</Text>
+          <Text style={styles.backText}>{t('addons_back_settings')}</Text>
         </TouchableOpacity>
         <Text style={styles.heading}>{t('addons_title')}</Text>
-        <Text style={styles.subheading}>Manage your streaming sources and Debrid services</Text>
+        <Text style={styles.subheading}>{t('addons_subheading')}</Text>
 
         {/* ── Tabs ── */}
         <View style={styles.tabRow}>
@@ -539,7 +539,7 @@ export const AddonsScreen = ({ navigation, route }: any) => {
               {installError ? <Text style={styles.errorText}>{installError}</Text> : null}
               <TextInput
                 style={styles.modalInput}
-                placeholder="https://addon-url.com/manifest.json or stremio://..."
+                placeholder={t('addons_install_url')}
                 placeholderTextColor={colors.placeholder}
                 value={installUrl}
                 onChangeText={setInstallUrl}
@@ -574,7 +574,7 @@ export const AddonsScreen = ({ navigation, route }: any) => {
               <View style={styles.modalHandle} />
               <Text style={styles.modalTitle}>{t('addons_connect_provider', { name: selectedProvider?.label ?? '' })}</Text>
               <Text style={styles.modalSubtitle}>
-                Debrid is optional and helps turn cached torrents into instant direct links.
+                {t('addons_debrid_desc')}
                 {'\n'}{t('addons_secure_note')}
               </Text>
               {debridError ? <Text style={styles.errorText}>{debridError}</Text> : null}

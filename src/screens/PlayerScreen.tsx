@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     Animated,
     Image,
@@ -53,7 +53,9 @@ import { useTorrentServer } from '../context/TorrentServerContext';
 import { useStreamSelectionSettings } from '../context/StreamSelectionContext';
 import { usePlaybackSettings } from '../context/PlaybackSettingsContext';
 import { useWatchProgress } from '../context/WatchProgressContext';
+import { useAppLifecycle } from '../context/AppLifecycleContext';
 import { ConfirmSheet } from '../components/ConfirmSheet';
+import { PlaybackLoadingOverlay } from '../components/player/PlaybackLoadingOverlay';
 import {
     getProfileStorageOwnerId,
     progressFileStorageKey,
@@ -62,9 +64,10 @@ import {
 import { useDisplaySettings } from '../context/DisplaySettingsContext';
 import { pickBestAudioTrack, scoreStream } from '../utils/streamSelection';
 import { Storage } from '../utils/storage';
-import { postClientLog } from '../utils/clientLog';
 import { createLocalProxyUrl } from '../utils/torrentServerClient';
 import { resolvePlayableStreamUrl } from '../services/playback/streamResolution';
+import { createPlaybackDiagnostics } from '../services/playback/playbackDiagnostics';
+import { createPlaybackSessionStore, usePlaybackSessionSelector } from '../services/playback/playbackSessionStore';
 import { parseStream } from '../utils/streamParser';
 import { getMpvNativeViewAvailabilityDiagnostics, isMpvNativeViewAvailable } from '../components/MpvPlayer';
 import { isExpoGoRuntime } from '../utils/runtime';
@@ -120,6 +123,15 @@ type PendingSameSourceRetry = {
     stream: AddonStream | null;
     upstreamUrl: string;
     resumeAtSec: number;
+};
+
+type PlayerSessionState = {
+    loading: boolean;
+    loadingMsg: string;
+    isError: boolean;
+    currentTime: number;
+    duration: number;
+    isPlaying: boolean;
 };
 
 type ExternalPlayerCandidate = {
@@ -545,6 +557,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         type = 'movie',
         title,
         year,
+        synopsis,
         titleLogo: paramTitleLogo,
         streamUrl: paramUrl,
         backdrop: paramBackdrop,
@@ -568,7 +581,8 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const { activeProfile } = useProfile();
     const { fetchStreams } = useAddons();
     const { accounts: debridAccounts, resolveStream, unrestrictLink, streamTorrent } = useDebrid();
-    const { saveProgress, clearProgress } = useWatchProgress();
+    const { saveProgress, flushProgress, clearProgress } = useWatchProgress();
+    const { appState, isForeground } = useAppLifecycle();
     const storageOwnerId = getProfileStorageOwnerId(user?.uid ?? null, activeProfile?.id ?? null);
 
     // ── State ──────────────────────────────────────────────────────────────────
@@ -576,9 +590,27 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const [activeStream, setActiveStream] = useState<AddonStream | null>(null);
     const [resolvedUrl, setResolvedUrl] = useState<string | null>(paramUrl ?? null);
     const [upstreamResolvedUrl, setUpstreamResolvedUrl] = useState<string | null>(paramUrl ?? null);
-    const [loading, setLoading] = useState(true);
-    const [loadingMsg, setLoadingMsg] = useState(t('player_resolving') || SEARCHING_MESSAGES[0]);
-    const [isError, setIsError] = useState(false);
+    const sessionStoreRef = useRef(createPlaybackSessionStore<PlayerSessionState>({
+        loading: true,
+        loadingMsg: t('player_resolving') || SEARCHING_MESSAGES[0],
+        isError: false,
+        currentTime: 0,
+        duration: 0,
+        isPlaying: true,
+    }));
+    const sessionStore = sessionStoreRef.current;
+    const loading = usePlaybackSessionSelector(sessionStore, state => state.loading);
+    const loadingMsg = usePlaybackSessionSelector(sessionStore, state => state.loadingMsg);
+    const isError = usePlaybackSessionSelector(sessionStore, state => state.isError);
+    const currentTime = usePlaybackSessionSelector(sessionStore, state => state.currentTime);
+    const duration = usePlaybackSessionSelector(sessionStore, state => state.duration);
+    const isPlaying = usePlaybackSessionSelector(sessionStore, state => state.isPlaying);
+    const setLoading = useCallback((value: boolean) => sessionStore.setState({ loading: value }), [sessionStore]);
+    const setLoadingMsg = useCallback((value: string) => sessionStore.setState({ loadingMsg: value }), [sessionStore]);
+    const setIsError = useCallback((value: boolean) => sessionStore.setState({ isError: value }), [sessionStore]);
+    const setCurrentTime = useCallback((value: number) => sessionStore.setState({ currentTime: value }), [sessionStore]);
+    const setDuration = useCallback((value: number) => sessionStore.setState({ duration: value }), [sessionStore]);
+    const setIsPlaying = useCallback((value: boolean) => sessionStore.setState({ isPlaying: value }), [sessionStore]);
     const [contentFit, setContentFit] = useState<VideoContentFit>('cover'); 
     
     // Custom UI State
@@ -594,9 +626,6 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         castNativeModuleAvailable ? null : 'unavailable',
     );
     const [showCompatibilitySuggestion, setShowCompatibilitySuggestion] = useState(false);
-    const [currentTime, setCurrentTime] = useState(0);
-    const [duration, setDuration] = useState(0);
-    const [isPlaying, setIsPlaying] = useState(true);
     const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
     const [isHandingOffToMpv, setIsHandingOffToMpv] = useState(false);
     const [showGuestAccountPrompt, setShowGuestAccountPrompt] = useState(false);
@@ -606,6 +635,11 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const loadingLogoBreathAnim = useRef(new Animated.Value(1)).current;
     const loadingTextOpacity = useRef(new Animated.Value(1)).current;
     const controlsOpacity = useRef(new Animated.Value(1)).current;
+
+    const flushProgressAndGoBack = useCallback(() => {
+        flushProgress();
+        navigation.goBack();
+    }, [flushProgress, navigation]);
 
     // ── Player & Refs ──────────────────────────────────────────────────────────
     const initialSource = '';
@@ -624,7 +658,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     );
     const player = useVideoPlayer(initialSource, p => {
         p.play();
-        p.timeUpdateEventInterval = 0.2;
+        p.timeUpdateEventInterval = 1.0;
     }, playerBuilderOptions);
 
     const preferredAudioTrackKeyRef = useRef<string | null>(null);
@@ -665,6 +699,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const playbackCompletedRef = useRef(false);
     const scrobbledStart = useRef(false);
     const progressTimer = useRef<any>(null);
+    const appStateRef = useRef(appState);
     const payloadRef = useRef({ movieId, type, title, year });
     const pendingResumeRef = useRef<number | null>(typeof paramResumeFrom === 'number' ? paramResumeFrom : null);
     const didApplyResumeRef = useRef(false);
@@ -894,7 +929,11 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     }, [updateLoadingMessage]);
 
     useEffect(() => {
-        if (!loading || isError) {
+        appStateRef.current = appState;
+    }, [appState]);
+
+    useEffect(() => {
+        if (!loading || isError || !isForeground) {
             loadingLogoBreathAnim.setValue(1);
             loadingTextOpacity.setValue(1);
             return;
@@ -908,7 +947,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         );
         breath.start();
         return () => breath.stop();
-    }, [isError, loading, loadingLogoBreathAnim, loadingTextOpacity]);
+    }, [appState, isError, isForeground, loading, loadingLogoBreathAnim, loadingTextOpacity]);
 
     useEffect(() => {
         resetControlsTimer();
@@ -935,10 +974,14 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         });
 
         const appStateSub = AppState.addEventListener('change', nextAppState => {
+            appStateRef.current = nextAppState;
             if (nextAppState === 'active') {
                 StatusBar.setHidden(true);
                 return;
             }
+            loadingLogoBreathAnim.stopAnimation();
+            loadingLogoBreathAnim.setValue(1);
+            loadingTextOpacity.setValue(1);
             // Trigger PiP on 'inactive' (fires before 'background' — better timing on Android)
             // and also on 'background' as a fallback. The native startsPictureInPictureAutomatically
             // prop handles Android 12+ auto-enter; this covers manual entry and older Android.
@@ -988,30 +1031,10 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         };
     }, [user?.uid, type, title, imdbId, movieId]);
 
-    const logPlayerEvent = useCallback((
-        level: 'info' | 'warn' | 'error',
-        message: string,
-        context?: Record<string, unknown>,
-    ) => {
-        if (level === 'error') {
-            console.error(message, context?.error);
-        } else if (level === 'warn') {
-            console.warn(message);
-        } else {
-            console.log(message);
-        }
-
-        void postClientLog({
-            level,
-            tag: 'Player',
-            message,
-            userId: typeof playerLogMetaRef.current.userId === 'string' ? playerLogMetaRef.current.userId : null,
-            context: {
-                ...playerLogMetaRef.current,
-                ...(context ?? {}),
-            },
-        });
-    }, []);
+    const logPlayerEvent = useMemo(
+        () => createPlaybackDiagnostics('Player', playerLogMetaRef),
+        [],
+    );
 
     const shouldHandlePlayerFailure = useCallback((reason: string): boolean => {
         if (resolveInFlightCountRef.current > 0) {
@@ -1363,6 +1386,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                 title,
                 year,
                 type,
+                synopsis,
                 titleLogo: paramTitleLogo,
                 backdrop: paramBackdrop,
                 poster: paramPoster,
@@ -1375,6 +1399,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                     type,
                     title,
                     year,
+                    synopsis,
                     titleLogo: paramTitleLogo,
                     backdrop: paramBackdrop,
                     poster: paramPoster,
@@ -1881,7 +1906,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                 void GoogleCast.showExpandedControls().catch(() => false);
             }
             ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-            navigation.goBack();
+            flushProgressAndGoBack();
             return true;
         } catch (error) {
             castPendingLoadRef.current = false;
@@ -1977,7 +2002,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
             await openExternalPlayer(playbackUrl, 'manual', activeStreamRef.current);
             setLoading(false);
             ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-            navigation.goBack();
+            flushProgressAndGoBack();
         } catch (error) {
             logPlayerEvent('warn', '[Player] Manual external launch failed', {
                 error: error instanceof Error ? error.message : String(error),
@@ -2126,6 +2151,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                     title,
                     year,
                     type,
+                    synopsis,
                     titleLogo: paramTitleLogo,
                     backdrop: paramBackdrop,
                     poster: paramPoster,
@@ -2144,6 +2170,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                         type,
                         title,
                         year,
+                        synopsis,
                         titleLogo: paramTitleLogo,
                         backdrop: paramBackdrop,
                         poster: paramPoster,
@@ -2390,7 +2417,6 @@ export const PlayerScreen = ({ route, navigation }: any) => {
             if (!paramProgressKey || !dur || currentTime - lastProgressSaveRef.current < 10) return;
             lastProgressSaveRef.current = currentTime;
             try {
-                await Storage.setItem(progressFileStorageKey(storageOwnerId, paramProgressKey), JSON.stringify({ positionSec: currentTime, durationSec: dur }));
                 saveProgress(paramProgressKey, currentTime, dur);
                 await saveToProgressIndex(storageOwnerId, {
                     key: paramProgressKey, tmdbId: Number(movieId), title: title ?? '', poster: paramPoster || undefined, backdrop: paramBackdrop || undefined, type: type || 'movie',
@@ -2403,7 +2429,14 @@ export const PlayerScreen = ({ route, navigation }: any) => {
 
     // Trakt Intervals
     useEffect(() => {
-        if (!isConnected || !resolvedUrl) return;
+        const shouldRunTraktPolling = isConnected && resolvedUrl && isPlaying && appStateRef.current === 'active';
+        if (!shouldRunTraktPolling) {
+            if (progressTimer.current) {
+                clearInterval(progressTimer.current);
+                progressTimer.current = null;
+            }
+            return;
+        }
         
         if (!scrobbledStart.current) {
             scrobbledStart.current = true;
@@ -2420,9 +2453,12 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         }, 60_000);
 
         return () => {
-            if (progressTimer.current) clearInterval(progressTimer.current);
+            if (progressTimer.current) {
+                clearInterval(progressTimer.current);
+                progressTimer.current = null;
+            }
         };
-    }, [isConnected, resolvedUrl, player, scrobble]);
+    }, [isConnected, isPlaying, resolvedUrl, player, scrobble]);
 
     // Trakt Stop on Unmount
     useEffect(() => {
@@ -2683,7 +2719,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                         style={styles.btn} 
                         onPress={() => {
                             ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-                            navigation.goBack();
+                            flushProgressAndGoBack();
                         }}
                     >
                         <Text style={styles.btnText}>Go Back</Text>
@@ -2735,37 +2771,19 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                     navigation.navigate('Auth');
                 }}
             />
-            {!shouldUseEmbeddedVideoPlayer && loading && (
-                <View style={styles.overlay} pointerEvents="none">
-                    {loadingArtworkUri && <Image source={{ uri: loadingArtworkUri }} style={styles.backdropBg} />}
-                    <View style={styles.overlayDim} />
-                    <View style={styles.content}>
-                        <Animated.View style={[styles.loadingTitleWrap, { opacity: loadingLogoBreathAnim }]}>
-                            {titleLogoUri ? (
-                                <Image source={{ uri: titleLogoUri }} style={styles.logoImage} resizeMode="contain" />
-                            ) : (
-                                <Text style={styles.logoFallbackText} numberOfLines={2}>{title ?? 'Playback'}</Text>
-                            )}
-                        </Animated.View>
-                        <Animated.Text style={[styles.msg, { opacity: loadingTextOpacity }]}>{loadingMsg}</Animated.Text>
-                    </View>
-                </View>
-            )}
-            {loading && shouldUseEmbeddedVideoPlayer && (
-                <View style={styles.overlay} pointerEvents="none">
-                    {loadingArtworkUri && <Image source={{ uri: loadingArtworkUri }} style={styles.backdropBg} />}
-                    <View style={styles.overlayDim} />
-                    <View style={styles.content}>
-                        <Animated.View style={[styles.loadingTitleWrap, { opacity: loadingLogoBreathAnim }]}>
-                            {titleLogoUri ? (
-                                <Image source={{ uri: titleLogoUri }} style={styles.logoImage} resizeMode="contain" />
-                            ) : (
-                                <Text style={styles.logoFallbackText} numberOfLines={2}>{title ?? 'Playback'}</Text>
-                            )}
-                        </Animated.View>
-                        <Animated.Text style={[styles.msg, { opacity: loadingTextOpacity }]}>{loadingMsg}</Animated.Text>
-                    </View>
-                </View>
+            {loading && (
+                <PlaybackLoadingOverlay
+                    visible={loading}
+                    artworkUri={loadingArtworkUri}
+                    titleLogoUri={titleLogoUri}
+                    fallbackTitle={title ?? 'Playback'}
+                    loadingMessage={loadingMsg}
+                    logoBreathAnim={loadingLogoBreathAnim}
+                    textOpacity={loadingTextOpacity}
+                    accentColor={theme.colors.accent}
+                    textColor="#ffffff"
+                    secondaryTextColor="rgba(255,255,255,0.82)"
+                />
             )}
             {isPausedPlayback && !showControls && (
                 <View style={styles.pausedLogoWrap} pointerEvents="none">
@@ -2773,6 +2791,11 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                         <Image source={{ uri: titleLogoUri }} style={styles.logoImage} resizeMode="contain" />
                     ) : (
                         <Text style={styles.logoFallbackText} numberOfLines={2}>{title ?? 'Playback'}</Text>
+                    )}
+                    {!!synopsis && (
+                        <Text style={styles.pausedSynopsisText} numberOfLines={4}>
+                            {synopsis}
+                        </Text>
                     )}
                 </View>
             )}
@@ -2786,7 +2809,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                     <View style={styles.controlsRow}>
                         <TouchableOpacity 
                             style={styles.circleBtn} 
-                            onPress={() => navigation.goBack()}
+                            onPress={flushProgressAndGoBack}
                             hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
                         >
                             <Ionicons name="close" size={22} color="white" />
@@ -3410,6 +3433,14 @@ const styles = StyleSheet.create({
         alignItems: 'flex-end',
         justifyContent: 'center',
         marginBottom: 0,
+    },
+    pausedSynopsisText: {
+        marginTop: 12,
+        color: 'rgba(255,255,255,0.82)',
+        fontSize: 13,
+        lineHeight: 19,
+        textAlign: 'right',
+        maxWidth: 280,
     },
     pausedPlayBtn: {
         width: 65,

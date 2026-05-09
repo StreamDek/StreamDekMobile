@@ -71,7 +71,29 @@ function buildCinemetaUrl(endpoint: string): string {
   return `${CINEMETA_BASE}/${path}/${extraArgs}.json`;
 }
 
-export async function fetchMetadataCatalog(endpoint: string): Promise<MetadataCatalogResponse> {
+export async function fetchMetadataCatalog(endpoint: string, options?: { signal?: AbortSignal }): Promise<MetadataCatalogResponse> {
+  if (options?.signal) {
+    if (!endpoint.startsWith('/cinemeta/')) {
+      const response = await tmdbFetch(endpoint, { signal: options.signal });
+      if (!response.ok) throw new Error('TMDB catalog fetch failed');
+      const data = await response.json();
+      return {
+        results: data?.results ?? [],
+        total_pages: data?.total_pages,
+      };
+    }
+
+    const response = await fetch(buildCinemetaUrl(endpoint), { signal: options.signal });
+    if (!response.ok) throw new Error(`Cinemeta catalog fetch failed: ${response.status}`);
+    const data = await response.json();
+    const metas = Array.isArray(data?.metas) ? data.metas : [];
+
+    return {
+      results: metas.map(normalizeCinemetaItem).filter((item: MetadataCatalogItem) => item.id.length > 0),
+      total_pages: data?.hasMore ? 2 : 1,
+    };
+  }
+
   return getSharedCachedAsync(
     `catalog:${endpoint}`,
     METADATA_CATALOG_TTL_MS,

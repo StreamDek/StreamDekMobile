@@ -9,10 +9,13 @@ type StreamSelectionSettingsValue = {
   enabled: boolean;
   setEnabled: (value: boolean) => Promise<void>;
   shortSourceFilterEnabled: boolean;
+  effectiveShortSourceFilterEnabled: boolean;
   setShortSourceFilterEnabled: (value: boolean) => Promise<void>;
   preferredQuality: PreferredQuality;
+  effectivePreferredQuality?: PreferredQuality;
   setPreferredQuality: (value: PreferredQuality) => Promise<void>;
   maxFileSizeGB: number;
+  effectiveMaxFileSizeGB: number;
   setMaxFileSizeGB: (value: number) => Promise<void>;
   refreshFromCloud: () => Promise<void>;
   isReady: boolean;
@@ -24,10 +27,13 @@ const StreamSelectionContext = createContext<StreamSelectionSettingsValue>({
   enabled: true,
   setEnabled: async () => {},
   shortSourceFilterEnabled: true,
+  effectiveShortSourceFilterEnabled: true,
   setShortSourceFilterEnabled: async () => {},
   preferredQuality: '1080p',
+  effectivePreferredQuality: undefined,
   setPreferredQuality: async () => {},
   maxFileSizeGB: 0,
+  effectiveMaxFileSizeGB: 0,
   setMaxFileSizeGB: async () => {},
   refreshFromCloud: async () => {},
   isReady: false,
@@ -185,15 +191,22 @@ export const StreamSelectionProvider = ({ children }: { children: React.ReactNod
     await applyRemotePlayback(remotePreferences);
   }, [applyRemotePlayback, user]);
 
+  const effectiveShortSourceFilterEnabled = enabled ? true : shortSourceFilterEnabled;
+  const effectivePreferredQuality = enabled ? undefined : preferredQuality;
+  const effectiveMaxFileSizeGB = enabled ? 0 : maxFileSizeGB;
+
   return (
     <StreamSelectionContext.Provider value={{
       enabled,
       setEnabled,
       shortSourceFilterEnabled,
+      effectiveShortSourceFilterEnabled,
       setShortSourceFilterEnabled,
       preferredQuality,
+      effectivePreferredQuality,
       setPreferredQuality,
       maxFileSizeGB,
+      effectiveMaxFileSizeGB,
       setMaxFileSizeGB,
       refreshFromCloud,
       isReady,

@@ -177,8 +177,8 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
   const { t } = useLanguage();
   const {
     enabled: streamSelectionEnabled,
-    preferredQuality,
-    maxFileSizeGB,
+    effectivePreferredQuality,
+    effectiveMaxFileSizeGB,
   } = useStreamSelectionSettings();
   const [addons, setAddons]       = useState<InstalledAddon[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -351,9 +351,9 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
   }, [buildAddonHeaders, refreshAddons]);
 
   const streamScoreOptions = useMemo<StreamScoreOptions>(() => ({
-    preferredQuality,
-    maxFileSizeGB: maxFileSizeGB > 0 ? maxFileSizeGB : undefined,
-  }), [maxFileSizeGB, preferredQuality]);
+    preferredQuality: effectivePreferredQuality,
+    maxFileSizeGB: effectiveMaxFileSizeGB > 0 ? effectiveMaxFileSizeGB : undefined,
+  }), [effectiveMaxFileSizeGB, effectivePreferredQuality]);
 
   const applyStreamSelection = useCallback((incoming: AddonStream[]): AddonStream[] => {
     const playableOnly = incoming.filter(
@@ -361,8 +361,6 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
     );
     const rankingOptions = streamScoreOptions;
 
-    // Preferred quality and max size should always affect ordering/filtering.
-    // The smart-selection toggle only affects extra playback heuristics elsewhere.
     return sortStreams(
       playableOnly.filter(stream => scoreStream(stream, rankingOptions) > -10000),
       rankingOptions,
@@ -431,7 +429,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
       .filter(a => a.enabled)
       .sort((a, b) => a.position - b.position);
     const enabledAddonKey = enabledAddons.map(a => `${a.id}:${a.position}`).join(',');
-    const selectionKey = `${preferredQuality}:${maxFileSizeGB}:${streamSelectionEnabled ? 'smart-on' : 'smart-off'}`;
+    const selectionKey = `${effectivePreferredQuality ?? 'smart-auto'}:${effectiveMaxFileSizeGB}:${streamSelectionEnabled ? 'smart-on' : 'smart-off'}`;
     const ultraKey = shouldFetchUltra ? 'ultra-on' : 'ultra-off';
     const cacheKey = `${type}:${videoId}:${enabledAddonKey}:${selectionKey}:${ultraKey}`;
     const cached   = streamCache.current.get(cacheKey);
@@ -500,7 +498,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
         expiresAt: Date.now() + CACHE_TTL,
       });
     }
-  }, [addons, applyStreamSelection, buildAddonHeaders, fetchUltraStreams, maxFileSizeGB, preferredQuality, shouldFetchUltra, streamSelectionEnabled]);
+  }, [addons, applyStreamSelection, buildAddonHeaders, effectiveMaxFileSizeGB, effectivePreferredQuality, fetchUltraStreams, shouldFetchUltra, streamSelectionEnabled]);
 
   return (
     <AddonContext.Provider value={{

@@ -301,10 +301,10 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const {
     enabled: streamSelectionEnabled,
     setEnabled: setStreamSelectionEnabled,
-    shortSourceFilterEnabled,
+    effectiveShortSourceFilterEnabled,
     setShortSourceFilterEnabled,
-    maxFileSizeGB,
-    preferredQuality,
+    effectiveMaxFileSizeGB,
+    effectivePreferredQuality,
     refreshFromCloud: refreshStreamSelectionFromCloud,
   } = useStreamSelectionSettings();
   const { pictureInPictureEnabled } = useDisplaySettings();
@@ -851,11 +851,27 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   }, [resolveOnMount, resolvedStreamUrl]);
 
   const rankStreams = useCallback((streams: AddonStream[]): AddonStream[] => {
-    const opts = { preferQuickStart: true, maxFileSizeGB: maxFileSizeGB > 0 ? maxFileSizeGB : undefined, preferredQuality };
+    const opts = {
+      preferQuickStart: true,
+      maxFileSizeGB: effectiveMaxFileSizeGB > 0 ? effectiveMaxFileSizeGB : undefined,
+      preferredQuality: effectivePreferredQuality,
+    };
     return [...streams].sort((a, b) => scoreStream(b, opts) - scoreStream(a, opts));
-  }, [maxFileSizeGB, preferredQuality]);
+  }, [effectiveMaxFileSizeGB, effectivePreferredQuality]);
 
   const resolveSourceStreamUrl = useCallback(async (stream: AddonStream): Promise<string | null> => {
+    console.log('[StreamDekSeriesDebug] MPV resolving source stream', {
+      title,
+      resolverType: resolverContentType,
+      hasUrl: !!stream.url,
+      hasInfoHash: !!stream.infoHash,
+      cachedBy: stream.cachedBy,
+      filename: stream.behaviorHints?.filename ?? null,
+      name: stream.name ?? stream.title ?? null,
+      debridAccountCount: debridAccounts.length,
+      streamSelectionEnabled,
+      maxFileSizeGB: effectiveMaxFileSizeGB,
+    });
     return resolvePlayableStreamUrl({
       stream,
       debridAccountCount: debridAccounts.length,
@@ -863,9 +879,9 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
       streamTorrent,
       streamingMode: serverConfig.streamingMode,
       streamSelectionEnabled,
-      maxFileSizeGB,
+      maxFileSizeGB: effectiveMaxFileSizeGB,
     });
-  }, [debridAccounts.length, maxFileSizeGB, resolveStream, serverConfig.streamingMode, streamSelectionEnabled, streamTorrent]);
+  }, [debridAccounts.length, effectiveMaxFileSizeGB, resolveStream, serverConfig.streamingMode, streamSelectionEnabled, streamTorrent]);
 
   useEffect(() => {
     if (!resolveOnMount || resolvedStreamUrl) return;
@@ -929,17 +945,63 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
           return;
         }
 
-        const selectedIdentity = streamIdentityKey(selected);
-        if (selectedIdentity) setActiveSourceIdentityState(selectedIdentity);
+        const orderedCandidates = [
+          selected,
+          ...ranked.filter(stream => stream !== selected),
+        ];
 
-        const resolved = await resolveSourceStreamUrl(selected);
-        if (cancelled) return;
-        if (!resolved) {
+        let resolved: string | null = null;
+        let resolvedCandidate: AddonStream | null = null;
+
+        for (let index = 0; index < orderedCandidates.length; index += 1) {
+          const candidate = orderedCandidates[index];
+          console.log('[StreamDekSeriesDebug] MPV selected source stream', {
+            title,
+            resolverType: resolverContentType,
+            streamCount: ranked.length,
+            candidateIndex: index,
+            selectedHasUrl: !!candidate.url,
+            selectedHasInfoHash: !!candidate.infoHash,
+            selectedName: candidate.name ?? candidate.title ?? null,
+            selectedFilename: candidate.behaviorHints?.filename ?? null,
+          });
+
+          const selectedIdentity = streamIdentityKey(candidate);
+          if (selectedIdentity) setActiveSourceIdentityState(selectedIdentity);
+
+          resolved = await resolveSourceStreamUrl(candidate);
+          if (cancelled) return;
+          if (resolved) {
+            resolvedCandidate = candidate;
+            break;
+          }
+
+          console.log('[StreamDekSeriesDebug] MPV candidate failed, trying next source', {
+            title,
+            resolverType: resolverContentType,
+            candidateIndex: index,
+            selectedName: candidate.name ?? candidate.title ?? null,
+            remainingCandidates: orderedCandidates.length - index - 1,
+          });
+        }
+
+        if (!resolved || !resolvedCandidate) {
+          console.log('[StreamDekSeriesDebug] MPV failed to resolve source stream URL', {
+            title,
+            resolverType: resolverContentType,
+            selectedName: selected.name ?? selected.title ?? null,
+          });
           setError(t('player_err_load'));
           setLoading(false);
           return;
         }
 
+        console.log('[StreamDekSeriesDebug] MPV resolved source stream URL', {
+          title,
+          resolverType: resolverContentType,
+          resolvedCandidateName: resolvedCandidate.name ?? resolvedCandidate.title ?? null,
+          resolvedUrlPrefix: resolved.slice(0, 80),
+        });
         rememberedSourceSavedRef.current = false;
         setResolvedStreamUrl(resolved);
       } finally {
@@ -1102,7 +1164,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     sourceSwitchBackupRef.current = null;
     const loadedDuration = Number(event?.nativeEvent?.duration ?? 0);
     if (
-      shortSourceFilterEnabled
+      effectiveShortSourceFilterEnabled
       && Number.isFinite(loadedDuration)
       && loadedDuration > 0
       && loadedDuration < MIN_ACCEPTABLE_STREAM_DURATION_SEC
@@ -1660,7 +1722,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
       { label: t('mpv_info_decoder'), value: decoderMode },
       { label: t('mpv_info_surface'), value: renderSurface },
       { label: t('settings_stream_selection_logic'), value: streamSelectionEnabled ? t('mpv_enabled') : t('mpv_disabled') },
-      { label: t('settings_short_source_filter'), value: shortSourceFilterEnabled ? t('mpv_enabled') : t('mpv_disabled') },
+      { label: t('settings_short_source_filter'), value: effectiveShortSourceFilterEnabled ? t('mpv_enabled') : t('mpv_disabled') },
       { label: t('mpv_info_audio_track'), value: selectedAudioLabel },
       { label: t('mpv_info_subtitle_track'), value: selectedSubtitleLabel },
       { label: t('mpv_info_position'), value: `${formatTime(currentTime)} / ${formatTime(duration)}` },
@@ -1675,7 +1737,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
       playbackRate,
       renderSurface,
       resizeMode,
-      shortSourceFilterEnabled,
+      effectiveShortSourceFilterEnabled,
       selectedAudioLabel,
       selectedSubtitleLabel,
       speedLabel,

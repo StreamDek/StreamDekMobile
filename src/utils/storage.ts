@@ -36,8 +36,6 @@ const HOT_KEY_PATTERNS = [
   /^stream_selection_settings$/i,
   /^playback_settings$/i,
   /^streamdek_progress_v1_/i,
-  /^streamdek_watchlist(?:_|$)/i,
-  /^streamdek_watchlist_removed(?:_|$)/i,
 ];
 
 function getFile(key: string): File {

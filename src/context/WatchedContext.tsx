@@ -38,8 +38,6 @@ interface WatchedContextType {
   isSeriesWatched:        (showTmdbId: number) => boolean;
   toggleMovieWatched:     (tmdbId: number, imdbId: string | undefined, title: string, year?: number) => Promise<void>;
   toggleEpisodeWatched:   (showTmdbId: number, showImdbId: string | undefined, showTitle: string, season: number, episode: number) => Promise<void>;
-  markSeasonWatched:      (showTmdbId: number, showImdbId: string | undefined, showTitle: string, season: number, episodeCount: number) => Promise<void>;
-  unmarkSeasonWatched:    (showTmdbId: number, season: number) => void;
   markAllEpisodesWatched: (showTmdbId: number, showImdbId: string | undefined, showTitle: string, seasons: Array<{ season_number: number; episode_count: number }>) => Promise<void>;
   unmarkSeriesWatched:    (showTmdbId: number) => void;
   isSyncing: boolean;
@@ -54,8 +52,6 @@ const WatchedContext = createContext<WatchedContextType>({
   isSeriesWatched:        () => false,
   toggleMovieWatched:     async () => {},
   toggleEpisodeWatched:   async () => {},
-  markSeasonWatched:      async () => {},
-  unmarkSeasonWatched:    () => {},
   markAllEpisodesWatched: async () => {},
   unmarkSeriesWatched:    () => {},
   isSyncing:              false,
@@ -277,77 +273,6 @@ export const WatchedProvider = ({ children }: { children: React.ReactNode }) => 
     persist(items.filter(i => !(i.type === 'episode' && i.tmdbId === showTmdbId)));
   }, [items, persist]);
 
-  const unmarkSeasonWatched = useCallback((showTmdbId: number, season: number) => {
-    const removed = items.filter(i => !(i.type === 'episode' && i.tmdbId === showTmdbId && i.season === season));
-    persist(removed);
-  }, [items, persist]);
-
-  const markSeasonWatched = useCallback(async (
-    showTmdbId: number,
-    showImdbId: string | undefined,
-    showTitle: string,
-    season: number,
-    episodeCount: number,
-  ) => {
-    const watchedAt = new Date().toISOString();
-    const safeEpisodeCount = Math.max(0, Number(episodeCount ?? 0));
-    if (safeEpisodeCount <= 0) return;
-
-    const newItems: LocalWatchedItem[] = [];
-    for (let ep = 1; ep <= safeEpisodeCount; ep += 1) {
-      const id = `episode:${showTmdbId}:${season}:${ep}`;
-      if (!items.some(i => i.id === id)) {
-        newItems.push({
-          id,
-          type: 'episode',
-          tmdbId: showTmdbId,
-          imdbId: showImdbId,
-          title: showTitle,
-          season,
-          episode: ep,
-          watchedAt,
-          syncedToTrakt: false,
-        });
-      }
-    }
-
-    if (newItems.length === 0) return;
-
-    let synced = false;
-    if (traktConnected && user && activeProfileId) {
-      try {
-        const res = await fetch(`${API_BASE}/trakt/sync/watched`, {
-          method: 'POST',
-          headers: await buildProfileHeaders(),
-          body: JSON.stringify({
-            movies: [],
-            shows: [{
-              title: showTitle,
-              ids: { tmdb: showTmdbId },
-              seasons: [{
-                number: season,
-                episodes: newItems.map(item => ({
-                  number: item.episode!,
-                  watched_at: watchedAt,
-                })),
-              }],
-            }],
-          }),
-        });
-        synced = res.ok;
-      } catch {}
-    }
-
-    persist([
-      ...items,
-      ...newItems.map(item => ({ ...item, syncedToTrakt: synced })),
-    ]);
-    for (const item of newItems) {
-      clearProgress(episodeProgressKey(showTmdbId, season, item.episode!));
-      clearProgressIndexEntry(episodeProgressKey(showTmdbId, season, item.episode!));
-    }
-  }, [activeProfileId, buildProfileHeaders, clearProgress, clearProgressIndexEntry, items, persist, traktConnected, user]);
-
   /** Mark every episode in the provided seasons list as watched in one batch */
   const markAllEpisodesWatched = useCallback(async (
     showTmdbId:  number,
@@ -418,15 +343,13 @@ export const WatchedProvider = ({ children }: { children: React.ReactNode }) => 
     isSeriesWatched,
     toggleMovieWatched,
     toggleEpisodeWatched,
-    markSeasonWatched,
-    unmarkSeasonWatched,
     markAllEpisodesWatched,
     unmarkSeriesWatched,
     isSyncing,
   }), [
     items, isSyncing,
     isMovieWatched, isEpisodeWatched, isSeriesWatched,
-    toggleMovieWatched, toggleEpisodeWatched, markSeasonWatched, unmarkSeasonWatched, markAllEpisodesWatched, unmarkSeriesWatched,
+    toggleMovieWatched, toggleEpisodeWatched, markAllEpisodesWatched, unmarkSeriesWatched,
   ]);
 
   return (

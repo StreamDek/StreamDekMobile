@@ -1,9 +1,8 @@
-import React, { useRef, useMemo, memo } from 'react';
+import React, { useRef, memo } from 'react';
 import { View, Text, StyleSheet, Animated, Pressable } from 'react-native';
 import { Image } from 'expo-image';
 import { useTheme } from '../context/ThemeContext';
 import { RatingBadge } from './RatingBadge';
-import { getDeviceProfile } from '../utils/deviceProfile';
 
 interface MediaCardProps {
   item: any;
@@ -23,8 +22,6 @@ function formatDuration(minutes: number): string {
 export const MediaCard = memo<MediaCardProps>(({ item, onPress, onLongPress, width, compactGrid = false, variant = 'portrait', layout = 'stacked' }) => {
   const { theme: { colors, resolvedAppearance } } = useTheme();
   const scale = useRef(new Animated.Value(1)).current;
-  const deviceProfile = useMemo(() => getDeviceProfile(), []);
-  const enablePressScale = deviceProfile.performanceClass !== 'low';
   const isHorizontal = false;
   const cardWidth = width ?? (isHorizontal ? 316 : (variant === 'landscape' ? 224 : 130));
   const posterWidth = isHorizontal ? 128 : cardWidth;
@@ -34,14 +31,8 @@ export const MediaCard = memo<MediaCardProps>(({ item, onPress, onLongPress, wid
       ? Math.round(cardWidth * 9 / 16)
       : (compactGrid ? Math.round(cardWidth * 1.5) : 195));
 
-  const onPressIn  = () => {
-    if (!enablePressScale) return;
-    Animated.spring(scale, { toValue: 0.94, useNativeDriver: true }).start();
-  };
-  const onPressOut = () => {
-    if (!enablePressScale) return;
-    Animated.spring(scale, { toValue: 1, friction: 4, useNativeDriver: true }).start();
-  };
+  const onPressIn  = () => Animated.spring(scale, { toValue: 0.94, useNativeDriver: true }).start();
+  const onPressOut = () => Animated.spring(scale, { toValue: 1, friction: 4, useNativeDriver: true }).start();
 
   const ratingTextColor = (item.rating ?? 0) >= 7 ? '#00e676' : (item.rating ?? 0) >= 5 ? '#ffd740' : '#c97070';
   const titleColor = resolvedAppearance === 'light' ? colors.textPrimary : '#e8e8f0';
@@ -130,7 +121,7 @@ export const MediaCard = memo<MediaCardProps>(({ item, onPress, onLongPress, wid
   }
 
   return (
-      <Animated.View style={[styles.card, compactGrid && styles.cardGrid, { width: cardWidth, transform: [{ scale: enablePressScale ? scale : 1 }] }]}>
+    <Animated.View style={[styles.card, compactGrid && styles.cardGrid, { width: cardWidth, transform: [{ scale }] }]}>
       <Pressable
         hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
         onPress={() => onPress(item)}

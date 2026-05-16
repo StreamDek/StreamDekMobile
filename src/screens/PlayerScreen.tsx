@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     Animated,
     Image,
@@ -53,9 +53,6 @@ import { useTorrentServer } from '../context/TorrentServerContext';
 import { useStreamSelectionSettings } from '../context/StreamSelectionContext';
 import { usePlaybackSettings } from '../context/PlaybackSettingsContext';
 import { useWatchProgress } from '../context/WatchProgressContext';
-import { useAppLifecycle } from '../context/AppLifecycleContext';
-import { ConfirmSheet } from '../components/ConfirmSheet';
-import { PlaybackLoadingOverlay } from '../components/player/PlaybackLoadingOverlay';
 import {
     getProfileStorageOwnerId,
     progressFileStorageKey,
@@ -64,13 +61,10 @@ import {
 import { useDisplaySettings } from '../context/DisplaySettingsContext';
 import { pickBestAudioTrack, scoreStream } from '../utils/streamSelection';
 import { Storage } from '../utils/storage';
-import { createLocalProxyUrl } from '../utils/torrentServerClient';
-import { resolvePlayableStreamUrl } from '../services/playback/streamResolution';
-import { createPlaybackDiagnostics } from '../services/playback/playbackDiagnostics';
-import { createPlaybackSessionStore, usePlaybackSessionSelector } from '../services/playback/playbackSessionStore';
+import { postClientLog } from '../utils/clientLog';
+import { createLocalProxyUrl, createLocalTorrentPlaybackUrl } from '../utils/torrentServerClient';
 import { parseStream } from '../utils/streamParser';
 import { getMpvNativeViewAvailabilityDiagnostics, isMpvNativeViewAvailable } from '../components/MpvPlayer';
-import { isExpoGoRuntime } from '../utils/runtime';
 
 // ── Constants & Helpers ──────────────────────────────────────────────────────
 
@@ -125,15 +119,6 @@ type PendingSameSourceRetry = {
     resumeAtSec: number;
 };
 
-type PlayerSessionState = {
-    loading: boolean;
-    loadingMsg: string;
-    isError: boolean;
-    currentTime: number;
-    duration: number;
-    isPlaying: boolean;
-};
-
 type ExternalPlayerCandidate = {
     label: string;
     targetUrl: string;
@@ -142,7 +127,6 @@ type ExternalPlayerCandidate = {
 type PlayerDrawerSection = 'sources' | 'tracks' | 'speed' | 'screen' | 'diagnostics';
 type Media3ContentType = 'auto' | 'progressive' | 'hls' | 'dash' | 'smoothStreaming';
 const SUBTITLE_OFF_PREFERENCE_KEY = '__off__';
-const GUEST_ACCOUNT_PROMPT_SHOWN_KEY = 'streamdek_guest_account_prompt_shown';
 
 type TrackPreferenceLike = {
     id?: string;
@@ -528,9 +512,9 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const { config: serverConfig } = useTorrentServer();
     const {
         enabled: streamSelectionEnabled,
-        effectiveShortSourceFilterEnabled,
-        effectivePreferredQuality,
-        effectiveMaxFileSizeGB,
+        shortSourceFilterEnabled,
+        preferredQuality,
+        maxFileSizeGB,
     } = useStreamSelectionSettings();
     const castNativeModuleAvailable = !!NativeModules.RNGCCastContext;
     const platformAndroidVersion = typeof Platform.Version === 'number' ? Platform.Version : Number(Platform.Version);
@@ -544,8 +528,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     } = usePlaybackSettings();
     const insets = useSafeAreaInsets();
     const { pictureInPictureEnabled } = useDisplaySettings();
-    const expoGoRuntime = isExpoGoRuntime();
-    const shouldUseEmbeddedVideoPlayer = expoGoRuntime;
+    const shouldUseEmbeddedVideoPlayer = false; // MPV is the only player
     const [runtimePlaybackConfig, setRuntimePlaybackConfig] = useState<RuntimePlaybackConfig>(() => (
         preferredRuntimePlaybackConfig(decoderMode, renderSurface)
     ));
@@ -557,7 +540,6 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         type = 'movie',
         title,
         year,
-        synopsis,
         titleLogo: paramTitleLogo,
         streamUrl: paramUrl,
         backdrop: paramBackdrop,
@@ -581,8 +563,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const { activeProfile } = useProfile();
     const { fetchStreams } = useAddons();
     const { accounts: debridAccounts, resolveStream, unrestrictLink, streamTorrent } = useDebrid();
-    const { saveProgress, flushProgress, clearProgress } = useWatchProgress();
-    const { appState, isForeground } = useAppLifecycle();
+    const { saveProgress, clearProgress } = useWatchProgress();
     const storageOwnerId = getProfileStorageOwnerId(user?.uid ?? null, activeProfile?.id ?? null);
 
     // ── State ──────────────────────────────────────────────────────────────────
@@ -590,27 +571,9 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const [activeStream, setActiveStream] = useState<AddonStream | null>(null);
     const [resolvedUrl, setResolvedUrl] = useState<string | null>(paramUrl ?? null);
     const [upstreamResolvedUrl, setUpstreamResolvedUrl] = useState<string | null>(paramUrl ?? null);
-    const sessionStoreRef = useRef(createPlaybackSessionStore<PlayerSessionState>({
-        loading: true,
-        loadingMsg: t('player_resolving') || SEARCHING_MESSAGES[0],
-        isError: false,
-        currentTime: 0,
-        duration: 0,
-        isPlaying: true,
-    }));
-    const sessionStore = sessionStoreRef.current;
-    const loading = usePlaybackSessionSelector(sessionStore, state => state.loading);
-    const loadingMsg = usePlaybackSessionSelector(sessionStore, state => state.loadingMsg);
-    const isError = usePlaybackSessionSelector(sessionStore, state => state.isError);
-    const currentTime = usePlaybackSessionSelector(sessionStore, state => state.currentTime);
-    const duration = usePlaybackSessionSelector(sessionStore, state => state.duration);
-    const isPlaying = usePlaybackSessionSelector(sessionStore, state => state.isPlaying);
-    const setLoading = useCallback((value: boolean) => sessionStore.setState({ loading: value }), [sessionStore]);
-    const setLoadingMsg = useCallback((value: string) => sessionStore.setState({ loadingMsg: value }), [sessionStore]);
-    const setIsError = useCallback((value: boolean) => sessionStore.setState({ isError: value }), [sessionStore]);
-    const setCurrentTime = useCallback((value: number) => sessionStore.setState({ currentTime: value }), [sessionStore]);
-    const setDuration = useCallback((value: number) => sessionStore.setState({ duration: value }), [sessionStore]);
-    const setIsPlaying = useCallback((value: boolean) => sessionStore.setState({ isPlaying: value }), [sessionStore]);
+    const [loading, setLoading] = useState(true);
+    const [loadingMsg, setLoadingMsg] = useState(t('player_resolving') || SEARCHING_MESSAGES[0]);
+    const [isError, setIsError] = useState(false);
     const [contentFit, setContentFit] = useState<VideoContentFit>('cover'); 
     
     // Custom UI State
@@ -626,20 +589,17 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         castNativeModuleAvailable ? null : 'unavailable',
     );
     const [showCompatibilitySuggestion, setShowCompatibilitySuggestion] = useState(false);
+    const [currentTime, setCurrentTime] = useState(0);
+    const [duration, setDuration] = useState(0);
+    const [isPlaying, setIsPlaying] = useState(true);
     const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
     const [isHandingOffToMpv, setIsHandingOffToMpv] = useState(false);
-    const [showGuestAccountPrompt, setShowGuestAccountPrompt] = useState(false);
     const isPausedPlayback = shouldUseEmbeddedVideoPlayer && !loading && !isPlaying && !isHandingOffToMpv;
     const castNativeButtonAvailable = !!UIManager.getViewManagerConfig?.('RNGoogleCastButton');
     const drawerTranslateX = useRef(new Animated.Value(360)).current;
     const loadingLogoBreathAnim = useRef(new Animated.Value(1)).current;
     const loadingTextOpacity = useRef(new Animated.Value(1)).current;
     const controlsOpacity = useRef(new Animated.Value(1)).current;
-
-    const flushProgressAndGoBack = useCallback(() => {
-        flushProgress();
-        navigation.goBack();
-    }, [flushProgress, navigation]);
 
     // ── Player & Refs ──────────────────────────────────────────────────────────
     const initialSource = '';
@@ -658,7 +618,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     );
     const player = useVideoPlayer(initialSource, p => {
         p.play();
-        p.timeUpdateEventInterval = 1.0;
+        p.timeUpdateEventInterval = 0.2;
     }, playerBuilderOptions);
 
     const preferredAudioTrackKeyRef = useRef<string | null>(null);
@@ -699,7 +659,6 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const playbackCompletedRef = useRef(false);
     const scrobbledStart = useRef(false);
     const progressTimer = useRef<any>(null);
-    const appStateRef = useRef(appState);
     const payloadRef = useRef({ movieId, type, title, year });
     const pendingResumeRef = useRef<number | null>(typeof paramResumeFrom === 'number' ? paramResumeFrom : null);
     const didApplyResumeRef = useRef(false);
@@ -707,7 +666,6 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const preferredSaveBlockedRef = useRef(false);
     const preferredSavedForCurrentSourceRef = useRef(false);
     const validatedDurationForCurrentSourceRef = useRef(false);
-    const guestPromptHandledRef = useRef(false);
 
     useEffect(() => {
         if (Platform.OS !== 'android') return;
@@ -719,26 +677,6 @@ export const PlayerScreen = ({ route, navigation }: any) => {
             prioritizeTimeOverSizeThreshold: true,
         };
     }, [player]);
-
-    useEffect(() => {
-        if (user || guestPromptHandledRef.current || loading || isError || currentTime <= 0) {
-            return;
-        }
-
-        guestPromptHandledRef.current = true;
-        void (async () => {
-            try {
-                const alreadyShown = await Storage.getItem(GUEST_ACCOUNT_PROMPT_SHOWN_KEY);
-                if (alreadyShown) return;
-                await Storage.setItem(GUEST_ACCOUNT_PROMPT_SHOWN_KEY, '1');
-                if (isMountedRef.current) {
-                    setShowGuestAccountPrompt(true);
-                }
-            } catch {
-                // Ignore prompt persistence failures.
-            }
-        })();
-    }, [currentTime, isError, loading, user]);
 
     const controlsTimerRef = useRef<any>(null);
     const didAutoOpenSourcesRef = useRef(false);
@@ -929,21 +867,9 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     }, [updateLoadingMessage]);
 
     useEffect(() => {
-        appStateRef.current = appState;
-    }, [appState]);
-
-    useEffect(() => {
-        if (!loading || isError || !isForeground) {
+        if (!loading || isError) {
             loadingLogoBreathAnim.setValue(1);
             loadingTextOpacity.setValue(1);
-            if (!pictureInPictureEnabled && shouldUseEmbeddedVideoPlayer) {
-                try {
-                    playerRef.current?.pause();
-                } catch {
-                    // Ignore best-effort pause failures while the app backgrounds.
-                }
-                setIsPlaying(false);
-            }
             return;
         }
 
@@ -955,7 +881,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         );
         breath.start();
         return () => breath.stop();
-    }, [appState, isError, isForeground, loading, loadingLogoBreathAnim, loadingTextOpacity]);
+    }, [isError, loading, loadingLogoBreathAnim, loadingTextOpacity]);
 
     useEffect(() => {
         resetControlsTimer();
@@ -982,14 +908,10 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         });
 
         const appStateSub = AppState.addEventListener('change', nextAppState => {
-            appStateRef.current = nextAppState;
             if (nextAppState === 'active') {
                 StatusBar.setHidden(true);
                 return;
             }
-            loadingLogoBreathAnim.stopAnimation();
-            loadingLogoBreathAnim.setValue(1);
-            loadingTextOpacity.setValue(1);
             // Trigger PiP on 'inactive' (fires before 'background' — better timing on Android)
             // and also on 'background' as a fallback. The native startsPictureInPictureAutomatically
             // prop handles Android 12+ auto-enter; this covers manual entry and older Android.
@@ -1013,7 +935,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
             }
             skipPortraitOnUnmountRef.current = false;
         };
-    }, [loading, navigation, pictureInPictureEnabled, setIsPlaying, shouldUseEmbeddedVideoPlayer]);
+    }, [loading, navigation, pictureInPictureEnabled, shouldUseEmbeddedVideoPlayer]);
 
     useEffect(() => { playerRef.current = player; }, [player]);
     useEffect(() => { allStreamsRef.current = allStreams; }, [allStreams]);
@@ -1039,10 +961,30 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         };
     }, [user?.uid, type, title, imdbId, movieId]);
 
-    const logPlayerEvent = useMemo(
-        () => createPlaybackDiagnostics('Player', playerLogMetaRef),
-        [],
-    );
+    const logPlayerEvent = useCallback((
+        level: 'info' | 'warn' | 'error',
+        message: string,
+        context?: Record<string, unknown>,
+    ) => {
+        if (level === 'error') {
+            console.error(message, context?.error);
+        } else if (level === 'warn') {
+            console.warn(message);
+        } else {
+            console.log(message);
+        }
+
+        void postClientLog({
+            level,
+            tag: 'Player',
+            message,
+            userId: typeof playerLogMetaRef.current.userId === 'string' ? playerLogMetaRef.current.userId : null,
+            context: {
+                ...playerLogMetaRef.current,
+                ...(context ?? {}),
+            },
+        });
+    }, []);
 
     const shouldHandlePlayerFailure = useCallback((reason: string): boolean => {
         if (resolveInFlightCountRef.current > 0) {
@@ -1243,24 +1185,25 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     }, []);
 
     const getRankedStreams = useCallback((streams: AddonStream[]): AddonStream[] => {
+        if (!streamSelectionEnabled) {
+            return [...streams];
+        }
         const preferQuickStart = serverConfig.streamingMode === 'server';
-        const baseOptions = {
-            preferredQuality: effectivePreferredQuality,
-            maxFileSizeGB: effectiveMaxFileSizeGB > 0 ? effectiveMaxFileSizeGB : undefined,
-        };
         return [...streams].sort((a, b) => (
             scoreStream(b, {
                 preferQuickStart,
-                ...baseOptions,
+                preferredQuality,
+                maxFileSizeGB: maxFileSizeGB > 0 ? maxFileSizeGB : undefined,
                 sessionPenalty: getSessionPenalty(b),
             })
             - scoreStream(a, {
                 preferQuickStart,
-                ...baseOptions,
+                preferredQuality,
+                maxFileSizeGB: maxFileSizeGB > 0 ? maxFileSizeGB : undefined,
                 sessionPenalty: getSessionPenalty(a),
             })
         ));
-    }, [effectiveMaxFileSizeGB, effectivePreferredQuality, getSessionPenalty, serverConfig.streamingMode]);
+    }, [getSessionPenalty, maxFileSizeGB, preferredQuality, serverConfig.streamingMode, streamSelectionEnabled]);
 
     const recordFailedStream = useCallback((
         stream: AddonStream | null | undefined,
@@ -1394,7 +1337,6 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                 title,
                 year,
                 type,
-                synopsis,
                 titleLogo: paramTitleLogo,
                 backdrop: paramBackdrop,
                 poster: paramPoster,
@@ -1407,7 +1349,6 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                     type,
                     title,
                     year,
-                    synopsis,
                     titleLogo: paramTitleLogo,
                     backdrop: paramBackdrop,
                     poster: paramPoster,
@@ -1483,48 +1424,81 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         const isCurrentAttempt = () => attemptId === latestResolveAttemptIdRef.current;
         logPlayerEvent('info', `[Player] Resolving ${describeStream(stream, streamIndex, totalStreams)}`);
         try {
-            const resolved = await resolvePlayableStreamUrl({
-                stream,
-                debridAccountCount: debridAccounts.length,
-                resolveStream,
-                streamTorrent,
-                streamingMode: serverConfig.streamingMode,
-                streamSelectionEnabled,
-                maxFileSizeGB: effectiveMaxFileSizeGB,
-                defaultMaxSizeBytes: PREFERRED_SIZE_LIMIT,
-                shouldContinue: isCurrentAttempt,
-                onDebridFailures: (label, failures) => logDebridFailures(label, failures),
-                onStep: (step) => {
-                    if (step === 'direct-url') {
-                        logPlayerEvent('info', `[Player] Source already has direct URL for ${describeStream(stream, streamIndex, totalStreams)}`);
-                    } else if (step === 'debrid-resolve') {
-                        logPlayerEvent('info', `[Player] Trying premium resolver for ${describeStream(stream, streamIndex, totalStreams)}`);
-                    } else if (step === 'local-torrent') {
-                        logPlayerEvent('info', `[Player] Trying local playback URL for ${describeStream(stream, streamIndex, totalStreams)}`);
-                    } else if (step === 'backend-torrent') {
-                        logPlayerEvent('info', `[Player] Trying backend stream URL for ${describeStream(stream, streamIndex, totalStreams)}`);
-                    }
-                },
-                onWarn: (warning) => {
-                    if (warning === 'local-torrent-unavailable') {
-                        logPlayerEvent('warn', `[Player] Local playback URL unavailable for ${describeStream(stream, streamIndex, totalStreams)}`);
-                    }
-                },
-                onError: (message, error) => {
-                    logPlayerEvent('error', `[Player] ${message}`, { error: error instanceof Error ? error.message : String(error) });
-                },
-            });
             if (!isCurrentAttempt()) return null;
-            if (resolved) {
-                logPlayerEvent('info', `[Player] Resolution succeeded for ${describeStream(stream, streamIndex, totalStreams)}`);
-                return resolved;
+
+            if (stream.url) {
+                logPlayerEvent('info', `[Player] Source already has direct URL for ${describeStream(stream, streamIndex, totalStreams)}`);
+                return stream.url;
+            }
+            if (stream.infoHash) {
+                const hint = stream.behaviorHints?.filename;
+                const magnet = `magnet:?xt=urn:btih:${stream.infoHash}`;
+                const shouldTryLocalTorrentPlayback = serverConfig.streamingMode === 'server';
+                const isUncachedServerModeSource = shouldTryLocalTorrentPlayback && stream.cachedBy.length === 0;
+                const shouldPreferPremiumResolver = isUncachedServerModeSource && debridAccounts.length > 0;
+
+                if (shouldPreferPremiumResolver) {
+                    logPlayerEvent('info', `[Player] Trying premium resolver for ${describeStream(stream, streamIndex, totalStreams)}`);
+                    let res = null;
+                    try {
+                        res = await resolveStream(stream.infoHash, magnet, hint, { maxSize: PREFERRED_SIZE_LIMIT });
+                    } catch (error: any) {
+                        logDebridFailures('Premium resolver failed', error?.failures);
+                    }
+                    if (!isCurrentAttempt()) return null;
+                    if (res?.url) {
+                        logPlayerEvent('info', `[Player] Premium resolver succeeded for ${describeStream(stream, streamIndex, totalStreams)} (${res.filesize} bytes)`);
+                        return res.url;
+                    }
+                    logPlayerEvent('info', `[Player] Premium resolver returned no URL for ${describeStream(stream, streamIndex, totalStreams)}`);
+                }
+
+                if (shouldTryLocalTorrentPlayback) {
+                    const localLogLabel = isUncachedServerModeSource && shouldPreferPremiumResolver
+                        ? 'Trying local playback URL after premium resolver miss for'
+                        : isUncachedServerModeSource
+                            ? 'Trying local playback URL first for uncached server-mode source'
+                            : 'Trying local playback URL for';
+                    logPlayerEvent('info', `[Player] ${localLogLabel} ${describeStream(stream, streamIndex, totalStreams)}`);
+                    const localTorrentUrl = await createLocalTorrentPlaybackUrl(stream.infoHash, magnet, hint);
+                    if (!isCurrentAttempt()) return null;
+                    if (localTorrentUrl) {
+                        logPlayerEvent('info', `[Player] Local playback URL succeeded for ${describeStream(stream, streamIndex, totalStreams)}`);
+                        return localTorrentUrl;
+                    }
+                    logPlayerEvent('warn', `[Player] Local playback URL unavailable for ${describeStream(stream, streamIndex, totalStreams)}`);
+                }
+
+                if (!shouldPreferPremiumResolver && debridAccounts.length > 0) {
+                    logPlayerEvent('info', `[Player] Trying premium resolver for ${describeStream(stream, streamIndex, totalStreams)}`);
+                    let res = null;
+                    try {
+                        res = await resolveStream(stream.infoHash, magnet, hint, { maxSize: PREFERRED_SIZE_LIMIT });
+                    } catch (error: any) {
+                        logDebridFailures('Premium resolver failed', error?.failures);
+                    }
+                    if (!isCurrentAttempt()) return null;
+                    if (res?.url) {
+                        logPlayerEvent('info', `[Player] Premium resolver succeeded for ${describeStream(stream, streamIndex, totalStreams)} (${res.filesize} bytes)`);
+                        return res.url;
+                    }
+                    logPlayerEvent('info', `[Player] Premium resolver returned no URL for ${describeStream(stream, streamIndex, totalStreams)}`);
+                }
+
+                logPlayerEvent('info', `[Player] Trying backend stream URL for ${describeStream(stream, streamIndex, totalStreams)}`);
+                const backendTorrentUrl = await streamTorrent(stream.infoHash, magnet, hint);
+                if (!isCurrentAttempt()) return null;
+                if (backendTorrentUrl) {
+                    logPlayerEvent('info', `[Player] Backend stream URL succeeded for ${describeStream(stream, streamIndex, totalStreams)}`);
+                    return backendTorrentUrl;
+                }
             }
         } catch (e) {
             logPlayerEvent('error', "[Player] Resolution error", { error: e instanceof Error ? e.message : String(e) });
         }
         logPlayerEvent('info', `[Player] Resolution failed for ${describeStream(stream, streamIndex, totalStreams)}`);
         return null;
-    }, [debridAccounts, logDebridFailures, logPlayerEvent, resolveStream, serverConfig.streamingMode, streamTorrent]);
+    }, [debridAccounts, resolveStream, serverConfig.streamingMode, streamTorrent, logDebridFailures, logPlayerEvent]);
 
     const resolveStreamToUrlWithTimeout = useCallback(async (
         stream: AddonStream,
@@ -1784,7 +1758,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const validateCurrentSourceDuration = useCallback((): boolean => {
         if (validatedDurationForCurrentSourceRef.current) return false;
         if (!sourceLoadedRef.current) return false;
-        if (!effectiveShortSourceFilterEnabled) {
+        if (!shortSourceFilterEnabled) {
             validatedDurationForCurrentSourceRef.current = true;
             return false;
         }
@@ -1808,7 +1782,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
 
         validatedDurationForCurrentSourceRef.current = true;
         return false;
-    }, [effectiveShortSourceFilterEnabled, handlePlayerError, player, logPlayerEvent]);
+    }, [handlePlayerError, player, logPlayerEvent, shortSourceFilterEnabled]);
 
     const cancelPendingFallbacks = useCallback((reason: string) => {
         if (!isHandlingErrorRef.current && resolveInFlightCountRef.current === 0) {
@@ -1914,7 +1888,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                 void GoogleCast.showExpandedControls().catch(() => false);
             }
             ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-            flushProgressAndGoBack();
+            navigation.goBack();
             return true;
         } catch (error) {
             castPendingLoadRef.current = false;
@@ -2010,7 +1984,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
             await openExternalPlayer(playbackUrl, 'manual', activeStreamRef.current);
             setLoading(false);
             ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-            flushProgressAndGoBack();
+            navigation.goBack();
         } catch (error) {
             logPlayerEvent('warn', '[Player] Manual external launch failed', {
                 error: error instanceof Error ? error.message : String(error),
@@ -2159,7 +2133,6 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                     title,
                     year,
                     type,
-                    synopsis,
                     titleLogo: paramTitleLogo,
                     backdrop: paramBackdrop,
                     poster: paramPoster,
@@ -2178,7 +2151,6 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                         type,
                         title,
                         year,
-                        synopsis,
                         titleLogo: paramTitleLogo,
                         backdrop: paramBackdrop,
                         poster: paramPoster,
@@ -2425,6 +2397,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
             if (!paramProgressKey || !dur || currentTime - lastProgressSaveRef.current < 10) return;
             lastProgressSaveRef.current = currentTime;
             try {
+                await Storage.setItem(progressFileStorageKey(storageOwnerId, paramProgressKey), JSON.stringify({ positionSec: currentTime, durationSec: dur }));
                 saveProgress(paramProgressKey, currentTime, dur);
                 await saveToProgressIndex(storageOwnerId, {
                     key: paramProgressKey, tmdbId: Number(movieId), title: title ?? '', poster: paramPoster || undefined, backdrop: paramBackdrop || undefined, type: type || 'movie',
@@ -2437,14 +2410,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
 
     // Trakt Intervals
     useEffect(() => {
-        const shouldRunTraktPolling = isConnected && resolvedUrl && isPlaying && appStateRef.current === 'active';
-        if (!shouldRunTraktPolling) {
-            if (progressTimer.current) {
-                clearInterval(progressTimer.current);
-                progressTimer.current = null;
-            }
-            return;
-        }
+        if (!isConnected || !resolvedUrl) return;
         
         if (!scrobbledStart.current) {
             scrobbledStart.current = true;
@@ -2461,12 +2427,9 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         }, 60_000);
 
         return () => {
-            if (progressTimer.current) {
-                clearInterval(progressTimer.current);
-                progressTimer.current = null;
-            }
+            if (progressTimer.current) clearInterval(progressTimer.current);
         };
-    }, [isConnected, isPlaying, resolvedUrl, player, scrobble]);
+    }, [isConnected, resolvedUrl, player, scrobble]);
 
     // Trakt Stop on Unmount
     useEffect(() => {
@@ -2727,7 +2690,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                         style={styles.btn} 
                         onPress={() => {
                             ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-                            flushProgressAndGoBack();
+                            navigation.goBack();
                         }}
                     >
                         <Text style={styles.btnText}>Go Back</Text>
@@ -2741,13 +2704,13 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         <View style={styles.root}>
             {shouldUseEmbeddedVideoPlayer && (
                 <>
-                    <VideoView
+                    <VideoView 
                         ref={videoViewRef}
-                        style={StyleSheet.absoluteFill}
-                        player={player}
-                        contentFit={contentFit}
+                        style={StyleSheet.absoluteFill} 
+                        player={player} 
+                        contentFit={contentFit} 
                         surfaceType={effectiveSurfaceType}
-                        nativeControls={false}
+                        nativeControls={false} 
                         allowsPictureInPicture={pictureInPictureEnabled}
                         startsPictureInPictureAutomatically={pictureInPictureEnabled}
                         onFirstFrameRender={() => {
@@ -2766,32 +2729,37 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                     />
                 </>
             )}
-            <ConfirmSheet
-                visible={showGuestAccountPrompt}
-                onClose={() => setShowGuestAccountPrompt(false)}
-                icon="person-add-outline"
-                title="Create an account"
-                message="Sync with TV, save your add-ons, and connect Trakt without interrupting guest playback."
-                confirmLabel="Create Account"
-                cancelLabel="Not Now"
-                onConfirm={() => {
-                    setShowGuestAccountPrompt(false);
-                    navigation.navigate('Auth');
-                }}
-            />
-            {loading && (
-                <PlaybackLoadingOverlay
-                    visible={loading}
-                    artworkUri={loadingArtworkUri}
-                    titleLogoUri={titleLogoUri}
-                    fallbackTitle={title ?? 'Playback'}
-                    loadingMessage={loadingMsg}
-                    logoBreathAnim={loadingLogoBreathAnim}
-                    textOpacity={loadingTextOpacity}
-                    accentColor={theme.colors.accent}
-                    textColor="#ffffff"
-                    secondaryTextColor="rgba(255,255,255,0.82)"
-                />
+            {!shouldUseEmbeddedVideoPlayer && loading && (
+                <View style={styles.overlay} pointerEvents="none">
+                    {loadingArtworkUri && <Image source={{ uri: loadingArtworkUri }} style={styles.backdropBg} />}
+                    <View style={styles.overlayDim} />
+                    <View style={styles.content}>
+                        <Animated.View style={[styles.loadingTitleWrap, { opacity: loadingLogoBreathAnim }]}>
+                            {titleLogoUri ? (
+                                <Image source={{ uri: titleLogoUri }} style={styles.logoImage} resizeMode="contain" />
+                            ) : (
+                                <Text style={styles.logoFallbackText} numberOfLines={2}>{title ?? 'Playback'}</Text>
+                            )}
+                        </Animated.View>
+                        <Animated.Text style={[styles.msg, { opacity: loadingTextOpacity }]}>{loadingMsg}</Animated.Text>
+                    </View>
+                </View>
+            )}
+            {loading && shouldUseEmbeddedVideoPlayer && (
+                <View style={styles.overlay} pointerEvents="none">
+                    {loadingArtworkUri && <Image source={{ uri: loadingArtworkUri }} style={styles.backdropBg} />}
+                    <View style={styles.overlayDim} />
+                    <View style={styles.content}>
+                        <Animated.View style={[styles.loadingTitleWrap, { opacity: loadingLogoBreathAnim }]}>
+                            {titleLogoUri ? (
+                                <Image source={{ uri: titleLogoUri }} style={styles.logoImage} resizeMode="contain" />
+                            ) : (
+                                <Text style={styles.logoFallbackText} numberOfLines={2}>{title ?? 'Playback'}</Text>
+                            )}
+                        </Animated.View>
+                        <Animated.Text style={[styles.msg, { opacity: loadingTextOpacity }]}>{loadingMsg}</Animated.Text>
+                    </View>
+                </View>
             )}
             {isPausedPlayback && !showControls && (
                 <View style={styles.pausedLogoWrap} pointerEvents="none">
@@ -2799,11 +2767,6 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                         <Image source={{ uri: titleLogoUri }} style={styles.logoImage} resizeMode="contain" />
                     ) : (
                         <Text style={styles.logoFallbackText} numberOfLines={2}>{title ?? 'Playback'}</Text>
-                    )}
-                    {!!synopsis && (
-                        <Text style={styles.pausedSynopsisText} numberOfLines={4}>
-                            {synopsis}
-                        </Text>
                     )}
                 </View>
             )}
@@ -2817,7 +2780,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                     <View style={styles.controlsRow}>
                         <TouchableOpacity 
                             style={styles.circleBtn} 
-                            onPress={flushProgressAndGoBack}
+                            onPress={() => navigation.goBack()}
                             hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
                         >
                             <Ionicons name="close" size={22} color="white" />
@@ -2896,7 +2859,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                             <Text style={styles.timeLabel}>{formatTime(duration)}</Text>
                         </View>
                         <View style={styles.quickMenuRow}>
-                            {mpvQuickActionVisible && shouldUseEmbeddedVideoPlayer && !expoGoRuntime && (
+                            {mpvQuickActionVisible && shouldUseEmbeddedVideoPlayer && (
                                 <TouchableOpacity
                                     style={styles.quickMenuButton}
                                     onPress={handleEmbeddedMpvPress}
@@ -3441,14 +3404,6 @@ const styles = StyleSheet.create({
         alignItems: 'flex-end',
         justifyContent: 'center',
         marginBottom: 0,
-    },
-    pausedSynopsisText: {
-        marginTop: 12,
-        color: 'rgba(255,255,255,0.82)',
-        fontSize: 13,
-        lineHeight: 19,
-        textAlign: 'right',
-        maxWidth: 280,
     },
     pausedPlayBtn: {
         width: 65,

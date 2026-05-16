@@ -1,40 +1,19 @@
-type IdleTaskOptions = {
-  timeoutMs?: number;
-};
-
-export type IdleTaskHandle = {
-  cancel: () => void;
-};
+import { InteractionManager } from 'react-native';
 
 /**
  * Runs a task when the JS thread is idle.
  * This is the modern replacement for InteractionManager.runAfterInteractions
  * that avoids deprecation warnings and ensures better frame stability.
  */
-export function runIdle(task: () => void | Promise<void>, options?: IdleTaskOptions): IdleTaskHandle {
-  let cancelled = false;
-  const timeoutMs = options?.timeoutMs ?? 1200;
-  const runTask = () => {
-    if (cancelled) return;
-    void task();
-  };
-
+export function runIdle(task: () => void | Promise<void>) {
   if (typeof requestIdleCallback === 'function') {
-    const idleId = requestIdleCallback(runTask, { timeout: timeoutMs });
-    return {
-      cancel: () => {
-        cancelled = true;
-        cancelIdleCallback(idleId);
-      },
-    };
+    requestIdleCallback(() => {
+      void task();
+    });
+  } else {
+    // Fallback if requestIdleCallback is missing (rare in modern RN)
+    InteractionManager.runAfterInteractions(() => {
+      void task();
+    });
   }
-
-  // Fallback for environments where requestIdleCallback is unavailable.
-  const timeoutId = setTimeout(runTask, 48);
-  return {
-    cancel: () => {
-      cancelled = true;
-      clearTimeout(timeoutId);
-    },
-  };
 }

@@ -47,11 +47,11 @@ import {
   StackedSkeleton,
 } from '../components/ContinueWatchingCard';
 
-const SECTION_TITLES: Record<string, string> = {
-  'general-playback': 'General, Playback and Subtitles',
-  'home-appearance': 'Home and Appearance',
-  'account-services': 'Account and Services',
-};
+const SECTION_TITLE_KEYS = {
+  'general-playback': 'settings_detail_general_playback',
+  'home-appearance': 'settings_detail_home_appearance',
+  'account-services': 'settings_detail_account_services',
+} as const;
 
 type PickerOption = {
   value: string | number;
@@ -286,7 +286,6 @@ export function SettingsScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
   const windowHeight = Dimensions.get('window').height;
   const detailSection = route?.params?.section ?? 'general-playback';
-  const title = SECTION_TITLES[detailSection] ?? 'Settings';
   const { user, signOut } = useAuth();
   const { activeProfile } = useProfile();
   const { refreshAddons } = useAddons();
@@ -294,6 +293,7 @@ export function SettingsScreen({ navigation, route }: any) {
   const { checkStatus } = useTrakt();
   const { theme, appearance, resolvedAppearance, setAppearance, setThemeId, showHeroSynopsis, setShowHeroSynopsis } = useTheme();
   const { language, setLanguage, t } = useLanguage();
+  const title = t((SECTION_TITLE_KEYS as Record<string, any>)[detailSection] ?? 'settings_title');
   const { uiStyle, setUiStyle } = useUIStyle();
   const { showNavLabels, setShowNavLabels, continueWatchingStyle, setContinueWatchingStyle, vividAmbientEnabled, setVividAmbientEnabled, pictureInPictureEnabled, setPictureInPictureEnabled, showStreamsList, setShowStreamsList } = useDisplaySettings();
   const { metadataProvider, tmdbKeyEnabled, tmdbApiKey, setMetadataProvider, setTmdbKeyEnabled, setTmdbApiKey } = useTmdbApiKey();
@@ -315,13 +315,13 @@ export function SettingsScreen({ navigation, route }: any) {
     if (metadataProvider === 'cinemeta') {
       return [
         { id: 'networks', title: t('section_networks'), endpoint: '/tmdb/networks', enabled: true },
-        { id: 'featured_movie', title: 'Featured Movies', endpoint: '/cinemeta/catalog/movie/imdbRating', enabled: true },
-        { id: 'featured_tv', title: 'Featured Series', endpoint: '/cinemeta/catalog/series/imdbRating', enabled: true },
+        { id: 'featured_movie', title: t('section_featured_movies'), endpoint: '/cinemeta/catalog/movie/imdbRating', enabled: true },
+        { id: 'featured_tv', title: t('section_featured_series'), endpoint: '/cinemeta/catalog/series/imdbRating', enabled: true },
         { id: 'popular_movie', title: t('section_popular_movies'), endpoint: '/cinemeta/catalog/movie/top', enabled: true },
         { id: 'popular_tv', title: t('section_popular_tv'), endpoint: '/cinemeta/catalog/series/top', enabled: true },
-        { id: 'documentaries', title: 'Documentaries', endpoint: '/cinemeta/catalog/movie/top?genre=Documentary', enabled: false },
-        { id: 'new_movie', title: 'New Movies', endpoint: `/cinemeta/catalog/movie/year/${CURRENT_YEAR}`, enabled: false },
-        { id: 'new_tv', title: 'New Series', endpoint: `/cinemeta/catalog/series/year/${CURRENT_YEAR}`, enabled: false },
+        { id: 'documentaries', title: t('section_documentaries'), endpoint: '/cinemeta/catalog/movie/top?genre=Documentary', enabled: false },
+        { id: 'new_movie', title: t('section_new_movies'), endpoint: `/cinemeta/catalog/movie/year/${CURRENT_YEAR}`, enabled: false },
+        { id: 'new_tv', title: t('section_new_series'), endpoint: `/cinemeta/catalog/series/year/${CURRENT_YEAR}`, enabled: false },
       ];
     }
 
@@ -329,7 +329,7 @@ export function SettingsScreen({ navigation, route }: any) {
       { id: 'networks', title: t('section_networks'), endpoint: '/tmdb/networks', enabled: true },
       { id: 'trending_movie', title: t('section_trending_movies'), endpoint: '/tmdb/trending/movie', enabled: true },
       { id: 'trending_tv', title: t('section_trending_tv'), endpoint: '/tmdb/trending/tv', enabled: true },
-      { id: 'documentaries', title: 'Documentaries', endpoint: '/tmdb/discover?type=movie&genre_id=99&sort_by=popularity.desc', enabled: false },
+      { id: 'documentaries', title: t('section_documentaries'), endpoint: '/tmdb/discover?type=movie&genre_id=99&sort_by=popularity.desc', enabled: false },
       { id: 'popular_movie', title: t('section_popular_movies'), endpoint: '/tmdb/popular/movie', enabled: false },
       { id: 'popular_tv', title: t('section_popular_tv'), endpoint: '/tmdb/popular/tv', enabled: false },
     ];
@@ -379,45 +379,78 @@ export function SettingsScreen({ navigation, route }: any) {
     await setSyncOverCellular(value);
   }, []);
 
-  const themeOptions = THEMES.map(item => ({ value: item.id, label: item.name, description: item.description, accentColor: item.swatch ?? colors.accent }));
+  const themeLabelMap: Record<string, { label: string; description: string }> = {
+    monochrome: { label: t('settings_theme_monochrome'), description: t('settings_theme_monochrome_sub') },
+    ocean: { label: t('settings_theme_ocean'), description: t('settings_theme_ocean_sub') },
+    emerald: { label: t('settings_theme_emerald'), description: t('settings_theme_emerald_sub') },
+  };
+  const themeOptions = THEMES.map(item => ({
+    value: item.id,
+    label: themeLabelMap[item.id]?.label ?? item.name,
+    description: themeLabelMap[item.id]?.description ?? item.description,
+    accentColor: item.swatch ?? colors.accent,
+  }));
+  const themeDisplayName = themeLabelMap[theme.id]?.label ?? theme.name;
   const languageOptions = LANGUAGES.map(item => ({ value: item.code, label: `${item.flag} ${item.name}` }));
   const appearanceOptions: PickerOption[] = [
-    { value: 'system', label: 'System', description: 'Follow the device appearance setting.' },
-    { value: 'dark', label: 'Dark', description: 'Always use dark appearance.' },
-    { value: 'light', label: 'Light', description: 'Always use light appearance.' },
+    { value: 'system', label: t('settings_system'), description: t('settings_system_sub') },
+    { value: 'dark', label: t('settings_dark'), description: t('settings_dark_sub') },
+    { value: 'light', label: t('settings_light'), description: t('settings_light_sub') },
   ];
   const qualityOptions: PickerOption[] = [
-    { value: '4k', label: '4K', description: 'Prefer 4K streams first.' },
-    { value: '1080p', label: '1080p', description: 'Prefer Full HD streams first.' },
-    { value: '720p', label: '720p', description: 'Prefer HD streams first.' },
-    { value: 'best', label: 'Best Available', description: 'Use StreamDek ranking without a fixed resolution target.' },
+    { value: '4k', label: '4K', description: t('settings_quality_4k_sub') },
+    { value: '1080p', label: '1080p', description: t('settings_quality_1080p_sub') },
+    { value: '720p', label: '720p', description: t('settings_quality_720p_sub') },
+    { value: 'best', label: t('settings_quality_best'), description: t('settings_quality_best_sub') },
   ];
-  const fileSizeOptions: PickerOption[] = [0, 4, 8, 12, 20].map(value => ({ value, label: value === 0 ? 'Unlimited' : `${value} GB` }));
+  const fileSizeOptions: PickerOption[] = [0, 4, 8, 12, 20].map(value => ({ value, label: value === 0 ? t('settings_unlimited') : `${value} GB` }));
   const pageStyleOptions: PickerOption[] = [
-    { value: 'classic', label: 'Classic', description: 'Poster-forward layout with standard metadata placement.' },
-    { value: 'centered', label: 'Centered', description: 'Centered presentation with cleaner spacing.' },
-    { value: 'glass', label: 'Glassy Hero', description: 'Large cinematic hero with glass styling.' },
+    { value: 'classic', label: t('settings_classic'), description: t('settings_page_style_classic_sub') },
+    { value: 'centered', label: t('settings_centered'), description: t('settings_page_style_centered_sub') },
+    { value: 'glass', label: t('settings_glassy_hero'), description: t('settings_page_style_glass_sub') },
   ];
   const continueWatchingOptions: PickerOption[] = [
-    { value: 'cinematic', label: 'Cinematic Backdrop' },
-    { value: 'glass', label: 'Glass Overlay' },
-    { value: 'ticket', label: 'Widescreen Ticket' },
-    { value: 'mini', label: 'Mini Player Row' },
-    { value: 'stacked', label: 'Tall Stacked' },
+    { value: 'cinematic', label: t('settings_continue_style_cinematic') },
+    { value: 'glass', label: t('settings_continue_style_glass') },
+    { value: 'ticket', label: t('settings_continue_style_ticket') },
+    { value: 'mini', label: t('settings_continue_style_mini') },
+    { value: 'stacked', label: t('settings_continue_style_stacked') },
   ];
+  const continueStyleLabelMap: Record<string, string> = {
+    cinematic: t('settings_continue_style_cinematic'),
+    glass: t('settings_continue_style_glass'),
+    ticket: t('settings_continue_style_ticket'),
+    mini: t('settings_continue_style_mini'),
+    stacked: t('settings_continue_style_stacked'),
+  };
   const metadataOptions: PickerOption[] = [
-    { value: 'cinemeta', label: 'Cinemeta', description: 'Built-in catalog with no account and no API key required.' },
-    { value: 'tmdb', label: 'TMDB', description: 'Use TMDB metadata and your own API key when enabled.' },
+    { value: 'cinemeta', label: t('settings_cinemeta'), description: t('settings_metadata_cinemeta_sub') },
+    { value: 'tmdb', label: t('settings_tmdb'), description: t('settings_metadata_tmdb_sub') },
   ];
   const decoderOptions: PickerOption[] = [
-    { value: 'auto', label: 'Automatic' },
-    { value: 'hardware', label: 'Hardware' },
-    { value: 'software', label: 'Software' },
+    { value: 'auto', label: t('settings_decoder_auto') },
+    { value: 'hardware', label: t('settings_decoder_hardware') },
+    { value: 'software', label: t('settings_decoder_software') },
   ];
   const surfaceOptions: PickerOption[] = [
-    { value: 'surface', label: 'Surface View' },
-    { value: 'texture', label: 'Texture View' },
+    { value: 'surface', label: t('settings_surface_view') },
+    { value: 'texture', label: t('settings_texture_view') },
   ];
+  const qualityValueLabelMap: Record<string, string> = {
+    '4k': '4K',
+    '1080p': '1080p',
+    '720p': '720p',
+    best: t('settings_quality_best'),
+  };
+  const decoderValueLabelMap: Record<string, string> = {
+    auto: t('settings_decoder_auto'),
+    hardware: t('settings_decoder_hardware'),
+    software: t('settings_decoder_software'),
+  };
+  const surfaceValueLabelMap: Record<string, string> = {
+    surface: t('settings_surface_view'),
+    texture: t('settings_texture_view'),
+  };
 
   const renderPageStylePreview = (option: PickerOption, active: boolean) => {
     const stroke = active ? (colors.accent === '#ffffff' ? colors.textPrimary : colors.accent) : colors.border;
@@ -572,10 +605,10 @@ export function SettingsScreen({ navigation, route }: any) {
         >
           <Ionicons name="reorder-three-outline" size={18} color={colors.placeholder} />
         </TouchableOpacity>
-        <View style={styles.layoutInfo}>
-          <Text style={styles.layoutLabel}>{item.title}</Text>
-          <Text style={styles.layoutSub}>{item.enabled ? 'Visible on Home' : 'Hidden from Home'}</Text>
-        </View>
+      <View style={styles.layoutInfo}>
+        <Text style={styles.layoutLabel}>{item.title}</Text>
+        <Text style={styles.layoutSub}>{item.enabled ? t('settings_home_layout_visible') : t('settings_home_layout_hidden')}</Text>
+      </View>
         <AppleToggle
           value={item.enabled}
           onValueChange={value => { toggleHomeLayoutSection(item.id, value); }}
@@ -583,7 +616,7 @@ export function SettingsScreen({ navigation, route }: any) {
         />
       </View>
     </View>
-  ), [colors.placeholder, colors.toggleOn, styles.layoutDragActive, styles.layoutGrip, styles.layoutInfo, styles.layoutLabel, styles.layoutRow, styles.layoutSub, toggleHomeLayoutSection]);
+  ), [colors.placeholder, colors.toggleOn, styles.layoutDragActive, styles.layoutGrip, styles.layoutInfo, styles.layoutLabel, styles.layoutRow, styles.layoutSub, t, toggleHomeLayoutSection]);
   const homeLayoutSheetMaxHeight = Math.min(720, Math.floor(windowHeight * 0.88));
 
   return (
@@ -596,48 +629,48 @@ export function SettingsScreen({ navigation, route }: any) {
             <View style={styles.content}>
               <TouchableOpacity onPress={() => navigation.goBack()} activeOpacity={0.78} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <Ionicons name="chevron-back" size={20} color={colors.textSecondary} />
-                <Text style={{ color: colors.textSecondary, fontSize: 14, fontWeight: '600' }}>Back</Text>
+                <Text style={{ color: colors.textSecondary, fontSize: 14, fontWeight: '600' }}>{t('common_back')}</Text>
               </TouchableOpacity>
               <View>
                 <Text style={styles.headerTitle}>{title}</Text>
-                <Text style={styles.headerSub}>Focused detail page for faster settings interactions and background application of changes.</Text>
+                <Text style={styles.headerSub}>{t('settings_detail_header_sub')}</Text>
               </View>
 
               {detailSection === 'general-playback' ? (
                 <>
-                  <Text style={styles.sectionTitle}>General</Text>
+                  <Text style={styles.sectionTitle}>{t('settings_general')}</Text>
                   <View style={styles.card}>
-                    <SettingRow icon="language-outline" iconColor={safeIconColor('#9b5de5')} label={t('settings_language')} subtitle="Choose the language used for the app interface." value={`${language.flag} ${language.name}`} onPress={() => setPicker('language')} />
+                    <SettingRow icon="language-outline" iconColor={safeIconColor('#9b5de5')} label={t('settings_language')} subtitle={t('settings_language_sub_current')} value={`${language.flag} ${language.name}`} onPress={() => setPicker('language')} />
                     <View style={styles.divider} />
                     <SettingRow icon="moon-outline" iconColor={safeIconColor('#64748b')} label={t('settings_appearance')} subtitle={t('settings_appearance_sub')} value={appearance === 'dark' ? t('settings_dark') : appearance === 'light' ? t('settings_light') : t('settings_system')} onPress={() => setPicker('appearance')} />
                     <View style={styles.divider} />
-                    <SettingRow icon="color-palette-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_theme')} subtitle="Choose the colour theme used across the app." value={theme.name} onPress={() => setPicker('theme')} />
+                    <SettingRow icon="color-palette-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_theme')} subtitle={t('settings_theme_sub_current')} value={themeDisplayName} onPress={() => setPicker('theme')} />
                     <View style={styles.divider} />
-                    <SettingRow icon="grid-outline" iconColor={safeIconColor('#6366f1')} label="Show Navigation Labels" subtitle="Display tab names below the nav icons." right={<AppleToggle value={showNavLabels} onValueChange={value => { void setShowNavLabels(value); }} onColor={colors.toggleOn} />} />
+                    <SettingRow icon="grid-outline" iconColor={safeIconColor('#6366f1')} label={t('settings_show_nav_labels')} subtitle={t('settings_show_nav_labels_sub')} right={<AppleToggle value={showNavLabels} onValueChange={value => { void setShowNavLabels(value); }} onColor={colors.toggleOn} />} />
                     <View style={styles.divider} />
-                    <SettingRow icon="cellular-outline" iconColor={safeIconColor('#0ea5e9')} label="Sync on Cellular" subtitle="Allow account and addon sync when not on Wi-Fi." right={<AppleToggle value={syncOverCellular} onValueChange={handleSetSyncOverCellular} onColor={colors.toggleOn} />} />
+                    <SettingRow icon="cellular-outline" iconColor={safeIconColor('#0ea5e9')} label={t('settings_sync_cellular')} subtitle={t('settings_sync_cellular_sub')} right={<AppleToggle value={syncOverCellular} onValueChange={handleSetSyncOverCellular} onColor={colors.toggleOn} />} />
                   </View>
 
-                  <Text style={styles.sectionTitle}>Playback</Text>
+                  <Text style={styles.sectionTitle}>{t('settings_playback')}</Text>
                   <View style={styles.card}>
                     <SettingRow icon="play-circle-outline" iconColor={safeIconColor('#6366f1')} label={t('settings_picture_in_picture')} subtitle={t('settings_picture_in_picture_sub')} right={<AppleToggle value={pictureInPictureEnabled} onValueChange={value => { void setPictureInPictureEnabled(value); }} onColor={colors.toggleOn} />} />
                     <View style={styles.divider} />
-                    <SettingRow icon="albums-outline" iconColor={safeIconColor('#22d3ee')} label="Show Streams List" subtitle="Show the streams tab on media pages." right={<AppleToggle value={showStreamsList} onValueChange={value => { void setShowStreamsList(value); }} onColor={colors.toggleOn} />} />
+                    <SettingRow icon="albums-outline" iconColor={safeIconColor('#22d3ee')} label={t('settings_show_streams_list')} subtitle={t('settings_show_streams_list_sub')} right={<AppleToggle value={showStreamsList} onValueChange={value => { void setShowStreamsList(value); }} onColor={colors.toggleOn} />} />
                     <View style={styles.divider} />
                     <SettingRow icon="construct-outline" iconColor={safeIconColor('#14b8a6')} label={t('settings_stream_selection_logic')} subtitle={t('settings_stream_selection_logic_sub')} right={<AppleToggle value={streamSelectionEnabled} onValueChange={value => { void setStreamSelectionEnabled(value); }} onColor={colors.toggleOn} />} />
                     <View style={styles.divider} />
                     <SettingRow icon="timer-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_short_source_filter')} subtitle={t('settings_short_source_filter_sub')} right={<AppleToggle value={shortSourceFilterEnabled} onValueChange={value => { void setShortSourceFilterEnabled(value); }} onColor={colors.toggleOn} />} />
                     <View style={styles.divider} />
-                    <SettingRow icon="tv-outline" iconColor={safeIconColor('#a78bfa')} label={t('settings_decoder_mode')} subtitle={t('settings_decoder_mode_sub')} value={String(decoderMode)} onPress={() => setPicker('decoder')} />
+                    <SettingRow icon="tv-outline" iconColor={safeIconColor('#a78bfa')} label={t('settings_decoder_mode')} subtitle={t('settings_decoder_mode_sub')} value={decoderValueLabelMap[String(decoderMode)] ?? String(decoderMode)} onPress={() => setPicker('decoder')} />
                     <View style={styles.divider} />
-                    <SettingRow icon="scan-outline" iconColor={safeIconColor('#38bdf8')} label={t('settings_render_surface')} subtitle={t('settings_render_surface_sub')} value={String(renderSurface)} onPress={() => setPicker('surface')} />
+                    <SettingRow icon="scan-outline" iconColor={safeIconColor('#38bdf8')} label={t('settings_render_surface')} subtitle={t('settings_render_surface_sub')} value={surfaceValueLabelMap[String(renderSurface)] ?? String(renderSurface)} onPress={() => setPicker('surface')} />
                     <View style={styles.divider} />
-                    <SettingRow icon="resize-outline" iconColor={safeIconColor('#22c55e')} label="Preferred Stream Quality" subtitle="Bias automatic stream ordering toward your preferred quality." value={String(preferredQuality)} onPress={() => setPicker('quality')} />
+                    <SettingRow icon="resize-outline" iconColor={safeIconColor('#22c55e')} label={t('settings_preferred_stream_quality')} subtitle={t('settings_preferred_stream_quality_sub')} value={qualityValueLabelMap[String(preferredQuality)] ?? String(preferredQuality)} onPress={() => setPicker('quality')} />
                     <View style={styles.divider} />
-                    <SettingRow icon="archive-outline" iconColor={safeIconColor('#f97316')} label="Max File Size" subtitle="Exclude streams larger than this size." value={maxFileSizeGB === 0 ? 'Unlimited' : `${maxFileSizeGB} GB`} onPress={() => setPicker('fileSize')} />
+                    <SettingRow icon="archive-outline" iconColor={safeIconColor('#f97316')} label={t('settings_max_file_size')} subtitle={t('settings_max_file_size_sub')} value={maxFileSizeGB === 0 ? t('settings_unlimited') : `${maxFileSizeGB} GB`} onPress={() => setPicker('fileSize')} />
                   </View>
 
-                  <Text style={styles.sectionTitle}>Subtitles</Text>
+                  <Text style={styles.sectionTitle}>{t('settings_subtitles')}</Text>
                   <View style={styles.card}>
                     <SettingRow icon="text-outline" iconColor={safeIconColor('#8b5cf6')} label={t('settings_auto_load_subtitles')} subtitle={t('settings_auto_load_subtitles_sub')} right={<AppleToggle value={autoLoadEnabled} onValueChange={value => { void setAutoLoadEnabled(value); }} onColor={colors.toggleOn} />} />
                     <View style={styles.divider} />
@@ -650,37 +683,37 @@ export function SettingsScreen({ navigation, route }: any) {
 
               {detailSection === 'home-appearance' ? (
                 <>
-                  <Text style={styles.sectionTitle}>Home and Appearance</Text>
+                  <Text style={styles.sectionTitle}>{t('settings_detail_home_appearance')}</Text>
                   <View style={styles.card}>
-                    <SettingRow icon="film-outline" iconColor={safeIconColor('#f59e0b')} label="Catalog & Metadata" subtitle={metadataProvider === 'cinemeta' ? 'Cinemeta is active.' : 'TMDB is active.'} value={metadataProvider === 'cinemeta' ? 'Cinemeta' : 'TMDB'} onPress={() => setPicker('metadataProvider')} />
+                    <SettingRow icon="film-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_catalog_metadata')} subtitle={metadataProvider === 'cinemeta' ? t('settings_catalog_metadata_cinemeta') : t('settings_catalog_metadata_tmdb')} value={metadataProvider === 'cinemeta' ? t('settings_cinemeta') : t('settings_tmdb')} onPress={() => setPicker('metadataProvider')} />
                     <View style={styles.divider} />
-                    <SettingRow icon="grid-outline" iconColor={safeIconColor('#38bdf8')} label="Home Layout" subtitle="Choose which rows appear on the Home screen." value={`${homeLayoutSections.filter(section => section.enabled).length} active`} onPress={() => setShowHomeLayoutModal(true)} />
+                    <SettingRow icon="grid-outline" iconColor={safeIconColor('#38bdf8')} label={t('settings_home_layout')} subtitle={t('settings_home_layout_sub')} value={t('settings_home_layout_active_count', { n: homeLayoutSections.filter(section => section.enabled).length })} onPress={() => setShowHomeLayoutModal(true)} />
                     <View style={styles.divider} />
-                    <SettingRow icon="albums-outline" iconColor={safeIconColor('#22d3ee')} label={t('settings_page_style')} subtitle={t('settings_page_style_sub')} value={uiStyle === 'glass' ? 'Glassy Hero' : uiStyle === 'centered' ? 'Centered' : 'Classic'} onPress={() => setPicker('pageStyle')} />
+                    <SettingRow icon="albums-outline" iconColor={safeIconColor('#22d3ee')} label={t('settings_page_style')} subtitle={t('settings_page_style_sub')} value={uiStyle === 'glass' ? t('settings_glassy_hero') : uiStyle === 'centered' ? t('settings_centered') : t('settings_classic')} onPress={() => setPicker('pageStyle')} />
                     <View style={styles.divider} />
-                    <SettingRow icon="play-circle-outline" iconColor={safeIconColor('#22c55e')} label="Continue Watching Style" subtitle="Choose how continue watching cards appear on Home." value={String(continueWatchingStyle)} onPress={() => setPicker('continueStyle')} />
+                    <SettingRow icon="play-circle-outline" iconColor={safeIconColor('#22c55e')} label={t('settings_continue_watching_style')} subtitle={t('settings_continue_watching_style_sub')} value={continueStyleLabelMap[String(continueWatchingStyle)] ?? String(continueWatchingStyle)} onPress={() => setPicker('continueStyle')} />
                     <View style={styles.divider} />
                     <SettingRow icon="reader-outline" iconColor={safeIconColor('#64748b')} label={t('settings_hero_synopsis')} subtitle={t('settings_hero_synopsis_sub')} right={<AppleToggle value={showHeroSynopsis} onValueChange={value => { void setShowHeroSynopsis(value); }} onColor={colors.toggleOn} />} />
                     <View style={styles.divider} />
-                    <SettingRow icon="color-wand-outline" iconColor={safeIconColor('#a78bfa')} label="Ambient Background" subtitle="Show a colourful ambient glow behind home and detail screens." right={<AppleToggle value={vividAmbientEnabled} onValueChange={value => { void setVividAmbientEnabled(value); }} onColor={colors.toggleOn} />} />
+                    <SettingRow icon="color-wand-outline" iconColor={safeIconColor('#a78bfa')} label={t('settings_ambient_background')} subtitle={t('settings_ambient_background_sub')} right={<AppleToggle value={vividAmbientEnabled} onValueChange={value => { void setVividAmbientEnabled(value); }} onColor={colors.toggleOn} />} />
                   </View>
                   {metadataProvider === 'tmdb' ? (
                     <View style={styles.card}>
                       <View style={{ padding: 18, gap: 10 }}>
-                        <Text style={styles.rowLabel}>TMDB API Key</Text>
-                        <Text style={styles.rowSub}>If you are signed out, this is stored on device first and can sync later when you create an account.</Text>
+                        <Text style={styles.rowLabel}>{t('settings_tmdb_api_key')}</Text>
+                        <Text style={styles.rowSub}>{t('settings_tmdb_api_key_sub')}</Text>
                         <TextInput
                           value={tmdbDraft}
                           onChangeText={setTmdbDraft}
-                          placeholder="Paste your TMDB API key here"
+                          placeholder={t('settings_tmdb_api_key_placeholder')}
                           placeholderTextColor={colors.placeholder}
                           autoCapitalize="none"
                           autoCorrect={false}
                           style={styles.textInput}
                         />
-                        <SettingRow icon="key-outline" iconColor={safeIconColor('#f59e0b')} label="Use Custom TMDB Key" subtitle="Turn TMDB enrichment on or off." right={<AppleToggle value={tmdbKeyEnabled} onValueChange={value => { void setTmdbKeyEnabled(value); }} onColor={colors.toggleOn} />} />
+                        <SettingRow icon="key-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_tmdb_custom_key')} subtitle={t('settings_tmdb_custom_key_sub')} right={<AppleToggle value={tmdbKeyEnabled} onValueChange={value => { void setTmdbKeyEnabled(value); }} onColor={colors.toggleOn} />} />
                         <TouchableOpacity style={[styles.actionButton, { backgroundColor: colors.accent, borderWidth: 1, borderColor: resolvedAppearance === 'light' ? 'rgba(17,24,39,0.12)' : 'rgba(255,255,255,0.14)' }]} onPress={() => { void setTmdbApiKey(tmdbDraft.trim()); }} activeOpacity={0.82}>
-                          <Text style={[styles.actionButtonText, { color: colors.buttonText }]}>Save TMDB API Key</Text>
+                          <Text style={[styles.actionButtonText, { color: colors.buttonText }]}>{t('settings_tmdb_save_key')}</Text>
                         </TouchableOpacity>
                       </View>
                     </View>
@@ -690,13 +723,13 @@ export function SettingsScreen({ navigation, route }: any) {
 
               {detailSection === 'account-services' ? (
                 <>
-                  <Text style={styles.sectionTitle}>Account and Services</Text>
+                  <Text style={styles.sectionTitle}>{t('settings_detail_account_services')}</Text>
                   <View style={styles.card}>
                     <SettingRow
                       icon="person-circle-outline"
                       iconColor={safeIconColor(colors.mutedText)}
-                      label="Account"
-                      subtitle={user ? (user.email ? `Signed in as ${user.email}` : 'Signed in · Settings syncing across devices') : 'Create an account for sync, TV linking, and Trakt.'}
+                      label={t('settings_account')}
+                      subtitle={user ? (user.email ? `${t('addons_signed_in_as')} ${user.email}` : t('settings_account_signed_in_generic')) : t('settings_account_signed_out_sub')}
                       onPress={user ? undefined : () => navigation.navigate('Auth')}
                     />
                     {user ? <View style={styles.divider} /> : null}
@@ -704,8 +737,8 @@ export function SettingsScreen({ navigation, route }: any) {
                       <SettingRow
                         icon="sync-outline"
                         iconColor={safeIconColor('#22c55e')}
-                        label="Refresh Sync"
-                        subtitle="Pull the latest account, addon, debrid, and Trakt state from the cloud."
+                        label={t('settings_refresh_sync')}
+                        subtitle={t('settings_refresh_sync_sub')}
                         right={
                           <View style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: '#22c55e18', borderWidth: 1, borderColor: '#22c55e55', justifyContent: 'center', alignItems: 'center' }}>
                             {syncRefreshing
@@ -719,7 +752,7 @@ export function SettingsScreen({ navigation, route }: any) {
                   </View>
                   {user ? (
                     <TouchableOpacity style={[styles.actionButton, { backgroundColor: '#c0392b' }]} onPress={() => signOut()} activeOpacity={0.82}>
-                      <Text style={[styles.actionButtonText, { color: '#ffffff' }]}>Sign Out</Text>
+                      <Text style={[styles.actionButtonText, { color: '#ffffff' }]}>{t('settings_sign_out')}</Text>
                     </TouchableOpacity>
                   ) : null}
                 </>
@@ -730,8 +763,8 @@ export function SettingsScreen({ navigation, route }: any) {
       </BlurTargetView>
       <PickerModal
         visible={picker !== null}
-        title={picker === 'appearance' ? t('settings_appearance') : picker === 'theme' ? t('settings_theme') : picker === 'language' ? t('settings_language') : picker === 'quality' ? 'Preferred Stream Quality' : picker === 'fileSize' ? 'Max File Size' : picker === 'pageStyle' ? t('settings_page_style') : picker === 'continueStyle' ? 'Continue Watching Style' : picker === 'metadataProvider' ? 'Catalog & Metadata' : picker === 'decoder' ? t('settings_decoder_mode') : picker === 'surface' ? t('settings_render_surface') : 'Choose an option'}
-        subtitle={picker === 'metadataProvider' ? 'Pick the catalog source used across Home and metadata views.' : undefined}
+        title={picker === 'appearance' ? t('settings_appearance') : picker === 'theme' ? t('settings_theme') : picker === 'language' ? t('settings_language') : picker === 'quality' ? t('settings_preferred_stream_quality') : picker === 'fileSize' ? t('settings_max_file_size') : picker === 'pageStyle' ? t('settings_page_style') : picker === 'continueStyle' ? t('settings_continue_watching_style') : picker === 'metadataProvider' ? t('settings_catalog_metadata') : picker === 'decoder' ? t('settings_decoder_mode') : picker === 'surface' ? t('settings_render_surface') : t('settings_picker_choose')}
+        subtitle={picker === 'metadataProvider' ? t('settings_catalog_metadata_sub') : undefined}
         options={pickerOptions}
         selectedValue={pickerValue as any}
         onSelect={handlePickerSelect}
@@ -742,9 +775,9 @@ export function SettingsScreen({ navigation, route }: any) {
         <Pressable style={styles.modalBackdrop} onPress={() => setShowHomeLayoutModal(false)}>
           <GestureHandlerRootView style={{ width: '100%' }}>
           <Pressable style={[styles.modalCard, { paddingBottom: insets.bottom + 16, maxHeight: homeLayoutSheetMaxHeight }]} onPress={() => {}}>
-            <Text style={styles.modalTitle}>Home Layout</Text>
-            <Text style={styles.modalSub}>Choose which rows appear on Home and drag to reorder them. Changes apply in the background.</Text>
-            <Text style={styles.layoutHint}>Long-press the reorder handle to move a row.</Text>
+            <Text style={styles.modalTitle}>{t('settings_home_layout')}</Text>
+            <Text style={styles.modalSub}>{t('settings_home_layout_modal_sub')}</Text>
+            <Text style={styles.layoutHint}>{t('settings_home_layout_modal_hint')}</Text>
             <View style={[styles.layoutModalScroll, { maxHeight: homeLayoutSheetMaxHeight - 92, minHeight: Math.min(420, Math.floor(windowHeight * 0.52)) }]}>
               <DraggableFlatList
                 data={homeLayoutSections}

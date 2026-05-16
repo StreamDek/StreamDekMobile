@@ -171,6 +171,8 @@ export const WatchlistScreen = ({ navigation }: any) => {
   const { isConnected, watchlist: traktWatchlist, refreshWatchlist } = useTrakt();
   const storageOwnerId = getProfileStorageOwnerId(user?.uid, activeProfile?.id);
   const legacyOwnerId = user?.uid ?? null;
+  const watchlistKey = user ? storageOwnerId : null;
+
   const [localItems, setLocalItems] = useState<any[]>([]);
   const [watchlistRemovalIds, setWatchlistRemovalIds] = useState<string[]>([]);
   const [pendingRemovals, setPendingRemovals] = useState<Set<string>>(new Set());
@@ -210,12 +212,18 @@ export const WatchlistScreen = ({ navigation }: any) => {
   }, [allItems, filter]);
 
   const loadLocal = useCallback(async () => {
-    setLocalItems(await readWatchlistItems(storageOwnerId, legacyOwnerId));
-  }, [legacyOwnerId, storageOwnerId]);
+    if (watchlistKey) {
+      setLocalItems(await readWatchlistItems(storageOwnerId, legacyOwnerId));
+    }
+  }, [legacyOwnerId, storageOwnerId, watchlistKey]);
 
   const loadRemovalIds = useCallback(async () => {
+    if (!user) {
+      setWatchlistRemovalIds([]);
+      return;
+    }
     setWatchlistRemovalIds(await readWatchlistRemovalIds(storageOwnerId, legacyOwnerId));
-  }, [legacyOwnerId, storageOwnerId]);
+  }, [legacyOwnerId, storageOwnerId, user]);
 
   const load = useCallback(async () => {
     runIdle(async () => {
@@ -268,9 +276,11 @@ export const WatchlistScreen = ({ navigation }: any) => {
     }
 
     // Remove from local storage
-    const updated = (await readWatchlistItems(storageOwnerId, legacyOwnerId)).filter((i: any) => !watchlistItemMatchesId(i, id));
-    await writeWatchlistItems(storageOwnerId, updated);
-    setLocalItems(updated);
+    if (watchlistKey) {
+      const updated = (await readWatchlistItems(storageOwnerId, legacyOwnerId)).filter((i: any) => !watchlistItemMatchesId(i, id));
+      await writeWatchlistItems(storageOwnerId, updated);
+      setLocalItems(updated);
+    }
 
     const nextRemovalIds = Array.from(new Set([...watchlistRemovalIds, id]));
     setWatchlistRemovalIds(nextRemovalIds);
@@ -282,7 +292,7 @@ export const WatchlistScreen = ({ navigation }: any) => {
       next.delete(id);
       return next;
     });
-  }, [activeProfile?.id, isConnected, legacyOwnerId, refreshWatchlist, storageOwnerId, user, watchlistRemovalIds]);
+  }, [isConnected, legacyOwnerId, refreshWatchlist, storageOwnerId, user, watchlistKey, watchlistRemovalIds]);
 
   const {
     longPressItem, setLongPressItem, handleLongPress, buildActions,

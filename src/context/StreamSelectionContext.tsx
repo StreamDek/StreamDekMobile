@@ -9,13 +9,10 @@ type StreamSelectionSettingsValue = {
   enabled: boolean;
   setEnabled: (value: boolean) => Promise<void>;
   shortSourceFilterEnabled: boolean;
-  effectiveShortSourceFilterEnabled: boolean;
   setShortSourceFilterEnabled: (value: boolean) => Promise<void>;
   preferredQuality: PreferredQuality;
-  effectivePreferredQuality?: PreferredQuality;
   setPreferredQuality: (value: PreferredQuality) => Promise<void>;
   maxFileSizeGB: number;
-  effectiveMaxFileSizeGB: number;
   setMaxFileSizeGB: (value: number) => Promise<void>;
   refreshFromCloud: () => Promise<void>;
   isReady: boolean;
@@ -27,13 +24,10 @@ const StreamSelectionContext = createContext<StreamSelectionSettingsValue>({
   enabled: true,
   setEnabled: async () => {},
   shortSourceFilterEnabled: true,
-  effectiveShortSourceFilterEnabled: true,
   setShortSourceFilterEnabled: async () => {},
   preferredQuality: '1080p',
-  effectivePreferredQuality: undefined,
   setPreferredQuality: async () => {},
-  maxFileSizeGB: 0,
-  effectiveMaxFileSizeGB: 0,
+  maxFileSizeGB: 2,
   setMaxFileSizeGB: async () => {},
   refreshFromCloud: async () => {},
   isReady: false,
@@ -44,21 +38,16 @@ export const StreamSelectionProvider = ({ children }: { children: React.ReactNod
   const [enabled, setEnabledState] = useState(true);
   const [shortSourceFilterEnabled, setShortSourceFilterEnabledState] = useState(true);
   const [preferredQuality, setPreferredQualityState] = useState<PreferredQuality>('1080p');
-  const [maxFileSizeGB, setMaxFileSizeGBState] = useState(0);
+  const [maxFileSizeGB, setMaxFileSizeGBState] = useState(2);
   const [isReady, setIsReady] = useState(false);
   const settingsRef = useRef({
     enabled: true,
     shortSourceFilterEnabled: true,
     preferredQuality: '1080p' as PreferredQuality,
-    maxFileSizeGB: 0,
+    maxFileSizeGB: 2,
   });
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasLocalOverrideDuringHydrationRef = useRef(false);
-
-  const normalizePreferredQuality = useCallback((value: unknown): PreferredQuality | null => {
-    if (value === '4K') return '4k';
-    return isPreferredQuality(value) ? value : null;
-  }, []);
 
   const applyRemotePlayback = useCallback(async (remotePreferences: any | null) => {
     if (hasLocalOverrideDuringHydrationRef.current && !isReady) return;
@@ -72,8 +61,9 @@ export const StreamSelectionProvider = ({ children }: { children: React.ReactNod
     const nextShortSourceFilterEnabled = typeof remotePlayback.shortSourceFilterEnabled === 'boolean'
       ? remotePlayback.shortSourceFilterEnabled
       : settingsRef.current.shortSourceFilterEnabled;
-    const nextPreferredQuality = normalizePreferredQuality(remotePlayback.preferredQuality)
-      ?? settingsRef.current.preferredQuality;
+    const nextPreferredQuality = isPreferredQuality(remotePlayback.preferredQuality)
+      ? remotePlayback.preferredQuality
+      : settingsRef.current.preferredQuality;
     const nextMaxFileSizeGB = typeof remotePlayback.maxFileSizeGB === 'number'
       ? remotePlayback.maxFileSizeGB
       : settingsRef.current.maxFileSizeGB;
@@ -118,10 +108,9 @@ export const StreamSelectionProvider = ({ children }: { children: React.ReactNod
               setShortSourceFilterEnabledState(parsed.shortSourceFilterEnabled);
               settingsRef.current.shortSourceFilterEnabled = parsed.shortSourceFilterEnabled;
             }
-            const normalizedPreferredQuality = normalizePreferredQuality(parsed?.preferredQuality);
-            if (normalizedPreferredQuality) {
-              setPreferredQualityState(normalizedPreferredQuality);
-              settingsRef.current.preferredQuality = normalizedPreferredQuality;
+            if (isPreferredQuality(parsed?.preferredQuality)) {
+              setPreferredQualityState(parsed.preferredQuality);
+              settingsRef.current.preferredQuality = parsed.preferredQuality;
             }
             if (typeof parsed?.maxFileSizeGB === 'number') {
               setMaxFileSizeGBState(parsed.maxFileSizeGB);
@@ -141,7 +130,7 @@ export const StreamSelectionProvider = ({ children }: { children: React.ReactNod
     return () => {
       cancelled = true;
     };
-  }, [applyRemotePlayback, normalizePreferredQuality, user]);
+  }, [applyRemotePlayback, user]);
 
   const persist = useCallback((next: typeof settingsRef.current) => {
     settingsRef.current = next;
@@ -191,22 +180,15 @@ export const StreamSelectionProvider = ({ children }: { children: React.ReactNod
     await applyRemotePlayback(remotePreferences);
   }, [applyRemotePlayback, user]);
 
-  const effectiveShortSourceFilterEnabled = enabled ? true : shortSourceFilterEnabled;
-  const effectivePreferredQuality = enabled ? undefined : preferredQuality;
-  const effectiveMaxFileSizeGB = enabled ? 0 : maxFileSizeGB;
-
   return (
     <StreamSelectionContext.Provider value={{
       enabled,
       setEnabled,
       shortSourceFilterEnabled,
-      effectiveShortSourceFilterEnabled,
       setShortSourceFilterEnabled,
       preferredQuality,
-      effectivePreferredQuality,
       setPreferredQuality,
       maxFileSizeGB,
-      effectiveMaxFileSizeGB,
       setMaxFileSizeGB,
       refreshFromCloud,
       isReady,

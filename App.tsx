@@ -11,7 +11,6 @@ import { HomeScreen } from './src/screens/HomeScreen';
 import { PlayerScreen } from './src/screens/PlayerScreen';
 import { BrowseScreen } from './src/screens/BrowseScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
-import { SettingsShellScreen } from './src/screens/SettingsShellScreen';
 import { MediaDetailScreen } from './src/screens/MediaDetailScreen';
 import { WatchlistScreen } from './src/screens/WatchlistScreen';
 import { SearchScreen } from './src/screens/SearchScreen';
@@ -43,7 +42,6 @@ import { UIStyleProvider } from './src/context/UIStyleContext';
 import { DisplaySettingsProvider } from './src/context/DisplaySettingsContext';
 import { TmdbApiKeyProvider } from './src/context/TmdbApiKeyContext';
 import { ProfileProvider, useProfile } from './src/context/ProfileContext';
-import { AppLifecycleProvider } from './src/context/AppLifecycleContext';
 import { ProfileSwitcherScreen } from './src/screens/ProfileSwitcherScreen';
 import { ManageProfilesScreen } from './src/screens/ManageProfilesScreen';
 import { EditProfileScreen } from './src/screens/EditProfileScreen';
@@ -63,7 +61,7 @@ function MainTabs({ blurTargetRef }: { blurTargetRef: React.RefObject<View | nul
       <Tab.Screen name="Search" component={SearchScreen} />
       <Tab.Screen name="ContinueWatching" component={ContinueWatchingScreen} />
       <Tab.Screen name="Watchlist" component={WatchlistScreen} />
-      <Tab.Screen name="Settings" component={SettingsShellScreen} />
+      <Tab.Screen name="Settings" component={SettingsScreen} />
     </Tab.Navigator>
   );
 }
@@ -241,7 +239,6 @@ function AppNavigation() {
               component={AddonsScreen}
               options={{ headerShown: false, presentation: 'modal', animation: 'slide_from_bottom', animationDuration: 300 }}
             />
-            <Stack.Screen name="SettingsDetail" component={SettingsScreen} options={{ headerShown: false, animationDuration: 260 }} />
             <Stack.Screen name="Auth" component={AuthScreen} options={{ headerShown: false, presentation: 'modal', animation: 'slide_from_bottom', animationDuration: 300 }} />
             <Stack.Screen name="LinkTv" component={LinkTvScreen} options={{ headerShown: false, presentation: 'modal', animation: 'slide_from_bottom', animationDuration: 300 }} />
             <Stack.Screen
@@ -252,11 +249,6 @@ function AppNavigation() {
             <Stack.Screen name="TraktCollection" component={TraktCollectionScreen} options={{ headerShown: false, animationDuration: 280 }} />
             <Stack.Screen name="EpisodeStreams" component={EpisodeStreamsScreen} options={{ headerShown: false, animationDuration: 280 }} />
             <Stack.Screen name="ManageProfiles" component={ManageProfilesScreen} options={{ headerShown: false, animationDuration: 280 }} />
-            <Stack.Screen
-              name="ProfileSwitcher"
-              component={ProfileSwitcherScreen}
-              options={{ headerShown: false, presentation: 'transparentModal', animation: 'fade', animationDuration: 220 }}
-            />
             <Stack.Screen
               name="EditProfile"
               component={EditProfileScreen}
@@ -309,28 +301,26 @@ export default function App() {
               <DisplaySettingsProvider>
               <LanguageProvider>
                 <TraktProvider>
-                  <AppLifecycleProvider>
-                    <WatchProgressProvider>
-                      <WatchedProvider>
-                        <TorrentServerProvider>
-                          <StreamSelectionProvider>
-                            <PlaybackSettingsProvider>
-                              <SubtitleProvider>
-                              <DebridProvider>
-                                <AddonProvider>
-                                  <TmdbApiKeyProvider>
-                                    <AppNavigation />
-                                    <AnimatedSplash />
-                                  </TmdbApiKeyProvider>
-                                </AddonProvider>
-                              </DebridProvider>
-                              </SubtitleProvider>
-                            </PlaybackSettingsProvider>
-                          </StreamSelectionProvider>
-                        </TorrentServerProvider>
-                      </WatchedProvider>
-                    </WatchProgressProvider>
-                  </AppLifecycleProvider>
+                  <WatchProgressProvider>
+                    <WatchedProvider>
+                      <TorrentServerProvider>
+                        <StreamSelectionProvider>
+                          <PlaybackSettingsProvider>
+                            <SubtitleProvider>
+                            <DebridProvider>
+                              <AddonProvider>
+                                <TmdbApiKeyProvider>
+                                  <AppNavigation />
+                                  <AnimatedSplash />
+                                </TmdbApiKeyProvider>
+                              </AddonProvider>
+                            </DebridProvider>
+                            </SubtitleProvider>
+                          </PlaybackSettingsProvider>
+                        </StreamSelectionProvider>
+                      </TorrentServerProvider>
+                    </WatchedProvider>
+                  </WatchProgressProvider>
                 </TraktProvider>
               </LanguageProvider>
               </DisplaySettingsProvider>

@@ -19,7 +19,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../context/AuthContext';
 import { useProfile } from '../context/ProfileContext';
 import { useTheme, ThemeColors } from '../context/ThemeContext';
-import { useLanguage } from '../context/LanguageContext';
 import { deleteAccountDevice, fetchAccountBootstrap, type AccountBootstrap } from '../utils/accountPreferences';
 import { activateTvCode, extractTvCode, normalizeTvCode } from '../services/tvLink';
 
@@ -190,7 +189,6 @@ export function LinkTvScreen({ navigation, route }: any) {
   const { user, authLoading } = useAuth();
   const { activeProfile } = useProfile();
   const { theme } = useTheme();
-  const { t } = useLanguage();
   const { colors, resolvedAppearance } = theme;
   const isLightMode = resolvedAppearance === 'light';
   const isLightMonochrome = isLightMode && theme.id === 'monochrome';
@@ -248,7 +246,7 @@ export function LinkTvScreen({ navigation, route }: any) {
     if (!cameraPermission?.granted) {
       const response = await requestCameraPermission();
       if (!response.granted) {
-        Alert.alert(t('linktv_camera_needed_title'), t('linktv_camera_needed_body'));
+        Alert.alert('Camera access needed', 'Allow camera access to scan the TV QR code, or enter the code manually.');
         return;
       }
     }
@@ -263,7 +261,7 @@ export function LinkTvScreen({ navigation, route }: any) {
 
     const normalized = normalizeTvCode(nextCode);
     if (normalized.length < 9) {
-      setStatus(t('linktv_enter_full_code'));
+      setStatus('Enter the full TV code before continuing.');
       return;
     }
 
@@ -272,16 +270,16 @@ export function LinkTvScreen({ navigation, route }: any) {
 
   async function submitLink(normalized: string) {
     setBusy(true);
-    setStatus(t('linktv_authorizing'));
+    setStatus('Authorizing TV...');
 
     try {
       const result = await activateTvCode(user, normalized);
       setLinkedDeviceName(result.deviceName ?? null);
-      setStatus(t('linktv_success'));
+      setStatus('TV linked successfully.');
       setPendingConfirmationCode(null);
       await refreshLinkedDevices();
     } catch (error: any) {
-      setStatus(error?.message ?? t('linktv_link_failed'));
+      setStatus(error?.message ?? 'Could not link this TV right now.');
     } finally {
       setBusy(false);
     }
@@ -292,10 +290,10 @@ export function LinkTvScreen({ navigation, route }: any) {
     setDisconnectingDeviceId(deviceId);
     try {
       await deleteAccountDevice(user, deviceId);
-      setStatus(`${deviceName} ${t('linktv_disconnect').toLowerCase()}.`);
+      setStatus(`${deviceName} disconnected.`);
       await refreshLinkedDevices();
     } catch (error: any) {
-      setStatus(error?.message ?? t('linktv_disconnect_failed'));
+      setStatus(error?.message ?? 'Could not disconnect this TV right now.');
     } finally {
       setDisconnectingDeviceId(null);
     }
@@ -304,7 +302,7 @@ export function LinkTvScreen({ navigation, route }: any) {
   function handleScan(payload: string) {
     const extracted = extractTvCode(payload);
     if (!extracted) {
-      setStatus(t('linktv_bad_qr'));
+      setStatus('That QR code does not look like a StreamDek TV sign-in code.');
       setScannerVisible(false);
       return;
     }
@@ -329,23 +327,29 @@ export function LinkTvScreen({ navigation, route }: any) {
         >
           <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()}>
             <Ionicons name="chevron-back" size={20} color={colors.accentSoft} />
-            <Text style={styles.backText}>{t('linktv_back')}</Text>
+            <Text style={styles.backText}>Back</Text>
           </TouchableOpacity>
 
-          <Text style={styles.title}>{t('linktv_title')}</Text>
-          <Text style={styles.subtitle}>{t('linktv_subtitle')}</Text>
+          <Text style={styles.title}>Link TV</Text>
+          <Text style={styles.subtitle}>
+            Scan the QR code shown on StreamDek TV or enter the 8-character pairing code manually.
+          </Text>
 
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>{t('linktv_scan_title')}</Text>
-            <Text style={styles.cardBody}>{t('linktv_scan_body')}</Text>
+            <Text style={styles.cardTitle}>Scan QR Code</Text>
+            <Text style={styles.cardBody}>
+              Use the in-app scanner to approve sign-in for the TV currently showing the QR code.
+            </Text>
             <TouchableOpacity style={[styles.actionButton, styles.scannerButton]} onPress={() => void openScanner()} disabled={busy}>
-              <Text style={styles.scannerButtonText}>{t('linktv_open_scanner')}</Text>
+              <Text style={styles.scannerButtonText}>Open Scanner</Text>
             </TouchableOpacity>
           </View>
 
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>{t('linktv_manual_title')}</Text>
-            <Text style={styles.cardBody}>{t('linktv_manual_body')}</Text>
+            <Text style={styles.cardTitle}>Enter Code Manually</Text>
+            <Text style={styles.cardBody}>
+              If scanning is not convenient, type the pairing code from the TV screen.
+            </Text>
             <TextInput
               value={code}
               onChangeText={(value) => setCode(normalizeTvCode(value))}
@@ -360,10 +364,10 @@ export function LinkTvScreen({ navigation, route }: any) {
             />
             <View style={styles.row}>
               <TouchableOpacity style={[styles.actionButton, styles.primary]} onPress={() => void confirmAndLink(code)} disabled={busy}>
-                {busy ? <ActivityIndicator color={isLightMonochrome ? '#111111' : colors.buttonText} /> : <Text style={styles.primaryText}>{t('linktv_authorize')}</Text>}
+                {busy ? <ActivityIndicator color={isLightMonochrome ? '#111111' : colors.buttonText} /> : <Text style={styles.primaryText}>Authorize TV</Text>}
               </TouchableOpacity>
               <TouchableOpacity style={styles.secondary} onPress={() => setCode(normalizeTvCode(String(route?.params?.code ?? '')))} disabled={busy}>
-                <Text style={styles.secondaryText}>{t('linktv_deep_link_code')}</Text>
+                <Text style={styles.secondaryText}>Deep Link Code</Text>
               </TouchableOpacity>
             </View>
             {status ? <Text style={styles.state}>{status}</Text> : null}
@@ -371,18 +375,20 @@ export function LinkTvScreen({ navigation, route }: any) {
 
           <View style={styles.card}>
             <View style={styles.linkedHeaderRow}>
-              <Text style={styles.cardTitle}>{t('linktv_linked_tvs')}</Text>
+              <Text style={styles.cardTitle}>Linked TVs</Text>
               <Text style={styles.linkedCount}>{linkedTvDevices.length}</Text>
             </View>
-            <Text style={styles.cardBody}>{t('linktv_linked_tvs_body')}</Text>
+            <Text style={styles.cardBody}>
+              Manage TVs already linked to this account. Disconnect any device that should no longer sign in with you.
+            </Text>
             {refreshingDevices ? (
               <ActivityIndicator color={colors.accentSoft} />
             ) : linkedTvDevices.length ? (
               linkedTvDevices.map((device) => {
-                const deviceName = device.name?.trim() || t('linktv_streamdek_tv');
+                const deviceName = device.name?.trim() || 'StreamDek TV';
                 const subtitle = device.isCurrent
-                  ? t('linktv_this_tv_session', { name: deviceName })
-                  : t('linktv_last_seen', { name: deviceName, time: device.lastSeenAt ? new Date(device.lastSeenAt).toLocaleString() : t('linktv_recently') });
+                  ? `${deviceName} • This TV session`
+                  : `${deviceName} • Last seen ${device.lastSeenAt ? new Date(device.lastSeenAt).toLocaleString() : 'recently'}`;
                 return (
                   <View key={device.id} style={styles.linkedDeviceRow}>
                     <View style={styles.linkedDeviceIcon}>
@@ -400,23 +406,23 @@ export function LinkTvScreen({ navigation, route }: any) {
                     >
                       {disconnectingDeviceId === device.id
                         ? <ActivityIndicator size="small" color="#dc2626" />
-                        : <Text style={styles.disconnectButtonText}>{t('linktv_disconnect')}</Text>}
+                        : <Text style={styles.disconnectButtonText}>Disconnect</Text>}
                     </TouchableOpacity>
                   </View>
                 );
               })
             ) : (
-              <Text style={styles.state}>{t('linktv_no_tvs')}</Text>
+              <Text style={styles.state}>No TVs linked yet.</Text>
             )}
           </View>
 
-          {linkedDeviceName || status === t('linktv_success') ? (
+          {linkedDeviceName || status === 'TV linked successfully.' ? (
             <View style={styles.successCard}>
-              <Text style={styles.successTitle}>{t('linktv_authorized_title')}</Text>
+              <Text style={styles.successTitle}>TV authorized</Text>
               <Text style={styles.successBody}>
                 {linkedDeviceName
-                  ? t('linktv_authorized_body_named', { name: linkedDeviceName })
-                  : t('linktv_authorized_body')}
+                  ? `${linkedDeviceName} can now finish sign-in on the TV.`
+                  : 'The TV can now finish sign-in and enter the app.'}
               </Text>
             </View>
           ) : null}
@@ -427,7 +433,7 @@ export function LinkTvScreen({ navigation, route }: any) {
         <View style={styles.scannerBackdrop}>
           <View style={styles.scannerCard}>
             <View style={styles.scannerHeader}>
-              <Text style={styles.scannerTitle}>{t('linktv_scan_modal_title')}</Text>
+              <Text style={styles.scannerTitle}>Scan StreamDek TV QR</Text>
               <Pressable style={styles.scannerClose} onPress={() => setScannerVisible(false)}>
                 <Ionicons name="close" size={22} color={colors.textPrimary} />
               </Pressable>
@@ -439,7 +445,9 @@ export function LinkTvScreen({ navigation, route }: any) {
                 onBarcodeScanned={({ data }) => handleScan(data)}
               />
             </View>
-            <Text style={styles.scannerHelp}>{t('linktv_scan_modal_help')}</Text>
+            <Text style={styles.scannerHelp}>
+              Point the camera at the QR code on your TV. We will prefill the code and ask for confirmation before approving access.
+            </Text>
           </View>
         </View>
       </Modal>
@@ -450,8 +458,10 @@ export function LinkTvScreen({ navigation, route }: any) {
             <View style={styles.confirmIconWrap}>
               <Ionicons name="tv-outline" size={24} color={colors.accentSoft} />
             </View>
-            <Text style={styles.confirmTitle}>{t('linktv_confirm_title')}</Text>
-            <Text style={styles.confirmBody}>{t('linktv_confirm_body')}</Text>
+            <Text style={styles.confirmTitle}>Authorize TV sign-in</Text>
+            <Text style={styles.confirmBody}>
+              Approve StreamDek TV using the pairing code below. The TV will finish signing in as soon as this is confirmed.
+            </Text>
             <Text style={styles.confirmCode}>{pendingConfirmationCode}</Text>
             <View style={styles.confirmActions}>
               <TouchableOpacity
@@ -459,14 +469,14 @@ export function LinkTvScreen({ navigation, route }: any) {
                 onPress={() => setPendingConfirmationCode(null)}
                 disabled={busy}
               >
-                <Text style={styles.secondaryText}>{t('common_cancel')}</Text>
+                <Text style={styles.secondaryText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.actionButton, styles.primary]}
                 onPress={() => pendingConfirmationCode ? void submitLink(pendingConfirmationCode) : undefined}
                 disabled={busy}
               >
-                {busy ? <ActivityIndicator color={isLightMonochrome ? '#111111' : colors.buttonText} /> : <Text style={styles.primaryText}>{t('linktv_authorize')}</Text>}
+                {busy ? <ActivityIndicator color={isLightMonochrome ? '#111111' : colors.buttonText} /> : <Text style={styles.primaryText}>Authorize</Text>}
               </TouchableOpacity>
             </View>
           </Pressable>

@@ -107,8 +107,7 @@ export const PrimaryActionButton = React.memo(function PrimaryActionButton({
     elevation,
     trackColor,
   } = getPrimaryActionPalette(colors, themeId, isLightAppearance, surface);
-  const glassSurface = surface === 'glass';
-  const glassBlurSurface = glassSurface && !isLightAppearance;
+  const glassSurface = surface === 'glass' && !isLightAppearance;
 
   return (
     <TouchableOpacity
@@ -130,7 +129,7 @@ export const PrimaryActionButton = React.memo(function PrimaryActionButton({
       disabled={disabled}
       onPress={onPress}
     >
-      {glassBlurSurface ? (
+      {glassSurface ? (
         <>
           <BlurView
             tint="dark"

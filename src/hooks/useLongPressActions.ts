@@ -58,18 +58,18 @@ export function useLongPressActions({ navigation, watchlistOverride, onWatchlist
 
   // Load local watchlist once so we can show correct "add/remove" label
   useEffect(() => {
-    if (watchlistOverride !== undefined) return;
+    if (watchlistOverride !== undefined || !user) return;
     readWatchlistItems(storageOwnerId, legacyOwnerId)
       .then(items => setLocalWatchlist(items))
       .catch(() => {});
-  }, [legacyOwnerId, storageOwnerId, watchlistOverride]);
+  }, [legacyOwnerId, storageOwnerId, user, watchlistOverride]);
 
   useEffect(() => {
-    if (watchlistOverride !== undefined) return;
+    if (watchlistOverride !== undefined || !user) return;
     readWatchlistRemovalIds(storageOwnerId, legacyOwnerId)
       .then(ids => setWatchlistRemovalIds(ids))
       .catch(() => {});
-  }, [legacyOwnerId, storageOwnerId, watchlistOverride]);
+  }, [legacyOwnerId, storageOwnerId, user, watchlistOverride]);
 
   const combinedWatchlist = useMemo(() => {
     if (watchlistOverride !== undefined) return watchlistOverride;
@@ -88,6 +88,7 @@ export function useLongPressActions({ navigation, watchlistOverride, onWatchlist
   }, []);
 
   const toggleWatchlist = useCallback(async (item: any) => {
+    if (!user) { navigation.navigate('Auth'); return; }
     const itemId = String(item.id);
     const current = await readWatchlistItems(storageOwnerId, legacyOwnerId);
     const exists = current.some((i: any) => watchlistItemMatchesId(i, itemId));
@@ -129,7 +130,7 @@ export function useLongPressActions({ navigation, watchlistOverride, onWatchlist
         await refreshWatchlist();
       } catch {}
     }
-  }, [activeProfile?.id, isConnected, legacyOwnerId, refreshWatchlist, storageOwnerId, user, watchlistRemovalIds]);
+  }, [legacyOwnerId, navigation, isConnected, refreshWatchlist, storageOwnerId, user, watchlistRemovalIds]);
 
   const handleSeriesMarkWatched = useCallback(async (item: any) => {
     try {

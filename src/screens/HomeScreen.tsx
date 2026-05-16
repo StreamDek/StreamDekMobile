@@ -3,7 +3,7 @@ import { useFocusEffect, useScrollToTop } from '@react-navigation/native';
 import {
   View, Text, StyleSheet, RefreshControl,
   Animated, Easing, PanResponder, StatusBar, TouchableOpacity,
-  FlatList, Dimensions, Share, BackHandler, AppState,
+  ScrollView, Dimensions, Share,
   Image as RNImage,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -13,7 +13,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Storage } from '../utils/storage';
 import { API_BASE } from '../constants/api';
 import { tmdbFetch } from '../utils/tmdbFetch';
-import { fetchMetadataCatalog } from '../utils/metadataCatalogFetch';
 import { SectionStrip } from '../components/SectionStrip';
 import { NetworkStrip } from '../components/NetworkStrip';
 import { ActionSheet } from '../components/ActionSheet';
@@ -30,7 +29,6 @@ import { useUIStyle } from '../context/UIStyleContext';
 import { useTrakt } from '../context/TraktContext';
 import { useLanguage } from '../context/LanguageContext';
 import { useWatched } from '../context/WatchedContext';
-import { useAppLifecycle } from '../context/AppLifecycleContext';
 import { movieProgressKey } from '../context/WatchProgressContext';
 import { useAppReady } from '../context/AppReadyContext';
 import { buildAuthHeaders } from '../utils/authHeaders';
@@ -48,19 +46,10 @@ import { RatingBadge } from '../components/RatingBadge';
 import { ContinueWatchingCard } from '../components/ContinueWatchingCard';
 import { useDisplaySettings } from '../context/DisplaySettingsContext';
 import { getProfileStorageOwnerId, profileScopedStorageKey, progressIndexStorageKey } from '../utils/profileStorage';
-import { useTmdbApiKey } from '../context/TmdbApiKeyContext';
-import { getDeviceProfile } from '../utils/deviceProfile';
-import { invalidateSharedCache } from '../utils/sharedDataCache';
-import { IdleTaskHandle, runIdle } from '../utils/idleTask';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const HERO_HEIGHT = 616;
-const DOCUMENTARY_SECTION_ID = 'documentaries';
-const CURRENT_YEAR = new Date().getFullYear();
-const HOME_SECTION_CACHE_KEY = 'home_section_cache';
-const homeSectionMemoryCache = new Map<string, Record<string, any[]>>();
-const SECTION_UPDATE_FLUSH_MS = 80;
-const AnimatedFlatList = Animated.createAnimatedComponent(FlatList<any>);
+const DOCUMENTARY_SECTION = { id: 'documentaries', title: 'Documentaries', endpoint: '/tmdb/discover?type=movie&genre_id=99&sort_by=popularity.desc', enabled: false };
 
 function formatContinueTime(positionSec?: number | null): string | null {
   if (!positionSec || !Number.isFinite(positionSec) || positionSec <= 0) return null;
@@ -426,6 +415,10 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     justifyContent: 'center' as const,
     backgroundColor: 'rgba(255,255,255,0.08)',
   },
+  heroGlassImageScrim: {
+    ...StyleSheet.absoluteFillObject,
+    bottom: -2,
+  } as any,
   heroGlassPosterFallbackText: {
     color: '#ffffff',
     fontSize: 13,
@@ -574,40 +567,23 @@ export const HomeScreen = ({ navigation }: any) => {
   const { theme, appearance, resolvedAppearance, showHeroSynopsis } = useTheme();
   const { colors } = theme;
   const { t } = useLanguage();
-  const { isForeground } = useAppLifecycle();
   const { uiStyle } = useUIStyle();
   const { continueWatchingStyle, vividAmbientEnabled } = useDisplaySettings();
   const { setAppReady } = useAppReady();
-  const { metadataProvider } = useTmdbApiKey();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const isDarkAppearance = resolvedAppearance === 'dark';
   const isMonochromeDark = isDarkAppearance;
   const heroSectionHeight = uiStyle === 'glass' ? HERO_HEIGHT + 36 : HERO_HEIGHT;
   const { isMovieWatched, isSeriesWatched, toggleMovieWatched, markAllEpisodesWatched, unmarkSeriesWatched } = useWatched();
 
-  const defaultSections = useMemo(() => {
-    if (metadataProvider === 'cinemeta') {
-      return [
-        { id: 'networks', title: t('section_networks'), endpoint: '/tmdb/networks', enabled: true },
-        { id: 'featured_movie', title: t('section_featured_movies'), endpoint: '/cinemeta/catalog/movie/imdbRating', enabled: true },
-        { id: 'featured_tv', title: t('section_featured_series'), endpoint: '/cinemeta/catalog/series/imdbRating', enabled: true },
-        { id: 'popular_movie', title: t('section_popular_movies'), endpoint: '/cinemeta/catalog/movie/top', enabled: true },
-        { id: 'popular_tv', title: t('section_popular_tv'), endpoint: '/cinemeta/catalog/series/top', enabled: true },
-        { id: DOCUMENTARY_SECTION_ID, title: t('section_documentaries'), endpoint: '/cinemeta/catalog/movie/top?genre=Documentary', enabled: false },
-        { id: 'new_movie', title: t('section_new_movies'), endpoint: `/cinemeta/catalog/movie/year/${CURRENT_YEAR}`, enabled: false },
-        { id: 'new_tv', title: t('section_new_series'), endpoint: `/cinemeta/catalog/series/year/${CURRENT_YEAR}`, enabled: false },
-      ];
-    }
-
-    return [
-      { id: 'networks', title: t('section_networks'), endpoint: '/tmdb/networks', enabled: true },
-      { id: 'trending_movie', title: t('section_trending_movies'), endpoint: '/tmdb/trending/movie', enabled: true },
-      { id: 'trending_tv', title: t('section_trending_tv'), endpoint: '/tmdb/trending/tv', enabled: true },
-      { id: DOCUMENTARY_SECTION_ID, title: t('section_documentaries'), endpoint: '/tmdb/discover?type=movie&genre_id=99&sort_by=popularity.desc', enabled: false },
-      { id: 'popular_movie', title: t('section_popular_movies'), endpoint: '/tmdb/popular/movie', enabled: false },
-      { id: 'popular_tv', title: t('section_popular_tv'), endpoint: '/tmdb/popular/tv', enabled: false },
-    ];
-  }, [metadataProvider, t]);
+  const defaultSections = useMemo(() => [
+    { id: 'networks',      title: t('section_networks'),        endpoint: '/tmdb/networks',       enabled: true },
+    { id: 'trending_movie', title: t('section_trending_movies'), endpoint: '/tmdb/trending/movie',  enabled: true },
+    { id: 'trending_tv',   title: t('section_trending_tv'),     endpoint: '/tmdb/trending/tv',     enabled: true },
+    DOCUMENTARY_SECTION,
+    { id: 'popular_movie',  title: t('section_popular_movies'),  endpoint: '/tmdb/popular/movie',   enabled: false },
+    { id: 'popular_tv',    title: t('section_popular_tv'),      endpoint: '/tmdb/popular/tv',      enabled: false },
+  ], [t]);
 
   const {
     isConnected: traktConnected,
@@ -638,7 +614,6 @@ export const HomeScreen = ({ navigation }: any) => {
   }, [activeProfileId]);
   const legacyOwnerId = user?.uid ?? null;
   const sectionSettingsKey = profileScopedStorageKey('home_sections', user?.uid, activeProfile?.id);
-  const sectionCacheKey = profileScopedStorageKey(`${HOME_SECTION_CACHE_KEY}:${metadataProvider}`, user?.uid, activeProfile?.id);
 
   const [longPressItem,          setLongPressItem]          = useState<any | null>(null);
   const [seriesWatchConfirmItem, setSeriesWatchConfirmItem] = useState<any | null>(null);
@@ -664,34 +639,8 @@ export const HomeScreen = ({ navigation }: any) => {
   const heroTimerRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const heroLengthRef = useRef(0);
   const heroTransitionDirectionRef = useRef<1 | -1>(1);
-  const deviceProfile = useMemo(() => getDeviceProfile(), []);
-  const appStateRef = useRef(AppState.currentState);
-  const homeFocusedRef = useRef(false);
-  const backgroundFetchIdleRef = useRef<IdleTaskHandle | null>(null);
-  const heroPrefetchIdleRef = useRef<IdleTaskHandle | null>(null);
-  const sectionPrefetchIdleRef = useRef<IdleTaskHandle | null>(null);
-  const heroMetadataIdleRef = useRef<IdleTaskHandle | null>(null);
-  const homeListRef = useRef<FlatList<any>>(null);
-  useScrollToTop(homeListRef);
-  const heroMetadataFetchedRef = useRef<Set<string>>(new Set());
-  const hasCompletedInitialHomeLoadRef = useRef(false);
-  const lastAutoFetchKeyRef = useRef<string | null>(null);
-  const sectionFetchRequestIdRef = useRef(0);
-
-  useFocusEffect(
-    useCallback(() => {
-      homeFocusedRef.current = true;
-      return () => {
-        homeFocusedRef.current = false;
-      };
-    }, []),
-  );
-
-  const resolveHeroBackdropUri = useCallback((item: any | null | undefined) => {
-    if (!item) return null;
-    const key = `${item.type}_${item.id}`;
-    return heroBackdrops[key] ?? getHeroBackgroundUri(item);
-  }, [heroBackdrops]);
+  const homeScrollViewRef = useRef<ScrollView>(null);
+  useScrollToTop(homeScrollViewRef);
 
   // Merge Trakt watchlist with local watchlist (dedup by id, minus pending removals)
   const combinedWatchlist = useMemo(() => {
@@ -703,6 +652,7 @@ export const HomeScreen = ({ navigation }: any) => {
     return uniqueItemsById(mergeWatchlistItems(traktMapped, localOnly));
   }, [traktWatchlist, watchlist, pendingWatchlistRemovals, watchlistRemovalIds]);
   const allContinueWatching = useMemo(() => {
+    if (!user) return [];
     const byId = new Map<string, any>();
     for (const item of [...continueWatching, ...localContinueWatching]) {
       const key = String(item?.tmdbId ?? item?.id ?? '');
@@ -711,7 +661,7 @@ export const HomeScreen = ({ navigation }: any) => {
       byId.set(key, current ? mergeMediaEntries(item, current) : mergeMediaEntries(item, {}));
     }
     return Array.from(byId.values());
-  }, [continueWatching, localContinueWatching]);
+  }, [user, continueWatching, localContinueWatching]);
   const scrollY = useRef(new Animated.Value(0)).current;
   const headerOpacity = scrollY.interpolate({ inputRange: [0, 80], outputRange: [1, 0.92], extrapolate: 'clamp' });
   const heroScrollScale = scrollY.interpolate({
@@ -750,22 +700,21 @@ export const HomeScreen = ({ navigation }: any) => {
   }, [defaultSections, sectionSettingsKey]);
 
   const loadWatchlist = useCallback(async () => {
+    if (!user) { setWatchlist([]); return; }
     try {
       setWatchlist(await readWatchlistItems(storageOwnerId, legacyOwnerId));
-    } catch {
-      setWatchlist([]);
-    }
-  }, [storageOwnerId, legacyOwnerId]);
+    } catch {}
+  }, [user, storageOwnerId, legacyOwnerId]);
 
   const loadWatchlistRemovals = useCallback(async () => {
+    if (!user) { setWatchlistRemovalIds([]); return; }
     try {
       setWatchlistRemovalIds(await readWatchlistRemovalIds(storageOwnerId, legacyOwnerId));
-    } catch {
-      setWatchlistRemovalIds([]);
-    }
-  }, [legacyOwnerId, storageOwnerId]);
+    } catch {}
+  }, [legacyOwnerId, storageOwnerId, user]);
 
   const loadLocalProgress = useCallback(async () => {
+    if (!user) { setLocalContinueWatching([]); return; }
     try {
       const indexKey = progressIndexStorageKey(storageOwnerId);
       const raw = await Storage.getItem(indexKey);
@@ -789,122 +738,27 @@ export const HomeScreen = ({ navigation }: any) => {
     } catch {
       setLocalContinueWatching([]);
     }
-  }, [storageOwnerId]);
+  }, [user, storageOwnerId]);
 
-  const loadCachedSectionData = useCallback(async () => {
-    const memoryCached = homeSectionMemoryCache.get(sectionCacheKey);
-    if (memoryCached) return memoryCached;
-    try {
-      const raw = await Storage.getItem(sectionCacheKey);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      const resolved = parsed && typeof parsed === 'object' ? parsed as Record<string, any[]> : null;
-      if (resolved) homeSectionMemoryCache.set(sectionCacheKey, resolved);
-      return resolved;
-    } catch {
-      return null;
-    }
-  }, [sectionCacheKey]);
-
-  const fetchCatalogSections = useCallback(async (activeSections: typeof sections) => {
-    const enabledSections = activeSections.filter(s => s.enabled);
-    const priorityWindow = deviceProfile.performanceClass === 'low' ? 2 : 3;
-    const prioritySections = enabledSections.slice(0, priorityWindow);
-    const backgroundSections = enabledSections.slice(priorityWindow);
-    const requestId = ++sectionFetchRequestIdRef.current;
-
-    if (enabledSections.length === 0) {
-      setLoading(false);
-      return false;
-    }
-
+  const fetchTmdbSections = useCallback(async (activeSections: typeof sections) => {
+    const results: Record<string, any[]> = {};
     let fetchedAny = false;
-    const nextResults: Record<string, any[]> = {};
-    const pendingUpdates: Record<string, any[]> = {};
-    let flushTimer: ReturnType<typeof setTimeout> | null = null;
-    let latestSnapshot: Record<string, any[]> | null = null;
-    let firstSettled = false;
-
-    const flushPendingUpdates = () => {
-      flushTimer = null;
-      if (sectionFetchRequestIdRef.current !== requestId) return;
-      const entries = Object.entries(pendingUpdates);
-      if (entries.length === 0) return;
-      for (const [key] of entries) delete pendingUpdates[key];
-      setSectionData(prev => {
-        const merged = { ...prev };
-        for (const [key, value] of entries) {
-          merged[key] = value;
-        }
-        latestSnapshot = merged;
-        return merged;
-      });
-    };
-
-    const queueSectionUpdate = (sectionId: string, rows: any[]) => {
-      pendingUpdates[sectionId] = rows;
-      if (!flushTimer) {
-        flushTimer = setTimeout(flushPendingUpdates, SECTION_UPDATE_FLUSH_MS);
-      }
-    };
-
-    const fetchSection = async (s: typeof enabledSections[number]) => {
+    await Promise.all(
+      activeSections.filter(s => s.enabled).map(async (s) => {
         try {
-          const data = await fetchMetadataCatalog(s.endpoint);
-          if (sectionFetchRequestIdRef.current !== requestId) return;
+          const res = await tmdbFetch(s.endpoint);
+          if (!res.ok) return;
+          const data = await res.json();
           fetchedAny = true;
-          nextResults[s.id] = data.results || [];
-          queueSectionUpdate(s.id, data.results || []);
-          if (!firstSettled) {
-            firstSettled = true;
-            setLoading(false);
-          }
-        } catch {
-          if (sectionFetchRequestIdRef.current !== requestId) return;
-          // Mark section as settled (empty) so the skeleton doesn't hang indefinitely.
-          nextResults[s.id] = [];
-          queueSectionUpdate(s.id, []);
-          if (!firstSettled) {
-            firstSettled = true;
-            setLoading(false);
-          }
-        }
-    };
-
-    await Promise.all(prioritySections.map(fetchSection));
-    if (backgroundSections.length > 0) {
-      await new Promise<void>(resolve => {
-        backgroundFetchIdleRef.current?.cancel();
-        backgroundFetchIdleRef.current = runIdle(async () => {
-          if (!isForeground || !homeFocusedRef.current) {
-            resolve();
-            return;
-          }
-          await Promise.all(backgroundSections.map(fetchSection));
-          resolve();
-        }, { timeoutMs: 1400 });
-      });
-      backgroundFetchIdleRef.current = null;
-    }
-    if (flushTimer) {
-      clearTimeout(flushTimer);
-      flushPendingUpdates();
-    }
-    if (sectionFetchRequestIdRef.current !== requestId) return fetchedAny;
-
-    if (Object.keys(nextResults).length > 0) {
-      const snapshot = latestSnapshot ?? {
-        ...homeSectionMemoryCache.get(sectionCacheKey),
-        ...nextResults,
-      };
-      homeSectionMemoryCache.set(sectionCacheKey, snapshot);
-      void Storage.setItem(sectionCacheKey, JSON.stringify(snapshot)).catch(() => undefined);
-    }
-    if (!firstSettled) {
-      setLoading(false);
+          results[s.id] = data.results || [];
+        } catch {}
+      })
+    );
+    if (Object.keys(results).length > 0) {
+      setSectionData(prev => ({ ...prev, ...results }));
     }
     return fetchedAny;
-  }, [deviceProfile.performanceClass, isForeground, sectionCacheKey]);
+  }, []);
 
   const fetchTraktSections = useCallback(async () => {
     if (!traktConnected || !user) return;
@@ -912,89 +766,50 @@ export const HomeScreen = ({ navigation }: any) => {
     refreshRecommendations();
   }, [traktConnected, user, refreshTrending, refreshRecommendations]);
 
-  // Clear stale data and reload when the catalog provider switches
-  const prevProviderRef = useRef(metadataProvider);
-  useEffect(() => {
-    if (prevProviderRef.current === metadataProvider) return;
-    prevProviderRef.current = metadataProvider;
-    invalidateSharedCache('catalog:');
-    hasCompletedInitialHomeLoadRef.current = false;
-    sectionFetchRequestIdRef.current += 1;
-    lastAutoFetchKeyRef.current = null;
-    setSections(defaultSections);
-    void (async () => {
-      const cached = await loadCachedSectionData();
-      if (cached && Object.keys(cached).length > 0) {
-        setSectionData(cached);
-        setLoading(false);
-      } else {
-        setSectionData({});
-        setLoading(true);
-      }
-      await loadSectionConfig();
-    })();
-  }, [defaultSections, loadCachedSectionData, loadSectionConfig, metadataProvider]);
-
   useEffect(() => {
     let active = true;
     const init = async () => {
-      const [resolvedSections, cachedSectionData] = await Promise.all([
-        loadSectionConfig(),
-        loadCachedSectionData(),
-      ]);
-      if (!active) return;
-      if (cachedSectionData && Object.keys(cachedSectionData).length > 0) {
-        setSectionData(cachedSectionData);
-        setLoading(false);
+      const resolvedSections = await loadSectionConfig();
+      const tmdbLoaded = active ? await fetchTmdbSections(resolvedSections) : false;
+      if (active) {
+        await Promise.all([loadWatchlist(), loadWatchlistRemovals()]);
+        await loadLocalProgress();
+        setLoading(!tmdbLoaded);
+        setAppReady(true);
       }
-      setSections(resolvedSections);
-      setAppReady(true);
-      void Promise.all([loadWatchlist(), loadWatchlistRemovals(), loadLocalProgress()]);
     };
     init();
     return () => { active = false; };
-  }, [loadCachedSectionData, loadLocalProgress, loadSectionConfig, loadWatchlist, loadWatchlistRemovals, setAppReady, user?.uid, activeProfile?.id]);
+  }, [fetchTmdbSections, loadSectionConfig, loadWatchlistRemovals, setAppReady, user?.uid, activeProfile?.id]);
 
   useFocusEffect(
     useCallback(() => {
       const timer = setTimeout(() => {
-        if (hasCompletedInitialHomeLoadRef.current) {
-          void fetchCatalogSections(sections);
-        } else {
-          hasCompletedInitialHomeLoadRef.current = true;
-        }
-        void loadWatchlist();
-        void loadLocalProgress();
+        void loadSectionConfig().then(resolvedSections => {
+          void fetchTmdbSections(resolvedSections);
+        });
+        loadWatchlist();
+        loadLocalProgress();
         if (traktConnected && user) {
-          void fetchTraktSections();
-          void refreshContinueWatching();
-          void refreshWatchlist();
+          fetchTraktSections();
+          refreshContinueWatching();
+          refreshWatchlist();
         }
       }, 100);
+      const timer2 = setTimeout(() => {
+        loadLocalProgress();
+      }, 600);
       return () => {
         clearTimeout(timer);
+        clearTimeout(timer2);
       };
-  }, [user, activeProfile?.id, traktConnected, fetchTraktSections, refreshContinueWatching, refreshWatchlist, loadWatchlist, loadLocalProgress, fetchCatalogSections, sections])
+  }, [user, activeProfile?.id, traktConnected, fetchTraktSections, refreshContinueWatching, refreshWatchlist, loadWatchlistRemovals, loadWatchlist, loadLocalProgress, fetchTmdbSections])
   );
 
   useEffect(() => {
     if (sections.length === 0) return;
-    const fetchKey = `${metadataProvider}:${sections.map(section => `${section.id}:${section.enabled ? 1 : 0}:${section.endpoint}`).join('|')}`;
-    if (lastAutoFetchKeyRef.current === fetchKey) return;
-    lastAutoFetchKeyRef.current = fetchKey;
-    void fetchCatalogSections(sections);
-  }, [fetchCatalogSections, metadataProvider, sections]);
-
-  // Home is the root tab — exit the app when the hardware back is pressed here.
-  useFocusEffect(
-    useCallback(() => {
-      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-        BackHandler.exitApp();
-        return true;
-      });
-      return () => sub.remove();
-    }, [])
-  );
+    void fetchTmdbSections(sections);
+  }, [sections, fetchTmdbSections]);
 
   // Sync user-specific content whenever auth state changes
   const prevUser = useRef<typeof user>(undefined);
@@ -1035,16 +850,14 @@ export const HomeScreen = ({ navigation }: any) => {
   }, [traktConnected, fetchTraktSections, refreshContinueWatching, refreshWatchlist]);
 
   useEffect(() => {
-      const heroMovieId = metadataProvider === 'cinemeta' ? 'featured_movie' : 'trending_movie';
-      const heroTvId    = metadataProvider === 'cinemeta' ? 'featured_tv'    : 'trending_tv';
-      const trendingMovies = (sectionData[heroMovieId] || []).slice(0, 8).map(i => ({ ...i, type: 'movie' }));
-      const trendingTv = (sectionData[heroTvId] || []).slice(0, 8).map(i => ({ ...i, type: 'tv' }));
+      const trendingMovies = (sectionData['trending_movie'] || []).slice(0, 6).map(i => ({ ...i, type: 'movie' }));
+      const trendingTv = (sectionData['trending_tv'] || []).slice(0, 6).map(i => ({ ...i, type: 'tv' }));
       const watchlistItems = combinedWatchlist
         .map(i => ({ ...i, type: i.type === 'tv' ? 'tv' : 'movie' }))
-        .slice(0, 8);
+        .slice(0, 6);
       const continueItems = allContinueWatching
         .map(i => ({ ...i, type: i.type === 'tv' ? 'tv' : 'movie' }))
-        .slice(0, 8);
+        .slice(0, 6);
     const isWatchedHeroItem = (item: any) => (
       item?.type === 'tv'
         ? isSeriesWatched(Number(item.id))
@@ -1071,14 +884,23 @@ export const HomeScreen = ({ navigation }: any) => {
       combined.push(item);
     };
 
-    for (let round = 0; round < 8 && combined.length < 8; round++) {
+    for (let round = 0; round < 3 && combined.length < 5; round++) {
       for (const bucket of buckets) {
         addItem(bucket[round]);
-        if (combined.length >= 8) break;
+        if (combined.length >= 5) break;
       }
     }
 
-    const nextHeroItems = combined.slice(0, 8);
+    if (combined.length < 5) {
+      for (const bucket of buckets) {
+        for (let i = 3; i < bucket.length && combined.length < 5; i++) {
+          addItem(bucket[i]);
+        }
+        if (combined.length >= 5) break;
+      }
+    }
+
+    const nextHeroItems = combined.slice(0, 5);
     const currentKey = heroItems[heroIndexRef.current] ? getHeroItemKey(heroItems[heroIndexRef.current]) : null;
     const nextIndex = currentKey
       ? nextHeroItems.findIndex(item => getHeroItemKey(item) === currentKey)
@@ -1086,7 +908,7 @@ export const HomeScreen = ({ navigation }: any) => {
     const resolvedIndex = nextIndex >= 0 ? nextIndex : 0;
 
     setHeroItems(nextHeroItems);
-    heroLengthRef.current = nextHeroItems.length;
+    heroLengthRef.current = Math.min(combined.length, 5);
     heroIndexRef.current = resolvedIndex;
     heroItemKeyRef.current = nextHeroItems[resolvedIndex] ? getHeroItemKey(nextHeroItems[resolvedIndex]) : null;
     setHeroIndex(resolvedIndex);
@@ -1094,73 +916,47 @@ export const HomeScreen = ({ navigation }: any) => {
     heroFadeIn.setValue(1);
     heroScale.setValue(1.015);
     Animated.timing(heroScale, {
-      toValue: deviceProfile.enableExtendedAnimations ? 1.06 : 1.03,
-      duration: deviceProfile.enableExtendedAnimations ? 14000 : 7000,
+      toValue: 1.06,
+      duration: 14000,
       easing: Easing.linear,
       useNativeDriver: true,
     }).start();
-  }, [deviceProfile.enableExtendedAnimations, sectionData, combinedWatchlist, allContinueWatching, isMovieWatched, isSeriesWatched, heroFadeIn, heroScale, metadataProvider]);
+  }, [sectionData, combinedWatchlist, allContinueWatching, isMovieWatched, isSeriesWatched, heroFadeIn, heroScale]);
 
   useEffect(() => {
-    heroPrefetchIdleRef.current?.cancel();
-    if (!isForeground || !homeFocusedRef.current) return;
     if (heroItems.length === 0) return;
-    const prioritizedHeroItems = heroItems.slice(0, deviceProfile.heroPrefetchCount);
-    heroPrefetchIdleRef.current = runIdle(async () => {
-      await Image.prefetch(
-        [
-          ...prioritizedHeroItems
-            .map(resolveHeroBackdropUri)
-            .filter((uri): uri is string => typeof uri === 'string' && uri.length > 0),
-          ...prioritizedHeroItems
-            .map(item => heroLogos[`${item.type}_${item.id}`])
-            .filter((uri): uri is string => typeof uri === 'string' && uri.length > 0),
-        ],
-        'memory-disk',
-      );
-    }, { timeoutMs: 1000 });
-    return () => {
-      heroPrefetchIdleRef.current?.cancel();
-      heroPrefetchIdleRef.current = null;
-    };
-  }, [deviceProfile.heroPrefetchCount, heroItems, heroLogos, isForeground, resolveHeroBackdropUri]);
+    void Image.prefetch(
+      [
+        ...heroItems
+          .map(getHeroBackgroundUri)
+          .filter((uri): uri is string => typeof uri === 'string' && uri.length > 0),
+        ...heroItems
+          .map(item => heroLogos[`${item.type}_${item.id}`])
+          .filter((uri): uri is string => typeof uri === 'string' && uri.length > 0),
+      ],
+      'memory-disk',
+    );
+  }, [heroItems, heroLogos]);
 
   useEffect(() => {
-    sectionPrefetchIdleRef.current?.cancel();
-    if (!isForeground || !homeFocusedRef.current) return;
     const sectionImages = Object.values(sectionData)
       .flat()
-      .slice(0, deviceProfile.sectionPrefetchCount)
+      .slice(0, 36)
       .flatMap((item: any) => [item?.poster, item?.backdrop])
       .filter((uri): uri is string => typeof uri === 'string' && uri.length > 0);
 
     if (sectionImages.length > 0) {
-      sectionPrefetchIdleRef.current = runIdle(
-        async () => {
-          await Image.prefetch(Array.from(new Set(sectionImages)), 'memory-disk');
-        },
-        { timeoutMs: 1200 },
-      );
+      void Image.prefetch(Array.from(new Set(sectionImages)), 'memory-disk');
     }
-    return () => {
-      sectionPrefetchIdleRef.current?.cancel();
-      sectionPrefetchIdleRef.current = null;
-    };
-  }, [deviceProfile.sectionPrefetchCount, isForeground, sectionData]);
+  }, [sectionData]);
 
   useEffect(() => {
-    heroMetadataIdleRef.current?.cancel();
-    if (!isForeground || !homeFocusedRef.current) return;
     if (heroItems.length === 0) return;
     let cancelled = false;
-    const itemsToEnrich = heroItems
-      .slice(0, deviceProfile.heroPrefetchCount)
-      .filter(item => !heroMetadataFetchedRef.current.has(`${item.type}_${item.id}`));
-    if (itemsToEnrich.length === 0) return;
 
     setHeroLogoStates(prev => {
       const next = { ...prev };
-      for (const item of itemsToEnrich) {
+      for (const item of heroItems) {
         const key = `${item.type}_${item.id}`;
         if (next[key] !== 'loaded') {
           next[key] = 'loading';
@@ -1170,7 +966,7 @@ export const HomeScreen = ({ navigation }: any) => {
     });
 
     const loadHeroMetadata = async () => {
-      const results = await Promise.all(itemsToEnrich.map(async (item) => {
+      const results = await Promise.all(heroItems.map(async (item) => {
         const key = `${item.type}_${item.id}`;
         try {
           const res = await tmdbFetch(`/tmdb/details/${item.type}/${item.id}`);
@@ -1192,13 +988,6 @@ export const HomeScreen = ({ navigation }: any) => {
         }
       }));
 
-      if (cancelled) return;
-
-      const metadataImages = results.flatMap(result => [result.logo, result.backdrop])
-        .filter((uri): uri is string => typeof uri === 'string' && uri.length > 0);
-      if (metadataImages.length > 0) {
-        await Image.prefetch(Array.from(new Set(metadataImages)), 'memory-disk').catch(() => undefined);
-      }
       if (cancelled) return;
 
       setHeroLogos(prev => {
@@ -1236,18 +1025,13 @@ export const HomeScreen = ({ navigation }: any) => {
         }
         return next;
       });
-      for (const result of results) {
-        heroMetadataFetchedRef.current.add(result.key);
-      }
     };
 
-    heroMetadataIdleRef.current = runIdle(loadHeroMetadata, { timeoutMs: 1500 });
+    void loadHeroMetadata();
     return () => {
       cancelled = true;
-      heroMetadataIdleRef.current?.cancel();
-      heroMetadataIdleRef.current = null;
     };
-  }, [deviceProfile.heroPrefetchCount, heroItems, isForeground]);
+  }, [heroItems]);
 
   const slideTo = useCallback((index: number) => {
     if (heroLengthRef.current <= 0) {
@@ -1283,21 +1067,19 @@ export const HomeScreen = ({ navigation }: any) => {
         useNativeDriver: true,
       }),
       Animated.timing(heroScale, {
-        toValue: deviceProfile.enableExtendedAnimations ? 1.06 : 1.03,
-        duration: deviceProfile.enableExtendedAnimations ? 14000 : 7000,
+        toValue: 1.06,
+        duration: 14000,
         easing: Easing.linear,
         useNativeDriver: true,
       }),
     ]).start(() => {
       setHeroPrevIndex(null);
     });
-  }, [deviceProfile.enableExtendedAnimations, heroContentAnim, heroFadeIn, heroItems, heroScale]);
+  }, [heroContentAnim, heroFadeIn, heroItems, heroScale]);
 
   const startHeroTimer = useCallback(() => {
-    if (appStateRef.current !== 'active') return;
     if (heroTimerRef.current) clearInterval(heroTimerRef.current);
     heroTimerRef.current = setInterval(() => {
-      if (appStateRef.current !== 'active') return;
       if (heroLengthRef.current <= 1) return;
       const next = (heroIndexRef.current + 1) % heroLengthRef.current;
       slideTo(next);
@@ -1326,23 +1108,10 @@ export const HomeScreen = ({ navigation }: any) => {
     return () => { if (heroTimerRef.current) clearInterval(heroTimerRef.current); };
   }, [heroItems, startHeroTimer]);
 
-  useEffect(() => {
-    const sub = AppState.addEventListener('change', state => {
-      appStateRef.current = state;
-      if (state === 'active') {
-        startHeroTimer();
-      } else if (heroTimerRef.current) {
-        clearInterval(heroTimerRef.current);
-        heroTimerRef.current = null;
-      }
-    });
-    return () => sub.remove();
-  }, [startHeroTimer]);
-
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     const [tmdbLoaded] = await Promise.all([
-      fetchCatalogSections(sections),
+      fetchTmdbSections(sections),
       fetchTraktSections(),
       loadWatchlist(),
       loadWatchlistRemovals(),
@@ -1351,7 +1120,7 @@ export const HomeScreen = ({ navigation }: any) => {
     ]);
     if (tmdbLoaded) setLoading(false);
     setRefreshing(false);
-  }, [fetchCatalogSections, fetchTraktSections, loadWatchlist, loadWatchlistRemovals, loadLocalProgress, traktConnected, refreshContinueWatching, refreshWatchlist, sections]);
+  }, [fetchTmdbSections, fetchTraktSections, loadWatchlist, loadWatchlistRemovals, loadLocalProgress, traktConnected, refreshContinueWatching, refreshWatchlist, sections]);
 
   const handleItemPress = useCallback((item: any) => {
     navigation.navigate('Detail', { movieId: item.id, type: item.type || 'movie' });
@@ -1409,20 +1178,20 @@ export const HomeScreen = ({ navigation }: any) => {
   }, [handleItemPress, isMovieWatched, isSeriesWatched]);
 
   const handleViewAll = useCallback((sectionId: string, title: string) => {
-    const section = sections.find(candidate => candidate.id === sectionId);
-    if (section?.endpoint) {
-      navigation.navigate('Browse', { title, endpoint: section.endpoint });
+    if (sectionId === 'documentaries') {
+      navigation.navigate('Browse', { title, endpoint: DOCUMENTARY_SECTION.endpoint });
       return;
     }
     const type = sectionId.includes('tv') ? 'tv' : 'movie';
     navigation.navigate('Browse', { type, title });
-  }, [navigation, sections]);
+  }, [navigation]);
 
   const handleNetworkPress = useCallback((item: any) => {
     navigation.navigate('Browse', { title: item.name, endpoint: `/tmdb/network/${item.id}` });
   }, [navigation]);
 
   const toggleWatchlist = useCallback(async (item: any) => {
+    if (!user) { navigation.navigate('Auth'); return; }
     const itemId = String(item.id);
     const current = await readWatchlistItems(storageOwnerId, legacyOwnerId);
     const exists = current.some((i: any) => watchlistItemMatchesId(i, itemId));
@@ -1694,7 +1463,7 @@ export const HomeScreen = ({ navigation }: any) => {
             !isDarkAppearance && styles.heroIconPillLight,
           ]}
           activeOpacity={0.8}
-          onPress={() => { if (item.type !== 'tv') { void toggleMovieWatched(Number(item.id), item.imdbId, item.title, item.year); } else { setSeriesWatchConfirmItem(item); } }}
+          onPress={() => { if (!user) { navigation.navigate('Auth'); return; } if (item.type !== 'tv') { void toggleMovieWatched(Number(item.id), item.imdbId, item.title, item.year); } else { setSeriesWatchConfirmItem(item); } }}
         >
           <Ionicons name={watched ? 'checkmark-circle' : 'checkmark-circle-outline'} size={16} color={isMonochromeDark ? '#ffffff' : watchedIconColor} />
         </TouchableOpacity>
@@ -1737,6 +1506,14 @@ export const HomeScreen = ({ navigation }: any) => {
                   </Text>
                 </View>
               )}
+              <LinearGradient
+                colors={isDarkAppearance
+                  ? ['rgba(4,6,10,0.08)', 'rgba(4,6,10,0.22)', 'rgba(4,6,10,0.82)']
+                  : ['rgba(255,255,255,0.04)', 'rgba(255,255,255,0.10)', 'rgba(8,12,20,0.62)']}
+                locations={[0, 0.45, 1]}
+                style={styles.heroGlassImageScrim}
+                pointerEvents="none"
+              />
             </View>
             <View style={styles.heroGlassInfo}>
               <View style={styles.heroGlassTop} />
@@ -1862,7 +1639,8 @@ export const HomeScreen = ({ navigation }: any) => {
     const item = heroItems[index];
     if (!item) return null;
     const glass = uiStyle === 'glass';
-    const backgroundUri = resolveHeroBackdropUri(item);
+    const key = `${item.type}_${item.id}`;
+    const backgroundUri = heroBackdrops[key] ?? getHeroBackgroundUri(item);
     const imagePosition = item.type === 'tv' ? { top: '30%' } : { top: '28%' };
     const scale = isOverlay ? Animated.multiply(heroScale, heroScrollScale) : heroScrollScale;
     const opacity = isOverlay ? heroFadeIn : 1;
@@ -1928,170 +1706,23 @@ export const HomeScreen = ({ navigation }: any) => {
 
   const activeAmbientBackdropUri = useMemo(() => {
     const currentHero = heroItems[heroIndex];
-    return resolveHeroBackdropUri(currentHero);
-  }, [heroIndex, heroItems, resolveHeroBackdropUri]);
-  const previousAmbientBackdropUri = useMemo(() => {
-    const previousHero = heroPrevIndex != null ? heroItems[heroPrevIndex] : null;
-    return resolveHeroBackdropUri(previousHero);
-  }, [heroItems, heroPrevIndex, resolveHeroBackdropUri]);
-  const homeRows = useMemo(() => {
-    const rows: Array<any> = [];
+    if (!currentHero) return null;
+    const currentKey = `${currentHero.type}_${currentHero.id}`;
+    return heroBackdrops[currentKey] ?? getHeroBackgroundUri(currentHero);
+  }, [heroBackdrops, heroIndex, heroItems]);
 
-    if (user && allContinueWatching.length > 0) {
-      rows.push({ key: 'continue', kind: 'continue' });
-    }
-
-    for (const section of sections.filter(s => s.enabled)) {
-      const sData = sectionData[section.id];
-      const isLoading = loading || sData === undefined;
-      if (!isLoading && (!sData || sData.length === 0)) continue;
-      const title = defaultSections.find(d => d.id === section.id)?.title ?? section.title;
-      rows.push({
-        key: `section:${section.id}`,
-        kind: section.id === 'networks' ? 'networks' : 'section',
-        sectionId: section.id,
-        title,
-        data: sData ?? [],
-        loading: isLoading,
-      });
-    }
-
-    if (traktConnected && traktRecommendations.length > 0) {
-      rows.push({ key: 'trakt:recommended', kind: 'traktRecommended' });
-    }
-    if (user && traktConnected && traktTrending.length > 0) {
-      rows.push({ key: 'trakt:trending', kind: 'traktTrending' });
-    }
-    if (combinedWatchlist.length > 0) {
-      rows.push({ key: 'watchlist', kind: 'watchlist' });
-    }
-
-    return rows;
-  }, [
-    allContinueWatching,
-    combinedWatchlist,
-    defaultSections,
-    loading,
-    sectionData,
-    sections,
-    traktConnected,
-    traktRecommendations,
-    traktTrending,
-    user,
-  ]);
-
-  const renderHomeRow = useCallback(({ item }: { item: any }) => {
-    switch (item.kind) {
-      case 'continue':
-        return (
-          <SectionStrip
-            title={t('section_continue')}
-            data={allContinueWatching}
-            loading={false}
-            onViewAll={() => navigation.navigate('ContinueWatching')}
-            onItemPress={handleItemPress}
-            onItemLongPress={handleLongPress}
-            renderCard={(rowItem: any) => (
-              <ContinueWatchingCard
-                item={rowItem}
-                cardStyle={continueWatchingStyle}
-                onPress={() => handleItemPress(rowItem)}
-                onLongPress={() => handleLongPress(rowItem)}
-              />
-            )}
-          />
-        );
-      case 'networks':
-        return (
-          <NetworkStrip
-            title={item.title}
-            data={item.data}
-            loading={item.loading}
-            onNetworkPress={handleNetworkPress}
-          />
-        );
-      case 'section':
-        return (
-          <SectionStrip
-            title={item.title}
-            data={item.data}
-            loading={item.loading}
-            onViewAll={() => handleViewAll(item.sectionId, item.title)}
-            onItemPress={handleItemPress}
-            onItemLongPress={handleLongPress}
-          />
-        );
-      case 'traktRecommended':
-        return (
-          <SectionStrip
-            title={t('section_recommended')}
-            data={traktRecommendations}
-            loading={false}
-            onViewAll={() => navigation.navigate('TraktCollection', { mode: 'recommended' })}
-            onItemPress={handleItemPress}
-            onItemLongPress={handleLongPress}
-          />
-        );
-      case 'traktTrending':
-        return (
-          <SectionStrip
-            title={t('section_trakt_trending')}
-            data={traktTrending}
-            loading={false}
-            onViewAll={() => navigation.navigate('TraktCollection', { mode: 'trending' })}
-            onItemPress={handleItemPress}
-            onItemLongPress={handleLongPress}
-          />
-        );
-      case 'watchlist':
-        return (
-          <SectionStrip
-            title={t('section_watchlist')}
-            data={combinedWatchlist}
-            loading={false}
-            onViewAll={() => navigation.navigate('Watchlist')}
-            onItemPress={handleItemPress}
-            onItemLongPress={handleLongPress}
-          />
-        );
-      default:
-        return null;
-    }
-  }, [
-    allContinueWatching,
-    combinedWatchlist,
-    continueWatchingStyle,
-    handleItemPress,
-    handleLongPress,
-    handleNetworkPress,
-    handleViewAll,
-    navigation,
-    t,
-    traktRecommendations,
-    traktTrending,
-  ]);
   return (
     <View style={{ flex: 1 }}>
       <BlurTargetView ref={blurTargetRef} style={{ flex: 1 }}>
     <View style={styles.container}>
       {(uiStyle === 'glass' || vividAmbientEnabled) && activeAmbientBackdropUri ? (
         <View pointerEvents="none" style={styles.ambientBackdrop}>
-          {previousAmbientBackdropUri ? (
-            <RNImage
-              source={{ uri: previousAmbientBackdropUri }}
-              style={[styles.ambientBackdropImage, uiStyle === 'glass' && { opacity: isDarkAppearance ? 0.72 : 0.62 }]}
-              resizeMode="cover"
-              blurRadius={deviceProfile.enableHeavyBlur ? (uiStyle === 'glass' ? 28 : 20) : 10}
-            />
-          ) : null}
-          <Animated.View style={[StyleSheet.absoluteFillObject, { opacity: heroFadeIn }]}>
-            <RNImage
-              source={{ uri: activeAmbientBackdropUri }}
-              style={[styles.ambientBackdropImage, uiStyle === 'glass' && { opacity: isDarkAppearance ? 0.72 : 0.62 }]}
-              resizeMode="cover"
-              blurRadius={deviceProfile.enableHeavyBlur ? (uiStyle === 'glass' ? 28 : 20) : 10}
-            />
-          </Animated.View>
+          <RNImage
+            source={{ uri: activeAmbientBackdropUri }}
+            style={[styles.ambientBackdropImage, uiStyle === 'glass' && { opacity: isDarkAppearance ? 0.72 : 0.62 }]}
+            resizeMode="cover"
+            blurRadius={uiStyle === 'glass' ? 28 : 20}
+          />
           <LinearGradient
             colors={uiStyle === 'glass'
               ? (isDarkAppearance
@@ -2113,21 +1744,8 @@ export const HomeScreen = ({ navigation }: any) => {
           pointerEvents="none"
         />
       )}
-      <AnimatedFlatList
-        ref={homeListRef as any}
-        data={homeRows}
-        keyExtractor={(item: any) => item.key}
-        renderItem={renderHomeRow}
-        onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
-        scrollEventThrottle={16}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 12 }}
-        initialNumToRender={deviceProfile.performanceClass === 'low' ? 3 : 5}
-        maxToRenderPerBatch={deviceProfile.performanceClass === 'low' ? 4 : 6}
-        windowSize={deviceProfile.performanceClass === 'low' ? 5 : 7}
-        removeClippedSubviews={deviceProfile.isTv}
-        ListHeaderComponent={heroItems.length > 0 ? (
+      <Animated.ScrollView ref={homeScrollViewRef as any} onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })} scrollEventThrottle={16} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 12 }}>
+        {heroItems.length > 0 && (
           <View style={{ marginBottom: uiStyle === 'glass' ? 24 : 18 }}>
             <View style={{ height: heroSectionHeight }} {...heroPanResponder.panHandlers}>
               <TouchableOpacity activeOpacity={1} onPress={() => handleItemPress(heroItems[heroIndex])} style={StyleSheet.absoluteFill}>
@@ -2154,8 +1772,34 @@ export const HomeScreen = ({ navigation }: any) => {
               ))}
             </View>
           </View>
-        ) : null}
-      />
+        )}
+        {user && allContinueWatching.length > 0 && (
+          <SectionStrip
+            title={t('section_continue')}
+            data={allContinueWatching}
+            loading={false}
+            onViewAll={() => navigation.navigate('ContinueWatching')}
+            onItemPress={handleItemPress}
+            onItemLongPress={handleLongPress}
+            renderCard={item => (
+              <ContinueWatchingCard
+                item={item}
+                cardStyle={continueWatchingStyle}
+                onPress={() => handleItemPress(item)}
+                onLongPress={() => handleLongPress(item)}
+              />
+            )}
+          />
+        )}
+        {sections.filter(s => s.enabled).map(s => {
+          const title = defaultSections.find(d => d.id === s.id)?.title ?? s.title;
+          if (s.id === 'networks') return <NetworkStrip key={s.id} title={title} data={sectionData[s.id] || []} loading={loading} onNetworkPress={handleNetworkPress} />;
+          return <SectionStrip key={s.id} title={title} data={sectionData[s.id] || []} loading={loading} onViewAll={() => handleViewAll(s.id, title)} onItemPress={handleItemPress} onItemLongPress={handleLongPress} />;
+        })}
+        {traktConnected && traktRecommendations.length > 0 && <SectionStrip title={t('section_recommended')} data={traktRecommendations} loading={false} onViewAll={() => navigation.navigate('TraktCollection', { mode: 'recommended' })} onItemPress={handleItemPress} onItemLongPress={handleLongPress} />}
+        {user && traktConnected && traktTrending.length > 0 && <SectionStrip title={t('section_trakt_trending')} data={traktTrending} loading={false} onViewAll={() => navigation.navigate('TraktCollection', { mode: 'trending' })} onItemPress={handleItemPress} onItemLongPress={handleLongPress} />}
+        {combinedWatchlist.length > 0 && <SectionStrip title={t('section_watchlist')} data={combinedWatchlist} loading={false} onViewAll={() => navigation.navigate('Watchlist')} onItemPress={handleItemPress} onItemLongPress={handleLongPress} />}
+      </Animated.ScrollView>
       <ActionSheet visible={!!longPressItem} onClose={() => setLongPressItem(null)} title={longPressItem?.title} subtitle={longPressItem?.year ? String(longPressItem.year) : undefined} actions={buildLongPressActions(longPressItem)} />
       <ActionSheet
         visible={!!heroPlayChoiceItem}
@@ -2197,4 +1841,3 @@ export const HomeScreen = ({ navigation }: any) => {
     </View>
   );
 };
-

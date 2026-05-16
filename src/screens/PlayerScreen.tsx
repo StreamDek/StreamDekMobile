@@ -528,9 +528,9 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const { config: serverConfig } = useTorrentServer();
     const {
         enabled: streamSelectionEnabled,
-        shortSourceFilterEnabled,
-        preferredQuality,
-        maxFileSizeGB,
+        effectiveShortSourceFilterEnabled,
+        effectivePreferredQuality,
+        effectiveMaxFileSizeGB,
     } = useStreamSelectionSettings();
     const castNativeModuleAvailable = !!NativeModules.RNGCCastContext;
     const platformAndroidVersion = typeof Platform.Version === 'number' ? Platform.Version : Number(Platform.Version);
@@ -1245,8 +1245,8 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const getRankedStreams = useCallback((streams: AddonStream[]): AddonStream[] => {
         const preferQuickStart = serverConfig.streamingMode === 'server';
         const baseOptions = {
-            preferredQuality,
-            maxFileSizeGB: maxFileSizeGB > 0 ? maxFileSizeGB : undefined,
+            preferredQuality: effectivePreferredQuality,
+            maxFileSizeGB: effectiveMaxFileSizeGB > 0 ? effectiveMaxFileSizeGB : undefined,
         };
         return [...streams].sort((a, b) => (
             scoreStream(b, {
@@ -1260,7 +1260,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                 sessionPenalty: getSessionPenalty(a),
             })
         ));
-    }, [getSessionPenalty, maxFileSizeGB, preferredQuality, serverConfig.streamingMode, streamSelectionEnabled]);
+    }, [effectiveMaxFileSizeGB, effectivePreferredQuality, getSessionPenalty, serverConfig.streamingMode]);
 
     const recordFailedStream = useCallback((
         stream: AddonStream | null | undefined,
@@ -1490,7 +1490,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                 streamTorrent,
                 streamingMode: serverConfig.streamingMode,
                 streamSelectionEnabled,
-                maxFileSizeGB,
+                maxFileSizeGB: effectiveMaxFileSizeGB,
                 defaultMaxSizeBytes: PREFERRED_SIZE_LIMIT,
                 shouldContinue: isCurrentAttempt,
                 onDebridFailures: (label, failures) => logDebridFailures(label, failures),
@@ -1784,7 +1784,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const validateCurrentSourceDuration = useCallback((): boolean => {
         if (validatedDurationForCurrentSourceRef.current) return false;
         if (!sourceLoadedRef.current) return false;
-        if (!shortSourceFilterEnabled) {
+        if (!effectiveShortSourceFilterEnabled) {
             validatedDurationForCurrentSourceRef.current = true;
             return false;
         }
@@ -1808,7 +1808,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
 
         validatedDurationForCurrentSourceRef.current = true;
         return false;
-    }, [handlePlayerError, player, logPlayerEvent, shortSourceFilterEnabled]);
+    }, [effectiveShortSourceFilterEnabled, handlePlayerError, player, logPlayerEvent]);
 
     const cancelPendingFallbacks = useCallback((reason: string) => {
         if (!isHandlingErrorRef.current && resolveInFlightCountRef.current === 0) {

@@ -388,7 +388,11 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
   const { isForeground } = useAppLifecycle();
   const { vividAmbientEnabled } = useDisplaySettings();
   const { uiStyle } = useUIStyle();
-  const { enabled: streamSelectionEnabled, preferredQuality, maxFileSizeGB } = useStreamSelectionSettings();
+  const {
+    enabled: streamSelectionEnabled,
+    effectivePreferredQuality,
+    effectiveMaxFileSizeGB,
+  } = useStreamSelectionSettings();
   const isLightAppearance = resolvedAppearance === 'light';
   const styles = useMemo(() => makeStyles(colors, isLightAppearance, vividAmbientEnabled), [colors, isLightAppearance, vividAmbientEnabled]);
   const blurTargetRef = useRef<View | null>(null);
@@ -426,9 +430,9 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
 
   // Sort by debrid priority (accounts already ordered by user priority), then by comprehensive stream score
   const streamOptions = useMemo(() => ({
-    preferredQuality,
-    maxFileSizeGB: maxFileSizeGB > 0 ? maxFileSizeGB : undefined,
-  }), [maxFileSizeGB, preferredQuality]);
+    preferredQuality: effectivePreferredQuality,
+    maxFileSizeGB: effectiveMaxFileSizeGB > 0 ? effectiveMaxFileSizeGB : undefined,
+  }), [effectiveMaxFileSizeGB, effectivePreferredQuality]);
 
   const sortedVisibleStreams = sortStreams(visibleStreams, streamOptions).slice(0, 20);
 
@@ -474,10 +478,27 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
       ? `${imdbId}:${season}:${episodeNumber}`
       : `${showId}:${season}:${episodeNumber}`;
 
+    console.log('[StreamDekSeriesDebug] Fetching episode streams', {
+      videoId,
+      imdbId: imdbId ?? null,
+      showId: showId ?? null,
+      season,
+      episodeNumber,
+      enabledAddonCount: currentEnabled.length,
+      ultraActive,
+    });
+
     await fetchStreamsProgressive(
       'series',
       videoId,
       (newStreams, pending) => {
+        console.log('[StreamDekSeriesDebug] Episode streams update', {
+          videoId,
+          streamCount: newStreams.length,
+          pending,
+          directUrlCount: newStreams.filter(stream => !!stream.url).length,
+          infoHashCount: newStreams.filter(stream => !!stream.infoHash).length,
+        });
         setStreams(newStreams);
         setPendingAddons(pending);
         // Show results as soon as the first addon responds; hide full spinner
@@ -663,6 +684,12 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
     };
 
     if (best.url) {
+      console.log('[StreamDekSeriesDebug] Navigating to player with direct episode URL', {
+        title: playerTitle,
+        hasUrl: true,
+        hasInfoHash: !!best.infoHash,
+        streamName: best.name ?? best.title ?? null,
+      });
       navigation.navigate(expoGoRuntime ? 'Player' : 'MpvPlayer', {
         ...sharedParams,
         streamUrl:    best.url,
@@ -673,6 +700,10 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
 
     if (best.infoHash) {
       if (debridAccounts.length === 0) {
+        console.log('[StreamDekSeriesDebug] Episode best stream requires debrid but no account is connected', {
+          title: playerTitle,
+          streamName: best.name ?? best.title ?? null,
+        });
         setDebridSheet(true);
         return;
       }
@@ -681,6 +712,13 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
         best.infoHash ?? best.url ?? best.behaviorHints?.filename ?? best.title ?? best.name ?? ''
       ).trim().replace(/\s+/g, ' ').toLowerCase();
 
+      console.log('[StreamDekSeriesDebug] Navigating to player with resolveOnMount for episode stream', {
+        title: playerTitle,
+        hasUrl: false,
+        hasInfoHash: true,
+        preferredSourceIdentity,
+        streamName: best.name ?? best.title ?? null,
+      });
       navigation.navigate(expoGoRuntime ? 'Player' : 'MpvPlayer', {
         ...sharedParams,
         resolveOnMount:          true,

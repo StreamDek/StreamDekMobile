@@ -176,6 +176,7 @@ function SettingRow({
   value,
   onPress,
   right,
+  disabled = false,
 }: {
   icon: React.ComponentProps<typeof Ionicons>['name'];
   iconColor: string;
@@ -184,13 +185,14 @@ function SettingRow({
   value?: string;
   onPress?: () => void;
   right?: React.ReactNode;
+  disabled?: boolean;
 }) {
   const { theme: { colors, id }, resolvedAppearance } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const visibleIconColor = getVisibleIconColor(iconColor, resolvedAppearance, id, colors.textPrimary);
 
   const body = (
-    <View style={styles.row}>
+    <View style={[styles.row, disabled ? { opacity: 0.5 } : null]}>
       <View style={[styles.rowIcon, { backgroundColor: `${visibleIconColor}22` }]}>
         <Ionicons name={icon} size={18} color={visibleIconColor} />
       </View>
@@ -204,7 +206,7 @@ function SettingRow({
   );
 
   if (!onPress) return body;
-  return <TouchableOpacity onPress={onPress} activeOpacity={0.78}>{body}</TouchableOpacity>;
+  return <TouchableOpacity onPress={onPress} activeOpacity={0.78} disabled={disabled}>{body}</TouchableOpacity>;
 }
 
 function PickerModal({
@@ -297,7 +299,16 @@ export function SettingsScreen({ navigation, route }: any) {
   const { uiStyle, setUiStyle } = useUIStyle();
   const { showNavLabels, setShowNavLabels, continueWatchingStyle, setContinueWatchingStyle, vividAmbientEnabled, setVividAmbientEnabled, pictureInPictureEnabled, setPictureInPictureEnabled, showStreamsList, setShowStreamsList } = useDisplaySettings();
   const { metadataProvider, tmdbKeyEnabled, tmdbApiKey, setMetadataProvider, setTmdbKeyEnabled, setTmdbApiKey } = useTmdbApiKey();
-  const { enabled: streamSelectionEnabled, setEnabled: setStreamSelectionEnabled, shortSourceFilterEnabled, setShortSourceFilterEnabled, preferredQuality, setPreferredQuality, maxFileSizeGB, setMaxFileSizeGB } = useStreamSelectionSettings();
+  const {
+    enabled: streamSelectionEnabled,
+    setEnabled: setStreamSelectionEnabled,
+    shortSourceFilterEnabled,
+    setShortSourceFilterEnabled,
+    preferredQuality,
+    setPreferredQuality,
+    maxFileSizeGB,
+    setMaxFileSizeGB,
+  } = useStreamSelectionSettings();
   const { decoderMode, setDecoderMode, renderSurface, setRenderSurface } = usePlaybackSettings();
   const { autoLoadEnabled, setAutoLoadEnabled, preferHI, setPreferHI, preferForced, setPreferForced } = useSubtitles();
   const { colors } = theme;
@@ -659,15 +670,15 @@ export function SettingsScreen({ navigation, route }: any) {
                     <View style={styles.divider} />
                     <SettingRow icon="construct-outline" iconColor={safeIconColor('#14b8a6')} label={t('settings_stream_selection_logic')} subtitle={t('settings_stream_selection_logic_sub')} right={<AppleToggle value={streamSelectionEnabled} onValueChange={value => { void setStreamSelectionEnabled(value); }} onColor={colors.toggleOn} />} />
                     <View style={styles.divider} />
-                    <SettingRow icon="timer-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_short_source_filter')} subtitle={t('settings_short_source_filter_sub')} right={<AppleToggle value={shortSourceFilterEnabled} onValueChange={value => { void setShortSourceFilterEnabled(value); }} onColor={colors.toggleOn} />} />
+                    <SettingRow icon="timer-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_short_source_filter')} subtitle={t('settings_short_source_filter_sub')} disabled={streamSelectionEnabled} right={<AppleToggle value={shortSourceFilterEnabled} onValueChange={value => { void setShortSourceFilterEnabled(value); }} onColor={colors.toggleOn} disabled={streamSelectionEnabled} />} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="resize-outline" iconColor={safeIconColor('#22c55e')} label={t('settings_preferred_stream_quality')} subtitle={t('settings_preferred_stream_quality_sub')} value={qualityValueLabelMap[String(preferredQuality)] ?? String(preferredQuality)} onPress={() => setPicker('quality')} disabled={streamSelectionEnabled} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="archive-outline" iconColor={safeIconColor('#f97316')} label={t('settings_max_file_size')} subtitle={t('settings_max_file_size_sub')} value={maxFileSizeGB === 0 ? t('settings_unlimited') : `${maxFileSizeGB} GB`} onPress={() => setPicker('fileSize')} disabled={streamSelectionEnabled} />
                     <View style={styles.divider} />
                     <SettingRow icon="tv-outline" iconColor={safeIconColor('#a78bfa')} label={t('settings_decoder_mode')} subtitle={t('settings_decoder_mode_sub')} value={decoderValueLabelMap[String(decoderMode)] ?? String(decoderMode)} onPress={() => setPicker('decoder')} />
                     <View style={styles.divider} />
                     <SettingRow icon="scan-outline" iconColor={safeIconColor('#38bdf8')} label={t('settings_render_surface')} subtitle={t('settings_render_surface_sub')} value={surfaceValueLabelMap[String(renderSurface)] ?? String(renderSurface)} onPress={() => setPicker('surface')} />
-                    <View style={styles.divider} />
-                    <SettingRow icon="resize-outline" iconColor={safeIconColor('#22c55e')} label={t('settings_preferred_stream_quality')} subtitle={t('settings_preferred_stream_quality_sub')} value={qualityValueLabelMap[String(preferredQuality)] ?? String(preferredQuality)} onPress={() => setPicker('quality')} />
-                    <View style={styles.divider} />
-                    <SettingRow icon="archive-outline" iconColor={safeIconColor('#f97316')} label={t('settings_max_file_size')} subtitle={t('settings_max_file_size_sub')} value={maxFileSizeGB === 0 ? t('settings_unlimited') : `${maxFileSizeGB} GB`} onPress={() => setPicker('fileSize')} />
                   </View>
 
                   <Text style={styles.sectionTitle}>{t('settings_subtitles')}</Text>

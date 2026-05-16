@@ -390,7 +390,7 @@ const en = {
   media_episodes_swipe_browse: '{n} episode{suffix} - swipe to browse',
   media_not_released_yet: 'Not released yet.',
   media_play_best_stream: 'Play Best Stream',
-  media_searching_streams:'Searching streamsâ€¦',
+  media_searching_streams:'Searching streams…',
   media_find_direct_sources: 'Find Direct Sources',
 
   // -- Addons / Debrid ----------------------------------------------------------

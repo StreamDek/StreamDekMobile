@@ -167,7 +167,9 @@ export function isLikelyPlayableVideoStream(stream: AddonStream): boolean {
 }
 
 export function isAllowedPlaybackStream(stream: AddonStream): boolean {
-  return Boolean(stream.url || stream.cachedBy.length > 0);
+  // Allow direct URLs, debrid-cached hashes, and raw torrent hashes.
+  // Torrent-only streams can still resolve through backend/local torrent playback.
+  return Boolean(stream.url || stream.infoHash || stream.cachedBy.length > 0);
 }
 
 function hasHdr(text: string): boolean {

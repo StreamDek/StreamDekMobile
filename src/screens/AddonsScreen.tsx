@@ -7,7 +7,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme, ThemeColors } from '../context/ThemeContext';
-import { useAddons, InstalledAddon, UltraManifestMeta } from '../context/AddonContext';
+import { useAddons, InstalledAddon } from '../context/AddonContext';
 import { useDebrid, DEBRID_PROVIDERS, DebridProviderName, DebridService } from '../context/DebridContext';
 import { useLanguage, TranslationKey } from '../context/LanguageContext';
 import { BOTTOM_NAV_HEIGHT } from '../components/BottomNavBar';
@@ -117,7 +117,6 @@ const makeStyles = (c: ThemeColors) => {
   },
   ultraInfo: { flex: 1 },
   ultraTitle: { color: '#ffffff', fontSize: 16, fontWeight: '900' },
-  ultraVersion: { color: 'rgba(255,255,255,0.78)', fontSize: 11, marginTop: 2, fontWeight: '700' },
   ultraSubtitle: { color: '#fde047', fontSize: 12, lineHeight: 17, marginTop: 4, fontWeight: '600' },
   // ── Install FAB ──
   fab: {
@@ -210,7 +209,6 @@ export const AddonsScreen = ({ navigation, route }: any) => {
     isLoading: addonsLoading,
     ultraEntitled,
     ultraBoostEnabled,
-    ultraManifest,
     setUltraBoostEnabled,
     refreshUltraEntitlement,
     installAddon,
@@ -409,12 +407,12 @@ export const AddonsScreen = ({ navigation, route }: any) => {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.accent} />}
       >
         {/* ── Header ── */}
-      <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.7}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.7}>
           <Ionicons name="chevron-back" size={20} color={colors.accentSoft} />
-          <Text style={styles.backText}>{t('addons_back_settings')}</Text>
+          <Text style={styles.backText}>Settings</Text>
         </TouchableOpacity>
         <Text style={styles.heading}>{t('addons_title')}</Text>
-        <Text style={styles.subheading}>{t('addons_subheading')}</Text>
+        <Text style={styles.subheading}>Manage your streaming sources and Debrid services</Text>
 
         {/* ── Tabs ── */}
         <View style={styles.tabRow}>
@@ -442,7 +440,6 @@ export const AddonsScreen = ({ navigation, route }: any) => {
           <>
             {ultraEntitled ? (
               <UltraBoostCard
-                manifest={ultraManifest}
                 enabled={ultraBoostEnabled}
                 onToggle={value => { void setUltraBoostEnabled(value); }}
                 styles={styles}
@@ -539,7 +536,7 @@ export const AddonsScreen = ({ navigation, route }: any) => {
               {installError ? <Text style={styles.errorText}>{installError}</Text> : null}
               <TextInput
                 style={styles.modalInput}
-                placeholder={t('addons_install_url')}
+                placeholder="https://addon-url.com/manifest.json or stremio://..."
                 placeholderTextColor={colors.placeholder}
                 value={installUrl}
                 onChangeText={setInstallUrl}
@@ -574,7 +571,7 @@ export const AddonsScreen = ({ navigation, route }: any) => {
               <View style={styles.modalHandle} />
               <Text style={styles.modalTitle}>{t('addons_connect_provider', { name: selectedProvider?.label ?? '' })}</Text>
               <Text style={styles.modalSubtitle}>
-                {t('addons_debrid_desc')}
+                {t('media_sign_in_unlock')}
                 {'\n'}{t('addons_secure_note')}
               </Text>
               {debridError ? <Text style={styles.errorText}>{debridError}</Text> : null}
@@ -697,9 +694,8 @@ export const AddonsScreen = ({ navigation, route }: any) => {
 // ── Ultra Boost Card ──────────────────────────────────────────────────────────
 
 function UltraBoostCard({
-  manifest, enabled, onToggle, styles,
+  enabled, onToggle, styles,
 }: {
-  manifest: UltraManifestMeta | null;
   enabled: boolean;
   onToggle: (enabled: boolean) => void;
   styles: ReturnType<typeof makeStyles>;
@@ -711,8 +707,7 @@ function UltraBoostCard({
           <Ionicons name="flash" size={22} color="#fde047" />
         </View>
         <View style={styles.ultraInfo}>
-          <Text style={styles.ultraTitle}>{manifest?.name || 'SD Ultra'}</Text>
-          <Text style={styles.ultraVersion}>v{manifest?.version || '1.0.0'}</Text>
+          <Text style={styles.ultraTitle}>SD Ultra</Text>
           <Text style={styles.ultraSubtitle}>
             Ultra Fast Results Everytime
           </Text>

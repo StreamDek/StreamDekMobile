@@ -14,7 +14,7 @@ import { useDisplaySettings } from '../context/DisplaySettingsContext';
 import { PROFILE_AVATARS } from '../utils/profileApi';
 
 export const BOTTOM_NAV_HEIGHT_WITH_LABELS = 70;
-export const BOTTOM_NAV_HEIGHT_WITHOUT_LABELS = 70;
+export const BOTTOM_NAV_HEIGHT_WITHOUT_LABELS = 62;
 export const BOTTOM_NAV_HEIGHT = BOTTOM_NAV_HEIGHT_WITH_LABELS;
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
@@ -47,7 +47,7 @@ const makeStyles = (c: ThemeColors, bgRgba: string, navHeight: number, isLightAp
   container: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 14 },
   shell: {
     borderRadius: 30,
-    backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.08)' : 'rgba(15,23,42,0.10)',
+    backgroundColor: 'transparent',
     borderWidth: 1,
     borderColor: isLightAppearance ? 'rgba(255,255,255,0.72)' : 'rgba(255,255,255,0.18)',
     overflow: 'hidden',
@@ -99,9 +99,9 @@ export const StackBottomNav: React.FC<Props> = ({ activeTab, blurTarget, onTabPr
   const { showNavLabels } = useDisplaySettings();
 
   const navHeight = showNavLabels ? BOTTOM_NAV_HEIGHT_WITH_LABELS : BOTTOM_NAV_HEIGHT_WITHOUT_LABELS;
-  const iconSize = showNavLabels ? 24 : 27;
-  const avatarSize = showNavLabels ? 26 : 29;
-  const avatarSizeActive = showNavLabels ? 28 : 31;
+  const iconSize = showNavLabels ? 24 : 28;
+  const avatarSize = showNavLabels ? 26 : 30;
+  const avatarSizeActive = showNavLabels ? 28 : 32;
   const isLightAppearance = resolvedAppearance === 'light';
 
   const bgRgba = useMemo(
@@ -116,7 +116,9 @@ export const StackBottomNav: React.FC<Props> = ({ activeTab, blurTarget, onTabPr
   const hasMeasuredInitialPillRef = useRef(false);
   const [tabLayouts, setTabLayouts] = useState<Record<string, { x: number; width: number }>>({});
 
-  const visibleTabs = TABS;
+  const visibleTabs = TABS.filter(tab =>
+    (tab.name !== 'Watchlist' && tab.name !== 'ContinueWatching') || !!user,
+  );
 
   const profileAvatar = activeProfile
     ? PROFILE_AVATARS[Math.min(activeProfile.avatarIndex, PROFILE_AVATARS.length - 1)]

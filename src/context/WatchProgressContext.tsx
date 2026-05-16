@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { Storage } from '../utils/storage';
 import { useAuth } from './AuthContext';
 import { useProfile } from './ProfileContext';
@@ -19,7 +19,6 @@ type ProgressMap = Record<string, ProgressEntry>;
 interface WatchProgressContextType {
   getProgress: (key: string) => ProgressEntry | null;
   saveProgress: (key: string, positionSec: number, durationSec: number) => void;
-  flushProgress: () => void;
   clearProgress: (key: string) => void;
   clearProgressIndexEntry: (key: string) => void;
 }
@@ -41,7 +40,6 @@ export function episodeProgressKey(
 const WatchProgressContext = createContext<WatchProgressContextType>({
   getProgress:  () => null,
   saveProgress: () => {},
-  flushProgress: () => {},
   clearProgress: () => {},
   clearProgressIndexEntry: () => {},
 });
@@ -51,47 +49,13 @@ export const WatchProgressProvider = ({ children }: { children: React.ReactNode 
   const { activeProfile } = useProfile();
   const [progress, setProgress] = useState<ProgressMap>({});
   const ownerId = getProfileStorageOwnerId(user?.uid ?? null, activeProfile?.id ?? null);
-  const progressRef = useRef<ProgressMap>({});
-  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const clearFlushTimer = useCallback(() => {
-    if (!flushTimerRef.current) return;
-    clearTimeout(flushTimerRef.current);
-    flushTimerRef.current = null;
-  }, []);
-
-  const flushProgressToStorage = useCallback((publishState = true) => {
-    clearFlushTimer();
-    const snapshot = progressRef.current;
-    if (publishState) {
-      setProgress({ ...snapshot });
-    }
-    void Storage.setItem(progressStorageKey(ownerId), JSON.stringify(snapshot));
-  }, [clearFlushTimer, ownerId]);
-
-  const scheduleProgressFlush = useCallback(() => {
-    if (flushTimerRef.current) return;
-    flushTimerRef.current = setTimeout(() => {
-      flushTimerRef.current = null;
-      const snapshot = progressRef.current;
-      setProgress({ ...snapshot });
-      void Storage.setItem(progressStorageKey(ownerId), JSON.stringify(snapshot));
-    }, 5000);
-  }, [ownerId]);
 
   // Reload progress whenever the signed-in user or profile changes
   useEffect(() => {
     const key = progressStorageKey(ownerId);
     Storage.getItem(key).then(async raw => {
       const value = raw;
-      try {
-        const parsed = value ? JSON.parse(value) : {};
-        progressRef.current = parsed;
-        setProgress(parsed);
-      } catch {
-        progressRef.current = {};
-        setProgress({});
-      }
+      try { setProgress(value ? JSON.parse(value) : {}); } catch { setProgress({}); }
     });
     const indexKey = progressIndexStorageKey(ownerId);
     Storage.getItem(indexKey).then(async raw => {
@@ -116,60 +80,43 @@ export const WatchProgressProvider = ({ children }: { children: React.ReactNode 
           }
           return next;
         });
-        progressRef.current = {
-          ...progressRef.current,
-          ...Object.fromEntries(
-            entries
-              .filter((entry: any) => entry && typeof entry.key === 'string')
-              .map((entry: any) => [
-                entry.key,
-                {
-                  positionSec: Number(entry.positionSec ?? 0),
-                  durationSec: Number(entry.durationSec ?? 0),
-                  updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : new Date().toISOString(),
-                },
-              ]),
-          ),
-        };
       } catch {
         // Ignore malformed legacy progress data.
       }
     });
-    return () => {
-      flushProgressToStorage(false);
-    };
-  }, [flushProgressToStorage, ownerId]);
+  }, [ownerId]);
 
   const getProgress = useCallback((key: string): ProgressEntry | null => {
-    return progressRef.current[key] ?? null;
-  }, []);
+    return progress[key] ?? null;
+  }, [progress]);
 
   const saveProgress = useCallback((
     key: string,
     positionSec: number,
     durationSec: number,
   ) => {
-    progressRef.current = {
-      ...progressRef.current,
-      [key]: {
+    setProgress(prev => {
+      const entry: ProgressEntry = {
         positionSec,
         durationSec,
         updatedAt: new Date().toISOString(),
-      },
-    };
-    scheduleProgressFlush();
-  }, [scheduleProgressFlush]);
-
-  const flushProgress = useCallback(() => {
-    flushProgressToStorage(true);
-  }, [flushProgressToStorage]);
+      };
+      const next = { ...prev, [key]: entry };
+      const storageKey = progressStorageKey(ownerId);
+      Storage.setItem(storageKey, JSON.stringify(next));
+      return next;
+    });
+  }, [ownerId]);
 
   const clearProgress = useCallback((key: string) => {
-    const next = { ...progressRef.current };
-    delete next[key];
-    progressRef.current = next;
-    flushProgressToStorage();
-  }, [flushProgressToStorage]);
+    setProgress(prev => {
+      const next = { ...prev };
+      delete next[key];
+      const storageKey = progressStorageKey(ownerId);
+      Storage.setItem(storageKey, JSON.stringify(next));
+      return next;
+    });
+  }, [ownerId]);
 
   const clearProgressIndexEntry = useCallback((key: string) => {
     const indexKey = progressIndexStorageKey(ownerId);
@@ -187,13 +134,8 @@ export const WatchProgressProvider = ({ children }: { children: React.ReactNode 
     })();
   }, [ownerId]);
 
-  useEffect(() => () => {
-    flushProgressToStorage(false);
-    clearFlushTimer();
-  }, [clearFlushTimer, flushProgressToStorage]);
-
   return (
-    <WatchProgressContext.Provider value={{ getProgress, saveProgress, flushProgress, clearProgress, clearProgressIndexEntry }}>
+    <WatchProgressContext.Provider value={{ getProgress, saveProgress, clearProgress, clearProgressIndexEntry }}>
       {children}
     </WatchProgressContext.Provider>
   );

@@ -19,8 +19,22 @@ import { useTheme, ThemeColors } from '../context/ThemeContext';
 import { useLanguage } from '../context/LanguageContext';
 import { Storage } from '../utils/storage';
 import { ConfirmSheet } from '../components/ConfirmSheet';
+import { loadStoredAuthSession } from '../lib/authClient';
+import {
+  readWatchlistItems,
+  readWatchlistRemovalIds,
+  writeWatchlistItems,
+  writeWatchlistRemovalIds,
+  uniqueItemsById,
+} from '../utils/watchlist';
+import {
+  progressFileStorageKey,
+  progressIndexStorageKey,
+  progressStorageKey,
+} from '../utils/profileStorage';
 
 type Mode = 'login' | 'signup' | 'forgot';
+const GUEST_TMDB_KEY_STORAGE = 'streamdek_tmdb_key_guest';
 
 const makeStyles = (c: ThemeColors, isLightMonochrome: boolean) => StyleSheet.create({
   flex: { flex: 1, backgroundColor: c.bg },
@@ -119,6 +133,10 @@ export const AuthScreen = ({ navigation }: any) => {
     cancelLabel: undefined as string | undefined,
     onConfirm: undefined as undefined | (() => void),
   });
+  const [postAuthChoice, setPostAuthChoice] = useState<{ visible: boolean; uid: string | null }>({
+    visible: false,
+    uid: null,
+  });
 
   const showAlert = (
     title: string,
@@ -149,6 +167,77 @@ export const AuthScreen = ({ navigation }: any) => {
   }, []);
 
   const closeAlert = () => setAlert((prev) => ({ ...prev, visible: false }));
+
+  async function guestStateExists(): Promise<boolean> {
+    try {
+      const [watchlist, removed, guestProgress, guestProgressIndex, tmdbGuest] = await Promise.all([
+        readWatchlistItems(null),
+        readWatchlistRemovalIds(null),
+        Storage.getItem(progressStorageKey(null)),
+        Storage.getItem(progressIndexStorageKey(null)),
+        Storage.getItem(GUEST_TMDB_KEY_STORAGE),
+      ]);
+      return watchlist.length > 0
+        || removed.length > 0
+        || Boolean(guestProgress)
+        || Boolean(guestProgressIndex)
+        || Boolean(tmdbGuest);
+    } catch {
+      return false;
+    }
+  }
+
+  async function migrateGuestStateToAccount(uid: string) {
+    const [guestWatchlist, accountWatchlist, guestRemoved, accountRemoved] = await Promise.all([
+      readWatchlistItems(null),
+      readWatchlistItems(uid),
+      readWatchlistRemovalIds(null),
+      readWatchlistRemovalIds(uid),
+    ]);
+
+    if (guestWatchlist.length > 0) {
+      await writeWatchlistItems(uid, uniqueItemsById([...accountWatchlist, ...guestWatchlist]));
+    }
+    if (guestRemoved.length > 0) {
+      await writeWatchlistRemovalIds(uid, Array.from(new Set([...accountRemoved, ...guestRemoved])));
+    }
+
+    const guestProgressRaw = await Storage.getItem(progressStorageKey(null));
+    if (guestProgressRaw) {
+      const accountProgressRaw = await Storage.getItem(progressStorageKey(uid));
+      const guestProgress = JSON.parse(guestProgressRaw) as Record<string, unknown>;
+      const accountProgress = accountProgressRaw ? JSON.parse(accountProgressRaw) as Record<string, unknown> : {};
+      await Storage.setItem(progressStorageKey(uid), JSON.stringify({ ...guestProgress, ...accountProgress }));
+    }
+
+    const guestIndexRaw = await Storage.getItem(progressIndexStorageKey(null));
+    if (guestIndexRaw) {
+      const accountIndexRaw = await Storage.getItem(progressIndexStorageKey(uid));
+      const guestIndex = Array.isArray(JSON.parse(guestIndexRaw)) ? JSON.parse(guestIndexRaw) : [];
+      const accountIndex = accountIndexRaw && Array.isArray(JSON.parse(accountIndexRaw)) ? JSON.parse(accountIndexRaw) : [];
+      const mergedIndexMap = new Map<string, any>();
+      [...guestIndex, ...accountIndex].forEach((entry: any) => {
+        if (entry?.key) mergedIndexMap.set(entry.key, entry);
+      });
+      const mergedIndex = Array.from(mergedIndexMap.values());
+      await Storage.setItem(progressIndexStorageKey(uid), JSON.stringify(mergedIndex));
+      await Promise.all(
+        mergedIndex
+          .filter((entry: any) => typeof entry?.key === 'string')
+          .map(async (entry: any) => {
+            const guestFile = await Storage.getItem(progressFileStorageKey(null, entry.key));
+            if (guestFile) {
+              await Storage.setItem(progressFileStorageKey(uid, entry.key), guestFile);
+            }
+          }),
+      );
+    }
+
+    const guestTmdbRaw = await Storage.getItem(GUEST_TMDB_KEY_STORAGE);
+    if (guestTmdbRaw) {
+      await Storage.setItem(`streamdek_tmdb_key_${uid}`, guestTmdbRaw);
+    }
+  }
 
   async function handleSubmit() {
     const trimmedEmail = email.trim();
@@ -255,6 +344,17 @@ export const AuthScreen = ({ navigation }: any) => {
     if (mode === 'login') {
       if (rememberMe) await Storage.setItem('streamdek_remember_email', trimmedEmail);
       else await Storage.removeItem('streamdek_remember_email');
+    }
+
+    const nextUid = (await loadStoredAuthSession())?.user?.uid ?? null;
+    if (!nextUid) {
+      navigation.goBack();
+      return;
+    }
+
+    if (await guestStateExists()) {
+      setPostAuthChoice({ visible: true, uid: nextUid });
+      return;
     }
 
     navigation.goBack();
@@ -520,6 +620,27 @@ export const AuthScreen = ({ navigation }: any) => {
           infoOnly={alert.infoOnly}
           icon={alert.icon}
           variant={alert.variant}
+        />
+        <ConfirmSheet
+          visible={postAuthChoice.visible}
+          title="Save guest setup to your account?"
+          message="Keep this setup on this device only, or save your guest watchlist, progress, and TMDB key to your new account."
+          confirmLabel="Save To Account"
+          cancelLabel="Keep On Device"
+          onConfirm={() => {
+            const uid = postAuthChoice.uid;
+            setPostAuthChoice({ visible: false, uid: null });
+            if (!uid) {
+              navigation.goBack();
+              return;
+            }
+            void migrateGuestStateToAccount(uid).finally(() => navigation.goBack());
+          }}
+          onClose={() => {
+            setPostAuthChoice({ visible: false, uid: null });
+            navigation.goBack();
+          }}
+          icon="cloud-upload-outline"
         />
       </KeyboardAvoidingView>
     </View>

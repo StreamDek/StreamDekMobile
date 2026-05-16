@@ -9,35 +9,80 @@ const storageKey = (uid: string | null | undefined) => uid ? `streamdek_tmdb_key
 interface TmdbKeyConfig {
   enabled: boolean;
   apiKey: string;
+  provider: MetadataProvider;
 }
+
+export type MetadataProvider = 'cinemeta' | 'tmdb';
 
 interface TmdbApiKeyContextValue {
   tmdbKeyEnabled: boolean;
   tmdbApiKey: string;
+  metadataProvider: MetadataProvider;
   setTmdbApiKey: (key: string) => Promise<void>;
   setTmdbKeyEnabled: (enabled: boolean) => Promise<void>;
+  setMetadataProvider: (provider: MetadataProvider) => Promise<void>;
 }
 
 const TmdbApiKeyContext = createContext<TmdbApiKeyContextValue>({
   tmdbKeyEnabled: false,
   tmdbApiKey: '',
+  metadataProvider: 'cinemeta',
   setTmdbApiKey: async () => {},
   setTmdbKeyEnabled: async () => {},
+  setMetadataProvider: async () => {},
 });
+
+function normalizeProvider(value: unknown): MetadataProvider {
+  return value === 'tmdb' ? 'tmdb' : 'cinemeta';
+}
 
 function readTmdbConfig(preferences: any): TmdbKeyConfig | null {
   const config = preferences?.integrations?.tmdb ?? preferences?.tmdb ?? null;
-  if (!config || typeof config !== 'object') return null;
+  const inferredProvider = (
+    config
+    && typeof config === 'object'
+    && (Boolean(config.enabled) || typeof config.apiKey === 'string' && config.apiKey.trim().length > 0)
+  ) ? 'tmdb' : 'cinemeta';
+  const provider = normalizeProvider(
+    preferences?.integrations?.metadata?.provider
+    ?? preferences?.integrations?.metadataProvider
+    ?? preferences?.metadataProvider
+    ?? config?.provider
+    ?? inferredProvider,
+  );
+  const hasMetadataPreference = (
+    preferences?.integrations?.metadata?.provider != null
+    || preferences?.integrations?.metadataProvider != null
+    || preferences?.metadataProvider != null
+  );
+
+  if (!config && !hasMetadataPreference) return null;
+  if (!config || typeof config !== 'object') {
+    return {
+      enabled: false,
+      apiKey: '',
+      provider,
+    };
+  }
   return {
     enabled: Boolean(config.enabled),
     apiKey: typeof config.apiKey === 'string' ? config.apiKey : '',
+    provider,
   };
+}
+
+function getActiveTmdbKey(config: Pick<TmdbKeyConfig, 'provider' | 'enabled' | 'apiKey'>): string | null {
+  if (config.provider !== 'tmdb') return null;
+  if (!config.enabled) return null;
+  const key = config.apiKey.trim();
+  return key.length > 0 ? key : null;
 }
 
 export function TmdbApiKeyProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const [tmdbKeyEnabled, setEnabledState] = useState(false);
   const [tmdbApiKey, setKeyState] = useState('');
+  const [metadataProvider, setMetadataProviderState] = useState<MetadataProvider>('cinemeta');
   const loadedUidRef = useRef<string | null>(null);
   const accountPreferencesRef = useRef<any | null>(null);
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -60,7 +105,8 @@ export function TmdbApiKeyProvider({ children }: { children: React.ReactNode }) 
         if (remoteConfig) {
           setEnabledState(remoteConfig.enabled);
           setKeyState(remoteConfig.apiKey);
-          __setTmdbActiveKey(remoteConfig.enabled && remoteConfig.apiKey.trim() ? remoteConfig.apiKey.trim() : null);
+          setMetadataProviderState(remoteConfig.provider);
+          __setTmdbActiveKey(getActiveTmdbKey(remoteConfig));
           await Storage.setItem(storageKey(uid), JSON.stringify(remoteConfig));
           return;
         }
@@ -74,6 +120,7 @@ export function TmdbApiKeyProvider({ children }: { children: React.ReactNode }) 
       if (!raw) {
         setEnabledState(false);
         setKeyState('');
+        setMetadataProviderState('cinemeta');
         __setTmdbActiveKey(null);
         return;
       }
@@ -82,20 +129,31 @@ export function TmdbApiKeyProvider({ children }: { children: React.ReactNode }) 
         const config: TmdbKeyConfig = JSON.parse(raw);
         const enabled = config.enabled ?? false;
         const key = config.apiKey ?? '';
+        const provider = normalizeProvider(
+          config.provider ?? ((enabled || key.trim().length > 0) ? 'tmdb' : 'cinemeta'),
+        );
         setEnabledState(enabled);
         setKeyState(key);
-        __setTmdbActiveKey(enabled && key.trim() ? key.trim() : null);
+        setMetadataProviderState(provider);
+        __setTmdbActiveKey(getActiveTmdbKey({ enabled, apiKey: key, provider }));
         if (user) {
           const currentPreferences = accountPreferencesRef.current ?? {};
           const nextPreferences = {
             ...currentPreferences,
             integrations: {
               ...(currentPreferences?.integrations ?? {}),
+              metadata: {
+                ...(currentPreferences?.integrations?.metadata ?? {}),
+                provider,
+              },
+              metadataProvider: provider,
               tmdb: {
                 enabled,
                 apiKey: key,
+                provider,
               },
             },
+            metadataProvider: provider,
           };
           accountPreferencesRef.current = nextPreferences;
           await patchAccountPreferences(user, nextPreferences);
@@ -103,6 +161,7 @@ export function TmdbApiKeyProvider({ children }: { children: React.ReactNode }) 
       } catch {
         setEnabledState(false);
         setKeyState('');
+        setMetadataProviderState('cinemeta');
         __setTmdbActiveKey(null);
       }
     })();
@@ -113,8 +172,12 @@ export function TmdbApiKeyProvider({ children }: { children: React.ReactNode }) 
   }, [user]);
 
   useEffect(() => {
-    __setTmdbActiveKey(tmdbKeyEnabled && tmdbApiKey.trim() ? tmdbApiKey.trim() : null);
-  }, [tmdbKeyEnabled, tmdbApiKey]);
+    __setTmdbActiveKey(getActiveTmdbKey({
+      provider: metadataProvider,
+      enabled: tmdbKeyEnabled,
+      apiKey: tmdbApiKey,
+    }));
+  }, [metadataProvider, tmdbKeyEnabled, tmdbApiKey]);
 
   const persist = useCallback((config: TmdbKeyConfig) => {
     if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
@@ -130,11 +193,18 @@ export function TmdbApiKeyProvider({ children }: { children: React.ReactNode }) 
           ...currentPreferences,
           integrations: {
             ...(currentPreferences?.integrations ?? {}),
+            metadata: {
+              ...(currentPreferences?.integrations?.metadata ?? {}),
+              provider: config.provider,
+            },
+            metadataProvider: config.provider,
             tmdb: {
               enabled: config.enabled,
               apiKey: config.apiKey,
+              provider: config.provider,
             },
           },
+          metadataProvider: config.provider,
         };
 
         accountPreferencesRef.current = nextPreferences;
@@ -147,16 +217,34 @@ export function TmdbApiKeyProvider({ children }: { children: React.ReactNode }) 
 
   const setTmdbApiKey = useCallback(async (key: string) => {
     setKeyState(key);
-    persist({ enabled: tmdbKeyEnabled, apiKey: key });
-  }, [tmdbKeyEnabled, persist]);
+    persist({ enabled: tmdbKeyEnabled, apiKey: key, provider: metadataProvider });
+  }, [metadataProvider, tmdbKeyEnabled, persist]);
 
   const setTmdbKeyEnabled = useCallback(async (enabled: boolean) => {
     setEnabledState(enabled);
-    persist({ enabled, apiKey: tmdbApiKey });
-  }, [tmdbApiKey, persist]);
+    persist({ enabled, apiKey: tmdbApiKey, provider: metadataProvider });
+  }, [metadataProvider, tmdbApiKey, persist]);
+
+  const setMetadataProvider = useCallback(async (provider: MetadataProvider) => {
+    const nextEnabled = provider === 'tmdb' ? tmdbKeyEnabled : false;
+    setMetadataProviderState(provider);
+    if (provider === 'cinemeta') {
+      setEnabledState(false);
+    }
+    persist({ enabled: nextEnabled, apiKey: tmdbApiKey, provider });
+  }, [tmdbApiKey, tmdbKeyEnabled, persist]);
 
   return (
-    <TmdbApiKeyContext.Provider value={{ tmdbKeyEnabled, tmdbApiKey, setTmdbApiKey, setTmdbKeyEnabled }}>
+    <TmdbApiKeyContext.Provider
+      value={{
+        tmdbKeyEnabled,
+        tmdbApiKey,
+        metadataProvider,
+        setTmdbApiKey,
+        setTmdbKeyEnabled,
+        setMetadataProvider,
+      }}
+    >
       {children}
     </TmdbApiKeyContext.Provider>
   );

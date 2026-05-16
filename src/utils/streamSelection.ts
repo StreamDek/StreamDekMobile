@@ -166,6 +166,10 @@ export function isLikelyPlayableVideoStream(stream: AddonStream): boolean {
   return extensions.some(ext => VALID_VIDEO_EXTENSIONS.has(ext));
 }
 
+export function isAllowedPlaybackStream(stream: AddonStream): boolean {
+  return Boolean(stream.url || stream.cachedBy.length > 0);
+}
+
 function hasHdr(text: string): boolean {
   return (
     text.includes('HDR10+') ||
@@ -377,6 +381,36 @@ export interface StreamScoreOptions {
   maxFileSizeGB?: number;
 }
 
+type PreferredQuality = NonNullable<StreamScoreOptions['preferredQuality']>;
+
+function qualityTier(text: string, parsedQuality: string | null): '4k' | '1080p' | '720p' | '480p' | 'other' {
+  if (isUltraHd(text, parsedQuality)) return '4k';
+  if (isFullHd(text, parsedQuality)) return '1080p';
+
+  const quality = (parsedQuality ?? '').toUpperCase();
+  if (quality === '720P' || text.includes('720')) return '720p';
+  if (quality === '480P' || text.includes('480')) return '480p';
+  return 'other';
+}
+
+function qualityPreferenceRank(
+  text: string,
+  parsedQuality: string | null,
+  preferredQuality?: StreamScoreOptions['preferredQuality'],
+): number {
+  if (!preferredQuality || preferredQuality === 'best') return 0;
+
+  const tier = qualityTier(text, parsedQuality);
+  const order: Record<PreferredQuality, Array<ReturnType<typeof qualityTier>>> = {
+    best: ['4k', '1080p', '720p', '480p', 'other'],
+    '4k': ['4k', '1080p', '720p', '480p', 'other'],
+    '1080p': ['1080p', '4k', '720p', '480p', 'other'],
+    '720p': ['720p', '1080p', '4k', '480p', 'other'],
+  };
+
+  return order[preferredQuality].indexOf(tier);
+}
+
 function preferredQualityScore(text: string, parsedQuality: string | null, preferredQuality?: StreamScoreOptions['preferredQuality']): number {
   if (!preferredQuality || preferredQuality === 'best') return 0;
 
@@ -456,7 +490,20 @@ export function scoreStream(stream: AddonStream, options?: StreamScoreOptions): 
 }
 
 export function sortStreams(streams: AddonStream[], options?: StreamScoreOptions): AddonStream[] {
-  return [...streams].sort((a, b) => scoreStream(b, options) - scoreStream(a, options));
+  return [...streams].sort((a, b) => {
+    const aText = streamText(a);
+    const bText = streamText(b);
+    const aParsed = parseStream(a);
+    const bParsed = parseStream(b);
+
+    const aPreferenceRank = qualityPreferenceRank(aText, aParsed.quality, options?.preferredQuality);
+    const bPreferenceRank = qualityPreferenceRank(bText, bParsed.quality, options?.preferredQuality);
+    if (aPreferenceRank !== bPreferenceRank) {
+      return aPreferenceRank - bPreferenceRank;
+    }
+
+    return scoreStream(b, options) - scoreStream(a, options);
+  });
 }
 
 export function selectBestStream(streams: AddonStream[], options?: StreamScoreOptions): AddonStream | null {

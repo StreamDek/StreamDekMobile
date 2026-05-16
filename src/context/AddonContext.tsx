@@ -7,15 +7,24 @@ import { useLanguage } from './LanguageContext';
 import { Storage } from '../utils/storage';
 import { DebridProviderName } from './DebridContext';
 import {
+  isAllowedPlaybackStream,
   scoreStream,
   sortStreams,
 } from '../utils/streamSelection';
 import type { StreamScoreOptions } from '../utils/streamSelection';
 import { useStreamSelectionSettings } from './StreamSelectionContext';
 import { buildAuthHeaders } from '../utils/authHeaders';
+import { getMobileClientIdentityHeaders } from '../utils/clientIdentity';
+import { getSharedCachedAsync, invalidateSharedCache } from '../utils/sharedDataCache';
 
 const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 const ULTRA_BOOST_STORAGE_KEY = 'streamdek_ultra_boost_enabled';
+const ADDON_STATE_TTL_MS = 20_000;
+
+export interface UltraManifestMeta {
+  name: string;
+  version: string;
+}
 
 
 export interface AddonManifest {
@@ -53,6 +62,8 @@ export interface AddonStream {
   size: string | null;
   /** Which Debrid providers have this hash cached. */
   cachedBy: DebridProviderName[];
+  /** Ultra raw torrent results are surfaced directly by the backend. */
+  streamdekAllowRawTorrent?: boolean;
 }
 
 interface CacheEntry {
@@ -65,6 +76,7 @@ interface AddonContextType {
   isLoading: boolean;
   ultraEntitled: boolean;
   ultraBoostEnabled: boolean;
+  ultraManifest: UltraManifestMeta | null;
   setUltraBoostEnabled(enabled: boolean): Promise<void>;
   refreshUltraEntitlement(): Promise<void>;
   installAddon(url: string): Promise<{ success: boolean; error?: string }>;
@@ -99,6 +111,7 @@ const AddonContext = createContext<AddonContextType>({
   isLoading: false,
   ultraEntitled: false,
   ultraBoostEnabled: false,
+  ultraManifest: null,
   setUltraBoostEnabled: async () => {},
   refreshUltraEntitlement: async () => {},
   installAddon:            async () => ({ success: false }),
@@ -129,6 +142,25 @@ function deduplicateStreams(streams: AddonStream[]): AddonStream[] {
   return Array.from(seen.values());
 }
 
+function normalizeAddonMutationError(message: string | undefined, t: (key: any, params?: Record<string, string | number>) => string): string {
+  const fallback = t('error_install_failed');
+  if (!message) return fallback;
+
+  const normalized = message.toLowerCase();
+  if (
+    normalized.includes('authentication required')
+    || normalized.includes('unauthorized')
+    || normalized.includes('not authenticated')
+    || normalized.includes('sign in')
+    || normalized.includes('login required')
+    || normalized.includes('token')
+  ) {
+    return 'This add-on could not be installed in guest mode right now. Try again shortly, or sign in if you want to sync it to your account.';
+  }
+
+  return message;
+}
+
 function normalizeManifestUrl(url: string): string {
   const trimmed = url.trim();
   if (!trimmed) return trimmed;
@@ -152,29 +184,50 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [ultraEntitled, setUltraEntitled] = useState(false);
   const [ultraBoostEnabled, setUltraBoostEnabledState] = useState(false);
+  const [ultraManifest, setUltraManifest] = useState<UltraManifestMeta | null>(null);
 
   // In-memory stream cache — survives re-renders, cleared on unmount
   const streamCache = useRef<Map<string, CacheEntry>>(new Map());
+
+  const buildAddonHeaders = useCallback(async (
+    options: {
+      includeContentType?: boolean;
+      headers?: HeadersInit;
+    } = {},
+  ) => ({
+    ...(await buildAuthHeaders(user, options)),
+    ...(await getMobileClientIdentityHeaders()),
+  }), [user]);
 
   const refreshUltraEntitlement = useCallback(async () => {
     if (!user) {
       setUltraEntitled(false);
       setUltraBoostEnabledState(false);
+      setUltraManifest(null);
       return;
     }
 
     try {
-      const res = await fetch(`${API_BASE}/addons/ultra/entitlement`, {
-        headers: await buildAuthHeaders(user, { includeContentType: false }),
-      });
-      if (!res.ok) {
-        setUltraEntitled(false);
-        setUltraBoostEnabledState(false);
-        return;
-      }
-
-      const data = await res.json();
+      const data = await getSharedCachedAsync(
+        `addons:ultra:${user.uid}`,
+        ADDON_STATE_TTL_MS,
+        async () => {
+          const res = await fetch(`${API_BASE}/addons/ultra/entitlement`, {
+            headers: await buildAddonHeaders({ includeContentType: false }),
+          });
+          if (!res.ok) {
+            throw new Error('Ultra entitlement unavailable');
+          }
+          return res.json();
+        },
+      );
       const entitled = !!data.ultra;
+      const manifest = data?.manifest;
+      setUltraManifest(
+        manifest && typeof manifest.name === 'string' && typeof manifest.version === 'string'
+          ? { name: manifest.name, version: manifest.version }
+          : null,
+      );
       setUltraEntitled(entitled);
       if (!entitled) {
         setUltraBoostEnabledState(false);
@@ -186,8 +239,9 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
     } catch {
       setUltraEntitled(false);
       setUltraBoostEnabledState(false);
+      setUltraManifest(null);
     }
-  }, [user]);
+  }, [buildAddonHeaders, user]);
 
   useEffect(() => { void refreshUltraEntitlement(); }, [refreshUltraEntitlement]);
 
@@ -199,19 +253,24 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
   }, []);
 
   const refreshAddons = useCallback(async () => {
-    if (!user) { setAddons([]); return; }
     setIsLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/addons/manifests`, {
-        headers: await buildAuthHeaders(user, { includeContentType: false }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setAddons(data ?? []);
-      }
+      const scopeKey = user ? `addons:manifests:${user.uid}` : 'addons:manifests:guest';
+      const data = await getSharedCachedAsync(
+        scopeKey,
+        ADDON_STATE_TTL_MS,
+        async () => {
+          const res = await fetch(`${API_BASE}/addons/manifests`, {
+            headers: await buildAddonHeaders({ includeContentType: false }),
+          });
+          if (!res.ok) return [];
+          return res.json();
+        },
+      );
+      setAddons(data ?? []);
     } catch { /* keep stale list on network error */ }
     finally { setIsLoading(false); }
-  }, [user]);
+  }, [buildAddonHeaders, user]);
 
   useEffect(() => { refreshAddons(); }, [refreshAddons]);
 
@@ -222,30 +281,37 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
       const normalizedUrl = normalizeManifestUrl(url);
       const res = await fetch(`${API_BASE}/addons/install`, {
         method: 'POST',
-        headers: await buildAuthHeaders(user),
+        headers: await buildAddonHeaders(),
         body: JSON.stringify({ url: normalizedUrl }),
       });
       const data = await res.json();
-      if (!res.ok) return { success: false, error: data.error ?? t('error_install_failed') };
+      if (!res.ok) {
+        return {
+          success: false,
+          error: normalizeAddonMutationError(data?.error, t),
+        };
+      }
+      invalidateSharedCache('addons:manifests:');
       await refreshAddons();
       return { success: true };
     } catch {
       return { success: false, error: t('common_network_error') };
     }
-  }, [refreshAddons, t, user]);
+  }, [buildAddonHeaders, refreshAddons, t]);
 
   const uninstallAddon = useCallback(async (id: string) => {
     const previousAddons = addons;
     setAddons(prev => prev.filter(addon => addon.id !== id));
     await fetch(`${API_BASE}/addons/uninstall`, {
       method: 'DELETE',
-      headers: await buildAuthHeaders(user),
+      headers: await buildAddonHeaders(),
       body: JSON.stringify({ id }),
     }).catch(() => {
       setAddons(previousAddons);
     });
+    invalidateSharedCache('addons:manifests:');
     void refreshAddons();
-  }, [addons, refreshAddons, user]);
+  }, [addons, buildAddonHeaders, refreshAddons]);
 
   const toggleAddon = useCallback(async (id: string, enabled: boolean) => {
     // Invalidate stream cache — enabled addon set has changed
@@ -255,12 +321,14 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
     setAddons(prev => prev.map(a => a.id === id ? { ...a, enabled } : a));
     void fetch(`${API_BASE}/addons/toggle`, {
       method: 'POST',
-      headers: await buildAuthHeaders(user),
+      headers: await buildAddonHeaders(),
       body: JSON.stringify({ id, enabled }),
+    }).then(() => {
+      invalidateSharedCache('addons:manifests:');
     }).catch(() => {
       setAddons(previousAddons);
     });
-  }, [addons, user]);
+  }, [addons, buildAddonHeaders]);
 
   const reorderAddons = useCallback(async (orderedIds: string[]) => {
     // Optimistic update: re-index positions locally so the UI responds instantly
@@ -273,13 +341,14 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
     try {
       await fetch(`${API_BASE}/addons/reorder`, {
         method: 'POST',
-        headers: await buildAuthHeaders(user),
+        headers: await buildAddonHeaders(),
         body: JSON.stringify({ order: orderedIds }),
       });
+      invalidateSharedCache('addons:manifests:');
     } catch {
       await refreshAddons(); // revert on failure
     }
-  }, [refreshAddons, user]);
+  }, [buildAddonHeaders, refreshAddons]);
 
   const streamScoreOptions = useMemo<StreamScoreOptions>(() => ({
     preferredQuality,
@@ -287,16 +356,18 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
   }), [maxFileSizeGB, preferredQuality]);
 
   const applyStreamSelection = useCallback((incoming: AddonStream[]): AddonStream[] => {
-    if (!streamSelectionEnabled) return incoming;
-
-    // Apply local stream rules before results hit UI state/cache. This keeps
-    // third-party addons aligned with StreamDek Ultra for playable checks,
-    // preferred quality ordering, and the hard max-file-size constraint.
-    return sortStreams(
-      incoming.filter(stream => scoreStream(stream, streamScoreOptions) > -10000),
-      streamScoreOptions,
+    const playableOnly = incoming.filter(
+      stream => isAllowedPlaybackStream(stream) || stream.streamdekAllowRawTorrent === true,
     );
-  }, [streamScoreOptions, streamSelectionEnabled]);
+    const rankingOptions = streamScoreOptions;
+
+    // Preferred quality and max size should always affect ordering/filtering.
+    // The smart-selection toggle only affects extra playback heuristics elsewhere.
+    return sortStreams(
+      playableOnly.filter(stream => scoreStream(stream, rankingOptions) > -10000),
+      rankingOptions,
+    );
+  }, [streamScoreOptions]);
 
   const shouldFetchUltra = ultraEntitled && ultraBoostEnabled;
 
@@ -310,7 +381,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
     try {
       const res = await fetch(
         `${API_BASE}/addons/ultra/streams/${type}/${encodeURIComponent(videoId)}`,
-        { headers: await buildAuthHeaders(user, { includeContentType: false }), signal },
+        { headers: await buildAddonHeaders({ includeContentType: false }), signal },
       );
       if (res.status === 403) setUltraEntitled(false);
       if (!res.ok) return [];
@@ -322,7 +393,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
       }
       return [];
     }
-  }, [shouldFetchUltra, user]);
+  }, [buildAddonHeaders, shouldFetchUltra, user]);
 
   // ── Batch fetch (used by PlayerScreen auto-selection) ─────────────────────
 
@@ -334,7 +405,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
       const [addonStreams, ultraStreams] = await Promise.all([
         fetch(
           `${API_BASE}/addons/streams/${type}/${encodeURIComponent(videoId)}`,
-          { headers: await buildAuthHeaders(user, { includeContentType: false }) },
+          { headers: await buildAddonHeaders({ includeContentType: false }) },
         ).then(async (res) => {
           if (!res.ok) return [];
           const data = await res.json();
@@ -346,7 +417,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
     } catch {
       return [];
     }
-  }, [applyStreamSelection, fetchUltraStreams, user]);
+  }, [applyStreamSelection, buildAddonHeaders, fetchUltraStreams]);
 
   // ── Progressive fetch (used by stream list screens) ───────────────────────
 
@@ -360,9 +431,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
       .filter(a => a.enabled)
       .sort((a, b) => a.position - b.position);
     const enabledAddonKey = enabledAddons.map(a => `${a.id}:${a.position}`).join(',');
-    const selectionKey = streamSelectionEnabled
-      ? `${preferredQuality}:${maxFileSizeGB}`
-      : 'selection-off';
+    const selectionKey = `${preferredQuality}:${maxFileSizeGB}:${streamSelectionEnabled ? 'smart-on' : 'smart-off'}`;
     const ultraKey = shouldFetchUltra ? 'ultra-on' : 'ultra-off';
     const cacheKey = `${type}:${videoId}:${enabledAddonKey}:${selectionKey}:${ultraKey}`;
     const cached   = streamCache.current.get(cacheKey);
@@ -389,7 +458,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
       try {
         const res = await fetch(
           `${API_BASE}/addons/streams/single/${addon.id}/${type}/${encodeURIComponent(videoId)}`,
-          { headers: await buildAuthHeaders(user, { includeContentType: false }), signal },
+          { headers: await buildAddonHeaders({ includeContentType: false }), signal },
         );
         if (res.ok) {
           const data = await res.json();
@@ -431,12 +500,12 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
         expiresAt: Date.now() + CACHE_TTL,
       });
     }
-  }, [addons, applyStreamSelection, fetchUltraStreams, maxFileSizeGB, preferredQuality, shouldFetchUltra, streamSelectionEnabled, user]);
+  }, [addons, applyStreamSelection, buildAddonHeaders, fetchUltraStreams, maxFileSizeGB, preferredQuality, shouldFetchUltra, streamSelectionEnabled]);
 
   return (
     <AddonContext.Provider value={{
       addons, isLoading,
-      ultraEntitled, ultraBoostEnabled, setUltraBoostEnabled, refreshUltraEntitlement,
+      ultraEntitled, ultraBoostEnabled, ultraManifest, setUltraBoostEnabled, refreshUltraEntitlement,
       installAddon, uninstallAddon, toggleAddon,
       fetchStreams, fetchStreamsProgressive, refreshAddons, reorderAddons,
     }}>

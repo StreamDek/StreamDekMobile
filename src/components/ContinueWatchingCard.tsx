@@ -6,6 +6,7 @@ import { BlurView } from 'expo-blur';
 import { useTheme } from '../context/ThemeContext';
 import { RatingBadge } from './RatingBadge';
 import type { ContinueWatchingStyle } from '../context/DisplaySettingsContext';
+import { getDeviceProfile } from '../utils/deviceProfile';
 
 // ── Card dimensions ───────────────────────────────────────────────────────────
 export const CW_CARD_WIDTH: Record<ContinueWatchingStyle, number> = {
@@ -81,6 +82,7 @@ function CinematicCard({ item, onPress, onLongPress }: Omit<Props, 'cardStyle'>)
 function GlassCard({ item, onPress, onLongPress }: Omit<Props, 'cardStyle'>) {
   const { theme, resolvedAppearance } = useTheme();
   const c = theme.colors;
+  const deviceProfile = useMemo(() => getDeviceProfile(), []);
   const W = CW_CARD_WIDTH.glass;
   const H = Math.round(W * 9 / 16);
   const glassH = Math.round(H / 3);
@@ -101,29 +103,46 @@ function GlassCard({ item, onPress, onLongPress }: Omit<Props, 'cardStyle'>) {
         pointerEvents="none"
       />
 
-      <BlurView intensity={isDark ? 58 : 46} tint={isDark ? 'dark' : 'light'} style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: glassH, overflow: 'hidden', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: isDark ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.36)', paddingHorizontal: 12, paddingTop: 9 }}>
-        {imgSrc ? (
-          <RNImage
-            source={{ uri: imgSrc }}
-            blurRadius={18}
-            resizeMode="cover"
-            style={{ position: 'absolute', left: 0, right: 0, top: -(H - glassH), width: W, height: H }}
-          />
-        ) : null}
-        <View style={[StyleSheet.absoluteFillObject, { backgroundColor: isDark ? 'rgba(7,8,12,0.34)' : 'rgba(255,255,255,0.24)' }]} />
-        <View style={{ zIndex: 1 }}>
-          <View style={S.glassRow}>
-            <Text style={[S.glassTitle, { color: isDark ? '#f0f0f8' : '#111' }]} numberOfLines={1}>{item.title}</Text>
-            {timeLabel && <Text style={[S.glassTime, { color: isDark ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.55)' }]}>{timeLabel}</Text>}
+      {deviceProfile.enableHeavyBlur ? (
+        <BlurView intensity={isDark ? 58 : 46} tint={isDark ? 'dark' : 'light'} style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: glassH, overflow: 'hidden', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: isDark ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.36)', paddingHorizontal: 12, paddingTop: 9 }}>
+          {imgSrc ? (
+            <RNImage
+              source={{ uri: imgSrc }}
+              blurRadius={18}
+              resizeMode="cover"
+              style={{ position: 'absolute', left: 0, right: 0, top: -(H - glassH), width: W, height: H }}
+            />
+          ) : null}
+          <View style={[StyleSheet.absoluteFillObject, { backgroundColor: isDark ? 'rgba(7,8,12,0.34)' : 'rgba(255,255,255,0.24)' }]} />
+          <View style={{ zIndex: 1 }}>
+            <View style={S.glassRow}>
+              <Text style={[S.glassTitle, { color: isDark ? '#f0f0f8' : '#111' }]} numberOfLines={1}>{item.title}</Text>
+              {timeLabel && <Text style={[S.glassTime, { color: isDark ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.55)' }]}>{timeLabel}</Text>}
+            </View>
+            {item.rating > 0 && <View style={{ marginTop: 3 }}><RatingBadge rating={item.rating} size={9} textColor={ratingColor(item.rating)} /></View>}
           </View>
-          {item.rating > 0 && <View style={{ marginTop: 3 }}><RatingBadge rating={item.rating} size={9} textColor={ratingColor(item.rating)} /></View>}
+          {item.progress > 0 && (
+            <View style={[S.glassProgressTrack, { width: W }]}>
+              <View style={[S.glassProgressFill, { width: W * (item.progress / 100), backgroundColor: c.progressFill }]} />
+            </View>
+          )}
+        </BlurView>
+      ) : (
+        <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: glassH, overflow: 'hidden', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: isDark ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.30)', paddingHorizontal: 12, paddingTop: 9, backgroundColor: isDark ? 'rgba(7,8,12,0.68)' : 'rgba(255,255,255,0.70)' }}>
+          <View style={{ zIndex: 1 }}>
+            <View style={S.glassRow}>
+              <Text style={[S.glassTitle, { color: isDark ? '#f0f0f8' : '#111' }]} numberOfLines={1}>{item.title}</Text>
+              {timeLabel && <Text style={[S.glassTime, { color: isDark ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.55)' }]}>{timeLabel}</Text>}
+            </View>
+            {item.rating > 0 && <View style={{ marginTop: 3 }}><RatingBadge rating={item.rating} size={9} textColor={ratingColor(item.rating)} /></View>}
+          </View>
+          {item.progress > 0 && (
+            <View style={[S.glassProgressTrack, { width: W }]}>
+              <View style={[S.glassProgressFill, { width: W * (item.progress / 100), backgroundColor: c.progressFill }]} />
+            </View>
+          )}
         </View>
-        {item.progress > 0 && (
-          <View style={[S.glassProgressTrack, { width: W }]}>
-            <View style={[S.glassProgressFill, { width: W * (item.progress / 100), backgroundColor: c.progressFill }]} />
-          </View>
-        )}
-      </BlurView>
+      )}
     </TouchableOpacity>
   );
 }

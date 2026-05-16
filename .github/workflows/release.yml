@@ -33,7 +33,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Validate release version
         id: version
@@ -117,14 +117,7 @@ jobs:
           } > .env
 
       - name: Install JavaScript dependencies
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          if [ -f "package-lock.json" ]; then
-            npm ci
-          else
-            npm install
-          fi
+        run: npm install
 
       - name: Decode Android keystore
         shell: bash
@@ -186,5 +179,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.apk.outputs.apk_path }}
-          generate_release_notes: true
+          generate_release_notes: false
           fail_on_unmatched_files: true

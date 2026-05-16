@@ -14,7 +14,7 @@ import { useDisplaySettings } from '../context/DisplaySettingsContext';
 import { PROFILE_AVATARS } from '../utils/profileApi';
 
 export const BOTTOM_NAV_HEIGHT_WITH_LABELS = 70;
-export const BOTTOM_NAV_HEIGHT_WITHOUT_LABELS = 62;
+export const BOTTOM_NAV_HEIGHT_WITHOUT_LABELS = 70;
 export const BOTTOM_NAV_HEIGHT = BOTTOM_NAV_HEIGHT_WITH_LABELS;
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
@@ -99,9 +99,9 @@ export const StackBottomNav: React.FC<Props> = ({ activeTab, blurTarget, onTabPr
   const { showNavLabels } = useDisplaySettings();
 
   const navHeight = showNavLabels ? BOTTOM_NAV_HEIGHT_WITH_LABELS : BOTTOM_NAV_HEIGHT_WITHOUT_LABELS;
-  const iconSize = showNavLabels ? 24 : 28;
-  const avatarSize = showNavLabels ? 26 : 30;
-  const avatarSizeActive = showNavLabels ? 28 : 32;
+  const iconSize = showNavLabels ? 24 : 27;
+  const avatarSize = showNavLabels ? 26 : 29;
+  const avatarSizeActive = showNavLabels ? 28 : 31;
   const isLightAppearance = resolvedAppearance === 'light';
 
   const bgRgba = useMemo(

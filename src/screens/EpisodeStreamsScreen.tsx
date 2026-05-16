@@ -20,10 +20,12 @@ import { useWatched } from '../context/WatchedContext';
 import { useStreamSelectionSettings } from '../context/StreamSelectionContext';
 import { useWatchProgress, episodeProgressKey } from '../context/WatchProgressContext';
 import { ConfirmSheet } from '../components/ConfirmSheet';
+import { ActionSheet } from '../components/ActionSheet';
 import { PrimaryActionButton, getPrimaryActionPalette } from '../components/PrimaryActionButton';
 import { StackBottomNav, BOTTOM_NAV_HEIGHT } from '../components/StackBottomNav';
 import { selectBestStream, sortStreams, scoreStream } from '../utils/streamSelection';
 import { parseStream, formatSeeds } from '../utils/streamParser';
+import { isExpoGoRuntime } from '../utils/runtime';
 
 const IMG_HEIGHT = 230;
 
@@ -170,6 +172,16 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     shadowRadius: 18,
     shadowOffset: { width: 0, height: 8 },
     elevation: 10,
+  },
+  backBtnGlassTint: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.06)' : 'rgba(15,23,42,0.08)',
+  },
+  backBtnGlassHighlight: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 24,
+    borderTopWidth: 1,
+    borderTopColor: isLightAppearance ? 'rgba(255,255,255,0.30)' : 'rgba(255,255,255,0.08)',
   },
   titleSection: {
     paddingHorizontal: 20, paddingTop: 12, paddingBottom: 16,
@@ -357,6 +369,7 @@ function StreamRow({ stream, colors, onPlay, isLightAppearance, glass = false }:
 // ── Screen ────────────────────────────────────────────────────────────────────
 
 export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
+  const expoGoRuntime = isExpoGoRuntime();
   const {
     showId, showTitle, showPoster, showBackdrop, imdbId,
     season, episodeNumber, episodeName, episodeOverview, episodeReleaseDate, episodeRuntime,
@@ -412,20 +425,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
     maxFileSizeGB: maxFileSizeGB > 0 ? maxFileSizeGB : undefined,
   }), [maxFileSizeGB, preferredQuality]);
 
-  const sortedVisibleStreams = (streamSelectionEnabled
-    ? [...visibleStreams].sort((a, b) => {
-        const aCached = a.cachedBy.length > 0;
-        const bCached = b.cachedBy.length > 0;
-        if (bCached !== aCached) return bCached ? 1 : -1;
-        if (aCached && bCached) {
-          const aIdx = debridAccounts.findIndex(acc => acc.provider === a.cachedBy[0]);
-          const bIdx = debridAccounts.findIndex(acc => acc.provider === b.cachedBy[0]);
-          const diff = (aIdx === -1 ? 999 : aIdx) - (bIdx === -1 ? 999 : bIdx);
-          if (diff !== 0) return diff;
-        }
-        return scoreStream(b, streamOptions) - scoreStream(a, streamOptions);
-      })
-    : [...visibleStreams]).slice(0, 20);
+  const sortedVisibleStreams = sortStreams(visibleStreams, streamOptions).slice(0, 20);
 
   const grouped: Record<string, AddonStream[]> = {};
   for (const s of sortedVisibleStreams) {
@@ -540,6 +540,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
         imdbId,
         type: 'tv',
         title: playerTitle,
+        synopsis: episodeOverview ?? undefined,
         streamUrl: stream.url,
         activeStream: stream,
         streams,
@@ -558,6 +559,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
           imdbId,
           type: 'tv',
           title: playerTitle,
+          synopsis: episodeOverview ?? undefined,
           backdrop: backdropUri,
           poster: showPoster,
           season,
@@ -583,6 +585,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
           imdbId,
           type: 'tv',
           title: playerTitle,
+          synopsis: episodeOverview ?? undefined,
           streamUrl: resolved.url,
           activeStream: stream,
           streams,
@@ -616,13 +619,14 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
   // skipping the intermediate PlayerScreen so the loading overlay shows at once.
   const playBestStream = useCallback(() => {
     if (streams.length === 0) return;
-    const best = streamSelectionEnabled ? selectBestStream(streams, streamOptions) : streams[0];
+    const best = selectBestStream(streams, streamOptions);
     if (!best) return;
 
-    const sortedAll = streamSelectionEnabled ? sortStreams(streams, streamOptions) : [...streams];
+    const sortedAll = sortStreams(streams, streamOptions);
 
     const sharedParams = {
       title: playerTitle,
+      synopsis: episodeOverview ?? undefined,
       type: 'tv' as const,
       season,
       episode: episodeNumber,
@@ -637,6 +641,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
         imdbId,
         type: 'tv',
         title: playerTitle,
+        synopsis: episodeOverview ?? undefined,
         backdrop: backdropUri,
         poster: showPoster,
         season,
@@ -646,7 +651,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
     };
 
     if (best.url) {
-      navigation.navigate('MpvPlayer', {
+      navigation.navigate(expoGoRuntime ? 'Player' : 'MpvPlayer', {
         ...sharedParams,
         streamUrl:    best.url,
         sourceStreams: sortedAll,
@@ -664,14 +669,14 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
         best.infoHash ?? best.url ?? best.behaviorHints?.filename ?? best.title ?? best.name ?? ''
       ).trim().replace(/\s+/g, ' ').toLowerCase();
 
-      navigation.navigate('MpvPlayer', {
+      navigation.navigate(expoGoRuntime ? 'Player' : 'MpvPlayer', {
         ...sharedParams,
         resolveOnMount:          true,
         sourceStreams:            sortedAll,
         preferredSourceIdentity,
       });
     }
-  }, [streams, debridAccounts.length, navigation, playerTitle, season, episodeNumber,
+  }, [expoGoRuntime, streams, debridAccounts.length, navigation, playerTitle, episodeOverview, season, episodeNumber,
       backdropUri, showPoster, imdbId, showId, streamSelectionEnabled, resolvedProgressKey, streamOptions]);
 
   // ── Render helpers ─────────────────────────────────────────────────────────
@@ -684,24 +689,6 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
           <ActivityIndicator color={colors.textPrimary} size="large" />
           <Text style={{ color: colors.subText, fontSize: 13, marginTop: 14 }}>
             {t('streams_searching', { n: sourceCount, plural: sourceCount !== 1 ? 's' : '' })}
-          </Text>
-        </View>
-      );
-    }
-
-    if (!user) {
-      return (
-        <View style={styles.emptyWrap}>
-          <View style={[styles.emptyIcon, { backgroundColor: colors.accent + '18' }]}>
-            <Ionicons name="person-circle-outline" size={34} color={colors.accent} />
-          </View>
-          <Text style={styles.emptyTitle}>{t('streams_sign_in_title')}</Text>
-          <Text style={styles.emptyDesc}>{t('streams_sign_in_desc')}</Text>
-          <TouchableOpacity style={styles.emptyBtn} onPress={() => navigation.navigate('Auth')} activeOpacity={0.85}>
-            <Text style={styles.emptyBtnText}>{t('streams_sign_in_btn')}</Text>
-          </TouchableOpacity>
-          <Text style={{ color: colors.mutedText, fontSize: 11, textAlign: 'center', marginTop: 16, lineHeight: 17 }}>
-            Supports Real-Debrid, AllDebrid, Premiumize and any Stremio-compatible addon.
           </Text>
         </View>
       );
@@ -843,12 +830,17 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
             blurTarget={Platform.OS === 'android' ? blurTargetRef : undefined}
             style={StyleSheet.absoluteFillObject}
           />
+          <View pointerEvents="none" style={styles.backBtnGlassTint} />
           <View
             pointerEvents="none"
             style={[StyleSheet.absoluteFillObject, {
-              backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.45)' : 'rgba(10,12,18,0.18)',
+              borderRadius: 24,
+              borderWidth: 1,
+              borderColor: isLightAppearance ? 'rgba(255,255,255,0.56)' : 'rgba(255,255,255,0.16)',
+              backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.08)' : 'rgba(10,12,18,0.10)',
             }]}
           />
+          <View pointerEvents="none" style={styles.backBtnGlassHighlight} />
           <Ionicons name="chevron-back" size={20} color={isLightAppearance ? colors.textPrimary : '#ffffff'} />
         </TouchableOpacity>
         <PageWrapper
@@ -947,7 +939,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
           })()}
 
           {/* Play best stream button */}
-          {user && hasStreamSources && (() => {
+          {hasStreamSources && (() => {
             const ready = streams.length > 0;
             const searching = (loading || pendingAddons > 0) && !ready;
             const buttonProgress = episodeProgress != null && episodeProgress < 100 ? episodeProgress : null;
@@ -1036,16 +1028,31 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
         {renderContent()}
       </ScrollView>
 
-        {/* Debrid required sheet */}
-        <ConfirmSheet
+        <ActionSheet
           visible={debridSheet}
           onClose={() => setDebridSheet(false)}
-          icon="flash-outline"
           title={t('streams_debrid_required_title')}
-          message={t('streams_debrid_required_desc')}
-          confirmLabel={t('streams_setup_debrid')}
-          cancelLabel={t('common_cancel')}
-          onConfirm={() => navigation.navigate('Addons', { initialTab: 'debrid' })}
+          subtitle={t('streams_debrid_required_desc')}
+          actions={[
+            {
+              label: 'Find Direct Sources',
+              icon: 'extension-puzzle-outline',
+              variant: 'accent',
+              onPress: () => navigation.navigate('Addons', { initialTab: 'addons' }),
+            },
+            {
+              label: t('streams_setup_debrid'),
+              icon: 'flash-outline',
+              variant: 'default',
+              onPress: () => navigation.navigate('Addons', { initialTab: 'debrid' }),
+            },
+            {
+              label: t('common_cancel'),
+              icon: 'close-outline',
+              variant: 'cancel',
+              onPress: () => {},
+            },
+          ]}
         />
 
         {/* Debrid resolving overlay */}

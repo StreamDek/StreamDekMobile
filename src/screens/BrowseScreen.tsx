@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { API_BASE } from '../constants/api';
 import { tmdbFetch } from '../utils/tmdbFetch';
+import { fetchMetadataCatalog } from '../utils/metadataCatalogFetch';
 import { Storage } from '../utils/storage';
 import { MediaCard } from '../components/MediaCard';
 import { ActionSheet } from '../components/ActionSheet';
@@ -118,6 +119,8 @@ export const BrowseScreen = ({ navigation, route }: any) => {
   const styles     = useMemo(() => makeStyles(colors), [colors]);
   const insets     = useSafeAreaInsets();
   const blurTargetRef = useRef<View | null>(null);
+  const requestAbortRef = useRef<AbortController | null>(null);
+  const genreAbortRef = useRef<AbortController | null>(null);
 
   const {
     longPressItem, setLongPressItem, handleLongPress, buildActions,
@@ -157,16 +160,28 @@ export const BrowseScreen = ({ navigation, route }: any) => {
 
   // Fetch genre list once on mount
   useEffect(() => {
+    genreAbortRef.current?.abort();
     if (endpoint) { setGenres([]); return; }
-    tmdbFetch(`/tmdb/genres/${type}`)
+    const controller = new AbortController();
+    genreAbortRef.current = controller;
+    tmdbFetch(`/tmdb/genres/${type}`, { signal: controller.signal })
       .then(r => r.json())
       .then(d => setGenres(d.genres ?? []))
       .catch(() => {});
+    return () => controller.abort();
   }, [type, endpoint]);
 
   // Build the correct endpoint depending on whether a genre is selected
   const buildUrl = useCallback((pageNum: number, genre: Genre | null, options?: { contentType?: 'all' | 'movie' | 'tv' }) => {
     if (endpoint) {
+      if (String(endpoint).startsWith('/cinemeta/')) {
+        const params = new URLSearchParams();
+        const skip = Math.max(0, (pageNum - 1) * 100);
+        if (skip > 0) params.set('skip', String(skip));
+        return params.size > 0
+          ? `${endpoint}${String(endpoint).includes('?') ? '&' : '?'}${params.toString()}`
+          : endpoint;
+      }
       const params = new URLSearchParams();
       params.set('page', String(pageNum));
       if (isNetworkBrowse) {
@@ -184,20 +199,34 @@ export const BrowseScreen = ({ navigation, route }: any) => {
   }, [type, endpoint, isNetworkBrowse, contentType, sortMode]);
 
   const fetchPage = useCallback(async (pageNum: number, genre: Genre | null, append = false, options?: { contentType?: 'all' | 'movie' | 'tv' }) => {
+    requestAbortRef.current?.abort();
+    const controller = new AbortController();
+    requestAbortRef.current = controller;
     try {
-      const res  = await tmdbFetch(buildUrl(pageNum, genre, options));
-      if (!res.ok) return false;
-      const data = await res.json();
+      const url = buildUrl(pageNum, genre, options);
+      const data = endpoint && String(endpoint).startsWith('/cinemeta/')
+        ? await fetchMetadataCatalog(url, { signal: controller.signal })
+        : await (async () => {
+          const res  = await tmdbFetch(url, { signal: controller.signal });
+          if (!res.ok) return null;
+          return res.json();
+        })();
+      if (!data) return false;
       setTotalPages(data.total_pages || 1);
       if (append) setItems(prev => [...prev, ...(data.results || [])]);
       else        setItems(data.results || []);
       setLoadedOnce(true);
       return true;
     } catch (e) {
+      if (controller.signal.aborted) return false;
       console.error('Browse fetch failed:', e);
       return false;
+    } finally {
+      if (requestAbortRef.current === controller) {
+        requestAbortRef.current = null;
+      }
     }
-  }, [buildUrl]);
+  }, [buildUrl, endpoint]);
 
   useEffect(() => {
     let cancelled = false;
@@ -209,6 +238,11 @@ export const BrowseScreen = ({ navigation, route }: any) => {
     })();
     return () => { cancelled = true; };
   }, [type, endpoint, fetchPage, contentType, sortMode, selectedGenre?.id]);
+
+  useEffect(() => () => {
+    requestAbortRef.current?.abort();
+    genreAbortRef.current?.abort();
+  }, []);
 
   const handleGenreSelect = useCallback((genre: Genre | null) => {
     setSelectedGenre(genre);

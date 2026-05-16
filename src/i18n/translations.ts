@@ -193,9 +193,9 @@ const en = {
 
   // -- Home sections ------------------------------------------------------------
   section_popular_movies:  'Popular Movies',
-  section_popular_tv:      'Popular TV Series',
+  section_popular_tv:      'Popular Series',
   section_trending_movies: 'Trending Movies',
-  section_trending_tv:     'Trending TV Series',
+  section_trending_tv:     'Trending Series',
   section_networks:        'Networks',
   section_continue:        'Continue Watching',
   section_recommended:     'Recommended for You',
@@ -204,7 +204,7 @@ const en = {
 
   // -- Home hero ----------------------------------------------------------------
   home_movie_badge: 'Movie',
-  home_tv_badge:    'TV Series',
+  home_tv_badge:    'Series',
   home_play:        'Play',
   home_continue_btn: 'Continue',
   home_play_now_btn: 'Play Now',
@@ -299,8 +299,8 @@ const en = {
   streams_loading:       'Searching streams…',
   streams_all:           'All',
   streams_cached:        'Cached',
-  streams_debrid_req:    'Debrid required',
-  streams_debrid_msg:    'This stream is a torrent and needs a Debrid service. Connect one in Settings.',
+  streams_debrid_req:    'Torrent source not playable',
+  streams_debrid_msg:    'This source is a raw torrent. Add a Direct HTTP add-on or use a Debrid-cached source.',
 
   // -- Common -------------------------------------------------------------------
   common_ok:     'OK',
@@ -354,7 +354,7 @@ const en = {
   player_resolving:          'Resolving stream…',
   player_searching_addons:   'Searching addons…',
   player_no_streams:         'No streams found for this content.',
-  player_debrid_required:    'This content requires a Debrid service. Connect one in Settings ? Addons.',
+  player_debrid_required:    'This source is a raw torrent. Add a Direct HTTP add-on or use a Debrid-cached source.',
   player_resolving_debrid:    'Resolving via Debrid…',
   player_err_resolve:        'Could not resolve stream via Debrid.',
   player_err_load:           'Failed to load stream.',
@@ -396,8 +396,8 @@ const en = {
   auth_email_continue:        'Continue with email',
   streams_searching:         'Searching {n} addon{plural}…',
   streams_searching_more:    'Searching {n} more addon{plural}…',
-  streams_sign_in_title:     'Sign in to unlock streaming',
-  streams_sign_in_desc:      'Create a free account to install streaming addons and connect Debrid services for instant, high-speed access.',
+  streams_sign_in_title:     'Sign in to unlock syncing',
+  streams_sign_in_desc:      'Create a free account to sync with TV, connect Trakt, and keep settings across devices.',
   streams_sign_in_btn:       'Sign In / Create Account',
   streams_no_addons_title:   'No addons installed',
   streams_no_addons_desc:    'Addons are streaming sources that find links for episodes. Add one to start watching — compatible with any Stremio addon URL.',
@@ -405,8 +405,8 @@ const en = {
   streams_no_results_title:  'No streams found',
   streams_no_results_desc:   'None of your {n} addon{plural} returned results for this episode. It may not be indexed yet, or try adding more sources.',
   streams_manage_addons:     'Manage Addons',
-  streams_debrid_required_title: 'Debrid required',
-  streams_debrid_required_desc: 'This stream is a torrent and needs a Debrid service to play. Connect one in Settings.',
+  streams_debrid_required_title: 'Torrent source not playable',
+  streams_debrid_required_desc: 'This source is a raw torrent. Add a Direct HTTP add-on or use a Debrid-cached source.',
   streams_setup_debrid:      'Set Up Debrid',
   streams_resolving:         'Resolving stream…',
   streams_resolving_desc:    'Fetching cached link from your Debrid service',

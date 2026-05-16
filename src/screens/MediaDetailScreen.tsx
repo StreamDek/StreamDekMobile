@@ -32,6 +32,7 @@ import { useLanguage } from '../context/LanguageContext';
 import { useStreamSelectionSettings } from '../context/StreamSelectionContext';
 import { useWatched } from '../context/WatchedContext';
 import { movieProgressKey, episodeProgressKey, useWatchProgress } from '../context/WatchProgressContext';
+import { useAppLifecycle } from '../context/AppLifecycleContext';
 import { buildAuthHeaders } from '../utils/authHeaders';
 import { sortStreams } from '../utils/streamSelection';
 import {
@@ -1039,6 +1040,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const { t } = useLanguage();
   const { uiStyle } = useUIStyle();
   const { showStreamsList, vividAmbientEnabled } = useDisplaySettings();
+  const { isForeground } = useAppLifecycle();
   const isLightAppearance = resolvedAppearance === 'light';
   const isLightMonochrome = isLightAppearance && theme.id === 'monochrome';
   const isMonochromeDark = !isLightAppearance && theme.id === 'monochrome';
@@ -1125,6 +1127,9 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const [streamsFetchStarted, setStreamsFetchStarted] = useState(false);
   const streamsAbortRef  = useRef<AbortController | null>(null);
   const resolveAbortRef = useRef<AbortController | null>(null);
+  const detailsAbortRef = useRef<AbortController | null>(null);
+  const commentsAbortRef = useRef<AbortController | null>(null);
+  const seasonsAbortRef = useRef<AbortController | null>(null);
   const streamsRequestIdRef = useRef(0);
   const scrollViewRef    = useRef<any>(null);
   const blurTargetRef = useRef<View | null>(null);
@@ -1501,11 +1506,15 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
 
   useEffect(() => {
     if (detailCache.has(cacheKey)) return; // already have data, skip fetch
-    runIdle(() => {
+    const controller = new AbortController();
+    detailsAbortRef.current?.abort();
+    detailsAbortRef.current = controller;
+    const idleHandle = runIdle(() => {
       const fetchDetails = async () => {
         try {
-          const res = await tmdbFetch(`/tmdb/details/${type}/${movieId}`);
+          const res = await tmdbFetch(`/tmdb/details/${type}/${movieId}`, { signal: controller.signal });
           const data = await res.json();
+          if (controller.signal.aborted) return;
           detailCache.set(cacheKey, data);
           setMedia(data);
           setVimeoKey(data.vimeoKey ?? null);
@@ -1514,35 +1523,48 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
             Image.prefetch([data.backdrop, data.poster].filter(Boolean));
           }
         } catch (e) {
+          if (controller.signal.aborted) return;
           console.error('Detail fetch failed:', e);
           detailCache.delete(cacheKey); // don't cache errors
         } finally {
-          setLoading(false);
+          if (!controller.signal.aborted) {
+            setLoading(false);
+          }
         }
       };
       void fetchDetails();
     });
+    return () => {
+      idleHandle.cancel();
+      controller.abort();
+      if (detailsAbortRef.current === controller) detailsAbortRef.current = null;
+    };
   }, [movieId, type, cacheKey]);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    commentsAbortRef.current?.abort();
+    commentsAbortRef.current = controller;
 
     const fetchComments = async () => {
       try {
-        const res = await fetch(`${API_BASE}/trakt/comments/${type}/${movieId}`);
+        const res = await fetch(`${API_BASE}/trakt/comments/${type}/${movieId}`, { signal: controller.signal });
         if (!res.ok) {
-          if (!cancelled) setTraktComments([]);
+          if (!controller.signal.aborted) setTraktComments([]);
           return;
         }
         const data = await res.json();
-        if (!cancelled) setTraktComments(Array.isArray(data?.results) ? data.results : []);
+        if (!controller.signal.aborted) setTraktComments(Array.isArray(data?.results) ? data.results : []);
       } catch {
-        if (!cancelled) setTraktComments([]);
+        if (!controller.signal.aborted) setTraktComments([]);
       }
     };
 
     void fetchComments();
-    return () => { cancelled = true; };
+    return () => {
+      controller.abort();
+      if (commentsAbortRef.current === controller) commentsAbortRef.current = null;
+    };
   }, [movieId, type]);
 
   // Derive watchlist status from local storage and/or Trakt context.
@@ -1707,17 +1729,41 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   useEffect(() => {
     const shouldFetch = useGlassDetailLayout ? showSeasonsPanel : activeTab === 'seasons';
     if (!shouldFetch || type !== 'tv') return;
+    const controller = new AbortController();
+    seasonsAbortRef.current?.abort();
+    seasonsAbortRef.current = controller;
     const fetchEpisodes = async () => {
       setEpisodesLoading(true);
       try {
-        const res = await tmdbFetch(`/tmdb/season/${movieId}/${selectedSeason}`);
+        const res = await tmdbFetch(`/tmdb/season/${movieId}/${selectedSeason}`, { signal: controller.signal });
         const data = await res.json();
-        setEpisodes(data.episodes || []);
-      } catch { setEpisodes([]); }
-      finally { setEpisodesLoading(false); }
+        if (!controller.signal.aborted) {
+          setEpisodes(data.episodes || []);
+        }
+      } catch {
+        if (!controller.signal.aborted) setEpisodes([]);
+      }
+      finally {
+        if (!controller.signal.aborted) setEpisodesLoading(false);
+      }
     };
     fetchEpisodes();
+    return () => {
+      controller.abort();
+      if (seasonsAbortRef.current === controller) seasonsAbortRef.current = null;
+    };
   }, [activeTab, showSeasonsPanel, selectedSeason, movieId, type, useGlassDetailLayout]);
+
+  useEffect(() => {
+    if (isForeground) return;
+    detailsAbortRef.current?.abort();
+    commentsAbortRef.current?.abort();
+    seasonsAbortRef.current?.abort();
+    streamsAbortRef.current?.abort();
+    resolveAbortRef.current?.abort();
+    setEpisodesLoading(false);
+    setStreamsLoading(false);
+  }, [isForeground]);
 
   // Unified save: saves to Trakt (if connected) + local storage
   const toggleSave = useCallback(async () => {
@@ -2074,7 +2120,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
         subtitle={t('streams_debrid_msg')}
         actions={[
           {
-            label: 'Find Direct Sources',
+                label: t('media_find_direct_sources'),
             icon: 'extension-puzzle-outline',
             variant: 'accent',
             onPress: () => navigation.navigate('Addons', { initialTab: 'addons' }),
@@ -2446,10 +2492,10 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                     <ActivityIndicator size="small" color={colors.accentSoft} style={styles.tabInlineSpinner} />
                   ) : null}
                   <Text style={[styles.centeredPillText, (useGlassDetailLayout && tab === 'seasons' ? showSeasonsPanel : activeTab === tab) && styles.centeredPillTextActive]}>
-                    {tab === 'streams'
+                  {tab === 'streams'
                       ? `⚡ ${t('media_streams')}${streams.length > 0 ? ` (${streams.length})` : ''}`
                       : useGlassDetailLayout && tab === 'seasons'
-                        ? (showSeasonsPanel ? 'Hide Seasons' : 'Show Season(s)')
+                        ? (showSeasonsPanel ? t('media_hide_seasons') : t('media_show_seasons'))
                         : t(`media_${tab}` as any)}
                   </Text>
                 </TouchableOpacity>
@@ -2505,7 +2551,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                   {tab === 'streams'
                     ? `⚡ ${t('media_streams')}${streams.length > 0 ? ` (${streams.length})` : ''}`
                     : useGlassDetailLayout && tab === 'seasons'
-                      ? (showSeasonsPanel ? 'Hide Seasons' : 'Show Season(s)')
+                      ? (showSeasonsPanel ? t('media_hide_seasons') : t('media_show_seasons'))
                       : t(`media_${tab}` as any)}
                 </Text>
               </TouchableOpacity>
@@ -2579,8 +2625,11 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                   </Text>
                   <Text style={styles.seasonShelfMeta}>
                     {episodesLoading
-                      ? 'Loading episodes'
-                      : `${episodes.length || selectedSeasonInfo?.episode_count || 0} episode${(episodes.length || selectedSeasonInfo?.episode_count || 0) === 1 ? '' : 's'} - swipe to browse`}
+                    ? t('media_loading_episodes')
+                    : t('media_episodes_swipe_browse', {
+                        n: episodes.length || selectedSeasonInfo?.episode_count || 0,
+                        suffix: (episodes.length || selectedSeasonInfo?.episode_count || 0) === 1 ? '' : 's',
+                      })}
                   </Text>
                 </View>
                 {selectedSeasonEpisodeCount > 0 ? (
@@ -2595,7 +2644,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                       color={selectedSeasonWatched ? (isLightAppearance ? '#1b5e20' : '#00e676') : colors.mutedText}
                     />
                     <Text style={[styles.seasonWatchBtnText, selectedSeasonWatched && styles.seasonWatchBtnTextActive]}>
-                      {selectedSeasonWatched ? 'Season Watched' : 'Mark Season Watched'}
+                    {selectedSeasonWatched ? t('media_season_watched') : t('media_mark_season_watched')}
                     </Text>
                   </TouchableOpacity>
                 ) : null}
@@ -2672,7 +2721,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                           <Text style={styles.episodeCardMeta} numberOfLines={1}>{epMeta}</Text>
                         ) : null}
                         <Text style={styles.episodeCardOverview} numberOfLines={2}>
-                          {isUnairedEpisode ? 'Not released yet.' : ep.overview}
+                          {isUnairedEpisode ? t('media_not_released_yet') : ep.overview}
                         </Text>
                         {epProgress != null && epProgress > 0 && !isUnairedEpisode && (
                           <View style={styles.episodeProgressTrack}>
@@ -2979,7 +3028,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
 
               {(media.similarTitles?.length ?? 0) > 0 && (
                 <View style={styles.relatedSection}>
-                  <Text style={styles.featuredSectionHeading}>More Like This</Text>
+                  <Text style={styles.featuredSectionHeading}>{t('media_more_like_this')}</Text>
                   <ScrollView
                     horizontal
                     showsHorizontalScrollIndicator={false}
@@ -3033,8 +3082,11 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                     </Text>
                     <Text style={styles.seasonShelfMeta}>
                       {episodesLoading
-                        ? 'Loading episodes'
-                        : `${episodes.length || selectedSeasonInfo?.episode_count || 0} episode${(episodes.length || selectedSeasonInfo?.episode_count || 0) === 1 ? '' : 's'} - swipe to browse`}
+                    ? t('media_loading_episodes')
+                    : t('media_episodes_swipe_browse', {
+                        n: episodes.length || selectedSeasonInfo?.episode_count || 0,
+                        suffix: (episodes.length || selectedSeasonInfo?.episode_count || 0) === 1 ? '' : 's',
+                      })}
                     </Text>
                   </View>
                   {selectedSeasonEpisodeCount > 0 ? (
@@ -3049,7 +3101,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                         color={selectedSeasonWatched ? (isLightAppearance ? '#1b5e20' : '#00e676') : colors.mutedText}
                       />
                       <Text style={[styles.seasonWatchBtnText, selectedSeasonWatched && styles.seasonWatchBtnTextActive]}>
-                        {selectedSeasonWatched ? 'Season Watched' : 'Mark Season Watched'}
+                    {selectedSeasonWatched ? t('media_season_watched') : t('media_mark_season_watched')}
                       </Text>
                     </TouchableOpacity>
                   ) : null}
@@ -3126,7 +3178,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                           <Text style={styles.episodeCardMeta} numberOfLines={1}>{epMeta}</Text>
                         ) : null}
                         <Text style={styles.episodeCardOverview} numberOfLines={2}>
-                          {isUnairedEpisode ? 'Not released yet.' : ep.overview}
+                          {isUnairedEpisode ? t('media_not_released_yet') : ep.overview}
                         </Text>
                         {epProgress != null && epProgress > 0 && !isUnairedEpisode && (
                           <View style={styles.episodeProgressTrack}>

@@ -3305,13 +3305,13 @@ function StreamsTab({
   }, []);
   const {
     enabled: streamSelectionEnabled,
-    preferredQuality,
-    maxFileSizeGB,
+    effectivePreferredQuality,
+    effectiveMaxFileSizeGB,
   } = useStreamSelectionSettings();
   const streamOptions = useMemo(() => ({
-    preferredQuality,
-    maxFileSizeGB: maxFileSizeGB > 0 ? maxFileSizeGB : undefined,
-  }), [maxFileSizeGB, preferredQuality]);
+    preferredQuality: effectivePreferredQuality,
+    maxFileSizeGB: effectiveMaxFileSizeGB > 0 ? effectiveMaxFileSizeGB : undefined,
+  }), [effectiveMaxFileSizeGB, effectivePreferredQuality]);
 
   // Hooks must be called unconditionally — before any early returns
   const addonNames = useMemo(

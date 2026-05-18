@@ -13,7 +13,6 @@ export interface StreamResolutionOptions {
   ) => Promise<DebridResolvedStream | null>;
   streamTorrent: (infoHash: string, magnetLink: string, filename?: string) => Promise<string | null>;
   streamingMode: string;
-  streamSelectionEnabled: boolean;
   maxFileSizeGB: number;
   defaultMaxSizeBytes?: number;
   shouldContinue?: () => boolean;
@@ -29,7 +28,6 @@ export async function resolvePlayableStreamUrl({
   resolveStream,
   streamTorrent,
   streamingMode,
-  streamSelectionEnabled,
   maxFileSizeGB,
   defaultMaxSizeBytes,
   shouldContinue,
@@ -47,7 +45,6 @@ export async function resolvePlayableStreamUrl({
       filename: stream.behaviorHints?.filename ?? null,
       debridAccountCount,
       streamingMode,
-      streamSelectionEnabled,
       maxFileSizeGB,
     });
 
@@ -139,23 +136,27 @@ export async function resolvePlayableStreamUrl({
       }
     }
 
-    onStep?.('backend-torrent');
-    console.log('[StreamDekSeriesDebug] resolvePlayableStreamUrl backend-torrent attempt', {
-      name: stream.name ?? stream.title ?? null,
-    });
-    const backendTorrentUrl = await streamTorrent(stream.infoHash, magnet, hint);
-    if (shouldContinue && !shouldContinue()) return null;
-    if (backendTorrentUrl) {
-      console.log('[StreamDekSeriesDebug] resolvePlayableStreamUrl backend-torrent success', {
-        name: stream.name ?? stream.title ?? null,
-        urlPrefix: backendTorrentUrl.slice(0, 80),
-      });
-    } else {
-      console.log('[StreamDekSeriesDebug] resolvePlayableStreamUrl backend-torrent returned null', {
+    if (streamingMode === 'server') {
+      onStep?.('backend-torrent');
+      console.log('[StreamDekSeriesDebug] resolvePlayableStreamUrl backend-torrent attempt', {
         name: stream.name ?? stream.title ?? null,
       });
+      const backendTorrentUrl = await streamTorrent(stream.infoHash, magnet, hint);
+      if (shouldContinue && !shouldContinue()) return null;
+      if (backendTorrentUrl) {
+        console.log('[StreamDekSeriesDebug] resolvePlayableStreamUrl backend-torrent success', {
+          name: stream.name ?? stream.title ?? null,
+          urlPrefix: backendTorrentUrl.slice(0, 80),
+        });
+      } else {
+        console.log('[StreamDekSeriesDebug] resolvePlayableStreamUrl backend-torrent returned null', {
+          name: stream.name ?? stream.title ?? null,
+        });
+      }
+      return backendTorrentUrl;
     }
-    return backendTorrentUrl;
+
+    return null;
   } catch (error) {
     console.log('[StreamDekSeriesDebug] resolvePlayableStreamUrl fatal error', {
       name: stream.name ?? stream.title ?? null,

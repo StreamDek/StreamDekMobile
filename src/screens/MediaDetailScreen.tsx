@@ -29,12 +29,10 @@ import { useTrakt } from '../context/TraktContext';
 import { useAddons, AddonStream } from '../context/AddonContext';
 import { useDebrid } from '../context/DebridContext';
 import { useLanguage } from '../context/LanguageContext';
-import { useStreamSelectionSettings } from '../context/StreamSelectionContext';
 import { useWatched } from '../context/WatchedContext';
 import { movieProgressKey, episodeProgressKey, useWatchProgress } from '../context/WatchProgressContext';
 import { useAppLifecycle } from '../context/AppLifecycleContext';
 import { buildAuthHeaders } from '../utils/authHeaders';
-import { sortStreams } from '../utils/streamSelection';
 import {
   normalizeWatchlistItem,
   readWatchlistItems,
@@ -3303,15 +3301,6 @@ function StreamsTab({
       return name;
     };
   }, []);
-  const {
-    enabled: streamSelectionEnabled,
-    effectivePreferredQuality,
-    effectiveMaxFileSizeGB,
-  } = useStreamSelectionSettings();
-  const streamOptions = useMemo(() => ({
-    preferredQuality: effectivePreferredQuality,
-    maxFileSizeGB: effectiveMaxFileSizeGB > 0 ? effectiveMaxFileSizeGB : undefined,
-  }), [effectiveMaxFileSizeGB, effectivePreferredQuality]);
 
   // Hooks must be called unconditionally — before any early returns
   const addonNames = useMemo(
@@ -3447,7 +3436,7 @@ function StreamsTab({
     ? streams
     : streams.filter(s => s.addonName === safeAddon);
 
-  const sortedVisibleStreams = sortStreams(visibleStreams, streamOptions).slice(0, 20);
+  const sortedVisibleStreams = visibleStreams;
 
   // Group visible streams by addon name
   const grouped: Record<string, AddonStream[]> = {};

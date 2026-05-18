@@ -24,10 +24,10 @@ type StreamSelectionSettingsValue = {
 export type PreferredQuality = 'best' | '4k' | '1080p' | '720p';
 
 const StreamSelectionContext = createContext<StreamSelectionSettingsValue>({
-  enabled: true,
+  enabled: false,
   setEnabled: async () => {},
-  shortSourceFilterEnabled: true,
-  effectiveShortSourceFilterEnabled: true,
+  shortSourceFilterEnabled: false,
+  effectiveShortSourceFilterEnabled: false,
   setShortSourceFilterEnabled: async () => {},
   preferredQuality: '1080p',
   effectivePreferredQuality: undefined,
@@ -41,14 +41,14 @@ const StreamSelectionContext = createContext<StreamSelectionSettingsValue>({
 
 export const StreamSelectionProvider = ({ children }: { children: React.ReactNode }) => {
   const { user } = useAuth();
-  const [enabled, setEnabledState] = useState(true);
-  const [shortSourceFilterEnabled, setShortSourceFilterEnabledState] = useState(true);
+  const [enabled, setEnabledState] = useState(false);
+  const [shortSourceFilterEnabled, setShortSourceFilterEnabledState] = useState(false);
   const [preferredQuality, setPreferredQualityState] = useState<PreferredQuality>('1080p');
   const [maxFileSizeGB, setMaxFileSizeGBState] = useState(0);
   const [isReady, setIsReady] = useState(false);
   const settingsRef = useRef({
-    enabled: true,
-    shortSourceFilterEnabled: true,
+    enabled: false,
+    shortSourceFilterEnabled: false,
     preferredQuality: '1080p' as PreferredQuality,
     maxFileSizeGB: 0,
   });
@@ -191,9 +191,9 @@ export const StreamSelectionProvider = ({ children }: { children: React.ReactNod
     await applyRemotePlayback(remotePreferences);
   }, [applyRemotePlayback, user]);
 
-  const effectiveShortSourceFilterEnabled = enabled ? true : shortSourceFilterEnabled;
-  const effectivePreferredQuality = enabled ? undefined : preferredQuality;
-  const effectiveMaxFileSizeGB = enabled ? 0 : maxFileSizeGB;
+  const effectiveShortSourceFilterEnabled = false;
+  const effectivePreferredQuality = preferredQuality;
+  const effectiveMaxFileSizeGB = maxFileSizeGB;
 
   return (
     <StreamSelectionContext.Provider value={{

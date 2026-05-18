@@ -42,7 +42,6 @@ import { ScrobblePayload, useTrakt } from '../context/TraktContext';
 import { useWatched } from '../context/WatchedContext';
 import { useWatchProgress } from '../context/WatchProgressContext';
 import { useAppLifecycle } from '../context/AppLifecycleContext';
-import { scoreStream } from '../utils/streamSelection';
 import { parseStream } from '../utils/streamParser';
 import { Storage } from '../utils/storage';
 import { resolvePlayableStreamUrl } from '../services/playback/streamResolution';
@@ -299,12 +298,8 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     refreshFromCloud: refreshPlaybackFromCloud,
   } = usePlaybackSettings();
   const {
-    enabled: streamSelectionEnabled,
-    setEnabled: setStreamSelectionEnabled,
     effectiveShortSourceFilterEnabled,
-    setShortSourceFilterEnabled,
     effectiveMaxFileSizeGB,
-    effectivePreferredQuality,
     refreshFromCloud: refreshStreamSelectionFromCloud,
   } = useStreamSelectionSettings();
   const { pictureInPictureEnabled } = useDisplaySettings();
@@ -850,14 +845,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     setError(t('mpv_error_no_stream_url'));
   }, [resolveOnMount, resolvedStreamUrl]);
 
-  const rankStreams = useCallback((streams: AddonStream[]): AddonStream[] => {
-    const opts = {
-      preferQuickStart: true,
-      maxFileSizeGB: effectiveMaxFileSizeGB > 0 ? effectiveMaxFileSizeGB : undefined,
-      preferredQuality: effectivePreferredQuality,
-    };
-    return [...streams].sort((a, b) => scoreStream(b, opts) - scoreStream(a, opts));
-  }, [effectiveMaxFileSizeGB, effectivePreferredQuality]);
+  const rankStreams = useCallback((streams: AddonStream[]): AddonStream[] => [...streams], []);
 
   const resolveSourceStreamUrl = useCallback(async (stream: AddonStream): Promise<string | null> => {
     console.log('[StreamDekSeriesDebug] MPV resolving source stream', {
@@ -869,7 +857,6 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
       filename: stream.behaviorHints?.filename ?? null,
       name: stream.name ?? stream.title ?? null,
       debridAccountCount: debridAccounts.length,
-      streamSelectionEnabled,
       maxFileSizeGB: effectiveMaxFileSizeGB,
     });
     return resolvePlayableStreamUrl({
@@ -878,10 +865,9 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
       resolveStream,
       streamTorrent,
       streamingMode: serverConfig.streamingMode,
-      streamSelectionEnabled,
       maxFileSizeGB: effectiveMaxFileSizeGB,
     });
-  }, [debridAccounts.length, effectiveMaxFileSizeGB, resolveStream, serverConfig.streamingMode, streamSelectionEnabled, streamTorrent]);
+  }, [debridAccounts.length, effectiveMaxFileSizeGB, resolveStream, serverConfig.streamingMode, streamTorrent]);
 
   useEffect(() => {
     if (!resolveOnMount || resolvedStreamUrl) return;
@@ -1721,7 +1707,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
       { label: t('mpv_info_screen_mode'), value: resizeModeLabels[resizeMode] },
       { label: t('mpv_info_decoder'), value: decoderMode },
       { label: t('mpv_info_surface'), value: renderSurface },
-      { label: t('settings_stream_selection_logic'), value: streamSelectionEnabled ? t('mpv_enabled') : t('mpv_disabled') },
+      { label: t('settings_stream_selection_logic'), value: t('mpv_disabled') },
       { label: t('settings_short_source_filter'), value: effectiveShortSourceFilterEnabled ? t('mpv_enabled') : t('mpv_disabled') },
       { label: t('mpv_info_audio_track'), value: selectedAudioLabel },
       { label: t('mpv_info_subtitle_track'), value: selectedSubtitleLabel },
@@ -1741,7 +1727,6 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
       selectedAudioLabel,
       selectedSubtitleLabel,
       speedLabel,
-      streamSelectionEnabled,
       resolvedStreamUrl,
       resizeModeLabels,
       t,

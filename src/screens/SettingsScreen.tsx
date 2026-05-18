@@ -34,6 +34,7 @@ import { useProfile } from '../context/ProfileContext';
 import { useAddons } from '../context/AddonContext';
 import { useDebrid } from '../context/DebridContext';
 import { useTrakt } from '../context/TraktContext';
+import { useTorrentServer } from '../context/TorrentServerContext';
 import { fetchAccountBootstrap } from '../utils/accountPreferences';
 import { invalidateSharedCache } from '../utils/sharedDataCache';
 import { checkSyncAllowed, getSyncOverCellular, setSyncOverCellular } from '../utils/cellularGuard';
@@ -67,7 +68,7 @@ function getVisibleIconColor(color: string, resolvedAppearance: 'dark' | 'light'
   return color;
 }
 
-type PickerKind = 'appearance' | 'theme' | 'language' | 'quality' | 'fileSize' | 'pageStyle' | 'continueStyle' | 'metadataProvider' | 'decoder' | 'surface' | null;
+type PickerKind = 'appearance' | 'theme' | 'language' | 'quality' | 'fileSize' | 'pageStyle' | 'continueStyle' | 'metadataProvider' | 'decoder' | 'surface' | 'streamingMode' | null;
 type HomeLayoutSection = { id: string; title: string; endpoint: string; enabled: boolean };
 const CURRENT_YEAR = new Date().getFullYear();
 function makeStyles(c: ThemeColors) {
@@ -293,6 +294,7 @@ export function SettingsScreen({ navigation, route }: any) {
   const { refreshAddons } = useAddons();
   const { refreshAccounts } = useDebrid();
   const { checkStatus } = useTrakt();
+  const { config: torrentServerConfig, status: torrentServerStatus, updateConfig: updateTorrentServerConfig } = useTorrentServer();
   const { theme, appearance, resolvedAppearance, setAppearance, setThemeId, showHeroSynopsis, setShowHeroSynopsis } = useTheme();
   const { language, setLanguage, t } = useLanguage();
   const title = t((SECTION_TITLE_KEYS as Record<string, any>)[detailSection] ?? 'settings_title');
@@ -300,10 +302,6 @@ export function SettingsScreen({ navigation, route }: any) {
   const { showNavLabels, setShowNavLabels, continueWatchingStyle, setContinueWatchingStyle, vividAmbientEnabled, setVividAmbientEnabled, pictureInPictureEnabled, setPictureInPictureEnabled, showStreamsList, setShowStreamsList } = useDisplaySettings();
   const { metadataProvider, tmdbKeyEnabled, tmdbApiKey, setMetadataProvider, setTmdbKeyEnabled, setTmdbApiKey } = useTmdbApiKey();
   const {
-    enabled: streamSelectionEnabled,
-    setEnabled: setStreamSelectionEnabled,
-    shortSourceFilterEnabled,
-    setShortSourceFilterEnabled,
     preferredQuality,
     setPreferredQuality,
     maxFileSizeGB,
@@ -415,6 +413,10 @@ export function SettingsScreen({ navigation, route }: any) {
     { value: 'best', label: t('settings_quality_best'), description: t('settings_quality_best_sub') },
   ];
   const fileSizeOptions: PickerOption[] = [0, 4, 8, 12, 20].map(value => ({ value, label: value === 0 ? t('settings_unlimited') : `${value} GB` }));
+  const streamingModeOptions: PickerOption[] = [
+    { value: 'regular_http', label: t('settings_local_server'), description: t('settings_streaming_mode_regular_sub') },
+    { value: 'server', label: t('settings_streaming_mode'), description: t('settings_streaming_mode_server_sub') },
+  ];
   const pageStyleOptions: PickerOption[] = [
     { value: 'classic', label: t('settings_classic'), description: t('settings_page_style_classic_sub') },
     { value: 'centered', label: t('settings_centered'), description: t('settings_page_style_centered_sub') },
@@ -510,6 +512,7 @@ export function SettingsScreen({ navigation, route }: any) {
     : picker === 'language' ? languageOptions
     : picker === 'quality' ? qualityOptions
     : picker === 'fileSize' ? fileSizeOptions
+    : picker === 'streamingMode' ? streamingModeOptions
     : picker === 'pageStyle' ? pageStyleOptions
     : picker === 'continueStyle' ? continueWatchingOptions
     : picker === 'metadataProvider' ? metadataOptions
@@ -522,6 +525,7 @@ export function SettingsScreen({ navigation, route }: any) {
     : picker === 'language' ? language.code
     : picker === 'quality' ? preferredQuality
     : picker === 'fileSize' ? maxFileSizeGB
+    : picker === 'streamingMode' ? torrentServerConfig.streamingMode
     : picker === 'pageStyle' ? uiStyle
     : picker === 'continueStyle' ? continueWatchingStyle
     : picker === 'metadataProvider' ? metadataProvider
@@ -536,6 +540,7 @@ export function SettingsScreen({ navigation, route }: any) {
       case 'language': setLanguage(value as any); break;
       case 'quality': void setPreferredQuality(value as any); break;
       case 'fileSize': void setMaxFileSizeGB(Number(value)); break;
+      case 'streamingMode': void updateTorrentServerConfig({ streamingMode: value as any }); break;
       case 'pageStyle':
         void setUiStyle(value as any);
         requestAnimationFrame(() => {
@@ -668,13 +673,13 @@ export function SettingsScreen({ navigation, route }: any) {
                     <View style={styles.divider} />
                     <SettingRow icon="albums-outline" iconColor={safeIconColor('#22d3ee')} label={t('settings_show_streams_list')} subtitle={t('settings_show_streams_list_sub')} right={<AppleToggle value={showStreamsList} onValueChange={value => { void setShowStreamsList(value); }} onColor={colors.toggleOn} />} />
                     <View style={styles.divider} />
-                    <SettingRow icon="construct-outline" iconColor={safeIconColor('#14b8a6')} label={t('settings_stream_selection_logic')} subtitle={t('settings_stream_selection_logic_sub')} right={<AppleToggle value={streamSelectionEnabled} onValueChange={value => { void setStreamSelectionEnabled(value); }} onColor={colors.toggleOn} />} />
+                    <SettingRow icon="swap-horizontal-outline" iconColor={safeIconColor('#14b8a6')} label={t('settings_streaming_mode')} subtitle={torrentServerConfig.streamingMode === 'server' ? t('settings_streaming_mode_server_sub') : t('settings_streaming_mode_regular_sub')} value={torrentServerConfig.streamingMode === 'server' ? t('settings_streaming_mode') : t('settings_local_server')} onPress={() => setPicker('streamingMode')} />
                     <View style={styles.divider} />
-                    <SettingRow icon="timer-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_short_source_filter')} subtitle={t('settings_short_source_filter_sub')} disabled={streamSelectionEnabled} right={<AppleToggle value={shortSourceFilterEnabled} onValueChange={value => { void setShortSourceFilterEnabled(value); }} onColor={colors.toggleOn} disabled={streamSelectionEnabled} />} />
+                    <SettingRow icon="server-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_streaming_server_url')} subtitle={torrentServerConfig.streamingMode === 'server' ? (torrentServerStatus.isOnline ? torrentServerStatus.url : t('settings_streaming_mode_server_sub')) : t('settings_streaming_server_url_sub')} value={torrentServerConfig.streamingMode === 'server' ? (torrentServerStatus.isOnline ? 'Online' : 'Offline') : 'Inactive'} />
                     <View style={styles.divider} />
-                    <SettingRow icon="resize-outline" iconColor={safeIconColor('#22c55e')} label={t('settings_preferred_stream_quality')} subtitle={t('settings_preferred_stream_quality_sub')} value={qualityValueLabelMap[String(preferredQuality)] ?? String(preferredQuality)} onPress={() => setPicker('quality')} disabled={streamSelectionEnabled} />
+                    <SettingRow icon="resize-outline" iconColor={safeIconColor('#22c55e')} label={t('settings_preferred_stream_quality')} subtitle={t('settings_preferred_stream_quality_sub')} value={qualityValueLabelMap[String(preferredQuality)] ?? String(preferredQuality)} onPress={() => setPicker('quality')} />
                     <View style={styles.divider} />
-                    <SettingRow icon="archive-outline" iconColor={safeIconColor('#f97316')} label={t('settings_max_file_size')} subtitle={t('settings_max_file_size_sub')} value={maxFileSizeGB === 0 ? t('settings_unlimited') : `${maxFileSizeGB} GB`} onPress={() => setPicker('fileSize')} disabled={streamSelectionEnabled} />
+                    <SettingRow icon="archive-outline" iconColor={safeIconColor('#f97316')} label={t('settings_max_file_size')} subtitle={t('settings_max_file_size_sub')} value={maxFileSizeGB === 0 ? t('settings_unlimited') : `${maxFileSizeGB} GB`} onPress={() => setPicker('fileSize')} />
                     <View style={styles.divider} />
                     <SettingRow icon="tv-outline" iconColor={safeIconColor('#a78bfa')} label={t('settings_decoder_mode')} subtitle={t('settings_decoder_mode_sub')} value={decoderValueLabelMap[String(decoderMode)] ?? String(decoderMode)} onPress={() => setPicker('decoder')} />
                     <View style={styles.divider} />
@@ -774,7 +779,7 @@ export function SettingsScreen({ navigation, route }: any) {
       </BlurTargetView>
       <PickerModal
         visible={picker !== null}
-        title={picker === 'appearance' ? t('settings_appearance') : picker === 'theme' ? t('settings_theme') : picker === 'language' ? t('settings_language') : picker === 'quality' ? t('settings_preferred_stream_quality') : picker === 'fileSize' ? t('settings_max_file_size') : picker === 'pageStyle' ? t('settings_page_style') : picker === 'continueStyle' ? t('settings_continue_watching_style') : picker === 'metadataProvider' ? t('settings_catalog_metadata') : picker === 'decoder' ? t('settings_decoder_mode') : picker === 'surface' ? t('settings_render_surface') : t('settings_picker_choose')}
+        title={picker === 'appearance' ? t('settings_appearance') : picker === 'theme' ? t('settings_theme') : picker === 'language' ? t('settings_language') : picker === 'quality' ? t('settings_preferred_stream_quality') : picker === 'fileSize' ? t('settings_max_file_size') : picker === 'streamingMode' ? t('settings_streaming_mode') : picker === 'pageStyle' ? t('settings_page_style') : picker === 'continueStyle' ? t('settings_continue_watching_style') : picker === 'metadataProvider' ? t('settings_catalog_metadata') : picker === 'decoder' ? t('settings_decoder_mode') : picker === 'surface' ? t('settings_render_surface') : t('settings_picker_choose')}
         subtitle={picker === 'metadataProvider' ? t('settings_catalog_metadata_sub') : undefined}
         options={pickerOptions}
         selectedValue={pickerValue as any}

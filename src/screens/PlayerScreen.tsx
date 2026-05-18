@@ -62,7 +62,7 @@ import {
     progressIndexStorageKey,
 } from '../utils/profileStorage';
 import { useDisplaySettings } from '../context/DisplaySettingsContext';
-import { pickBestAudioTrack, scoreStream } from '../utils/streamSelection';
+import { pickBestAudioTrack } from '../utils/streamSelection';
 import { Storage } from '../utils/storage';
 import { createLocalProxyUrl } from '../utils/torrentServerClient';
 import { resolvePlayableStreamUrl } from '../services/playback/streamResolution';
@@ -527,9 +527,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const { theme } = useTheme();
     const { config: serverConfig } = useTorrentServer();
     const {
-        enabled: streamSelectionEnabled,
         effectiveShortSourceFilterEnabled,
-        effectivePreferredQuality,
         effectiveMaxFileSizeGB,
     } = useStreamSelectionSettings();
     const castNativeModuleAvailable = !!NativeModules.RNGCCastContext;
@@ -1238,29 +1236,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         return s1.url === s2.url && s1.title === s2.title;
     };
 
-    const getSessionPenalty = useCallback((stream: AddonStream): number => {
-        return sessionPenaltyForStream(stream, failureStatsRef.current);
-    }, []);
-
-    const getRankedStreams = useCallback((streams: AddonStream[]): AddonStream[] => {
-        const preferQuickStart = serverConfig.streamingMode === 'server';
-        const baseOptions = {
-            preferredQuality: effectivePreferredQuality,
-            maxFileSizeGB: effectiveMaxFileSizeGB > 0 ? effectiveMaxFileSizeGB : undefined,
-        };
-        return [...streams].sort((a, b) => (
-            scoreStream(b, {
-                preferQuickStart,
-                ...baseOptions,
-                sessionPenalty: getSessionPenalty(b),
-            })
-            - scoreStream(a, {
-                preferQuickStart,
-                ...baseOptions,
-                sessionPenalty: getSessionPenalty(a),
-            })
-        ));
-    }, [effectiveMaxFileSizeGB, effectivePreferredQuality, getSessionPenalty, serverConfig.streamingMode]);
+    const getRankedStreams = useCallback((streams: AddonStream[]): AddonStream[] => [...streams], []);
 
     const recordFailedStream = useCallback((
         stream: AddonStream | null | undefined,
@@ -1489,7 +1465,6 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                 resolveStream,
                 streamTorrent,
                 streamingMode: serverConfig.streamingMode,
-                streamSelectionEnabled,
                 maxFileSizeGB: effectiveMaxFileSizeGB,
                 defaultMaxSizeBytes: PREFERRED_SIZE_LIMIT,
                 shouldContinue: isCurrentAttempt,
@@ -1524,7 +1499,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         }
         logPlayerEvent('info', `[Player] Resolution failed for ${describeStream(stream, streamIndex, totalStreams)}`);
         return null;
-    }, [debridAccounts, logDebridFailures, logPlayerEvent, resolveStream, serverConfig.streamingMode, streamTorrent]);
+    }, [debridAccounts, effectiveMaxFileSizeGB, logDebridFailures, logPlayerEvent, resolveStream, serverConfig.streamingMode, streamTorrent]);
 
     const resolveStreamToUrlWithTimeout = useCallback(async (
         stream: AddonStream,

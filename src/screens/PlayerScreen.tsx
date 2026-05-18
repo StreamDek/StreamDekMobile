@@ -525,7 +525,7 @@ function buildPayload(movieId: string, type: string, title?: string, year?: numb
 export const PlayerScreen = ({ route, navigation }: any) => {
     const { t } = useLanguage();
     const { theme } = useTheme();
-    const { config: serverConfig } = useTorrentServer();
+    const { config: serverConfig, updateConfig: updateTorrentServerConfig } = useTorrentServer();
     const {
         effectiveShortSourceFilterEnabled,
         effectiveMaxFileSizeGB,
@@ -627,6 +627,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
     const [isHandingOffToMpv, setIsHandingOffToMpv] = useState(false);
     const [showGuestAccountPrompt, setShowGuestAccountPrompt] = useState(false);
+    const [showStreamingServerPrompt, setShowStreamingServerPrompt] = useState(false);
     const isPausedPlayback = shouldUseEmbeddedVideoPlayer && !loading && !isPlaying && !isHandingOffToMpv;
     const castNativeButtonAvailable = !!UIManager.getViewManagerConfig?.('RNGoogleCastButton');
     const drawerTranslateX = useRef(new Animated.Value(360)).current;
@@ -672,6 +673,9 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const failureStatsRef = useRef<SessionFailureStats>(createSessionFailureStats());
     const resolveInFlightCountRef = useRef(0);
     const latestResolveAttemptIdRef = useRef(0);
+    const streamingServerPromptStreamRef = useRef<AddonStream | null>(null);
+    const streamingServerPromptResumeRef = useRef(0);
+    const streamingServerPromptDeclineActionRef = useRef<(() => void) | null>(null);
     const sourceLoadedRef = useRef(false);
     const firstFrameRenderedRef = useRef(false);
     const resolvedUrlRef = useRef<string | null>(paramUrl ?? null);
@@ -1434,6 +1438,29 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         return 'Embedded MPV native module is missing from this installed app build. Reinstall with `npx expo run:android`.';
     }, []);
 
+    const closeStreamingServerPrompt = useCallback(() => {
+        setShowStreamingServerPrompt(false);
+        streamingServerPromptStreamRef.current = null;
+        streamingServerPromptResumeRef.current = 0;
+        streamingServerPromptDeclineActionRef.current = null;
+    }, []);
+
+    const offerStreamingServerFallback = useCallback((
+        stream: AddonStream | null,
+        resumeAtSec: number,
+        onDecline?: () => void,
+    ): boolean => {
+        if (!stream?.infoHash || serverConfig.streamingMode === 'server') {
+            return false;
+        }
+        streamingServerPromptStreamRef.current = stream;
+        streamingServerPromptResumeRef.current = resumeAtSec;
+        streamingServerPromptDeclineActionRef.current = onDecline ?? null;
+        setShowStreamingServerPrompt(true);
+        return true;
+    }, [serverConfig.streamingMode]);
+
+
     const shouldUseLocalProxyForPlayback = useCallback((upstreamUrl: string, stream: AddonStream | null): boolean => {
         if (serverConfig.streamingMode !== 'server') return false;
         if (upstreamUrl.startsWith('http://127.0.0.1:') || upstreamUrl.startsWith('http://localhost:')) {
@@ -1504,7 +1531,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const resolveStreamToUrlWithTimeout = useCallback(async (
         stream: AddonStream,
         options?: { supersede?: boolean },
-    ): Promise<{ url: string | null; isStale: boolean; attemptId: number }> => {
+    ): Promise<{ url: string | null; isStale: boolean; attemptId: number; timedOut: boolean }> => {
         const streamIndex = allStreamsRef.current.findIndex(candidate => candidate === stream);
         const totalStreams = allStreamsRef.current.length;
         const startedAt = Date.now();
@@ -1519,12 +1546,14 @@ export const PlayerScreen = ({ route, navigation }: any) => {
 
         let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
         let settled = false;
+        let timedOut = false;
 
         try {
             const url = await new Promise<string | null>(resolve => {
                 timeoutHandle = setTimeout(() => {
                     if (settled) return;
                     settled = true;
+                    timedOut = true;
                     logPlayerEvent('warn', `[Player] Resolve timed out after ${STREAM_RESOLVE_TIMEOUT_MS}ms for ${describeStream(stream, streamIndex, totalStreams)}`);
                     resolve(null);
                 }, STREAM_RESOLVE_TIMEOUT_MS);
@@ -1555,7 +1584,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
             if (isStale) {
                 logPlayerEvent('info', `[Player] Ignoring stale resolve result for ${describeStream(stream, streamIndex, totalStreams)} attempt=${attemptId} latest=${latestResolveAttemptIdRef.current}`);
             }
-            return { url, isStale, attemptId };
+            return { url, isStale, attemptId, timedOut };
         } finally {
             if (timeoutHandle) {
                 clearTimeout(timeoutHandle);
@@ -1563,6 +1592,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
             resolveInFlightCountRef.current = Math.max(0, resolveInFlightCountRef.current - 1);
         }
     }, [resolveStreamToUrl, logPlayerEvent]);
+
 
     const playStreamObject = async (
         upstreamUrl: string,
@@ -1639,6 +1669,25 @@ export const PlayerScreen = ({ route, navigation }: any) => {
             logPlayerEvent('error', "[Player] playStreamObject error", { error: e instanceof Error ? e.message : String(e) });
         }
     };
+
+    const confirmStreamingServerFallback = useCallback(async () => {
+        const stream = streamingServerPromptStreamRef.current;
+        const resumeAtSec = streamingServerPromptResumeRef.current;
+        closeStreamingServerPrompt();
+        if (!stream) return;
+
+        setLoading(true);
+        setIsError(false);
+        await updateTorrentServerConfig({ streamingMode: 'server' });
+        const { url, isStale } = await resolveStreamToUrlWithTimeout(stream);
+        if (isStale) return;
+        if (url) {
+            await playStreamObject(url, stream, { resumeAtSec });
+            return;
+        }
+        setLoading(false);
+        setIsError(true);
+    }, [closeStreamingServerPrompt, playStreamObject, resolveStreamToUrlWithTimeout, setIsError, setLoading, updateTorrentServerConfig]);
 
     useEffect(() => {
         if (!pendingSameSourceRetry) return;
@@ -2234,6 +2283,9 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                     if (url) { 
                         await playStreamObject(url, selectedStream);
                     } else {
+                        if (offerStreamingServerFallback(selectedStream, 0, () => handlePlayerError(selectedStream))) {
+                            return;
+                        }
                         handlePlayerError(selectedStream);
                     }
                 } else {
@@ -2250,7 +2302,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
             isMountedRef.current = false;
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [effectiveDecoderMode, effectiveSurfaceType, logPlayerEvent]);
+    }, [effectiveDecoderMode, effectiveSurfaceType, logPlayerEvent, offerStreamingServerFallback]);
 
     // Watchdog & Event Listeners
     useEffect(() => {
@@ -2492,6 +2544,12 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                                     if (url) {
                                         await playStreamObject(url, stream, { resumeAtSec });
                                     } else {
+                                        if (offerStreamingServerFallback(stream, resumeAtSec, () => {
+                                            setIsError(true);
+                                            setLoading(false);
+                                        })) {
+                                            return;
+                                        }
                                         setIsError(true);
                                         setLoading(false);
                                     }
@@ -2741,6 +2799,61 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                     />
                 </>
             )}
+            <Modal
+                visible={showStreamingServerPrompt}
+                transparent={true}
+                animationType="fade"
+                statusBarTranslucent={true}
+                onRequestClose={() => {
+                    const onDecline = streamingServerPromptDeclineActionRef.current;
+                    closeStreamingServerPrompt();
+                    onDecline?.();
+                }}
+            >
+                <View style={StyleSheet.absoluteFill}>
+                    <Pressable
+                        style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.72)' }]}
+                        onPress={() => {
+                            const onDecline = streamingServerPromptDeclineActionRef.current;
+                            closeStreamingServerPrompt();
+                            onDecline?.();
+                        }}
+                    />
+                    <View style={styles.externalPlayerModalWrap}>
+                        <View style={styles.externalPlayerModalCard}>
+                            <View style={[styles.externalPlayerModalIcon, { backgroundColor: 'rgba(20,184,166,0.18)' }]}>
+                                <Ionicons name="server-outline" size={22} color="#2dd4bf" />
+                            </View>
+                            <Text style={styles.externalPlayerModalTitle}>Use Streaming Server?</Text>
+                            <Text style={styles.externalPlayerModalMessage}>
+                                We could not fetch a ready-to-play version of this source quickly. StreamDek can try playing it with the built-in streaming server instead.
+                            </Text>
+                            <View style={styles.compatibilityActionsRow}>
+                                <TouchableOpacity
+                                    style={styles.compatibilitySecondaryButton}
+                                    onPress={() => {
+                                        const onDecline = streamingServerPromptDeclineActionRef.current;
+                                        closeStreamingServerPrompt();
+                                        onDecline?.();
+                                    }}
+                                    activeOpacity={0.85}
+                                >
+                                    <Text style={styles.compatibilitySecondaryButtonText}>{t('common_cancel')}</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                    style={styles.externalPlayerModalButton}
+                                    onPress={() => {
+                                        void confirmStreamingServerFallback();
+                                    }}
+                                    activeOpacity={0.85}
+                                >
+                                    <Text style={styles.externalPlayerModalButtonText}>Turn On and Play</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+                    </View>
+                </View>
+            </Modal>
             <ConfirmSheet
                 visible={showGuestAccountPrompt}
                 onClose={() => setShowGuestAccountPrompt(false)}

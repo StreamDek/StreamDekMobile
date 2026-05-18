@@ -402,20 +402,18 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
   const blurTargetRef = useRef<View | null>(null);
   const { addons, ultraEntitled, ultraBoostEnabled } = useAddons();
   const { isEpisodeWatched, toggleEpisodeWatched } = useWatched();
-  const { accounts: debridAccounts, resolveStream } = useDebrid();
+  const { accounts: debridAccounts } = useDebrid();
   const { getProgress } = useWatchProgress();
 
   const [debridSheet,     setDebridSheet]     = useState(false);
   const [streams,         setStreams]         = useState<AddonStream[]>([]);
   const [loading,         setLoading]         = useState(true);
   const [pendingAddons,   setPendingAddons]   = useState(0);
-  const [resolvingStream, setResolvingStream] = useState(false);
   const [headerHeight,    setHeaderHeight]    = useState(0);
   const [selectedAddon,   setSelectedAddon]   = useState<string>('all');
 
   // AbortController for the in-flight progressive fetch
   const abortRef = useRef<AbortController | null>(null);
-  const resolveAbortRef = useRef<AbortController | null>(null);
 
   const enabledAddons = addons.filter(a => a.enabled);
   const ultraActive = ultraEntitled && ultraBoostEnabled;
@@ -567,10 +565,9 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
     await Promise.allSettled(requests);
   }, [addons, ultraActive, imdbId, season, episodeNumber, showId, buildRequestHeaders]);
 
-  // Cancel in-flight fetch/resolve on unmount
+  // Cancel in-flight fetch on unmount
   useEffect(() => () => {
     abortRef.current?.abort();
-    resolveAbortRef.current?.abort();
   }, []);
 
   useEffect(() => {
@@ -628,12 +625,6 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
       .toLowerCase()
   );
 
-  const cancelResolvingStream = useCallback(() => {
-    resolveAbortRef.current?.abort();
-    resolveAbortRef.current = null;
-    setResolvingStream(false);
-  }, []);
-
   const playStream = useCallback(async (stream: AddonStream) => {
     if (stream.url) {
       navigation.navigate('Player', {
@@ -671,30 +662,12 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
       return;
     }
     if (stream.infoHash) {
-      if (debridAccounts.length === 0) {
-        setDebridSheet(true);
-        return;
-      }
-      resolveAbortRef.current?.abort();
-      const controller = new AbortController();
-      resolveAbortRef.current = controller;
-      setResolvingStream(true);
-      const hint   = stream.behaviorHints?.filename;
-      const magnet = `magnet:?xt=urn:btih:${stream.infoHash}${hint ? `&dn=${encodeURIComponent(hint)}` : ''}`;
-      try {
-        const resolved = await resolveStream(stream.infoHash, magnet, hint, { signal: controller.signal });
-        if (resolveAbortRef.current === controller) {
-          resolveAbortRef.current = null;
-        }
-        setResolvingStream(false);
-        if (resolved) {
-        navigation.navigate('Player', {
+      navigation.navigate('Player', {
           movieId: String(showId ?? ''),
           imdbId,
           type: 'tv',
           title: playerTitle,
           synopsis: episodeOverview ?? undefined,
-          streamUrl: resolved.url,
           activeStream: stream,
           streams,
           backdrop: backdropUri,
@@ -707,6 +680,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
           resolverType: 'tv',
           sourceStreams: streams,
           activeSourceIdentity: activeSourceIdentity(stream),
+          resolveOnMount: true,
           returnToPlayerParams: {
             movieId: String(showId ?? ''),
             imdbId,
@@ -719,18 +693,8 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
             progressKey: resolvedProgressKey,
           },
         });
-        }
-      } catch (error: any) {
-        if (resolveAbortRef.current === controller) {
-          resolveAbortRef.current = null;
-        }
-        if (error?.name !== 'AbortError') {
-          console.warn('[EpisodeStreamsScreen] Debrid resolve failed:', error?.message);
-        }
-        setResolvingStream(false);
-      }
     }
-  }, [navigation, playerTitle, debridAccounts, resolveStream, streams, backdropUri, showPoster, showId, imdbId, season, episodeNumber, resolvedProgressKey]);
+  }, [navigation, streams, backdropUri, showPoster, showId, imdbId, season, episodeNumber, resolvedProgressKey, playerTitle, episodeOverview]);
 
   // Auto-picks the highest-scored stream and navigates immediately to MpvPlayer,
   // skipping the intermediate PlayerScreen so the loading overlay shows at once.
@@ -1189,37 +1153,6 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
           ]}
         />
 
-        {/* Debrid resolving overlay */}
-        <Modal visible={resolvingStream} transparent animationType="fade" onRequestClose={cancelResolvingStream}>
-          <TouchableOpacity activeOpacity={1} onPress={cancelResolvingStream} style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'center', alignItems: 'center', padding: 32 }}>
-            <TouchableOpacity activeOpacity={1} onPress={() => {}} style={{
-              backgroundColor: isLightAppearance ? '#ffffff' : colors.cardBgElevated ?? colors.cardBg,
-              borderRadius: 16, padding: 28, alignItems: 'center', width: '100%',
-              borderWidth: 1, borderColor: colors.border,
-              shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.18, shadowRadius: 12, elevation: 8,
-            }}>
-              <ActivityIndicator size="large" color={colors.textPrimary} style={{ marginBottom: 16 }} />
-              <Text style={{ color: colors.textPrimary, fontSize: 16, fontWeight: '700', marginBottom: 6 }}>{t('streams_resolving')}</Text>
-              <Text style={{ color: colors.mutedText, fontSize: 13, textAlign: 'center', marginBottom: 18 }}>
-                {t('streams_resolving_desc')}
-              </Text>
-              <TouchableOpacity
-                onPress={cancelResolvingStream}
-                activeOpacity={0.85}
-                style={{
-                  borderRadius: 12,
-                  paddingVertical: 12,
-                  paddingHorizontal: 18,
-                  borderWidth: 1,
-                  borderColor: colors.border,
-                  backgroundColor: isLightAppearance ? colors.cardBg : colors.inputBg,
-                }}
-              >
-                <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '700' }}>{t('common_cancel')}</Text>
-              </TouchableOpacity>
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </Modal>
         </PageWrapper>
       </BlurTargetView>
       <StackBottomNav blurTarget={blurTargetRef} />

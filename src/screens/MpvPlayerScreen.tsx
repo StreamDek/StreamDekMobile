@@ -276,7 +276,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const storageOwnerId = getProfileStorageOwnerId(user?.uid ?? null, activeProfile?.id ?? null);
   const legacyOwnerId = user?.uid ?? null;
   const { accounts: debridAccounts, resolveStream, streamTorrent } = useDebrid();
-  const { config: serverConfig } = useTorrentServer();
+  const { config: serverConfig, updateConfig: updateTorrentServerConfig } = useTorrentServer();
   const loadingMessages = useMemo(() => ([
     t('mpv_loading_message_1'),
     t('mpv_loading_message_2'),
@@ -504,6 +504,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const [resolvedStreamUrl, setResolvedStreamUrl] = useState<string | null>(initialResolvedStreamUrl);
   const [resolvedSourceStreams, setResolvedSourceStreams] = useState<AddonStream[]>([]);
   const [showGuestAccountPrompt, setShowGuestAccountPrompt] = useState(false);
+  const [showStreamingServerPrompt, setShowStreamingServerPrompt] = useState(false);
   const [activeSourceIdentityState, setActiveSourceIdentityState] = useState<string>(() => {
     const routeIdentity = normalizeSourceIdentity(routeActiveSourceIdentity);
     if (routeIdentity) return routeIdentity;
@@ -521,6 +522,8 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     () => createPlaybackDiagnostics('MpvPlayer', diagnosticsMetaRef),
     [],
   );
+  const streamingServerPromptStreamRef = useRef<AddonStream | null>(null);
+  const streamingServerPromptResolverRef = useRef<((accepted: boolean) => void) | null>(null);
   const routeSourceStreamsList = useMemo<AddonStream[]>(() => {
     if (!Array.isArray(routeSourceStreams)) return [];
     return routeSourceStreams.filter((candidate: unknown): candidate is AddonStream => (
@@ -847,6 +850,25 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
 
   const rankStreams = useCallback((streams: AddonStream[]): AddonStream[] => [...streams], []);
 
+  const requestStreamingServerFallback = useCallback((stream: AddonStream): Promise<boolean> => {
+    if (!stream.infoHash || serverConfig.streamingMode === 'server') {
+      return Promise.resolve(false);
+    }
+    streamingServerPromptStreamRef.current = stream;
+    setShowStreamingServerPrompt(true);
+    return new Promise(resolve => {
+      streamingServerPromptResolverRef.current = resolve;
+    });
+  }, [serverConfig.streamingMode]);
+
+  const closeStreamingServerPrompt = useCallback((accepted: boolean) => {
+    setShowStreamingServerPrompt(false);
+    streamingServerPromptStreamRef.current = null;
+    const resolver = streamingServerPromptResolverRef.current;
+    streamingServerPromptResolverRef.current = null;
+    resolver?.(accepted);
+  }, []);
+
   const resolveSourceStreamUrl = useCallback(async (stream: AddonStream): Promise<string | null> => {
     console.log('[StreamDekSeriesDebug] MPV resolving source stream', {
       title,
@@ -957,6 +979,15 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
 
           resolved = await resolveSourceStreamUrl(candidate);
           if (cancelled) return;
+          if (!resolved && index === 0) {
+            const accepted = await requestStreamingServerFallback(candidate);
+            if (cancelled) return;
+            if (accepted) {
+              await updateTorrentServerConfig({ streamingMode: 'server' });
+              resolved = await resolveSourceStreamUrl(candidate);
+              if (cancelled) return;
+            }
+          }
           if (resolved) {
             resolvedCandidate = candidate;
             break;
@@ -1005,12 +1036,14 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     rankStreams,
     rememberedSourceStorageKey,
     resolveOnMount,
+    requestStreamingServerFallback,
     resolveSourceStreamUrl,
     resolvedStreamUrl,
     resolverContentType,
     routePreferredSourceIdentity,
     routePreferredSourceIndex,
     routeSourceStreamsList,
+    updateTorrentServerConfig,
   ]);
 
   useEffect(() => {
@@ -1535,6 +1568,30 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   ) => {
     const nextUrl = await resolveSourceStreamUrl(targetStream);
     if (!nextUrl) {
+      const accepted = await requestStreamingServerFallback(targetStream);
+      if (accepted) {
+        await updateTorrentServerConfig({ streamingMode: 'server' });
+        const retryUrl = await resolveSourceStreamUrl(targetStream);
+        if (retryUrl) {
+          sourceSwitchBackupRef.current = {
+            url: resolvedStreamUrl ?? '',
+            identity: activeSourceIdentity,
+            resumeAt,
+          };
+
+          rememberedSourceSavedRef.current = false;
+          setError(null);
+          setLoading(true);
+          setShowLoadingOverlay(true);
+          setDuration(0);
+          setCurrentTime(0);
+          setDidSeekInitialResume(false);
+          setEffectiveResumeFrom(resumeAt);
+          setActiveSourceIdentityState(options?.sourceIdentityOverride ?? streamIdentityKey(targetStream));
+          setResolvedStreamUrl(retryUrl);
+          return true;
+        }
+      }
       if (options?.failureToast) {
         setSwitchToast(options.failureToast);
       }
@@ -1558,7 +1615,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     setActiveSourceIdentityState(options?.sourceIdentityOverride ?? streamIdentityKey(targetStream));
     setResolvedStreamUrl(nextUrl);
     return true;
-  }, [activeSourceIdentity, resolveSourceStreamUrl, resolvedStreamUrl]);
+  }, [activeSourceIdentity, requestStreamingServerFallback, resolveSourceStreamUrl, resolvedStreamUrl, updateTorrentServerConfig]);
 
   const cycleResizeMode = () => {
     setResizeMode(current => {
@@ -2457,6 +2514,76 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
                 </View>
               ))}
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+      <Modal visible={showStreamingServerPrompt} transparent animationType="fade" onRequestClose={() => closeStreamingServerPrompt(false)}>
+        <View style={StyleSheet.absoluteFill}>
+          <Pressable
+            style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.72)' }]}
+            onPress={() => closeStreamingServerPrompt(false)}
+          />
+          <View style={{ ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 }}>
+            <View style={{
+              width: '100%',
+              maxWidth: 360,
+              borderRadius: 24,
+              backgroundColor: 'rgba(17,17,17,0.96)',
+              borderWidth: 1,
+              borderColor: 'rgba(255,255,255,0.1)',
+              padding: 22,
+              alignItems: 'center',
+            }}>
+              <View style={{
+                width: 52,
+                height: 52,
+                borderRadius: 26,
+                backgroundColor: 'rgba(20,184,166,0.18)',
+                alignItems: 'center',
+                justifyContent: 'center',
+                marginBottom: 14,
+              }}>
+                <Ionicons name="server-outline" size={22} color="#2dd4bf" />
+              </View>
+              <Text style={{ color: 'white', fontSize: 18, fontWeight: '800', textAlign: 'center', marginBottom: 8 }}>Use Streaming Server?</Text>
+              <Text style={{ color: 'rgba(255,255,255,0.72)', fontSize: 13, lineHeight: 20, textAlign: 'center', marginBottom: 18 }}>
+                We could not fetch a ready-to-play version of this source quickly. StreamDek can try playing it with the built-in streaming server instead.
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 10, width: '100%', justifyContent: 'center' }}>
+                <TouchableOpacity
+                  style={{
+                    minWidth: 110,
+                    paddingHorizontal: 16,
+                    paddingVertical: 12,
+                    borderRadius: 14,
+                    backgroundColor: 'rgba(255,255,255,0.08)',
+                    borderWidth: 1,
+                    borderColor: 'rgba(255,255,255,0.1)',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                  onPress={() => closeStreamingServerPrompt(false)}
+                  activeOpacity={0.85}
+                >
+                  <Text style={{ color: 'rgba(255,255,255,0.9)', fontSize: 14, fontWeight: '700' }}>{t('common_cancel')}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={{
+                    minWidth: 180,
+                    paddingHorizontal: 18,
+                    paddingVertical: 12,
+                    borderRadius: 14,
+                    backgroundColor: '#8b5cf6',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                  onPress={() => closeStreamingServerPrompt(true)}
+                  activeOpacity={0.85}
+                >
+                  <Text style={{ color: 'white', fontSize: 14, fontWeight: '800' }}>Turn On and Play</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
           </View>
         </View>
       </Modal>

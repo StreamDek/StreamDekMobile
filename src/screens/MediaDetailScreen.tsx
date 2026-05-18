@@ -1124,14 +1124,12 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const [streamsPending, setStreamsPending]   = useState(0);
   const [streamsFetchStarted, setStreamsFetchStarted] = useState(false);
   const streamsAbortRef  = useRef<AbortController | null>(null);
-  const resolveAbortRef = useRef<AbortController | null>(null);
   const detailsAbortRef = useRef<AbortController | null>(null);
   const commentsAbortRef = useRef<AbortController | null>(null);
   const seasonsAbortRef = useRef<AbortController | null>(null);
   const streamsRequestIdRef = useRef(0);
   const scrollViewRef    = useRef<any>(null);
   const blurTargetRef = useRef<View | null>(null);
-  const [resolvingStream, setResolvingStream] = useState(false);
   // Guard: ref (not state) so setting it true does NOT re-render the component
   // and therefore does NOT re-run the effect and abort the in-flight controller.
   const streamsFetchedRef = useRef(false);
@@ -1758,7 +1756,6 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     commentsAbortRef.current?.abort();
     seasonsAbortRef.current?.abort();
     streamsAbortRef.current?.abort();
-    resolveAbortRef.current?.abort();
     setEpisodesLoading(false);
     setStreamsLoading(false);
   }, [isForeground]);
@@ -1824,12 +1821,6 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     }
   }, [media, type, movieId, toggleMovieWatched, clearProgress, clearProgressIndexEntry]);
 
-  const cancelResolvingStream = useCallback(() => {
-    resolveAbortRef.current?.abort();
-    resolveAbortRef.current = null;
-    setResolvingStream(false);
-  }, []);
-
   const playStream = useCallback(async (stream: AddonStream) => {
     const pKey = movieProgressKey(Number(movieId));
     const runtimeSec = media?.runtime ? media.runtime * 60 : undefined;
@@ -1875,24 +1866,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     }
     // Debrid-cached torrent
     if (stream.infoHash) {
-      if (debridAccounts.length === 0) {
-        setDebridSheet(true);
-        return;
-      }
-      resolveAbortRef.current?.abort();
-      const controller = new AbortController();
-      resolveAbortRef.current = controller;
-      setResolvingStream(true);
-      const hint    = stream.behaviorHints?.filename;
-      const magnet  = `magnet:?xt=urn:btih:${stream.infoHash}${hint ? `&dn=${encodeURIComponent(hint)}` : ''}`;
-      try {
-        const resolved = await resolveStream(stream.infoHash, magnet, hint, { signal: controller.signal });
-        if (resolveAbortRef.current === controller) {
-          resolveAbortRef.current = null;
-        }
-        setResolvingStream(false);
-        if (resolved) {
-        navigation.navigate('Player', {
+      navigation.navigate('Player', {
           movieId,
           imdbId: media?.imdbId ?? undefined,
           type,
@@ -1900,7 +1874,6 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
           year: media?.year,
           synopsis: media?.description ?? undefined,
           titleLogo: media?.titleLogo,
-          streamUrl: resolved.url,
           activeStream: stream,
           backdrop: media?.backdrop,
           poster: media?.poster,
@@ -1912,6 +1885,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
           resolverType: type,
           sourceStreams: [stream],
           activeSourceIdentity,
+          resolveOnMount: true,
           returnToPlayerParams: {
             movieId,
             imdbId: media?.imdbId ?? undefined,
@@ -1925,18 +1899,8 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
             progressKey: pKey,
           },
         });
-      }
-      } catch (error: any) {
-        if (resolveAbortRef.current === controller) {
-          resolveAbortRef.current = null;
-        }
-        setResolvingStream(false);
-        if (error?.name === 'AbortError') {
-          return;
-        }
-      }
     }
-  }, [navigation, movieId, media, debridAccounts, resolveStream, type, resumeFromSec, detailHeroUri]);
+  }, [navigation, movieId, media, type, resumeFromSec, detailHeroUri]);
 
   const movieReleaseDate = type === 'movie' ? formatReleaseDate(media?.releaseDate) : null;
   const compactMovieDetails = useMemo(() => ([
@@ -3214,37 +3178,6 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
 
         </Animated.ScrollView>
       </View>
-        {/* Debrid resolution loading modal */}
-        <Modal visible={resolvingStream} transparent animationType="fade" onRequestClose={cancelResolvingStream}>
-          <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'center', alignItems: 'center', padding: 32 }} onPress={cancelResolvingStream}>
-            <Pressable onPress={() => {}} style={{
-              backgroundColor: isLightAppearance ? '#ffffff' : colors.cardBgElevated ?? colors.cardBg,
-              borderRadius: 16, padding: 28, alignItems: 'center', width: '100%',
-              borderWidth: 1, borderColor: colors.border,
-              shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.18, shadowRadius: 12, elevation: 8,
-            }}>
-              <ActivityIndicator size="large" color={colors.textPrimary} style={{ marginBottom: 16 }} />
-              <Text style={{ color: isLightAppearance ? '#111111' : colors.textPrimary, fontSize: 16, fontWeight: '700', marginBottom: 6 }}>{t('media_resolving')}</Text>
-              <Text style={{ color: isLightAppearance ? '#555555' : colors.mutedText, fontSize: 13, textAlign: 'center', marginBottom: 18 }}>
-                {t('media_resolving_sub')}
-              </Text>
-              <TouchableOpacity
-                onPress={cancelResolvingStream}
-                activeOpacity={0.85}
-                style={{
-                  borderRadius: 12,
-                  paddingVertical: 12,
-                  paddingHorizontal: 18,
-                  borderWidth: 1,
-                  borderColor: colors.border,
-                  backgroundColor: isLightAppearance ? colors.cardBg : colors.inputBg,
-                }}
-              >
-                <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '700' }}>Cancel</Text>
-              </TouchableOpacity>
-            </Pressable>
-          </Pressable>
-        </Modal>
         </PageWrapper>
         {!useGlassDetailLayout ? (
           <TouchableOpacity onPress={() => navigation.goBack()} style={[styles.backBtn, { top: insets.top + 10, zIndex: 40 }]}>

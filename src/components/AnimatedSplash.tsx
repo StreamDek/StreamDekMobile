@@ -7,8 +7,6 @@ export function AnimatedSplash() {
   const { isReady } = useAppReady();
   const [hidden, setHidden] = useState(false);
   const opacity = useRef(new Animated.Value(1)).current;
-  const pulseScale = useRef(new Animated.Value(0.94)).current;
-  const pulseOpacity = useRef(new Animated.Value(0.45)).current;
 
   useEffect(() => {
     SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -18,44 +16,8 @@ export function AnimatedSplash() {
   }, []);
 
   useEffect(() => {
-    const pulse = Animated.loop(
-      Animated.parallel([
-        Animated.sequence([
-          Animated.timing(pulseScale, {
-            toValue: 1.04,
-            duration: 1400,
-            easing: Easing.inOut(Easing.cubic),
-            useNativeDriver: true,
-          }),
-          Animated.timing(pulseScale, {
-            toValue: 0.94,
-            duration: 1400,
-            easing: Easing.inOut(Easing.cubic),
-            useNativeDriver: true,
-          }),
-        ]),
-        Animated.sequence([
-          Animated.timing(pulseOpacity, {
-            toValue: 0.8,
-            duration: 1400,
-            easing: Easing.inOut(Easing.cubic),
-            useNativeDriver: true,
-          }),
-          Animated.timing(pulseOpacity, {
-            toValue: 0.45,
-            duration: 1400,
-            easing: Easing.inOut(Easing.cubic),
-            useNativeDriver: true,
-          }),
-        ]),
-      ]),
-    );
-
-    pulse.start();
-    return () => {
-      pulse.stop();
-    };
-  }, [pulseOpacity, pulseScale]);
+    return undefined;
+  }, []);
 
   useEffect(() => {
     if (isReady) {
@@ -75,15 +37,6 @@ export function AnimatedSplash() {
   return (
     <Animated.View style={[StyleSheet.absoluteFill, styles.container, { opacity }]}>
       <View style={styles.backdrop} />
-      <Animated.View
-        style={[
-          styles.glow,
-          {
-            opacity: pulseOpacity,
-            transform: [{ scale: pulseScale }],
-          },
-        ]}
-      />
       <View style={styles.centerMark}>
         <View style={styles.centerRing} />
         <View style={styles.centerDot} />
@@ -102,14 +55,7 @@ const styles = StyleSheet.create({
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#050816',
-  },
-  glow: {
-    position: 'absolute',
-    width: 320,
-    height: 320,
-    borderRadius: 160,
-    backgroundColor: '#4c7dff',
+    backgroundColor: '#000000',
   },
   centerMark: {
     width: 92,
@@ -117,7 +63,7 @@ const styles = StyleSheet.create({
     borderRadius: 46,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.16)',
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    backgroundColor: '#000000',
     justifyContent: 'center',
     alignItems: 'center',
   },

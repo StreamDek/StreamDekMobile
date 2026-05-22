@@ -77,7 +77,7 @@ function AppNavigation() {
   const shouldBlockInitialAppReveal = authLoading || (!!user && !profilesReady);
   const appearanceFade = React.useRef(new Animated.Value(1)).current;
   const profileOverlayOpacity = React.useRef(new Animated.Value(showProfileSwitcher || profileSwitching ? 1 : 0)).current;
-  const profileContentFade = React.useRef(new Animated.Value(showProfileSwitcher || profileSwitching ? 0.96 : 1)).current;
+  const profileContentFade = React.useRef(new Animated.Value(showProfileSwitcher || profileSwitching ? 0 : 1)).current;
   const [profileOverlayMounted, setProfileOverlayMounted] = React.useState(showProfileSwitcher || profileSwitching);
   const showProfileLoaderOverlay = profileSwitching || (profileOverlayMounted && !showProfileSwitcher);
   const previousOverlayActiveRef = React.useRef(showProfileSwitcher || profileSwitching);
@@ -156,17 +156,7 @@ function AppNavigation() {
       profileOverlayOpacity.stopAnimation();
       profileContentFade.stopAnimation();
       profileOverlayOpacity.setValue(1);
-      if (!wasOverlayActive) {
-        profileContentFade.setValue(0.98);
-        Animated.timing(profileContentFade, {
-          toValue: 0.96,
-          duration: 220,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }).start();
-      } else {
-        profileContentFade.setValue(0.96);
-      }
+      profileContentFade.setValue(0);
       return;
     }
 

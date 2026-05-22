@@ -14,6 +14,7 @@ export interface SubmitIntroSegmentInput {
   imdbId: string;
   season: number;
   episode: number;
+  segmentType?: IntroDbSegmentType;
   startSec: number;
   endSec: number;
   apiKey?: string | null;
@@ -28,6 +29,9 @@ function normalizeSegmentType(value: unknown): IntroDbSegmentType | null {
   const normalized = String(value ?? '').trim().toLowerCase();
   if (normalized === 'intro' || normalized === 'recap' || normalized === 'outro') {
     return normalized;
+  }
+  if (normalized === 'credits' || normalized === 'credit') {
+    return 'outro';
   }
   return null;
 }
@@ -80,11 +84,51 @@ function extractRawSegments(payload: any): any[] {
   if (Array.isArray(payload?.data)) return payload.data;
 
   if (payload && typeof payload === 'object') {
+    const keyedSegments = ['intro', 'recap', 'outro', 'credits']
+      .map(key => {
+        const value = payload?.[key];
+        if (!value || typeof value !== 'object') return null;
+        return {
+          segment_type: key,
+          ...value,
+        };
+      })
+      .filter((segment): segment is Record<string, unknown> => segment != null);
+    if (keyedSegments.length > 0) {
+      return keyedSegments;
+    }
+
     const normalized = normalizeSegment(payload);
     if (normalized) return [payload];
   }
 
   return [];
+}
+
+async function fetchLegacyIntroLive(imdbId: string, season: number, episode: number, signal?: AbortSignal): Promise<IntroSegment | null> {
+  const params = new URLSearchParams({
+    imdb: imdbId,
+    imdb_id: imdbId,
+    season: String(season),
+    episode: String(episode),
+  });
+  const response = await fetch(`${INTRODB_API_BASE}/intro?${params.toString()}`, signal ? { signal } : undefined);
+  if (!response.ok) {
+    return null;
+  }
+
+  const payload = await response.json();
+  const startSec = parseClockOrSeconds(payload?.start_sec ?? payload?.start ?? payload?.intro_start);
+  const endSec = parseClockOrSeconds(payload?.end_sec ?? payload?.end ?? payload?.intro_end);
+  if (startSec == null || endSec == null || endSec <= startSec) {
+    return null;
+  }
+
+  return {
+    segmentType: 'intro',
+    startSec,
+    endSec,
+  };
 }
 
 async function fetchSegmentsLive(imdbId: string, season: number, episode: number, signal?: AbortSignal): Promise<IntroSegment[]> {
@@ -99,9 +143,38 @@ async function fetchSegmentsLive(imdbId: string, season: number, episode: number
   }
 
   const payload = await response.json();
-  return extractRawSegments(payload)
+  let segments = extractRawSegments(payload)
     .map(normalizeSegment)
-    .filter((segment): segment is IntroSegment => segment != null);
+    .filter((segment): segment is IntroSegment => segment != null)
+    .sort((left, right) => {
+      if (left.startSec !== right.startSec) return left.startSec - right.startSec;
+      if (left.endSec !== right.endSec) return left.endSec - right.endSec;
+      return left.segmentType.localeCompare(right.segmentType);
+    });
+
+  if (!segments.some(segment => segment.segmentType === 'intro')) {
+    const legacyIntro = await fetchLegacyIntroLive(imdbId, season, episode, signal);
+    if (legacyIntro) {
+      segments = [legacyIntro, ...segments.filter(segment => segment.segmentType !== 'intro')];
+    }
+  }
+
+  return segments;
+}
+
+export async function fetchEpisodeSegments(
+  imdbId: string,
+  season: number,
+  episode: number,
+  options?: { signal?: AbortSignal },
+): Promise<IntroSegment[]> {
+  const read = () => fetchSegmentsLive(imdbId, season, episode, options?.signal);
+
+  if (options?.signal) {
+    return read();
+  }
+
+  return cachedFetch(getEpisodeCacheKey(imdbId, season, episode), read);
 }
 
 export async function fetchEpisodeIntroSegment(
@@ -110,16 +183,8 @@ export async function fetchEpisodeIntroSegment(
   episode: number,
   options?: { signal?: AbortSignal },
 ): Promise<IntroSegment | null> {
-  const read = async () => {
-    const segments = await fetchSegmentsLive(imdbId, season, episode, options?.signal);
-    return segments.find(segment => segment.segmentType === 'intro') ?? null;
-  };
-
-  if (options?.signal) {
-    return read();
-  }
-
-  return cachedFetch(getEpisodeCacheKey(imdbId, season, episode), read);
+  const segments = await fetchEpisodeSegments(imdbId, season, episode, options);
+  return segments.find(segment => segment.segmentType === 'intro') ?? null;
 }
 
 export async function submitIntroSegment(input: SubmitIntroSegmentInput): Promise<void> {
@@ -130,7 +195,8 @@ export async function submitIntroSegment(input: SubmitIntroSegmentInput): Promis
     throw new Error('IntroDB contribution requires an API key.');
   }
 
-  const response = await fetch(`${INTRODB_API_BASE}/segments/submit`, {
+  const endpoint = apiKey && !authToken ? '/submit' : '/segments/submit';
+  const response = await fetch(`${INTRODB_API_BASE}${endpoint}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -139,7 +205,7 @@ export async function submitIntroSegment(input: SubmitIntroSegmentInput): Promis
     },
     body: JSON.stringify({
       imdb_id: input.imdbId,
-      segment_type: 'intro',
+      segment_type: input.segmentType ?? 'intro',
       season: input.season,
       episode: input.episode,
       start_sec: input.startSec,

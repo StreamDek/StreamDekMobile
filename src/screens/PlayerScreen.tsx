@@ -58,6 +58,9 @@ import { ConfirmSheet } from '../components/ConfirmSheet';
 import { PlaybackLoadingOverlay } from '../components/player/PlaybackLoadingOverlay';
 import { SkipIntroButton } from '../components/player/SkipIntroButton';
 import { IntroContributionSheet } from '../components/player/IntroContributionSheet';
+import { NextEpisodeStreamsSheet } from '../components/player/NextEpisodeStreamsSheet';
+import { InPlayerSourcesSheet } from '../components/player/InPlayerSourcesSheet';
+import { InPlayerEpisodesSheet } from '../components/player/InPlayerEpisodesSheet';
 import {
     getProfileStorageOwnerId,
     progressFileStorageKey,
@@ -73,7 +76,7 @@ import { createPlaybackSessionStore, usePlaybackSessionSelector } from '../servi
 import { parseStream } from '../utils/streamParser';
 import { getMpvNativeViewAvailabilityDiagnostics, isMpvNativeViewAvailable } from '../components/MpvPlayer';
 import { isExpoGoRuntime } from '../utils/runtime';
-import { useIntroSegment } from '../hooks/useIntroSegment';
+import { useSkipSegments } from '../hooks/useSkipSegments';
 import { submitIntroSegment } from '../services/introdb/introDbClient';
 
 // ── Constants & Helpers ──────────────────────────────────────────────────────
@@ -543,10 +546,15 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         renderSurface,
         setDecoderMode,
         setRenderSurface,
-        skipIntroEnabled,
+        skipSegmentsEnabled,
         introContributionEnabled,
         introDbApiKey,
         setIntroDbApiKey,
+        autoPlayNextEpisodeEnabled,
+        preferBingeGroupNextEpisode,
+        nextEpisodeThresholdMode,
+        nextEpisodeThresholdPercent,
+        nextEpisodeThresholdMinutes,
     } = usePlaybackSettings();
     const insets = useSafeAreaInsets();
     const { pictureInPictureEnabled } = useDisplaySettings();
@@ -641,9 +649,13 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     );
     const [showCompatibilitySuggestion, setShowCompatibilitySuggestion] = useState(false);
     const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
+    const [progressBarWidth, setProgressBarWidth] = useState(0);
     const [isHandingOffToMpv, setIsHandingOffToMpv] = useState(false);
     const [showGuestAccountPrompt, setShowGuestAccountPrompt] = useState(false);
     const [showStreamingServerPrompt, setShowStreamingServerPrompt] = useState(false);
+    const [showNextEpisodeSheet, setShowNextEpisodeSheet] = useState(false);
+    const [showEpisodesSheet, setShowEpisodesSheet] = useState(false);
+    const [tracksSubSection, setTracksSubSection] = useState<'audio' | 'subtitles'>('audio');
     const [showIntroContributionSheet, setShowIntroContributionSheet] = useState(false);
     const [showIntroContributionConfirm, setShowIntroContributionConfirm] = useState(false);
     const [introContributionStartSec, setIntroContributionStartSec] = useState<number | null>(null);
@@ -779,17 +791,25 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const skipPortraitOnUnmountRef = useRef(false);
 
     const {
-        introSegment,
-        shouldShowSkipIntro,
-        markSkipCompleted,
-        refresh: refreshIntroSegment,
-    } = useIntroSegment({
-        enabled: skipIntroEnabled,
+        activeAction,
+        hasImmediateAction,
+        refresh: refreshSegments,
+        markActionHandled,
+    } = useSkipSegments({
+        enabled: skipSegmentsEnabled,
         type,
         imdbId,
+        showId: movieId,
         season,
         episode,
         currentTime,
+        duration,
+        title,
+        backdrop: paramBackdrop,
+        poster: paramPoster,
+        nextEpisodeThresholdMode,
+        nextEpisodeThresholdPercent,
+        nextEpisodeThresholdMinutes,
     });
     const canContributeIntro = introContributionEnabled
         && type === 'tv'
@@ -805,16 +825,6 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
         return `${m}:${s.toString().padStart(2, '0')}`;
     };
-
-    const handleSkipIntro = useCallback(() => {
-        if (!introSegment) return;
-        const target = Math.max(introSegment.endSec, currentTime);
-        player.currentTime = target;
-        setCurrentTime(target);
-        markSkipCompleted();
-        if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
-        setShowControls(true);
-    }, [currentTime, introSegment, markSkipCompleted, player, setCurrentTime]);
 
     const handleMarkIntroStart = useCallback(() => {
         setIntroContributionStartSec(Math.max(0, currentTime));
@@ -878,8 +888,8 @@ export const PlayerScreen = ({ route, navigation }: any) => {
             setIntroContributionSuccess(t('skip_intro_submit_success'));
             setIntroContributionStartSec(null);
             setIntroContributionEndSec(null);
-            if (skipIntroEnabled) {
-                await refreshIntroSegment();
+            if (skipSegmentsEnabled) {
+                await refreshSegments();
             }
         } catch (nextError) {
             setIntroContributionError(nextError instanceof Error ? nextError.message : t('common_error'));
@@ -893,9 +903,9 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         introContributionEndSec,
         introContributionStartSec,
         introDbApiKey,
-        refreshIntroSegment,
+        refreshSegments,
         season,
-        skipIntroEnabled,
+        skipSegmentsEnabled,
         t,
     ]);
 
@@ -1162,6 +1172,13 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         };
     }, [loading, navigation, pictureInPictureEnabled, setIsPlaying, shouldUseEmbeddedVideoPlayer]);
 
+    // Re-hide status bar whenever a modal closes — Android resets window flags on Modal dismiss.
+    useEffect(() => {
+        if (!introOverlayBlocked && !showNextEpisodeSheet && !showEpisodesSheet) {
+            StatusBar.setHidden(true);
+        }
+    }, [introOverlayBlocked, showNextEpisodeSheet, showEpisodesSheet]);
+
     useEffect(() => { playerRef.current = player; }, [player]);
     useEffect(() => { allStreamsRef.current = allStreams; }, [allStreams]);
     useEffect(() => { activeStreamRef.current = activeStream; }, [activeStream]);
@@ -1213,6 +1230,105 @@ export const PlayerScreen = ({ route, navigation }: any) => {
             });
         }
     }, [logPlayerEvent, shouldUseEmbeddedVideoPlayer]);
+
+    const openNextEpisodeSheet = useCallback(() => {
+        if (!activeAction?.nextEpisodeTarget) return;
+        markActionHandled();
+        pauseEmbeddedPlayer('opening next episode sheet');
+        setShowNextEpisodeSheet(true);
+    }, [activeAction, markActionHandled, pauseEmbeddedPlayer]);
+
+    const handleNextEpisodeStream = useCallback((stream: AddonStream, allStreams: AddonStream[]) => {
+        const nextEpisodeTarget = activeAction?.nextEpisodeTarget;
+        if (!nextEpisodeTarget) return;
+
+        setShowNextEpisodeSheet(false);
+        playbackCompletedRef.current = true;
+        if (paramProgressKey) {
+            clearProgress(paramProgressKey);
+        }
+
+        const epCode = `S${String(nextEpisodeTarget.season).padStart(2, '0')}E${String(nextEpisodeTarget.episodeNumber).padStart(2, '0')}`;
+        const playerTitle = `${nextEpisodeTarget.showTitle}  ${epCode}`;
+        const streamIdentity = (
+            stream.infoHash?.toLowerCase()
+            ?? stream.url
+            ?? `${stream.addonId}:${stream.behaviorHints?.filename ?? stream.title ?? stream.name ?? ''}`
+        ).trim();
+
+        navigation.replace('MpvPlayer', {
+            streamUrl: stream.url ?? null,
+            headers: MAGIC_HEADERS,
+            type: 'tv',
+            title: playerTitle,
+            season: nextEpisodeTarget.season,
+            episode: nextEpisodeTarget.episodeNumber,
+            backdrop: nextEpisodeTarget.episodeStill ?? nextEpisodeTarget.showBackdrop,
+            poster: nextEpisodeTarget.showPoster,
+            progressKey: nextEpisodeTarget.progressKey,
+            resolveOnMount: !stream.url && !!stream.infoHash,
+            resolverMovieId: String(nextEpisodeTarget.showId),
+            resolverImdbId: nextEpisodeTarget.imdbId,
+            resolverType: 'tv',
+            activeStream: stream,
+            sourceStreams: allStreams,
+            activeSourceIdentity: streamIdentity,
+            returnToPlayerParams: {
+                movieId: String(nextEpisodeTarget.showId),
+                imdbId: nextEpisodeTarget.imdbId,
+                type: 'tv',
+                title: playerTitle,
+                backdrop: nextEpisodeTarget.showBackdrop,
+                poster: nextEpisodeTarget.showPoster,
+                season: nextEpisodeTarget.season,
+                episode: nextEpisodeTarget.episodeNumber,
+                progressKey: nextEpisodeTarget.progressKey,
+            },
+        });
+    }, [activeAction, clearProgress, navigation, paramProgressKey]);
+
+    const handleOpenEpisodes = useCallback(() => {
+        if (type !== 'tv' || season == null || episode == null) return;
+        setShowEpisodesSheet(true);
+    }, [episode, season, type]);
+
+    const handleEpisodeSelect = useCallback((selectedSeason: number, selectedEpisode: number) => {
+        setShowEpisodesSheet(false);
+        if (selectedSeason === season && selectedEpisode === episode) return;
+        const showTitle = title ? title.replace(/\s+S\d+\s*E\d+.*$/i, '').trim() : '';
+        navigation.navigate('EpisodeStreams', {
+            showId: movieId,
+            showTitle: showTitle || title,
+            imdbId,
+            season: selectedSeason,
+            episodeNumber: selectedEpisode,
+            progressKey: paramProgressKey,
+        });
+    }, [episode, imdbId, movieId, navigation, paramProgressKey, season, title]);
+
+    const handleSegmentAction = useCallback(() => {
+        if (!activeAction) return;
+        if (activeAction.kind === 'next_episode') {
+            openNextEpisodeSheet();
+            return;
+        }
+
+        const target = Math.max(activeAction.targetTimeSec ?? currentTime, currentTime);
+        player.currentTime = target;
+        setCurrentTime(target);
+        markActionHandled();
+        if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+        setShowControls(true);
+    }, [activeAction, currentTime, openNextEpisodeSheet, markActionHandled, player, setCurrentTime]);
+
+    useEffect(() => {
+        if (!autoPlayNextEpisodeEnabled) return undefined;
+        if (activeAction?.kind !== 'next_episode') return undefined;
+        const timer = setTimeout(() => {
+            openNextEpisodeSheet();
+        }, 1200);
+        return () => clearTimeout(timer);
+    }, [activeAction, autoPlayNextEpisodeEnabled, openNextEpisodeSheet]);
 
     const persistPreferredStream = useCallback(async (reason: string) => {
         const active = activeStreamRef.current;
@@ -1526,6 +1642,8 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                 initialLoadingMessage: loadingMsg,
                 resumeFrom: Math.max(0, resumeAtSec),
                 forceStartFromBeginning,
+                season,
+                episode,
                 returnToPlayerParams: {
                     movieId,
                     imdbId,
@@ -1537,6 +1655,8 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                     backdrop: paramBackdrop,
                     poster: paramPoster,
                     progressKey: paramProgressKey,
+                    season,
+                    episode,
                 },
                 rememberedSourceKey: preferredKey,
                 rememberedSourceValue: preferredValue,
@@ -1547,6 +1667,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         });
         return true;
     }, [
+        episode,
         forceStartFromBeginning,
         imdbId,
         loadingMsg,
@@ -1557,6 +1678,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         paramPoster,
         paramProgressKey,
         paramTitleLogo,
+        season,
         title,
         type,
         user?.uid,
@@ -2345,6 +2467,8 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                     initialLoadingMessage: loadingMsg,
                     resumeFrom: Math.max(0, Number(paramResumeFrom) || 0),
                     forceStartFromBeginning,
+                    season,
+                    episode,
                     resolveOnMount: true,
                     resolverMovieId: movieId,
                     resolverImdbId: imdbId,
@@ -2362,6 +2486,8 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                         backdrop: paramBackdrop,
                         poster: paramPoster,
                         progressKey: paramProgressKey,
+                        season,
+                        episode,
                     },
                     rememberedSourceKey: preferredKey,
                 });
@@ -3080,29 +3206,18 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                 </View>
             )}
             {shouldUseEmbeddedVideoPlayer && showControls && !loading && (
-                <Animated.View style={{ opacity: controlsOpacity }}>
-                <LinearGradient 
-                    colors={['rgba(0,0,0,0.8)', 'transparent']}
-                    pointerEvents="box-none"
-                    style={[styles.topBar, { paddingTop: insets.top + 12 }]}
-                >
-                    <View style={styles.controlsRow}>
-                        <TouchableOpacity 
-                            style={styles.circleBtn} 
-                            onPress={flushProgressAndGoBack}
-                            hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
-                        >
-                            <Ionicons name="close" size={22} color="white" />
-                        </TouchableOpacity>
-                        {!loading && (
-                            <View style={styles.titleContainer}>
-                                <Text style={styles.videoTitle} numberOfLines={1}>{title}</Text>
-                                <Text style={styles.videoSubtitle}>{year} • {type === 'tv' ? 'Episode' : 'Movie'}</Text>
-                            </View>
-                        )}
-                        <View style={styles.circleBtnPlaceholder} />
+                <Animated.View style={[styles.topBar, { paddingTop: insets.top + 10 }, { opacity: controlsOpacity }]}>
+                    <TouchableOpacity
+                        style={styles.topBtn}
+                        onPress={flushProgressAndGoBack}
+                        hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+                    >
+                        <Ionicons name="arrow-back" size={24} color="rgba(255,255,255,0.92)" />
+                    </TouchableOpacity>
+                    <View style={styles.topTitleWrap}>
+                        <Text style={styles.topTitle} numberOfLines={1}>{title}</Text>
                     </View>
-                </LinearGradient>
+                    <View style={{ width: 44 }} />
                 </Animated.View>
             )}
             {shouldUseEmbeddedVideoPlayer && castNativeButtonAvailable && CastButton && (
@@ -3110,174 +3225,196 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                     <CastButton style={styles.hiddenCastButton} />
                 </View>
             )}
-            {shouldUseEmbeddedVideoPlayer && !loading && shouldShowSkipIntro && !introOverlayBlocked && (
+            {shouldUseEmbeddedVideoPlayer && (!loading || hasImmediateAction) && activeAction && !introOverlayBlocked && (
                 <SkipIntroButton
-                    label={t('skip_intro_button')}
-                    onPress={handleSkipIntro}
+                    label={t(activeAction.labelKey)}
+                    onPress={handleSegmentAction}
                     bottom={showControls ? insets.bottom + 122 : insets.bottom + 20}
                 />
             )}
+            <NextEpisodeStreamsSheet
+                visible={showNextEpisodeSheet}
+                target={activeAction?.nextEpisodeTarget ?? null}
+                preferBingeGroupNextEpisode={preferBingeGroupNextEpisode}
+                preferredAddonName={preferBingeGroupNextEpisode ? (activeStreamRef.current?.addonName ?? null) : null}
+                preferredQualityGroup={preferBingeGroupNextEpisode ? (activeStreamRef.current ? (parseStream(activeStreamRef.current).quality ?? activeStreamRef.current.quality ?? null) : null) : null}
+                onSelectStream={handleNextEpisodeStream}
+                onDismiss={() => { setShowNextEpisodeSheet(false); }}
+            />
+
+            <InPlayerSourcesSheet
+                visible={showSources}
+                streams={allStreams}
+                activeStreamIdentity={activeStream ? (activeStream.infoHash?.toLowerCase() ?? activeStream.url ?? `${activeStream.addonId}:${activeStream.behaviorHints?.filename ?? activeStream.title ?? activeStream.name ?? ''}`.trim()) : undefined}
+                onSelectStream={stream => closePlayerDrawer()}
+                onReload={() => {
+                    closePlayerDrawer();
+                }}
+                onDismiss={closePlayerDrawer}
+            />
+
+            <InPlayerEpisodesSheet
+                visible={showEpisodesSheet}
+                showId={movieId}
+                showTitle={title ? title.replace(/\s+S\d+\s*E\d+.*$/i, '').trim() : title}
+                currentSeason={season ?? 1}
+                currentEpisode={episode ?? 1}
+                onSelectEpisode={handleEpisodeSelect}
+                onDismiss={() => setShowEpisodesSheet(false)}
+            />
+
             {shouldUseEmbeddedVideoPlayer && showControls && !loading && (
                 <Animated.View style={[styles.centerContainer, { opacity: controlsOpacity }]} pointerEvents="box-none">
-                    <TouchableOpacity 
-                        style={styles.centerBtn} 
+                    <TouchableOpacity
+                        style={styles.centerBtn}
                         onPress={() => seekBy(-10)}
                         hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
                     >
-                        <Ionicons name="play-back" size={32} color="white" />
+                        <Ionicons name="play-back-circle-outline" size={56} color="rgba(255,255,255,0.88)" />
                         <Text style={styles.skipText}>10</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity 
-                        style={styles.mainPlayBtn} 
+                    <TouchableOpacity
+                        style={styles.mainPlayBtn}
                         onPress={handlePlayPause}
                         hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
                     >
-                        <Ionicons name={isPlaying ? "pause-sharp" : "play-sharp"} size={36} color="#000" />
+                        <Ionicons name={isPlaying ? 'pause' : 'play'} size={32} color="rgba(255,255,255,0.95)" />
                     </TouchableOpacity>
-                    <TouchableOpacity 
-                        style={styles.centerBtn} 
+                    <TouchableOpacity
+                        style={styles.centerBtn}
                         onPress={() => seekBy(10)}
                         hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
                     >
-                        <Ionicons name="play-forward" size={32} color="white" />
+                        <Ionicons name="play-forward-circle-outline" size={56} color="rgba(255,255,255,0.88)" />
                         <Text style={styles.skipText}>10</Text>
                     </TouchableOpacity>
                 </Animated.View>
             )}
             {shouldUseEmbeddedVideoPlayer && showControls && !loading && (
-                <Animated.View style={{ opacity: controlsOpacity }}>
-                <LinearGradient 
-                    colors={['transparent', 'rgba(0,0,0,0.7)']}
-                    pointerEvents="box-none"
-                    style={[styles.bottomBar, { paddingBottom: insets.bottom + 16 }]}
-                >
+                <Animated.View style={[styles.bottomBar, { paddingBottom: insets.bottom + 12 }, { opacity: controlsOpacity }]}>
+                    {/* Progress + time */}
                     <View style={styles.sliderContainer}>
-                        <Slider
-                            style={styles.slider}
-                            minimumValue={0}
-                            maximumValue={duration}
-                            value={currentTime}
-                            onValueChange={(val) => {
-                                lastUiTimeRef.current = normalizePlaybackTime(val);
-                                setCurrentTime(val);
-                                if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
-                            }}
-                            onSlidingComplete={(val) => {
-                                player.currentTime = val;
-                                resetControlsTimer();
-                            }}
-                            minimumTrackTintColor={theme.colors.accent}
-                            maximumTrackTintColor="rgba(255,255,255,0.2)"
-                            thumbTintColor="#fff"
-                        />
+                        <View
+                            style={styles.sliderWrap}
+                            onLayout={e => setProgressBarWidth(e.nativeEvent.layout.width)}
+                        >
+                            {/* Custom visual track */}
+                            <View style={styles.trackBg} pointerEvents="none">
+                                <View style={styles.trackRail} />
+                                <View style={[styles.trackFill, {
+                                    width: progressBarWidth * Math.min(currentTime / Math.max(duration, 1), 1),
+                                }]} />
+                                <View style={[styles.trackThumb, {
+                                    left: Math.max(0, progressBarWidth * Math.min(currentTime / Math.max(duration, 1), 1) - 9),
+                                }]} />
+                            </View>
+                            {/* Native slider — transparent, handles touch */}
+                            <Slider
+                                style={[styles.slider, StyleSheet.absoluteFillObject]}
+                                minimumValue={0}
+                                maximumValue={duration}
+                                value={currentTime}
+                                onValueChange={(val) => {
+                                    lastUiTimeRef.current = normalizePlaybackTime(val);
+                                    setCurrentTime(val);
+                                    if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+                                }}
+                                onSlidingComplete={(val) => {
+                                    player.currentTime = val;
+                                    resetControlsTimer();
+                                }}
+                                minimumTrackTintColor="transparent"
+                                maximumTrackTintColor="transparent"
+                                thumbTintColor="transparent"
+                            />
+                        </View>
                         <View style={styles.timeRow}>
                             <Text style={styles.timeLabel}>{formatTime(currentTime)}</Text>
                             <Text style={styles.timeLabel}>{formatTime(duration)}</Text>
                         </View>
-                        <View style={styles.quickMenuRow}>
-                            {mpvQuickActionVisible && shouldUseEmbeddedVideoPlayer && !expoGoRuntime && (
-                                <TouchableOpacity
-                                    style={styles.quickMenuButton}
-                                    onPress={handleEmbeddedMpvPress}
-                                    hitSlop={{ top: 15, bottom: 15, left: 10, right: 10 }}
-                                >
-                                    <Ionicons
-                                        name="flash-outline"
-                                        size={14}
-                                        color="rgba(255,255,255,0.78)"
-                                    />
-                                    <Text style={styles.quickMenuLabel}>
-                                        MPV
-                                    </Text>
-                                </TouchableOpacity>
-                            )}
+                    </View>
+
+                    {/* Pill action bar */}
+                    <View style={styles.pillBarWrap}>
+                        <View style={styles.pillBar}>
+                            {/* Zoom */}
                             <TouchableOpacity
-                                style={styles.quickMenuButton}
-                                onPress={handleExternalPlayerPress}
-                                hitSlop={{ top: 15, bottom: 15, left: 10, right: 10 }}
+                                style={styles.pillItem}
+                                onPress={toggleContentFit}
+                                hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
                             >
                                 <Ionicons
-                                    name="open-outline"
-                                    size={14}
-                                    color="rgba(255,255,255,0.78)"
+                                    name={contentFit === 'contain' ? 'expand-outline' : contentFit === 'cover' ? 'contract-outline' : 'resize-outline'}
+                                    size={19}
+                                    color="rgba(255,255,255,0.92)"
                                 />
-                                <Text style={styles.quickMenuLabel}>
-                                    Open
-                                </Text>
+                                <Text style={styles.pillLabel}>Zoom</Text>
                             </TouchableOpacity>
+
+                            <View style={styles.pillSep} />
+
+                            {/* Speed */}
                             <TouchableOpacity
-                                style={[styles.quickMenuButton, castState === CastState.CONNECTED && styles.quickMenuButtonActive]}
-                                onPress={handleCastPress}
-                                hitSlop={{ top: 15, bottom: 15, left: 10, right: 10 }}
+                                style={[styles.pillItem, showPlayerDrawer && activeDrawerSection === 'speed' && styles.pillItemActive]}
+                                onPress={() => openPlayerDrawer('speed')}
+                                hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
                             >
-                                <Ionicons
-                                    name={castState === CastState.CONNECTED ? 'tv' : 'tv-outline'}
-                                    size={14}
-                                    color={castState === CastState.CONNECTED ? '#fff' : 'rgba(255,255,255,0.78)'}
-                                />
-                                <Text style={[styles.quickMenuLabel, castState === CastState.CONNECTED && styles.quickMenuLabelActive]}>
-                                    Cast
-                                </Text>
+                                <Text style={styles.pillSpeedIcon}>{playbackSpeed === 1 ? '1×' : `${playbackSpeed}×`}</Text>
+                                <Text style={styles.pillLabel}>Speed</Text>
                             </TouchableOpacity>
-                            {canContributeIntro && (
-                                <TouchableOpacity
-                                    style={styles.quickMenuButton}
-                                    onPress={() => {
-                                        setIntroContributionError(null);
-                                        setIntroContributionSuccess(null);
-                                        setShowIntroContributionSheet(true);
-                                    }}
-                                    hitSlop={{ top: 15, bottom: 15, left: 10, right: 10 }}
-                                >
-                                    <Ionicons
-                                        name="create-outline"
-                                        size={14}
-                                        color="rgba(255,255,255,0.78)"
-                                    />
-                                    <Text style={styles.quickMenuLabel}>
-                                        {t('skip_intro_contribute')}
-                                    </Text>
-                                </TouchableOpacity>
+
+                            <View style={styles.pillSep} />
+
+                            {/* Subs */}
+                            <TouchableOpacity
+                                style={[styles.pillItem, showPlayerDrawer && activeDrawerSection === 'tracks' && tracksSubSection === 'subtitles' && styles.pillItemActive]}
+                                onPress={() => { setTracksSubSection('subtitles'); openPlayerDrawer('tracks'); }}
+                                hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+                            >
+                                <Ionicons name="chatbubble-ellipses-outline" size={19} color="rgba(255,255,255,0.92)" />
+                                <Text style={styles.pillLabel}>Subs</Text>
+                            </TouchableOpacity>
+
+                            <View style={styles.pillSep} />
+
+                            {/* Audio */}
+                            <TouchableOpacity
+                                style={[styles.pillItem, showPlayerDrawer && activeDrawerSection === 'tracks' && tracksSubSection === 'audio' && styles.pillItemActive]}
+                                onPress={() => { setTracksSubSection('audio'); openPlayerDrawer('tracks'); }}
+                                hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+                            >
+                                <Ionicons name="volume-medium-outline" size={19} color="rgba(255,255,255,0.92)" />
+                                <Text style={styles.pillLabel}>Audio</Text>
+                            </TouchableOpacity>
+
+                            <View style={styles.pillSep} />
+
+                            {/* Sources */}
+                            <TouchableOpacity
+                                style={[styles.pillItem, showPlayerDrawer && activeDrawerSection === 'sources' && styles.pillItemActive]}
+                                onPress={() => openPlayerDrawer('sources')}
+                                hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+                            >
+                                <Ionicons name="layers-outline" size={19} color="rgba(255,255,255,0.92)" />
+                                <Text style={styles.pillLabel}>Sources</Text>
+                            </TouchableOpacity>
+
+                            {type === 'tv' && season != null && episode != null && (
+                                <>
+                                    <View style={styles.pillSep} />
+                                    {/* Episodes */}
+                                    <TouchableOpacity
+                                        style={styles.pillItem}
+                                        onPress={handleOpenEpisodes}
+                                        hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+                                    >
+                                        <Ionicons name="list-outline" size={19} color="rgba(255,255,255,0.92)" />
+                                        <Text style={styles.pillLabel}>Episodes</Text>
+                                    </TouchableOpacity>
+                                </>
                             )}
-                            {playerMenuItems
-                                .filter(item => item.enabled !== false)
-                                .map(item => {
-                                    const isActive = showPlayerDrawer && activeDrawerSection === item.key;
-                                    return (
-                                        <TouchableOpacity
-                                            key={item.key}
-                                            style={[styles.quickMenuButton, isActive && styles.quickMenuButtonActive]}
-                                            hitSlop={{ top: 15, bottom: 15, left: 10, right: 10 }}
-                                            onPress={() => {
-                                                if (item.key === 'screen') {
-                                                    toggleContentFit();
-                                                    return;
-                                                }
-                                                openPlayerDrawer(item.key);
-                                            }}
-                                        >
-                                            <Ionicons
-                                                name={
-                                                    item.key === 'screen'
-                                                        ? (contentFit === 'contain'
-                                                            ? 'contract'
-                                                            : contentFit === 'cover'
-                                                                ? 'expand'
-                                                                : 'resize')
-                                                        : item.icon
-                                                }
-                                                size={14}
-                                                color={isActive ? '#fff' : 'rgba(255,255,255,0.78)'}
-                                            />
-                                            <Text style={[styles.quickMenuLabel, isActive && styles.quickMenuLabelActive]}>
-                                                {item.label}
-                                            </Text>
-                                        </TouchableOpacity>
-                                    );
-                                })}
                         </View>
                     </View>
-                </LinearGradient>
                 </Animated.View>
             )}
             {/* SOURCES DRAWER (LEFT) */}
@@ -3293,15 +3430,12 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                         style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.6)' }]} 
                         onPress={closePlayerDrawer} 
                     />
-                    <View style={[styles.drawerContentOuterRight, styles.drawerContentOuterRightWide]}>
-                        <View style={[styles.drawerContentRight, styles.drawerContentRightWide]}>
+                    <View style={styles.centeredDrawerOuter}>
+                        <View style={styles.centeredDrawerCard}>
                             <View style={styles.drawerHeader}>
-                                <View style={styles.headerTitleRow}>
-                                    <Ionicons name="layers-outline" size={20} color={theme.colors.accent} style={{ marginRight: 10 }} />
-                                    <Text style={styles.drawerTitle}>{activeDrawerTitle}</Text>
-                                </View>
-                                <TouchableOpacity onPress={closePlayerDrawer} style={styles.closeBtn}>
-                                    <Ionicons name="close" size={24} color="rgba(255,255,255,0.5)" />
+                                <Text style={styles.drawerTitle}>{activeDrawerTitle}</Text>
+                                <TouchableOpacity onPress={closePlayerDrawer} style={styles.pillCloseBtn}>
+                                    <Text style={styles.pillCloseBtnText}>Close</Text>
                                 </TouchableOpacity>
                             </View>
                             <ScrollView 
@@ -3331,25 +3465,12 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                         style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.6)' }]} 
                         onPress={closePlayerDrawer} 
                     />
-                    <View style={styles.drawerContentOuterRight}>
-                        <View style={styles.drawerContentRight}>
+                    <View style={styles.centeredDrawerOuter}>
+                        <View style={styles.centeredDrawerCard}>
                             <View style={styles.drawerHeader}>
-                                <View style={styles.headerTitleRow}>
-                                    <Ionicons
-                                        name={
-                                            activeDrawerSection === 'tracks' ? 'options-outline'
-                                                : activeDrawerSection === 'speed' ? 'speedometer-outline'
-                                                    : activeDrawerSection === 'screen' ? 'expand-outline'
-                                                        : 'pulse-outline'
-                                        }
-                                        size={20}
-                                        color={theme.colors.accent}
-                                        style={{ marginRight: 10 }}
-                                    />
-                                    <Text style={styles.drawerTitle}>{activeDrawerTitle}</Text>
-                                </View>
-                                <TouchableOpacity onPress={closePlayerDrawer} style={styles.closeBtn}>
-                                    <Ionicons name="close" size={24} color="rgba(255,255,255,0.5)" />
+                                <Text style={styles.drawerTitle}>{activeDrawerTitle}</Text>
+                                <TouchableOpacity onPress={closePlayerDrawer} style={styles.pillCloseBtn}>
+                                    <Text style={styles.pillCloseBtnText}>Close</Text>
                                 </TouchableOpacity>
                             </View>
                             <ScrollView 
@@ -3359,7 +3480,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                                 style={{ flex: 1 }}
                                 keyboardShouldPersistTaps="handled"
                             >
-                                {activeDrawerSection === 'tracks' && <View style={styles.menuSection}>
+                                {activeDrawerSection === 'tracks' && tracksSubSection === 'audio' && <View style={styles.menuSection}>
                                     <View style={styles.sectionHeader}>
                                         <Ionicons name="musical-notes-outline" size={18} color="rgba(255,255,255,0.4)" />
                                         <Text style={styles.sectionTitle}>Audio Selection</Text>
@@ -3387,7 +3508,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                                         </TouchableOpacity>
                                     ))}
                                 </View>}
-                            {activeDrawerSection === 'tracks' && <View style={styles.menuSection}>
+                            {activeDrawerSection === 'tracks' && tracksSubSection === 'subtitles' && <View style={styles.menuSection}>
                                 <View style={styles.sectionHeader}>
                                     <Ionicons name="chatbubbles-outline" size={18} color="rgba(255,255,255,0.4)" />
                                     <Text style={styles.sectionTitle}>Subtitles</Text>
@@ -3633,13 +3754,36 @@ const styles = StyleSheet.create({
     msg: { color: 'rgba(255,255,255,0.65)', fontSize: 13, fontWeight: '500', marginTop: 4 },
     btn: { marginTop: 24, backgroundColor: '#8b5cf6', paddingVertical: 12, paddingHorizontal: 32, borderRadius: 12 },
     btnText: { color: '#fff', fontSize: 14, fontWeight: '700' },
-    topBar: { 
-        position: 'absolute', 
-        top: 0, 
-        left: 0, 
-        right: 0, 
-        justifyContent: 'flex-start',
-        zIndex: 20 
+    topBar: {
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 16,
+        zIndex: 20,
+    },
+    topBtn: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        backgroundColor: 'rgba(0,0,0,0.32)',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    topTitleWrap: {
+        flex: 1,
+        alignItems: 'center',
+        paddingHorizontal: 8,
+    },
+    topTitle: {
+        color: 'rgba(255,255,255,0.88)',
+        fontSize: 14,
+        fontWeight: '700',
+        textShadowColor: 'rgba(0,0,0,0.6)',
+        textShadowOffset: { width: 0, height: 1 },
+        textShadowRadius: 4,
     },
     glassHeader: {
         flexDirection: 'row',
@@ -3658,7 +3802,7 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'space-between',
         paddingHorizontal: 20,
-        paddingTop: 10
+        paddingTop: 10,
     },
     topRightActions: {
         flexDirection: 'row',
@@ -3760,138 +3904,183 @@ const styles = StyleSheet.create({
         borderColor: 'rgba(255, 255, 255, 0.4)',
     },
     centerBtn: {
-        width: 80,
-        height: 80,
+        width: 72,
+        height: 72,
         justifyContent: 'center',
         alignItems: 'center',
-        marginHorizontal: 30,
+        marginHorizontal: 28,
     },
     skipText: {
-        color: 'white',
-        fontSize: 12,
-        fontWeight: 'bold',
-        marginTop: -5,
+        color: 'rgba(255,255,255,0.85)',
+        fontSize: 11,
+        fontWeight: '700',
+        marginTop: 2,
+        letterSpacing: 0.2,
     },
     mainPlayBtn: {
-        width: 70,
-        height: 70,
-        borderRadius: 35,
-        backgroundColor: 'rgba(255, 255, 255, 0.5)',
+        width: 68,
+        height: 68,
+        borderRadius: 34,
+        backgroundColor: 'rgba(255,255,255,0.18)',
         justifyContent: 'center',
         alignItems: 'center',
         borderWidth: 1.5,
-        borderColor: 'rgba(255, 255, 255, 0.4)',
+        borderColor: 'rgba(255,255,255,0.32)',
     },
-    bottomBar: { 
-        position: 'absolute', 
-        bottom: 0, 
-        left: 0, 
-        right: 0, 
-        justifyContent: 'flex-end',
-        zIndex: 20 
+    bottomBar: {
+        position: 'absolute',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        zIndex: 20,
     },
     sliderContainer: {
         width: '100%',
-        paddingHorizontal: 20,
-        marginBottom: 10,
+        paddingHorizontal: 16,
+        marginBottom: 4,
+    },
+    sliderWrap: {
+        height: 40,
+        justifyContent: 'center',
+        position: 'relative',
     },
     slider: {
         width: '100%',
         height: 40,
     },
+    trackBg: {
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        top: 0,
+        bottom: 0,
+        justifyContent: 'center',
+    },
+    trackRail: {
+        height: 8,
+        backgroundColor: 'rgba(255,255,255,0.18)',
+        borderRadius: 4,
+    },
+    trackFill: {
+        position: 'absolute',
+        left: 0,
+        top: 16,
+        height: 8,
+        backgroundColor: '#3ea6ff',
+        borderRadius: 4,
+    },
+    trackThumb: {
+        position: 'absolute',
+        top: 11,
+        width: 18,
+        height: 18,
+        borderRadius: 9,
+        backgroundColor: '#fff',
+    },
     timeRow: {
         flexDirection: 'row',
         justifyContent: 'space-between',
-        marginTop: -10,
-        paddingHorizontal: 15,
+        marginTop: -8,
+        paddingHorizontal: 4,
     },
     timeLabel: {
-        color: 'rgba(255,255,255,0.8)',
-        fontSize: 12,
+        color: 'rgba(255,255,255,0.7)',
+        fontSize: 11,
         fontWeight: '600',
         fontFamily: 'monospace',
     },
-    quickMenuRow: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        justifyContent: 'center',
-        gap: 16,
-        marginTop: 16,
-    },
-    quickMenuButton: {
-        minWidth: 84,
+    pillBarWrap: {
+        alignItems: 'center',
         paddingHorizontal: 16,
-        paddingVertical: 14,
-        borderRadius: 16,
-        backgroundColor: 'rgba(255,255,255,0.12)',
-        borderWidth: 1,
-        borderColor: 'rgba(255,255,255,0.14)',
+        marginTop: 12,
+        marginBottom: 4,
+    },
+    pillBar: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: 'rgba(14,16,24,0.88)',
+        borderRadius: 32,
+        paddingHorizontal: 6,
+        paddingVertical: 6,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: 'rgba(255,255,255,0.12)',
+    },
+    pillItem: {
         alignItems: 'center',
         justifyContent: 'center',
+        paddingHorizontal: 14,
+        paddingVertical: 8,
+        borderRadius: 26,
+        gap: 4,
+        minWidth: 56,
     },
-    quickMenuButtonActive: {
-        backgroundColor: 'rgba(139, 92, 246, 0.34)',
-        borderColor: 'rgba(167, 139, 250, 0.8)',
+    pillItemActive: {
+        backgroundColor: 'rgba(255,255,255,0.14)',
     },
-    quickMenuLabel: {
-        color: 'rgba(255,255,255,0.8)',
-        fontSize: 11,
+    pillLabel: {
+        color: 'rgba(255,255,255,0.78)',
+        fontSize: 10,
         fontWeight: '700',
-        marginTop: 5,
+        letterSpacing: 0.2,
     },
-    quickMenuLabelActive: {
-        color: '#fff',
+    pillSpeedIcon: {
+        color: 'rgba(255,255,255,0.92)',
+        fontSize: 14,
+        fontWeight: '800',
+        letterSpacing: -0.3,
     },
+    pillSep: {
+        width: StyleSheet.hairlineWidth,
+        height: 28,
+        backgroundColor: 'rgba(255,255,255,0.14)',
+    },
+    // Legacy aliases kept for any remaining references
+    quickMenuRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 16, marginTop: 16 },
+    quickMenuButton: { minWidth: 84, paddingHorizontal: 16, paddingVertical: 14, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.12)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', alignItems: 'center', justifyContent: 'center' },
+    quickMenuButtonActive: { backgroundColor: 'rgba(139, 92, 246, 0.34)', borderColor: 'rgba(167, 139, 250, 0.8)' },
+    quickMenuLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 11, fontWeight: '700', marginTop: 5 },
+    quickMenuLabelActive: { color: '#fff' },
     drawerOverlay: {
         ...StyleSheet.absoluteFillObject,
         backgroundColor: 'rgba(0,0,0,0.6)',
         flexDirection: 'row',
         justifyContent: 'flex-end',
     },
-    drawerContentOuterRight: {
-        position: 'absolute',
-        top: 0,
-        right: 0,
-        bottom: 0,
-    },
-    drawerContentOuterRightWide: {
-        width: '72%',
-        maxWidth: 520,
-    },
-    drawerContentOuterLeft: {
+    // Centered modal drawers
+    centeredDrawerOuter: {
         position: 'absolute',
         top: 0,
         left: 0,
+        right: 0,
         bottom: 0,
-        width: '66.666%',
+        alignItems: 'center',
+        justifyContent: 'center',
     },
-    drawerContentRight: {
-        width: 320,
-        height: '100%',
-        backgroundColor: 'rgba(17,17,17,0.45)',
-        borderLeftWidth: 1,
-        borderLeftColor: 'rgba(255,255,255,0.1)',
-        paddingTop: 20,
+    centeredDrawerCard: {
+        width: '90%',
+        maxWidth: 460,
+        maxHeight: '78%',
+        backgroundColor: 'rgba(18,20,28,0.97)',
+        borderRadius: 20,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: 'rgba(255,255,255,0.12)',
+        overflow: 'hidden',
     },
-    drawerContentRightWide: {
-        width: '100%',
-    },
-    drawerContentLeft: {
-        width: '100%',
-        height: '100%',
-        backgroundColor: 'rgba(17,17,17,0.45)',
-        borderRightWidth: 1,
-        borderRightColor: 'rgba(255,255,255,0.1)',
-        paddingTop: 20,
-    },
+    // Legacy (unused) - kept for safety
+    drawerContentOuterRight: { position: 'absolute', top: 0, right: 0, bottom: 0 },
+    drawerContentOuterRightWide: { width: '72%', maxWidth: 520 },
+    drawerContentOuterLeft: { position: 'absolute', top: 0, left: 0, bottom: 0, width: '66.666%' },
+    drawerContentRight: { width: 320, height: '100%', backgroundColor: 'rgba(17,17,17,0.95)', paddingTop: 20 },
+    drawerContentRightWide: { width: '100%' },
+    drawerContentLeft: { width: '100%', height: '100%', backgroundColor: 'rgba(17,17,17,0.95)', paddingTop: 20 },
     drawerHeader: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        marginBottom: 20,
-        paddingBottom: 15,
         paddingHorizontal: 20,
-        borderBottomWidth: 1,
+        paddingTop: 20,
+        paddingBottom: 16,
+        borderBottomWidth: StyleSheet.hairlineWidth,
         borderBottomColor: 'rgba(255,255,255,0.1)',
     },
     headerTitleRow: {
@@ -3900,11 +4089,24 @@ const styles = StyleSheet.create({
     },
     drawerTitle: {
         color: 'white',
-        fontSize: 16,
+        fontSize: 18,
         fontWeight: '800',
     },
     closeBtn: {
         padding: 5,
+    },
+    pillCloseBtn: {
+        backgroundColor: 'rgba(255,255,255,0.12)',
+        borderRadius: 20,
+        paddingHorizontal: 16,
+        paddingVertical: 7,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: 'rgba(255,255,255,0.16)',
+    },
+    pillCloseBtnText: {
+        color: 'rgba(255,255,255,0.85)',
+        fontSize: 13,
+        fontWeight: '700',
     },
     menuSection: {
         marginBottom: 25,

@@ -20,11 +20,13 @@ import { useUIStyle } from '../context/UIStyleContext';
 import { useWatched } from '../context/WatchedContext';
 import { useWatchProgress, episodeProgressKey } from '../context/WatchProgressContext';
 import { useAppLifecycle } from '../context/AppLifecycleContext';
+import { useStreamSelectionSettings } from '../context/StreamSelectionContext';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import { ActionSheet } from '../components/ActionSheet';
 import { PrimaryActionButton, getPrimaryActionPalette } from '../components/PrimaryActionButton';
 import { StackBottomNav, BOTTOM_NAV_HEIGHT } from '../components/StackBottomNav';
 import { parseStream, formatSeeds } from '../utils/streamParser';
+import { sortStreams } from '../utils/streamSelection';
 import { isExpoGoRuntime } from '../utils/runtime';
 import { buildAuthHeaders } from '../utils/authHeaders';
 import { getMobileClientIdentityHeaders } from '../utils/clientIdentity';
@@ -387,6 +389,10 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
     showId, showTitle, showPoster, showBackdrop, imdbId,
     season, episodeNumber, episodeName, episodeOverview, episodeReleaseDate, episodeRuntime,
     progressKey: routeProgressKey,
+    autoPlayOnLoad,
+    preferBingeGroupNextEpisode,
+    preferredAddonName,
+    preferredQualityGroup,
   } = route.params || {};
 
   const insets = useSafeAreaInsets();
@@ -404,6 +410,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
   const { isEpisodeWatched, toggleEpisodeWatched } = useWatched();
   const { accounts: debridAccounts } = useDebrid();
   const { getProgress } = useWatchProgress();
+  const { preferredQuality } = useStreamSelectionSettings();
 
   const [debridSheet,     setDebridSheet]     = useState(false);
   const [streams,         setStreams]         = useState<AddonStream[]>([]);
@@ -411,6 +418,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
   const [pendingAddons,   setPendingAddons]   = useState(0);
   const [headerHeight,    setHeaderHeight]    = useState(0);
   const [selectedAddon,   setSelectedAddon]   = useState<string>('all');
+  const autoPlayHandledRef = useRef(false);
 
   // AbortController for the in-flight progressive fetch
   const abortRef = useRef<AbortController | null>(null);
@@ -625,6 +633,34 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
       .toLowerCase()
   );
 
+  const pickAutoplayStream = useCallback((candidates: AddonStream[]): AddonStream | null => {
+    if (candidates.length === 0) return null;
+
+    const sortedAll = sortStreams(candidates, { preferredQuality });
+    if (!preferBingeGroupNextEpisode) {
+      return sortedAll[0] ?? null;
+    }
+
+    const normalizedAddon = typeof preferredAddonName === 'string' ? preferredAddonName.trim().toLowerCase() : '';
+    const normalizedQuality = typeof preferredQualityGroup === 'string' ? preferredQualityGroup.trim().toLowerCase() : '';
+    const bingeCandidates = candidates.filter(stream => {
+      const addonMatches = normalizedAddon.length > 0
+        ? (stream.addonName ?? '').trim().toLowerCase() === normalizedAddon
+        : true;
+      const streamQuality = (parseStream(stream).quality ?? stream.quality ?? '').trim().toLowerCase();
+      const qualityMatches = normalizedQuality.length > 0
+        ? streamQuality === normalizedQuality
+        : true;
+      return addonMatches && qualityMatches;
+    });
+
+    if (bingeCandidates.length > 0) {
+      return sortStreams(bingeCandidates, { preferredQuality })[0] ?? null;
+    }
+
+    return sortedAll[0] ?? null;
+  }, [preferBingeGroupNextEpisode, preferredAddonName, preferredQuality, preferredQualityGroup]);
+
   const playStream = useCallback(async (stream: AddonStream) => {
     if (stream.url) {
       navigation.navigate('Player', {
@@ -700,10 +736,10 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
   // skipping the intermediate PlayerScreen so the loading overlay shows at once.
   const playBestStream = useCallback(() => {
     if (streams.length === 0) return;
-    const best = streams[0] ?? null;
+    const best = pickAutoplayStream(streams);
     if (!best) return;
 
-    const sortedAll = [...streams];
+    const sortedAll = sortStreams([...streams], { preferredQuality });
 
     const sharedParams = {
       title: playerTitle,
@@ -775,7 +811,16 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
       });
     }
   }, [expoGoRuntime, streams, debridAccounts.length, navigation, playerTitle, episodeOverview, season, episodeNumber,
-      backdropUri, showPoster, imdbId, showId, resolvedProgressKey]);
+      backdropUri, showPoster, imdbId, showId, resolvedProgressKey, pickAutoplayStream, preferredQuality]);
+
+  useEffect(() => {
+    if (!autoPlayOnLoad) return;
+    if (autoPlayHandledRef.current) return;
+    if (loading) return;
+    if (streams.length === 0) return;
+    autoPlayHandledRef.current = true;
+    playBestStream();
+  }, [autoPlayOnLoad, loading, playBestStream, streams.length]);
 
   // ── Render helpers ─────────────────────────────────────────────────────────
 

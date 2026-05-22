@@ -2,10 +2,11 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
   View, Text, StyleSheet, TextInput, FlatList, ScrollView,
   TouchableOpacity, ActivityIndicator, StatusBar, Keyboard, Image as RNImage, Dimensions,
-  Modal, Pressable,
+  Modal, Pressable, Platform,
 } from 'react-native';
 import { Image } from 'expo-image';
-import { BlurTargetView } from 'expo-blur';
+import { BlurTargetView, BlurView } from 'expo-blur';
+import { LinearGradient } from 'expo-linear-gradient';
 import { runIdle } from '../utils/idleTask';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -34,6 +35,22 @@ const cardWidth = (cols: number) => (SCREEN_WIDTH - H_PAD * 2 - CARD_GAP * (cols
 const GRID_SKELETON = Array.from({ length: 12 }, (_, i) => ({ id: `search-skeleton-${i}` }));
 
 const CURRENT_YEAR = new Date().getFullYear();
+
+function hexToRgba(hex: string, alpha: number) {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function darkenHex(hex: string, factor: number) {
+  const h = hex.replace('#', '');
+  const r = Math.floor(parseInt(h.substring(0, 2), 16) * factor);
+  const g = Math.floor(parseInt(h.substring(2, 4), 16) * factor);
+  const b = Math.floor(parseInt(h.substring(4, 6), 16) * factor);
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
 
 type DiscoverType = 'movie' | 'tv' | 'documentary';
 type DiscoverFilterSheet = 'type' | 'genre' | 'year' | null;
@@ -72,12 +89,44 @@ const DiscoverCard = React.memo(function DiscoverCard({ item, onPress, onLongPre
   );
 });
 
-const makeStyles = (c: ThemeColors, isLightAppearance: boolean) => {
+const makeStyles = (c: ThemeColors, isLightAppearance: boolean, headerBgRgba: string) => {
   return StyleSheet.create({
   container: { flex: 1, backgroundColor: c.bg },
-  header: {
+  headerContainer: {
     position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10,
-    paddingHorizontal: 20, paddingBottom: 18, backgroundColor: c.bgHeader,
+    paddingHorizontal: 14,
+  },
+  headerShell: {
+    borderRadius: 24,
+    backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.08)' : 'rgba(15,23,42,0.10)',
+    borderWidth: 1,
+    borderColor: isLightAppearance ? 'rgba(255,255,255,0.72)' : 'rgba(255,255,255,0.18)',
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOpacity: isLightAppearance ? 0.16 : 0.26,
+    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 16,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 14,
+  },
+  headerBlurFill: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  headerGlassTint: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: headerBgRgba,
+  },
+  headerGlassGradient: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  headerGlassGlow: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  headerContent: {
+    position: 'relative',
+    zIndex: 1,
   },
   headerFade: { position: 'absolute', left: 0, right: 0, height: 36, zIndex: 9 },
   heading: { color: c.textPrimary, fontSize: 34, fontWeight: '800', letterSpacing: -0.9, marginBottom: 16 },
@@ -206,12 +255,18 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean) => {
 };
 
 export const SearchScreen = ({ navigation }: any) => {
-  const blurTargetRef = useRef<View | null>(null);
+  const [blurTarget, setBlurTarget] = useState<View | null>(null);
   const insets = useSafeAreaInsets();
   const { theme: { colors }, resolvedAppearance } = useTheme();
   const { t } = useLanguage();
   const isLightAppearance = resolvedAppearance === 'light';
-  const styles = useMemo(() => makeStyles(colors, isLightAppearance), [colors, isLightAppearance]);
+  const headerBgRgba = useMemo(
+    () => (resolvedAppearance === 'light'
+      ? hexToRgba(colors.bgHeaderSolid, 0.032)
+      : hexToRgba(darkenHex(colors.bgHeaderSolid, 1), 0.03)),
+    [colors.bgHeaderSolid, resolvedAppearance],
+  );
+  const styles = useMemo(() => makeStyles(colors, isLightAppearance, headerBgRgba), [colors, headerBgRgba, isLightAppearance]);
 
   const {
     longPressItem, setLongPressItem, handleLongPress, buildActions,
@@ -520,9 +575,7 @@ export const SearchScreen = ({ navigation }: any) => {
 
 
   return (
-    <View style={{ flex: 1 }}>
-      <BlurTargetView ref={blurTargetRef} style={{ flex: 1 }}>
-    <View style={styles.container}>
+    <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle={resolvedAppearance === 'light' ? 'dark-content' : 'light-content'} translucent backgroundColor="transparent" />
       <Modal
         visible={activeFilterSheet !== null}
@@ -562,242 +615,275 @@ export const SearchScreen = ({ navigation }: any) => {
         onConfirm={() => { if (seriesWatchConfirmItem) handleSeriesMarkWatched(seriesWatchConfirmItem); }}
       />
 
-      <View
-        style={[styles.header, { paddingTop: insets.top + 26 }]}
-        onLayout={e => setHeaderHeight(e.nativeEvent.layout.height)}
-      >
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-          <Text style={[styles.heading, { marginBottom: 0 }]}>{t('nav_search')}</Text>
-          <TouchableOpacity
-            onPress={toggleGridCols}
-            style={styles.colToggleBtn}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <Ionicons name={gridCols === 3 ? 'grid-outline' : 'apps-outline'} size={18} color={colors.accentSoft} />
-          </TouchableOpacity>
-        </View>
-        <View style={styles.inputRow}>
-          <Ionicons name="search-outline" size={18} color={colors.mutedText} />
-          <TextInput
-            ref={inputRef}
-            style={styles.input}
-            value={query}
-            onChangeText={onChangeText}
-            onSubmitEditing={onSubmit}
-            placeholder={t('search_placeholder')}
-            placeholderTextColor={colors.mutedText}
-            returnKeyType="search"
-            autoCorrect={false}
-            autoCapitalize="none"
-            selectionColor={colors.accent}
-          />
-          {query.length > 0 && (
-            <TouchableOpacity
-              onPress={() => {
-                setQuery('');
-                setResults([]);
-                setSearched(false);
-                setSearchPage(1);
-                setSearchTotalPages(1);
-                setLoading(false);
-                setLoadingMore(false);
-              }}
-              style={styles.clearBtn}
-            >
-              <Ionicons name="close" size={14} color={colors.subText} />
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
-
-      {showSearch && (
-        <View style={{ flex: 1 }}>
-          {loading && results.length === 0 ? (
-            <View style={[styles.searchGrid, { paddingTop: headerHeight + 12 }]}>
-              {Array.from({ length: Math.ceil(GRID_SKELETON.length / gridCols) }, (_, ri) => (
-                <View key={`search-skeleton-row-${ri}`} style={styles.searchRow}>
-                  {GRID_SKELETON.slice(ri * gridCols, ri * gridCols + gridCols).map((item, ci) => (
-                    <View key={item.id} style={[ci < gridCols - 1 ? { marginRight: CARD_GAP } : null, { flex: 1 }]}>
-                      <SkeletonMediaCard width={CARD_WIDTH} compactGrid />
-                    </View>
-                  ))}
-                </View>
-              ))}
-            </View>
-          ) : searched && results.length === 0 ? (
-            <View style={[styles.center, { paddingTop: headerHeight }]}>
-              <Ionicons name="search-outline" size={48} color={colors.placeholder} />
-              <Text style={styles.emptyTitle}>{t('search_no_results')} "{query}"</Text>
-              <Text style={styles.emptyDesc}>{t('search_no_results_sub')}</Text>
-            </View>
-          ) : (
-            <FlatList
-              key={`grid-${gridCols}`}
-              data={results}
-              renderItem={({ item, index }) => {
-                const ci = index % gridCols;
-                const isLast = ci === gridCols - 1;
-                return (
-                  <View style={[!isLast ? { marginRight: CARD_GAP } : null, { width: CARD_WIDTH }]}>
-                    <DiscoverCard item={item} onPress={() => navToDetail(item)} onLongPress={() => handleLongPress(item)} colors={colors} />
-                  </View>
-                );
-              }}
-              numColumns={gridCols}
-              columnWrapperStyle={styles.searchRow}
-              keyExtractor={(item, i) => mediaListItemKey(item, i)}
-              showsVerticalScrollIndicator={false}
-              onEndReached={loadMoreSearch}
-              onEndReachedThreshold={0.4}
-              keyboardShouldPersistTaps="handled"
-              contentContainerStyle={[styles.searchGrid, { paddingTop: headerHeight + 12, paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 16 }]}
-              ListFooterComponent={loadingMore ? (
-                <View style={{ paddingVertical: 20, alignItems: 'center' }}>
-                  <ActivityIndicator color={colors.accentSoft} />
-                </View>
-              ) : null}
-              removeClippedSubviews
-              initialNumToRender={12}
-              maxToRenderPerBatch={12}
-              windowSize={5}
-              getItemLayout={(_, index) => ({
-                length: 242, // Height of MediaCard including margins/meta
-                offset: 242 * index,
-                index,
-              })}
-            />
-          )}
-        </View>
-      )}
-
-      {/* Discover Section (when NOT searching) */}
-      {!showSearch && (
-        <ScrollView
-          showsVerticalScrollIndicator={false}
-          onScroll={handleDiscoverScroll}
-          scrollEventThrottle={16}
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={{ paddingTop: headerHeight, paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 24 }}
-        >
-          {recent.length > 0 && (
-            <View style={styles.recentSection}>
-              <View style={styles.recentHeader}>
-                <Text style={styles.sectionTitle}>{t('search_recent')}</Text>
-                <TouchableOpacity onPress={clearRecent}>
-                  <Text style={styles.clearAll}>{t('search_clear_all')}</Text>
-                </TouchableOpacity>
-              </View>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.recentChips}>
-                {recent.map((term, i) => (
-                  <TouchableOpacity key={term} style={[styles.recentChip, i < recent.length - 1 ? { marginRight: 8 } : null]} onPress={() => onRecentTap(term)}>
-                    <Ionicons name="time-outline" size={12} color={colors.subText} />
-                    <Text style={styles.recentChipText}>{term}</Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </View>
-          )}
-
-          <View style={styles.discoverSection}>
-            <Text style={styles.discoverTitle}>{t('search_discover')}</Text>
-
-            <View style={[styles.filterRow, { justifyContent: 'space-between', alignItems: 'center', marginTop: 10, marginBottom: 4 }]}>
-              <TouchableOpacity style={styles.filterField} onPress={() => setActiveFilterSheet('type')} activeOpacity={0.82}>
-                <View style={styles.filterFieldInfo}>
-                  <Text style={styles.filterFieldTitle}>{typeOptions.find(option => option.value === discoverType)?.label ?? t('search_movies')}</Text>
-                  <View style={styles.filterFieldIcon}>
-                    <Ionicons name="chevron-down" size={14} color={colors.placeholder} />
-                  </View>
-                </View>
-              </TouchableOpacity>
-              {genres.length > 0 ? (
-                <TouchableOpacity style={styles.filterField} onPress={() => setActiveFilterSheet('genre')} activeOpacity={0.82}>
-                  <View style={styles.filterFieldInfo}>
-                    <Text style={styles.filterFieldValue}>{selectedGenreLabel}</Text>
-                    <View style={styles.filterFieldIcon}>
-                      <Ionicons name="chevron-down" size={14} color={colors.placeholder} />
-                    </View>
-                  </View>
-                </TouchableOpacity>
-              ) : <View />}
-              <TouchableOpacity style={styles.filterField} onPress={() => setActiveFilterSheet('year')} activeOpacity={0.82}>
-                <View style={styles.filterFieldInfo}>
-                  <Text style={styles.filterFieldValue}>{selectedYearLabel}</Text>
-                  <View style={styles.filterFieldIcon}>
-                    <Ionicons name="chevron-down" size={14} color={colors.placeholder} />
-                  </View>
-                </View>
-              </TouchableOpacity>
-            </View>
-
-            {discoverLoading ? (
-              <View style={styles.discoverLoader}>
-                <View style={{ width: '100%' }}>
-                  <View style={styles.discoverSkeletonHeader}>
-                    <SkeletonText style={{ width: 104, height: 12, marginBottom: 12 }} />
-                    <View style={styles.filterRow}>
-                      <SkeletonBlock style={{ width: 86, height: 34, borderRadius: 20 }} />
-                      <SkeletonBlock style={{ width: 94, height: 34, borderRadius: 20 }} />
-                      <SkeletonBlock style={{ width: 78, height: 34, borderRadius: 20 }} />
-                    </View>
-                  </View>
-                  {Array.from({ length: 2 }, (_, rowIndex) => (
-                    <View key={`discover-skeleton-row-${rowIndex}`} style={styles.discoverRow}>
-                      {Array.from({ length: gridCols }, (_, colIndex) => (
-                        <View key={`discover-skeleton-${rowIndex}-${colIndex}`} style={[colIndex < gridCols - 1 ? { marginRight: 10 } : null, { flex: 1 }]}>
+      <BlurTargetView ref={setBlurTarget as any} style={{ flex: 1 }}>
+        <View style={styles.container}>
+          {showSearch && (
+            <View style={{ flex: 1 }}>
+              {loading && results.length === 0 ? (
+                <View style={[styles.searchGrid, { paddingTop: headerHeight + 12 }]}>
+                  {Array.from({ length: Math.ceil(GRID_SKELETON.length / gridCols) }, (_, ri) => (
+                    <View key={`search-skeleton-row-${ri}`} style={styles.searchRow}>
+                      {GRID_SKELETON.slice(ri * gridCols, ri * gridCols + gridCols).map((item, ci) => (
+                        <View key={item.id} style={[ci < gridCols - 1 ? { marginRight: CARD_GAP } : null, { flex: 1 }]}>
                           <SkeletonMediaCard width={CARD_WIDTH} compactGrid />
                         </View>
                       ))}
                     </View>
                   ))}
                 </View>
-              </View>
-            ) : discoverItems.length === 0 ? (
-              <View style={styles.discoverEmpty}>
-                <Text style={styles.emptyDesc}>{t('search_no_discover')}</Text>
-              </View>
-            ) : (
-              <FadeInView style={styles.discoverGrid}>
+              ) : searched && results.length === 0 ? (
+                <View style={[styles.center, { paddingTop: headerHeight }]}>
+                  <Ionicons name="search-outline" size={48} color={colors.placeholder} />
+                  <Text style={styles.emptyTitle}>{t('search_no_results')} "{query}"</Text>
+                  <Text style={styles.emptyDesc}>{t('search_no_results_sub')}</Text>
+                </View>
+              ) : (
                 <FlatList
-                  key={`discover-grid-${gridCols}`}
-                  keyExtractor={(item, i) => mediaListItemKey(item, i)}
-                  numColumns={gridCols}
-                  columnWrapperStyle={styles.discoverRow}
-                  scrollEnabled={false} // Container ScrollView handles scrolling
+                  key={`grid-${gridCols}`}
+                  data={results}
                   renderItem={({ item, index }) => {
-                    if (item.id.startsWith('GHOST')) return <View style={{ flex: 1 }} />;
                     const ci = index % gridCols;
                     const isLast = ci === gridCols - 1;
                     return (
-                      <View style={[!isLast ? { marginRight: 10 } : null, { flex: 1 }]}>
+                      <View style={[!isLast ? { marginRight: CARD_GAP } : null, { width: CARD_WIDTH }]}>
                         <DiscoverCard item={item} onPress={() => navToDetail(item)} onLongPress={() => handleLongPress(item)} colors={colors} />
                       </View>
                     );
                   }}
-                  data={(() => {
-                    const data = [...discoverItems];
-                    const remainder = data.length % gridCols;
-                    if (remainder > 0) {
-                      for (let i = 0; i < gridCols - remainder; i++) {
-                        data.push({ id: `GHOST-${i}` });
-                      }
-                    }
-                    return data;
-                  })()}
-                  ListFooterComponent={discoverLoadingMore ? (
+                  numColumns={gridCols}
+                  columnWrapperStyle={styles.searchRow}
+                  keyExtractor={(item, i) => mediaListItemKey(item, i)}
+                  showsVerticalScrollIndicator={false}
+                  onEndReached={loadMoreSearch}
+                  onEndReachedThreshold={0.4}
+                  keyboardShouldPersistTaps="handled"
+                  contentContainerStyle={[styles.searchGrid, { paddingTop: headerHeight + 12, paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 16 }]}
+                  ListFooterComponent={loadingMore ? (
                     <View style={{ paddingVertical: 20, alignItems: 'center' }}>
-                      <ActivityIndicator size="small" color={colors.accent} />
+                      <ActivityIndicator color={colors.accentSoft} />
                     </View>
                   ) : null}
+                  removeClippedSubviews
+                  initialNumToRender={12}
+                  maxToRenderPerBatch={12}
+                  windowSize={5}
+                  getItemLayout={(_, index) => ({
+                    length: 242, // Height of MediaCard including margins/meta
+                    offset: 242 * index,
+                    index,
+                  })}
                 />
-              </FadeInView>
-            )}
-          </View>
-        </ScrollView>
-      )}
-    </View>
+              )}
+            </View>
+          )}
+
+          {/* Discover Section (when NOT searching) */}
+          {!showSearch && (
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              onScroll={handleDiscoverScroll}
+              scrollEventThrottle={16}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ paddingTop: headerHeight, paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 24 }}
+            >
+              {recent.length > 0 && (
+                <View style={styles.recentSection}>
+                  <View style={styles.recentHeader}>
+                    <Text style={styles.sectionTitle}>{t('search_recent')}</Text>
+                    <TouchableOpacity onPress={clearRecent}>
+                      <Text style={styles.clearAll}>{t('search_clear_all')}</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.recentChips}>
+                    {recent.map((term, i) => (
+                      <TouchableOpacity key={term} style={[styles.recentChip, i < recent.length - 1 ? { marginRight: 8 } : null]} onPress={() => onRecentTap(term)}>
+                        <Ionicons name="time-outline" size={12} color={colors.subText} />
+                        <Text style={styles.recentChipText}>{term}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
+
+              <View style={styles.discoverSection}>
+                <Text style={styles.discoverTitle}>{t('search_discover')}</Text>
+
+                <View style={[styles.filterRow, { justifyContent: 'space-between', alignItems: 'center', marginTop: 10, marginBottom: 4 }]}>
+                  <TouchableOpacity style={styles.filterField} onPress={() => setActiveFilterSheet('type')} activeOpacity={0.82}>
+                    <View style={styles.filterFieldInfo}>
+                      <Text style={styles.filterFieldTitle}>{typeOptions.find(option => option.value === discoverType)?.label ?? t('search_movies')}</Text>
+                      <View style={styles.filterFieldIcon}>
+                        <Ionicons name="chevron-down" size={14} color={colors.placeholder} />
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                  {genres.length > 0 ? (
+                    <TouchableOpacity style={styles.filterField} onPress={() => setActiveFilterSheet('genre')} activeOpacity={0.82}>
+                      <View style={styles.filterFieldInfo}>
+                        <Text style={styles.filterFieldValue}>{selectedGenreLabel}</Text>
+                        <View style={styles.filterFieldIcon}>
+                          <Ionicons name="chevron-down" size={14} color={colors.placeholder} />
+                        </View>
+                      </View>
+                    </TouchableOpacity>
+                  ) : <View />}
+                  <TouchableOpacity style={styles.filterField} onPress={() => setActiveFilterSheet('year')} activeOpacity={0.82}>
+                    <View style={styles.filterFieldInfo}>
+                      <Text style={styles.filterFieldValue}>{selectedYearLabel}</Text>
+                      <View style={styles.filterFieldIcon}>
+                        <Ionicons name="chevron-down" size={14} color={colors.placeholder} />
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                </View>
+
+                {discoverLoading ? (
+                  <View style={styles.discoverLoader}>
+                    <View style={{ width: '100%' }}>
+                      <View style={styles.discoverSkeletonHeader}>
+                        <SkeletonText style={{ width: 104, height: 12, marginBottom: 12 }} />
+                        <View style={styles.filterRow}>
+                          <SkeletonBlock style={{ width: 86, height: 34, borderRadius: 20 }} />
+                          <SkeletonBlock style={{ width: 94, height: 34, borderRadius: 20 }} />
+                          <SkeletonBlock style={{ width: 78, height: 34, borderRadius: 20 }} />
+                        </View>
+                      </View>
+                      {Array.from({ length: 2 }, (_, rowIndex) => (
+                        <View key={`discover-skeleton-row-${rowIndex}`} style={styles.discoverRow}>
+                          {Array.from({ length: gridCols }, (_, colIndex) => (
+                            <View key={`discover-skeleton-${rowIndex}-${colIndex}`} style={[colIndex < gridCols - 1 ? { marginRight: 10 } : null, { flex: 1 }]}>
+                              <SkeletonMediaCard width={CARD_WIDTH} compactGrid />
+                            </View>
+                          ))}
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                ) : discoverItems.length === 0 ? (
+                  <View style={styles.discoverEmpty}>
+                    <Text style={styles.emptyDesc}>{t('search_no_discover')}</Text>
+                  </View>
+                ) : (
+                  <FadeInView style={styles.discoverGrid}>
+                    <FlatList
+                      key={`discover-grid-${gridCols}`}
+                      keyExtractor={(item, i) => mediaListItemKey(item, i)}
+                      numColumns={gridCols}
+                      columnWrapperStyle={styles.discoverRow}
+                      scrollEnabled={false} // Container ScrollView handles scrolling
+                      renderItem={({ item, index }) => {
+                        if (item.id.startsWith('GHOST')) return <View style={{ flex: 1 }} />;
+                        const ci = index % gridCols;
+                        const isLast = ci === gridCols - 1;
+                        return (
+                          <View style={[!isLast ? { marginRight: 10 } : null, { flex: 1 }]}>
+                            <DiscoverCard item={item} onPress={() => navToDetail(item)} onLongPress={() => handleLongPress(item)} colors={colors} />
+                          </View>
+                        );
+                      }}
+                      data={(() => {
+                        const data = [...discoverItems];
+                        const remainder = data.length % gridCols;
+                        if (remainder > 0) {
+                          for (let i = 0; i < gridCols - remainder; i++) {
+                            data.push({ id: `GHOST-${i}` });
+                          }
+                        }
+                        return data;
+                      })()}
+                      ListFooterComponent={discoverLoadingMore ? (
+                        <View style={{ paddingVertical: 20, alignItems: 'center' }}>
+                          <ActivityIndicator size="small" color={colors.accent} />
+                        </View>
+                      ) : null}
+                    />
+                  </FadeInView>
+                )}
+              </View>
+            </ScrollView>
+          )}
+        </View>
       </BlurTargetView>
-      <StackBottomNav activeTab="Search" blurTarget={blurTargetRef} />
+
+      <View
+        style={[styles.headerContainer, { top: insets.top + 8 }]}
+        onLayout={e => setHeaderHeight(e.nativeEvent.layout.height + insets.top + 8)}
+      >
+        <View style={styles.headerShell}>
+          <BlurView
+            tint={isLightAppearance ? 'light' : 'dark'}
+            intensity={isLightAppearance ? 78 : 86}
+            blurMethod={Platform.OS === 'android' && blurTarget ? 'dimezisBlurViewSdk31Plus' : undefined}
+            blurTarget={Platform.OS === 'android' ? { current: blurTarget } : undefined}
+            style={styles.headerBlurFill}
+          />
+          <View style={styles.headerGlassTint} pointerEvents="none" />
+          <LinearGradient
+            colors={isLightAppearance
+              ? ['rgba(255,255,255,0.075)', 'rgba(214,191,255,0.03)', 'rgba(255,214,236,0.04)']
+              : ['rgba(255,255,255,0.024)', 'rgba(168,159,248,0.02)', 'rgba(255,255,255,0.012)']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.headerGlassGradient}
+            pointerEvents="none"
+          />
+          <View
+            style={[
+              styles.headerGlassGlow,
+              {
+                backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.012)' : 'rgba(255,255,255,0.008)',
+              },
+            ]}
+            pointerEvents="none"
+          />
+          <View style={styles.headerContent}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+              <Text style={[styles.heading, { marginBottom: 0 }]}>{t('nav_search')}</Text>
+              <TouchableOpacity
+                onPress={toggleGridCols}
+                style={styles.colToggleBtn}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name={gridCols === 3 ? 'grid-outline' : 'apps-outline'} size={18} color={colors.accentSoft} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.inputRow}>
+              <Ionicons name="search-outline" size={18} color={colors.mutedText} />
+              <TextInput
+                ref={inputRef}
+                style={styles.input}
+                value={query}
+                onChangeText={onChangeText}
+                onSubmitEditing={onSubmit}
+                placeholder={t('search_placeholder')}
+                placeholderTextColor={colors.mutedText}
+                returnKeyType="search"
+                autoCorrect={false}
+                autoCapitalize="none"
+                selectionColor={colors.accent}
+              />
+              {query.length > 0 && (
+                <TouchableOpacity
+                  onPress={() => {
+                    setQuery('');
+                    setResults([]);
+                    setSearched(false);
+                    setSearchPage(1);
+                    setSearchTotalPages(1);
+                    setLoading(false);
+                    setLoadingMore(false);
+                  }}
+                  style={styles.clearBtn}
+                >
+                  <Ionicons name="close" size={14} color={colors.subText} />
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        </View>
+      </View>
+
+      <StackBottomNav activeTab="Search" blurTarget={Platform.OS === 'android' ? { current: blurTarget } : undefined} />
     </View>
   );
 };

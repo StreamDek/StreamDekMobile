@@ -307,7 +307,18 @@ export function SettingsScreen({ navigation, route }: any) {
     maxFileSizeGB,
     setMaxFileSizeGB,
   } = useStreamSelectionSettings();
-  const { decoderMode, setDecoderMode, renderSurface, setRenderSurface } = usePlaybackSettings();
+  const {
+    decoderMode,
+    setDecoderMode,
+    renderSurface,
+    setRenderSurface,
+    skipIntroEnabled,
+    setSkipIntroEnabled,
+    introContributionEnabled,
+    setIntroContributionEnabled,
+    introDbApiKey,
+    setIntroDbApiKey,
+  } = usePlaybackSettings();
   const { autoLoadEnabled, setAutoLoadEnabled, preferHI, setPreferHI, preferForced, setPreferForced } = useSubtitles();
   const { colors } = theme;
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -315,6 +326,7 @@ export function SettingsScreen({ navigation, route }: any) {
   const [showHomeLayoutModal, setShowHomeLayoutModal] = useState(false);
   const [homeLayoutSections, setHomeLayoutSections] = useState<HomeLayoutSection[]>([]);
   const [tmdbDraft, setTmdbDraft] = useState(tmdbApiKey);
+  const [introDbDraft, setIntroDbDraft] = useState(introDbApiKey);
   const [syncRefreshing, setSyncRefreshing] = useState(false);
   const [syncOverCellular, setSyncOverCellularState] = useState(false);
   const safeIconColor = React.useCallback((color: string) => getVisibleIconColor(color, resolvedAppearance, theme.id, colors.textPrimary), [colors.textPrimary, resolvedAppearance, theme.id]);
@@ -345,6 +357,7 @@ export function SettingsScreen({ navigation, route }: any) {
   }, [metadataProvider, t]);
 
   React.useEffect(() => { setTmdbDraft(tmdbApiKey); }, [tmdbApiKey]);
+  React.useEffect(() => { setIntroDbDraft(introDbApiKey); }, [introDbApiKey]);
 
   React.useEffect(() => {
     void getSyncOverCellular().then(setSyncOverCellularState);
@@ -684,7 +697,31 @@ export function SettingsScreen({ navigation, route }: any) {
                     <SettingRow icon="tv-outline" iconColor={safeIconColor('#a78bfa')} label={t('settings_decoder_mode')} subtitle={t('settings_decoder_mode_sub')} value={decoderValueLabelMap[String(decoderMode)] ?? String(decoderMode)} onPress={() => setPicker('decoder')} />
                     <View style={styles.divider} />
                     <SettingRow icon="scan-outline" iconColor={safeIconColor('#38bdf8')} label={t('settings_render_surface')} subtitle={t('settings_render_surface_sub')} value={surfaceValueLabelMap[String(renderSurface)] ?? String(renderSurface)} onPress={() => setPicker('surface')} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="play-forward-outline" iconColor={safeIconColor('#60a5fa')} label={t('settings_skip_intro')} subtitle={t('settings_skip_intro_sub')} right={<AppleToggle value={skipIntroEnabled} onValueChange={value => { void setSkipIntroEnabled(value); }} onColor={colors.toggleOn} />} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="create-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_intro_contributions')} subtitle={t('settings_intro_contributions_sub')} right={<AppleToggle value={introContributionEnabled} onValueChange={value => { void setIntroContributionEnabled(value); }} onColor={colors.toggleOn} />} />
                   </View>
+                  {introContributionEnabled ? (
+                    <View style={styles.card}>
+                      <View style={{ padding: 18, gap: 10 }}>
+                        <Text style={styles.rowLabel}>{t('settings_introdb_api_key')}</Text>
+                        <Text style={styles.rowSub}>{t('settings_introdb_api_key_sub')}</Text>
+                        <TextInput
+                          value={introDbDraft}
+                          onChangeText={setIntroDbDraft}
+                          placeholder={t('settings_introdb_api_key_placeholder')}
+                          placeholderTextColor={colors.placeholder}
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          style={styles.textInput}
+                        />
+                        <TouchableOpacity style={[styles.actionButton, { backgroundColor: colors.accent, borderWidth: 1, borderColor: resolvedAppearance === 'light' ? 'rgba(17,24,39,0.12)' : 'rgba(255,255,255,0.14)' }]} onPress={() => { void setIntroDbApiKey(introDbDraft.trim()); }} activeOpacity={0.82}>
+                          <Text style={[styles.actionButtonText, { color: colors.buttonText }]}>{t('common_save')}</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  ) : null}
 
                   <Text style={styles.sectionTitle}>{t('settings_subtitles')}</Text>
                   <View style={styles.card}>

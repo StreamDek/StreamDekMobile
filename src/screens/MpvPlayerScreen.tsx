@@ -58,6 +58,10 @@ import {
 } from '../utils/profileStorage';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import { PlaybackLoadingOverlay } from '../components/player/PlaybackLoadingOverlay';
+import { SkipIntroButton } from '../components/player/SkipIntroButton';
+import { IntroContributionSheet } from '../components/player/IntroContributionSheet';
+import { useIntroSegment } from '../hooks/useIntroSegment';
+import { submitIntroSegment } from '../services/introdb/introDbClient';
 
 const MAGIC_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
@@ -295,6 +299,10 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     renderSurface,
     setDecoderMode,
     setRenderSurface,
+    skipIntroEnabled,
+    introContributionEnabled,
+    introDbApiKey,
+    setIntroDbApiKey,
     refreshFromCloud: refreshPlaybackFromCloud,
   } = usePlaybackSettings();
   const {
@@ -505,11 +513,37 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const [resolvedSourceStreams, setResolvedSourceStreams] = useState<AddonStream[]>([]);
   const [showGuestAccountPrompt, setShowGuestAccountPrompt] = useState(false);
   const [showStreamingServerPrompt, setShowStreamingServerPrompt] = useState(false);
+  const [showIntroContributionSheet, setShowIntroContributionSheet] = useState(false);
+  const [showIntroContributionConfirm, setShowIntroContributionConfirm] = useState(false);
+  const [introContributionStartSec, setIntroContributionStartSec] = useState<number | null>(null);
+  const [introContributionEndSec, setIntroContributionEndSec] = useState<number | null>(null);
+  const [introContributionError, setIntroContributionError] = useState<string | null>(null);
+  const [introContributionSuccess, setIntroContributionSuccess] = useState<string | null>(null);
+  const [introContributionSubmitting, setIntroContributionSubmitting] = useState(false);
   const [activeSourceIdentityState, setActiveSourceIdentityState] = useState<string>(() => {
     const routeIdentity = normalizeSourceIdentity(routeActiveSourceIdentity);
     if (routeIdentity) return routeIdentity;
     return normalizeSourceIdentity(routePreferredSourceIdentity);
   });
+  const {
+    introSegment,
+    shouldShowSkipIntro,
+    markSkipCompleted,
+    refresh: refreshIntroSegment,
+  } = useIntroSegment({
+    enabled: skipIntroEnabled,
+    type,
+    imdbId,
+    season,
+    episode,
+    currentTime,
+  });
+  const canContributeIntro = introContributionEnabled
+    && type === 'tv'
+    && typeof imdbId === 'string'
+    && imdbId.trim().length > 0
+    && season != null
+    && episode != null;
 
   const resolvedHeaders = useMemo(
     () => ({
@@ -740,7 +774,11 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     return () => sub.remove();
   }, [pictureInPictureEnabled]);
 
-  const anyPopupOpen = showTrackPicker || showAudioModal || showInfoModal;
+  const anyPopupOpen = showTrackPicker
+    || showAudioModal
+    || showInfoModal
+    || showIntroContributionSheet
+    || showIntroContributionConfirm;
   useEffect(() => {
     if (anyPopupOpen) {
       clearControlsTimer();
@@ -753,6 +791,15 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
       scheduleControlsAutoHide(true);
     }
   }, [anyPopupOpen, clearControlsTimer, controlsOpacity, error, loading, scheduleControlsAutoHide]);
+
+  useEffect(() => {
+    setIntroContributionStartSec(null);
+    setIntroContributionEndSec(null);
+    setIntroContributionError(null);
+    setIntroContributionSuccess(null);
+    setShowIntroContributionSheet(false);
+    setShowIntroContributionConfirm(false);
+  }, [imdbId, season, episode]);
 
   useFocusEffect(
     useCallback(() => {
@@ -1552,6 +1599,98 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     keepControlsAwake();
   };
 
+  const handleSkipIntro = useCallback(() => {
+    if (!introSegment) return;
+    const target = Math.max(introSegment.endSec, currentTime);
+    playerRef.current?.seekTo(target);
+    setCurrentTime(target);
+    markSkipCompleted();
+    keepControlsAwake();
+  }, [currentTime, introSegment, keepControlsAwake, markSkipCompleted, setCurrentTime]);
+
+  const handleMarkIntroStart = useCallback(() => {
+    setIntroContributionStartSec(Math.max(0, currentTime));
+    setIntroContributionError(null);
+    setIntroContributionSuccess(null);
+  }, [currentTime]);
+
+  const handleMarkIntroEnd = useCallback(() => {
+    setIntroContributionEndSec(Math.max(0, currentTime));
+    setIntroContributionError(null);
+    setIntroContributionSuccess(null);
+  }, [currentTime]);
+
+  const handleClearIntroContribution = useCallback(() => {
+    setIntroContributionStartSec(null);
+    setIntroContributionEndSec(null);
+    setIntroContributionError(null);
+    setIntroContributionSuccess(null);
+  }, []);
+
+  const handlePrepareIntroContributionSubmit = useCallback(() => {
+    if (!canContributeIntro) return;
+    if (!introDbApiKey.trim()) {
+      setIntroContributionError(t('skip_intro_validation_api_key'));
+      return;
+    }
+    if (introContributionStartSec == null || introContributionEndSec == null) {
+      setIntroContributionError(t('skip_intro_validation_missing'));
+      return;
+    }
+    if (introContributionStartSec >= introContributionEndSec) {
+      setIntroContributionError(t('skip_intro_validation_order'));
+      return;
+    }
+    setIntroContributionError(null);
+    setShowIntroContributionConfirm(true);
+  }, [
+    canContributeIntro,
+    introContributionEndSec,
+    introContributionStartSec,
+    introDbApiKey,
+    t,
+  ]);
+
+  const handleSubmitIntroContribution = useCallback(async () => {
+    if (!canContributeIntro || season == null || episode == null) return;
+    if (introContributionStartSec == null || introContributionEndSec == null) return;
+
+    setIntroContributionSubmitting(true);
+    setIntroContributionError(null);
+    setIntroContributionSuccess(null);
+    try {
+      await submitIntroSegment({
+        imdbId: imdbId!.trim(),
+        season,
+        episode,
+        startSec: introContributionStartSec,
+        endSec: introContributionEndSec,
+        apiKey: introDbApiKey,
+      });
+      setIntroContributionSuccess(t('skip_intro_submit_success'));
+      setIntroContributionStartSec(null);
+      setIntroContributionEndSec(null);
+      if (skipIntroEnabled) {
+        await refreshIntroSegment();
+      }
+    } catch (nextError) {
+      setIntroContributionError(nextError instanceof Error ? nextError.message : t('common_error'));
+    } finally {
+      setIntroContributionSubmitting(false);
+    }
+  }, [
+    canContributeIntro,
+    episode,
+    imdbId,
+    introContributionEndSec,
+    introContributionStartSec,
+    introDbApiKey,
+    refreshIntroSegment,
+    season,
+    skipIntroEnabled,
+    t,
+  ]);
+
   const getResumePosition = useCallback(() => Math.max(
     0,
     Number.isFinite(playbackPosRef.current) ? playbackPosRef.current : 0,
@@ -1971,6 +2110,14 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
         </View>
       )}
 
+      {!loading && shouldShowSkipIntro && !anyPopupOpen && (
+        <SkipIntroButton
+          label={t('skip_intro_button')}
+          onPress={handleSkipIntro}
+          bottom={controlsVisible ? insets.bottom + 104 : insets.bottom + 18}
+        />
+      )}
+
       {controlsVisible && !loading && (
         <Animated.View
           pointerEvents="box-none"
@@ -2130,6 +2277,21 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
             >
               <Ionicons name="information-circle-outline" size={22} color="#fff" />
             </TouchableOpacity>
+            {canContributeIntro && (
+              <TouchableOpacity
+                style={styles.dockBtn}
+                onPress={() => {
+                  clearControlsTimer();
+                  setShowControls(false);
+                  setIntroContributionError(null);
+                  setIntroContributionSuccess(null);
+                  setShowIntroContributionSheet(true);
+                }}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="create-outline" size={21} color="#fff" />
+              </TouchableOpacity>
+            )}
           </View>
         </Animated.View>
       )}
@@ -2587,6 +2749,35 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
           </View>
         </View>
       </Modal>
+      <IntroContributionSheet
+        visible={showIntroContributionSheet}
+        onClose={() => setShowIntroContributionSheet(false)}
+        startSec={introContributionStartSec}
+        endSec={introContributionEndSec}
+        currentTime={currentTime}
+        apiKey={introDbApiKey}
+        onApiKeyChange={value => { void setIntroDbApiKey(value); }}
+        onMarkStart={handleMarkIntroStart}
+        onMarkEnd={handleMarkIntroEnd}
+        onClear={handleClearIntroContribution}
+        onSubmit={handlePrepareIntroContributionSubmit}
+        submitting={introContributionSubmitting}
+        error={introContributionError}
+        successMessage={introContributionSuccess}
+      />
+      <ConfirmSheet
+        visible={showIntroContributionConfirm}
+        onClose={() => setShowIntroContributionConfirm(false)}
+        icon="create-outline"
+        title={t('skip_intro_confirm_title')}
+        message={`${t('skip_intro_mark_start')}: ${formatTime(introContributionStartSec ?? 0)}\n${t('skip_intro_mark_end')}: ${formatTime(introContributionEndSec ?? 0)}`}
+        confirmLabel={t('skip_intro_submit')}
+        cancelLabel={t('common_cancel')}
+        onConfirm={() => {
+          setShowIntroContributionConfirm(false);
+          void handleSubmitIntroContribution();
+        }}
+      />
       <ConfirmSheet
         visible={showGuestAccountPrompt}
         onClose={() => setShowGuestAccountPrompt(false)}

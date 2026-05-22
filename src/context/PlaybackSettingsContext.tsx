@@ -15,6 +15,12 @@ type PlaybackSettingsValue = {
   setRenderSurface: (value: PlaybackRenderSurface) => Promise<void>;
   preferEmbeddedMpvByDefault: boolean;
   setPreferEmbeddedMpvByDefault: (value: boolean) => Promise<void>;
+  skipIntroEnabled: boolean;
+  setSkipIntroEnabled: (value: boolean) => Promise<void>;
+  introContributionEnabled: boolean;
+  setIntroContributionEnabled: (value: boolean) => Promise<void>;
+  introDbApiKey: string;
+  setIntroDbApiKey: (value: string) => Promise<void>;
   refreshFromCloud: () => Promise<void>;
   isReady: boolean;
 };
@@ -26,6 +32,12 @@ const PlaybackSettingsContext = createContext<PlaybackSettingsValue>({
   setRenderSurface: async () => {},
   preferEmbeddedMpvByDefault: true,
   setPreferEmbeddedMpvByDefault: async () => {},
+  skipIntroEnabled: true,
+  setSkipIntroEnabled: async () => {},
+  introContributionEnabled: false,
+  setIntroContributionEnabled: async () => {},
+  introDbApiKey: '',
+  setIntroDbApiKey: async () => {},
   refreshFromCloud: async () => {},
   isReady: false,
 });
@@ -35,11 +47,17 @@ export const PlaybackSettingsProvider = ({ children }: { children: React.ReactNo
   const [decoderMode, setDecoderModeState] = useState<PlaybackDecoderMode>('auto');
   const [renderSurface, setRenderSurfaceState] = useState<PlaybackRenderSurface>('standard');
   const [preferEmbeddedMpvByDefault, setPreferEmbeddedMpvByDefaultState] = useState(true);
+  const [skipIntroEnabled, setSkipIntroEnabledState] = useState(true);
+  const [introContributionEnabled, setIntroContributionEnabledState] = useState(false);
+  const [introDbApiKey, setIntroDbApiKeyState] = useState('');
   const [isReady, setIsReady] = useState(false);
   const settingsRef = useRef({
     decoderMode: 'auto' as PlaybackDecoderMode,
     renderSurface: 'standard' as PlaybackRenderSurface,
     preferEmbeddedMpvByDefault: true,
+    skipIntroEnabled: true,
+    introContributionEnabled: false,
+    introDbApiKey: '',
   });
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasLocalOverrideDuringHydrationRef = useRef(false);
@@ -69,21 +87,39 @@ export const PlaybackSettingsProvider = ({ children }: { children: React.ReactNo
     const nextPreferEmbeddedMpvByDefault = typeof remotePlayback.preferEmbeddedMpvByDefault === 'boolean'
       ? remotePlayback.preferEmbeddedMpvByDefault
       : settingsRef.current.preferEmbeddedMpvByDefault;
+    const nextSkipIntroEnabled = typeof remotePlayback.skipIntroEnabled === 'boolean'
+      ? remotePlayback.skipIntroEnabled
+      : settingsRef.current.skipIntroEnabled;
+    const nextIntroContributionEnabled = typeof remotePlayback.introContributionEnabled === 'boolean'
+      ? remotePlayback.introContributionEnabled
+      : settingsRef.current.introContributionEnabled;
+    const nextIntroDbApiKey = typeof remotePlayback.introDbApiKey === 'string'
+      ? remotePlayback.introDbApiKey
+      : settingsRef.current.introDbApiKey;
 
     settingsRef.current = {
       decoderMode: nextDecoderMode,
       renderSurface: nextRenderSurface,
       preferEmbeddedMpvByDefault: nextPreferEmbeddedMpvByDefault,
+      skipIntroEnabled: nextSkipIntroEnabled,
+      introContributionEnabled: nextIntroContributionEnabled,
+      introDbApiKey: nextIntroDbApiKey,
     };
 
     setDecoderModeState(nextDecoderMode);
     setRenderSurfaceState(nextRenderSurface);
     setPreferEmbeddedMpvByDefaultState(nextPreferEmbeddedMpvByDefault);
+    setSkipIntroEnabledState(nextSkipIntroEnabled);
+    setIntroContributionEnabledState(nextIntroContributionEnabled);
+    setIntroDbApiKeyState(nextIntroDbApiKey);
 
     await Storage.setItem(PLAYBACK_SETTINGS_KEY, JSON.stringify({
       decoderMode: nextDecoderMode,
       renderSurface: nextRenderSurface,
       preferEmbeddedMpvByDefault: nextPreferEmbeddedMpvByDefault,
+      skipIntroEnabled: nextSkipIntroEnabled,
+      introContributionEnabled: nextIntroContributionEnabled,
+      introDbApiKey: nextIntroDbApiKey,
     }));
   }, [isReady]);
 
@@ -110,6 +146,18 @@ export const PlaybackSettingsProvider = ({ children }: { children: React.ReactNo
             if (typeof parsed?.preferEmbeddedMpvByDefault === 'boolean') {
               setPreferEmbeddedMpvByDefaultState(parsed.preferEmbeddedMpvByDefault);
               settingsRef.current.preferEmbeddedMpvByDefault = parsed.preferEmbeddedMpvByDefault;
+            }
+            if (typeof parsed?.skipIntroEnabled === 'boolean') {
+              setSkipIntroEnabledState(parsed.skipIntroEnabled);
+              settingsRef.current.skipIntroEnabled = parsed.skipIntroEnabled;
+            }
+            if (typeof parsed?.introContributionEnabled === 'boolean') {
+              setIntroContributionEnabledState(parsed.introContributionEnabled);
+              settingsRef.current.introContributionEnabled = parsed.introContributionEnabled;
+            }
+            if (typeof parsed?.introDbApiKey === 'string') {
+              setIntroDbApiKeyState(parsed.introDbApiKey);
+              settingsRef.current.introDbApiKey = parsed.introDbApiKey;
             }
           } catch {
             // Ignore malformed persisted settings.
@@ -139,6 +187,9 @@ export const PlaybackSettingsProvider = ({ children }: { children: React.ReactNo
           decoderMode: snapshot.decoderMode,
           renderSurface: snapshot.renderSurface,
           preferEmbeddedMpvByDefault: snapshot.preferEmbeddedMpvByDefault,
+          skipIntroEnabled: snapshot.skipIntroEnabled,
+          introContributionEnabled: snapshot.introContributionEnabled,
+          introDbApiKey: snapshot.introDbApiKey,
         },
       });
       persistTimerRef.current = null;
@@ -163,6 +214,24 @@ export const PlaybackSettingsProvider = ({ children }: { children: React.ReactNo
     persist({ ...settingsRef.current, preferEmbeddedMpvByDefault: value });
   }, [isReady, persist]);
 
+  const setSkipIntroEnabled = useCallback(async (value: boolean) => {
+    if (!isReady) hasLocalOverrideDuringHydrationRef.current = true;
+    setSkipIntroEnabledState(value);
+    persist({ ...settingsRef.current, skipIntroEnabled: value });
+  }, [isReady, persist]);
+
+  const setIntroContributionEnabled = useCallback(async (value: boolean) => {
+    if (!isReady) hasLocalOverrideDuringHydrationRef.current = true;
+    setIntroContributionEnabledState(value);
+    persist({ ...settingsRef.current, introContributionEnabled: value });
+  }, [isReady, persist]);
+
+  const setIntroDbApiKey = useCallback(async (value: string) => {
+    if (!isReady) hasLocalOverrideDuringHydrationRef.current = true;
+    setIntroDbApiKeyState(value);
+    persist({ ...settingsRef.current, introDbApiKey: value });
+  }, [isReady, persist]);
+
   const refreshFromCloud = useCallback(async () => {
     const remotePreferences = await fetchAccountPreferences(user);
     await applyRemotePlayback(remotePreferences);
@@ -176,6 +245,12 @@ export const PlaybackSettingsProvider = ({ children }: { children: React.ReactNo
       setRenderSurface,
       preferEmbeddedMpvByDefault,
       setPreferEmbeddedMpvByDefault,
+      skipIntroEnabled,
+      setSkipIntroEnabled,
+      introContributionEnabled,
+      setIntroContributionEnabled,
+      introDbApiKey,
+      setIntroDbApiKey,
       refreshFromCloud,
       isReady,
     }}>

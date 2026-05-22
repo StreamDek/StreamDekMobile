@@ -56,6 +56,8 @@ import { useWatchProgress } from '../context/WatchProgressContext';
 import { useAppLifecycle } from '../context/AppLifecycleContext';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import { PlaybackLoadingOverlay } from '../components/player/PlaybackLoadingOverlay';
+import { SkipIntroButton } from '../components/player/SkipIntroButton';
+import { IntroContributionSheet } from '../components/player/IntroContributionSheet';
 import {
     getProfileStorageOwnerId,
     progressFileStorageKey,
@@ -71,6 +73,8 @@ import { createPlaybackSessionStore, usePlaybackSessionSelector } from '../servi
 import { parseStream } from '../utils/streamParser';
 import { getMpvNativeViewAvailabilityDiagnostics, isMpvNativeViewAvailable } from '../components/MpvPlayer';
 import { isExpoGoRuntime } from '../utils/runtime';
+import { useIntroSegment } from '../hooks/useIntroSegment';
+import { submitIntroSegment } from '../services/introdb/introDbClient';
 
 // ── Constants & Helpers ──────────────────────────────────────────────────────
 
@@ -539,6 +543,10 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         renderSurface,
         setDecoderMode,
         setRenderSurface,
+        skipIntroEnabled,
+        introContributionEnabled,
+        introDbApiKey,
+        setIntroDbApiKey,
     } = usePlaybackSettings();
     const insets = useSafeAreaInsets();
     const { pictureInPictureEnabled } = useDisplaySettings();
@@ -567,12 +575,20 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         openSourcesOnStart: paramOpenSourcesOnStart,
         preferredSourceIndex: paramPreferredSourceIndex,
         preferredSourceIdentity: paramPreferredSourceIdentity,
+        season: routeSeason,
+        episode: routeEpisode,
     } = route.params ?? {};
     const loadingArtworkUri = paramBackdrop ?? paramPoster ?? null;
     const titleLogoUri = typeof paramTitleLogo === 'string' && paramTitleLogo.length > 0
         ? paramTitleLogo
         : null;
     const forceStartFromBeginning = Boolean(paramForceStartFromBeginning);
+    const season = Number.isFinite(Number(routeSeason)) && Number(routeSeason) > 0
+        ? Math.trunc(Number(routeSeason))
+        : null;
+    const episode = Number.isFinite(Number(routeEpisode)) && Number(routeEpisode) > 0
+        ? Math.trunc(Number(routeEpisode))
+        : null;
 
     const { scrobble, isConnected } = useTrakt();
     const { user } = useAuth();
@@ -628,6 +644,13 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const [isHandingOffToMpv, setIsHandingOffToMpv] = useState(false);
     const [showGuestAccountPrompt, setShowGuestAccountPrompt] = useState(false);
     const [showStreamingServerPrompt, setShowStreamingServerPrompt] = useState(false);
+    const [showIntroContributionSheet, setShowIntroContributionSheet] = useState(false);
+    const [showIntroContributionConfirm, setShowIntroContributionConfirm] = useState(false);
+    const [introContributionStartSec, setIntroContributionStartSec] = useState<number | null>(null);
+    const [introContributionEndSec, setIntroContributionEndSec] = useState<number | null>(null);
+    const [introContributionError, setIntroContributionError] = useState<string | null>(null);
+    const [introContributionSuccess, setIntroContributionSuccess] = useState<string | null>(null);
+    const [introContributionSubmitting, setIntroContributionSubmitting] = useState(false);
     const isPausedPlayback = shouldUseEmbeddedVideoPlayer && !loading && !isPlaying && !isHandingOffToMpv;
     const castNativeButtonAvailable = !!UIManager.getViewManagerConfig?.('RNGoogleCastButton');
     const drawerTranslateX = useRef(new Animated.Value(360)).current;
@@ -723,6 +746,15 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     }, [player]);
 
     useEffect(() => {
+        setIntroContributionStartSec(null);
+        setIntroContributionEndSec(null);
+        setIntroContributionError(null);
+        setIntroContributionSuccess(null);
+        setShowIntroContributionSheet(false);
+        setShowIntroContributionConfirm(false);
+    }, [imdbId, season, episode]);
+
+    useEffect(() => {
         if (user || guestPromptHandledRef.current || loading || isError || currentTime <= 0) {
             return;
         }
@@ -746,6 +778,26 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     const didAutoOpenSourcesRef = useRef(false);
     const skipPortraitOnUnmountRef = useRef(false);
 
+    const {
+        introSegment,
+        shouldShowSkipIntro,
+        markSkipCompleted,
+        refresh: refreshIntroSegment,
+    } = useIntroSegment({
+        enabled: skipIntroEnabled,
+        type,
+        imdbId,
+        season,
+        episode,
+        currentTime,
+    });
+    const canContributeIntro = introContributionEnabled
+        && type === 'tv'
+        && typeof imdbId === 'string'
+        && imdbId.trim().length > 0
+        && season != null
+        && episode != null;
+
     const formatTime = (seconds: number) => {
         const h = Math.floor(seconds / 3600);
         const m = Math.floor((seconds % 3600) / 60);
@@ -753,6 +805,99 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
         return `${m}:${s.toString().padStart(2, '0')}`;
     };
+
+    const handleSkipIntro = useCallback(() => {
+        if (!introSegment) return;
+        const target = Math.max(introSegment.endSec, currentTime);
+        player.currentTime = target;
+        setCurrentTime(target);
+        markSkipCompleted();
+        if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+        setShowControls(true);
+    }, [currentTime, introSegment, markSkipCompleted, player, setCurrentTime]);
+
+    const handleMarkIntroStart = useCallback(() => {
+        setIntroContributionStartSec(Math.max(0, currentTime));
+        setIntroContributionError(null);
+        setIntroContributionSuccess(null);
+    }, [currentTime]);
+
+    const handleMarkIntroEnd = useCallback(() => {
+        setIntroContributionEndSec(Math.max(0, currentTime));
+        setIntroContributionError(null);
+        setIntroContributionSuccess(null);
+    }, [currentTime]);
+
+    const handleClearIntroContribution = useCallback(() => {
+        setIntroContributionStartSec(null);
+        setIntroContributionEndSec(null);
+        setIntroContributionError(null);
+        setIntroContributionSuccess(null);
+    }, []);
+
+    const handlePrepareIntroContributionSubmit = useCallback(() => {
+        if (!canContributeIntro) return;
+        if (!introDbApiKey.trim()) {
+            setIntroContributionError(t('skip_intro_validation_api_key'));
+            return;
+        }
+        if (introContributionStartSec == null || introContributionEndSec == null) {
+            setIntroContributionError(t('skip_intro_validation_missing'));
+            return;
+        }
+        if (introContributionStartSec >= introContributionEndSec) {
+            setIntroContributionError(t('skip_intro_validation_order'));
+            return;
+        }
+        setIntroContributionError(null);
+        setShowIntroContributionConfirm(true);
+    }, [
+        canContributeIntro,
+        introContributionEndSec,
+        introContributionStartSec,
+        introDbApiKey,
+        t,
+    ]);
+
+    const handleSubmitIntroContribution = useCallback(async () => {
+        if (!canContributeIntro || season == null || episode == null) return;
+        if (introContributionStartSec == null || introContributionEndSec == null) return;
+
+        setIntroContributionSubmitting(true);
+        setIntroContributionError(null);
+        setIntroContributionSuccess(null);
+        try {
+            await submitIntroSegment({
+                imdbId: imdbId!.trim(),
+                season,
+                episode,
+                startSec: introContributionStartSec,
+                endSec: introContributionEndSec,
+                apiKey: introDbApiKey,
+            });
+            setIntroContributionSuccess(t('skip_intro_submit_success'));
+            setIntroContributionStartSec(null);
+            setIntroContributionEndSec(null);
+            if (skipIntroEnabled) {
+                await refreshIntroSegment();
+            }
+        } catch (nextError) {
+            setIntroContributionError(nextError instanceof Error ? nextError.message : t('common_error'));
+        } finally {
+            setIntroContributionSubmitting(false);
+        }
+    }, [
+        canContributeIntro,
+        episode,
+        imdbId,
+        introContributionEndSec,
+        introContributionStartSec,
+        introDbApiKey,
+        refreshIntroSegment,
+        season,
+        skipIntroEnabled,
+        t,
+    ]);
 
     const showControlsAnimated = useCallback(() => {
         if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
@@ -2110,6 +2255,16 @@ export const PlayerScreen = ({ route, navigation }: any) => {
             diagnostics: 'Playback Diagnostics',
         } satisfies Record<PlayerDrawerSection, string>
     )[activeDrawerSection];
+    const introOverlayBlocked = showSettings
+        || showSources
+        || showPlayerDrawer
+        || showStreamingServerPrompt
+        || showGuestAccountPrompt
+        || !!externalPlayerErrorMessage
+        || !!castErrorMessage
+        || showCompatibilitySuggestion
+        || showIntroContributionSheet
+        || showIntroContributionConfirm;
 
     useEffect(() => {
         if (!castNativeModuleAvailable) {
@@ -2867,6 +3022,35 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                     navigation.navigate('Auth');
                 }}
             />
+            <IntroContributionSheet
+                visible={showIntroContributionSheet}
+                onClose={() => setShowIntroContributionSheet(false)}
+                startSec={introContributionStartSec}
+                endSec={introContributionEndSec}
+                currentTime={currentTime}
+                apiKey={introDbApiKey}
+                onApiKeyChange={value => { void setIntroDbApiKey(value); }}
+                onMarkStart={handleMarkIntroStart}
+                onMarkEnd={handleMarkIntroEnd}
+                onClear={handleClearIntroContribution}
+                onSubmit={handlePrepareIntroContributionSubmit}
+                submitting={introContributionSubmitting}
+                error={introContributionError}
+                successMessage={introContributionSuccess}
+            />
+            <ConfirmSheet
+                visible={showIntroContributionConfirm}
+                onClose={() => setShowIntroContributionConfirm(false)}
+                icon="create-outline"
+                title={t('skip_intro_confirm_title')}
+                message={`${t('skip_intro_mark_start')}: ${formatTime(introContributionStartSec ?? 0)}\n${t('skip_intro_mark_end')}: ${formatTime(introContributionEndSec ?? 0)}`}
+                confirmLabel={t('skip_intro_submit')}
+                cancelLabel={t('common_cancel')}
+                onConfirm={() => {
+                    setShowIntroContributionConfirm(false);
+                    void handleSubmitIntroContribution();
+                }}
+            />
             {loading && (
                 <PlaybackLoadingOverlay
                     visible={loading}
@@ -2925,6 +3109,13 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                 <View pointerEvents="none" style={styles.hiddenCastButtonWrap}>
                     <CastButton style={styles.hiddenCastButton} />
                 </View>
+            )}
+            {shouldUseEmbeddedVideoPlayer && !loading && shouldShowSkipIntro && !introOverlayBlocked && (
+                <SkipIntroButton
+                    label={t('skip_intro_button')}
+                    onPress={handleSkipIntro}
+                    bottom={showControls ? insets.bottom + 122 : insets.bottom + 20}
+                />
             )}
             {shouldUseEmbeddedVideoPlayer && showControls && !loading && (
                 <Animated.View style={[styles.centerContainer, { opacity: controlsOpacity }]} pointerEvents="box-none">
@@ -3028,6 +3219,26 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                                     Cast
                                 </Text>
                             </TouchableOpacity>
+                            {canContributeIntro && (
+                                <TouchableOpacity
+                                    style={styles.quickMenuButton}
+                                    onPress={() => {
+                                        setIntroContributionError(null);
+                                        setIntroContributionSuccess(null);
+                                        setShowIntroContributionSheet(true);
+                                    }}
+                                    hitSlop={{ top: 15, bottom: 15, left: 10, right: 10 }}
+                                >
+                                    <Ionicons
+                                        name="create-outline"
+                                        size={14}
+                                        color="rgba(255,255,255,0.78)"
+                                    />
+                                    <Text style={styles.quickMenuLabel}>
+                                        {t('skip_intro_contribute')}
+                                    </Text>
+                                </TouchableOpacity>
+                            )}
                             {playerMenuItems
                                 .filter(item => item.enabled !== false)
                                 .map(item => {

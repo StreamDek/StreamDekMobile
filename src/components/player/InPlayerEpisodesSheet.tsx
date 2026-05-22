@@ -216,7 +216,6 @@ export function InPlayerEpisodesSheet({
             const isPlaying = selectedSeason === currentSeason && ep.episode_number === currentEpisode;
             const isWatched = !isPlaying && showIdNum > 0 && isEpisodeWatched(showIdNum, selectedSeason, ep.episode_number);
             const isUnreleased = !ep.air_date || ep.air_date > today;
-            const isUnwatched = !isWatched && !isPlaying && !isUnreleased;
             const code = `S${String(selectedSeason).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')}`;
             const unreleasedLabel = ep.air_date
               ? `Airs ${new Date(ep.air_date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
@@ -239,9 +238,8 @@ export function InPlayerEpisodesSheet({
                   {ep.still ? (
                     <Image
                       source={{ uri: ep.still }}
-                      style={[styles.thumb, isWatched && styles.thumbWatched]}
+                      style={[styles.thumb, isWatched && styles.thumbWatched, isUnreleased && styles.thumbUnreleased]}
                       contentFit="cover"
-                      blurRadius={isUnreleased ? 24 : isUnwatched ? 12 : 0}
                     />
                   ) : (
                     <View style={[styles.thumb, styles.thumbFallback]}>
@@ -401,6 +399,9 @@ const styles = StyleSheet.create({
   },
   thumbWatched: {
     opacity: 0.55,
+  },
+  thumbUnreleased: {
+    opacity: 0.35,
   },
   watchedOverlay: {
     position: 'absolute',

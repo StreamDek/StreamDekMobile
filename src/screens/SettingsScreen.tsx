@@ -12,6 +12,7 @@ import {
   ActivityIndicator,
   Dimensions,
 } from 'react-native';
+import Slider from '@react-native-community/slider';
 import DraggableFlatList, { RenderItemParams } from 'react-native-draggable-flatlist';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -144,6 +145,43 @@ function makeStyles(c: ThemeColors) {
       color: c.textPrimary,
       fontSize: 13,
       fontFamily: 'monospace',
+    },
+    segmentedControl: {
+      flexDirection: 'row',
+      gap: 10,
+    },
+    segmentedButton: {
+      flex: 1,
+      borderWidth: 1,
+      borderRadius: 14,
+      paddingVertical: 12,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    segmentedButtonText: {
+      fontSize: 13,
+      fontWeight: '800',
+    },
+    sliderCard: {
+      borderWidth: 1,
+      borderRadius: 16,
+      paddingHorizontal: 14,
+      paddingTop: 14,
+      paddingBottom: 10,
+      gap: 8,
+    },
+    sliderHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+    },
+    sliderValueLabel: {
+      fontSize: 14,
+      fontWeight: '800',
+    },
+    sliderValueSub: {
+      fontSize: 12,
+      fontWeight: '600',
     },
     layoutRow: {
       flexDirection: 'row',
@@ -312,12 +350,22 @@ export function SettingsScreen({ navigation, route }: any) {
     setDecoderMode,
     renderSurface,
     setRenderSurface,
-    skipIntroEnabled,
-    setSkipIntroEnabled,
+    skipSegmentsEnabled,
+    setSkipSegmentsEnabled,
     introContributionEnabled,
     setIntroContributionEnabled,
     introDbApiKey,
     setIntroDbApiKey,
+    autoPlayNextEpisodeEnabled,
+    setAutoPlayNextEpisodeEnabled,
+    preferBingeGroupNextEpisode,
+    setPreferBingeGroupNextEpisode,
+    nextEpisodeThresholdMode,
+    setNextEpisodeThresholdMode,
+    nextEpisodeThresholdPercent,
+    setNextEpisodeThresholdPercent,
+    nextEpisodeThresholdMinutes,
+    setNextEpisodeThresholdMinutes,
   } = usePlaybackSettings();
   const { autoLoadEnabled, setAutoLoadEnabled, preferHI, setPreferHI, preferForced, setPreferForced } = useSubtitles();
   const { colors } = theme;
@@ -698,10 +746,82 @@ export function SettingsScreen({ navigation, route }: any) {
                     <View style={styles.divider} />
                     <SettingRow icon="scan-outline" iconColor={safeIconColor('#38bdf8')} label={t('settings_render_surface')} subtitle={t('settings_render_surface_sub')} value={surfaceValueLabelMap[String(renderSurface)] ?? String(renderSurface)} onPress={() => setPicker('surface')} />
                     <View style={styles.divider} />
-                    <SettingRow icon="play-forward-outline" iconColor={safeIconColor('#60a5fa')} label={t('settings_skip_intro')} subtitle={t('settings_skip_intro_sub')} right={<AppleToggle value={skipIntroEnabled} onValueChange={value => { void setSkipIntroEnabled(value); }} onColor={colors.toggleOn} />} />
+                    <SettingRow icon="play-forward-outline" iconColor={safeIconColor('#60a5fa')} label={t('settings_skip_intro')} subtitle={t('settings_skip_intro_sub')} right={<AppleToggle value={skipSegmentsEnabled} onValueChange={value => { void setSkipSegmentsEnabled(value); }} onColor={colors.toggleOn} />} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="play-skip-forward-outline" iconColor={safeIconColor('#22c55e')} label={t('settings_auto_play_next_episode')} subtitle={t('settings_auto_play_next_episode_sub')} right={<AppleToggle value={autoPlayNextEpisodeEnabled} onValueChange={value => { void setAutoPlayNextEpisodeEnabled(value); }} onColor={colors.toggleOn} />} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="layers-outline" iconColor={safeIconColor('#a78bfa')} label={t('settings_prefer_binge_group')} subtitle={t('settings_prefer_binge_group_sub')} right={<AppleToggle value={preferBingeGroupNextEpisode} onValueChange={value => { void setPreferBingeGroupNextEpisode(value); }} onColor={colors.toggleOn} />} />
                     <View style={styles.divider} />
                     <SettingRow icon="create-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_intro_contributions')} subtitle={t('settings_intro_contributions_sub')} right={<AppleToggle value={introContributionEnabled} onValueChange={value => { void setIntroContributionEnabled(value); }} onColor={colors.toggleOn} />} />
                   </View>
+                  {skipSegmentsEnabled ? (
+                    <View style={styles.card}>
+                      <View style={{ padding: 18, gap: 14 }}>
+                        <Text style={styles.rowLabel}>{t('settings_next_episode_threshold')}</Text>
+                        <Text style={styles.rowSub}>{t('settings_next_episode_threshold_sub')}</Text>
+                        <View style={styles.segmentedControl}>
+                          <TouchableOpacity
+                            activeOpacity={0.85}
+                            onPress={() => { void setNextEpisodeThresholdMode('percent'); }}
+                            style={[
+                              styles.segmentedButton,
+                              {
+                                backgroundColor: nextEpisodeThresholdMode === 'percent' ? colors.accent : colors.inputBg,
+                                borderColor: nextEpisodeThresholdMode === 'percent' ? colors.accent : colors.border,
+                              },
+                            ]}
+                          >
+                            <Text style={[styles.segmentedButtonText, { color: nextEpisodeThresholdMode === 'percent' ? colors.buttonText : colors.textPrimary }]}>
+                              {t('settings_threshold_percent')}
+                            </Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            activeOpacity={0.85}
+                            onPress={() => { void setNextEpisodeThresholdMode('minutes'); }}
+                            style={[
+                              styles.segmentedButton,
+                              {
+                                backgroundColor: nextEpisodeThresholdMode === 'minutes' ? colors.accent : colors.inputBg,
+                                borderColor: nextEpisodeThresholdMode === 'minutes' ? colors.accent : colors.border,
+                              },
+                            ]}
+                          >
+                            <Text style={[styles.segmentedButtonText, { color: nextEpisodeThresholdMode === 'minutes' ? colors.buttonText : colors.textPrimary }]}>
+                              {t('settings_threshold_minutes')}
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                        <View style={[styles.sliderCard, { backgroundColor: colors.inputBg, borderColor: colors.border }]}>
+                          <View style={styles.sliderHeader}>
+                            <Text style={[styles.sliderValueLabel, { color: colors.textPrimary }]}>
+                              {nextEpisodeThresholdMode === 'percent'
+                                ? t('settings_threshold_percent_value', { value: nextEpisodeThresholdPercent })
+                                : t('settings_threshold_minutes_value', { value: nextEpisodeThresholdMinutes })}
+                            </Text>
+                            <Text style={[styles.sliderValueSub, { color: colors.textSecondary }]}>
+                              {t('settings_drag_to_adjust')}
+                            </Text>
+                          </View>
+                          <Slider
+                            minimumValue={nextEpisodeThresholdMode === 'percent' ? 50 : 1}
+                            maximumValue={nextEpisodeThresholdMode === 'percent' ? 99 : 15}
+                            step={1}
+                            value={nextEpisodeThresholdMode === 'percent' ? nextEpisodeThresholdPercent : nextEpisodeThresholdMinutes}
+                            minimumTrackTintColor={colors.accent}
+                            maximumTrackTintColor={colors.border}
+                            thumbTintColor={colors.accent}
+                            onSlidingComplete={value => {
+                              if (nextEpisodeThresholdMode === 'percent') {
+                                void setNextEpisodeThresholdPercent(value);
+                                return;
+                              }
+                              void setNextEpisodeThresholdMinutes(value);
+                            }}
+                          />
+                        </View>
+                      </View>
+                    </View>
+                  ) : null}
                   {introContributionEnabled ? (
                     <View style={styles.card}>
                       <View style={{ padding: 18, gap: 10 }}>

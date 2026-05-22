@@ -323,47 +323,82 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
     const enabledAddons = addons
       .filter(a => a.enabled)
       .sort((a, b) => a.position - b.position);
+    const ultraActive = ultraEntitled && ultraBoostEnabled;
     const enabledAddonKey = enabledAddons.map(a => `${a.id}:${a.position}`).join(',');
-    const ultraKey = ultraEntitled && ultraBoostEnabled ? 'ultra-on' : 'ultra-off';
-    const cacheKey = `${type}:${videoId}:${enabledAddonKey}:${ultraKey}`;
-    const cached = streamCache.current.get(cacheKey);
+    const cacheKey = `${type}:${videoId}:${enabledAddonKey}:${ultraActive ? 'ultra-on' : 'ultra-off'}`;
 
+    const cached = streamCache.current.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
       onUpdate(cached.streams, 0);
       return;
     }
 
-    if (enabledAddons.length === 0 && !(ultraEntitled && ultraBoostEnabled)) {
+    const totalSources = enabledAddons.length + (ultraActive ? 1 : 0);
+    if (totalSources === 0) {
       onUpdate([], 0);
       return;
     }
 
-    onUpdate([], 1);
+    onUpdate([], totalSources);
 
-    let accumulated: AddonStream[] = [];
-    try {
-      const res = await fetch(
-        `${API_BASE}/addons/streams/${type}/${encodeURIComponent(videoId)}`,
-        { headers: await buildAddonHeaders({ includeContentType: false }), signal },
-      );
-      if (res.ok) {
-        const data = await res.json();
-        accumulated = data.streams ?? [];
+    const accumulated: AddonStream[] = [];
+    let pending = totalSources;
+    const headers = await buildAddonHeaders({ includeContentType: false });
+
+    // Called by each source (addon or ultra) when it settles.
+    // Delivers partial results immediately so the UI populates on first response.
+    const settle = () => {
+      if (signal?.aborted) return;
+      pending--;
+      onUpdate([...accumulated], pending);
+      if (pending === 0 && accumulated.length > 0) {
+        streamCache.current.set(cacheKey, {
+          streams: [...accumulated],
+          expiresAt: Date.now() + CACHE_TTL,
+        });
       }
-    } catch (e: any) {
-      if (e?.name !== 'AbortError') {
-        console.warn('[AddonContext] Aggregate stream fetch failed:', e?.message);
+    };
+
+    // One fetch per enabled addon — fires in parallel, updates on each response
+    const addonFetches = enabledAddons.map(async (addon) => {
+      try {
+        const res = await fetch(
+          `${API_BASE}/addons/streams/single/${encodeURIComponent(addon.id)}/${type}/${encodeURIComponent(videoId)}`,
+          { headers, signal },
+        );
+        if (res.ok && !signal?.aborted) {
+          const data = await res.json();
+          accumulated.push(...(data?.streams ?? []));
+        }
+      } catch (e: any) {
+        if (e?.name !== 'AbortError') {
+          console.warn(`[AddonContext] Addon ${addon.id} stream fetch failed:`, e?.message);
+        }
       }
-    }
+      settle();
+    });
 
-    onUpdate([...accumulated], 0);
+    const ultraFetch = ultraActive
+      ? (async () => {
+          try {
+            const res = await fetch(
+              `${API_BASE}/addons/ultra/streams/${type}/${encodeURIComponent(videoId)}`,
+              { headers, signal },
+            );
+            if (res.ok && !signal?.aborted) {
+              const data = await res.json();
+              accumulated.push(...(data?.streams ?? []));
+            }
+          } catch (e: any) {
+            if (e?.name !== 'AbortError') {
+              console.warn('[AddonContext] Ultra stream fetch failed:', e?.message);
+            }
+          }
+          settle();
+        })()
+      : Promise.resolve();
 
-    if (!signal?.aborted && accumulated.length > 0) {
-      streamCache.current.set(cacheKey, {
-        streams: accumulated,
-        expiresAt: Date.now() + CACHE_TTL,
-      });
-    }
+    await Promise.allSettled([...addonFetches, ultraFetch]);
   }, [addons, buildAddonHeaders, ultraBoostEnabled, ultraEntitled]);
 
   return (

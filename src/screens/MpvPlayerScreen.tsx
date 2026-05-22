@@ -60,7 +60,10 @@ import { ConfirmSheet } from '../components/ConfirmSheet';
 import { PlaybackLoadingOverlay } from '../components/player/PlaybackLoadingOverlay';
 import { SkipIntroButton } from '../components/player/SkipIntroButton';
 import { IntroContributionSheet } from '../components/player/IntroContributionSheet';
-import { useIntroSegment } from '../hooks/useIntroSegment';
+import { NextEpisodeStreamsSheet } from '../components/player/NextEpisodeStreamsSheet';
+import { InPlayerSourcesSheet } from '../components/player/InPlayerSourcesSheet';
+import { InPlayerEpisodesSheet } from '../components/player/InPlayerEpisodesSheet';
+import { useSkipSegments } from '../hooks/useSkipSegments';
 import { submitIntroSegment } from '../services/introdb/introDbClient';
 
 const MAGIC_HEADERS = {
@@ -299,10 +302,15 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     renderSurface,
     setDecoderMode,
     setRenderSurface,
-    skipIntroEnabled,
+    skipSegmentsEnabled,
     introContributionEnabled,
     introDbApiKey,
     setIntroDbApiKey,
+    autoPlayNextEpisodeEnabled,
+    preferBingeGroupNextEpisode,
+    nextEpisodeThresholdMode,
+    nextEpisodeThresholdPercent,
+    nextEpisodeThresholdMinutes,
     refreshFromCloud: refreshPlaybackFromCloud,
   } = usePlaybackSettings();
   const {
@@ -513,6 +521,9 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const [resolvedSourceStreams, setResolvedSourceStreams] = useState<AddonStream[]>([]);
   const [showGuestAccountPrompt, setShowGuestAccountPrompt] = useState(false);
   const [showStreamingServerPrompt, setShowStreamingServerPrompt] = useState(false);
+  const [showNextEpisodeSheet, setShowNextEpisodeSheet] = useState(false);
+  const [showSourcesModal, setShowSourcesModal] = useState(false);
+  const [showEpisodesSheet, setShowEpisodesSheet] = useState(false);
   const [showIntroContributionSheet, setShowIntroContributionSheet] = useState(false);
   const [showIntroContributionConfirm, setShowIntroContributionConfirm] = useState(false);
   const [introContributionStartSec, setIntroContributionStartSec] = useState<number | null>(null);
@@ -526,17 +537,25 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     return normalizeSourceIdentity(routePreferredSourceIdentity);
   });
   const {
-    introSegment,
-    shouldShowSkipIntro,
-    markSkipCompleted,
-    refresh: refreshIntroSegment,
-  } = useIntroSegment({
-    enabled: skipIntroEnabled,
+    activeAction,
+    hasImmediateAction,
+    refresh: refreshSegments,
+    markActionHandled,
+  } = useSkipSegments({
+    enabled: skipSegmentsEnabled,
     type,
     imdbId,
+    showId: movieId,
     season,
     episode,
     currentTime,
+    duration,
+    title,
+    backdrop: typeof backdrop === 'string' ? backdrop : null,
+    poster: typeof poster === 'string' ? poster : null,
+    nextEpisodeThresholdMode,
+    nextEpisodeThresholdPercent,
+    nextEpisodeThresholdMinutes,
   });
   const canContributeIntro = introContributionEnabled
     && type === 'tv'
@@ -626,6 +645,10 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     if (activeSourceIdentityState) return activeSourceIdentityState;
     return normalizeSourceIdentity(routeActiveSourceIdentity);
   }, [activeSourceIdentityState, routeActiveSourceIdentity]);
+  const currentActiveStream = useMemo(() => {
+    const candidates = resolvedSourceStreams.length > 0 ? resolvedSourceStreams : routeSourceStreamsList;
+    return candidates.find(stream => streamIdentityKey(stream) === activeSourceIdentity) ?? null;
+  }, [activeSourceIdentity, resolvedSourceStreams, routeSourceStreamsList]);
 
   const persistRememberedSource = useCallback(async () => {
     if (rememberedSourceSavedRef.current) return;
@@ -777,6 +800,8 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const anyPopupOpen = showTrackPicker
     || showAudioModal
     || showInfoModal
+    || showSourcesModal
+    || showEpisodesSheet
     || showIntroContributionSheet
     || showIntroContributionConfirm;
   useEffect(() => {
@@ -800,6 +825,22 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     setShowIntroContributionSheet(false);
     setShowIntroContributionConfirm(false);
   }, [imdbId, season, episode]);
+
+  // Keep status bar hidden for the lifetime of this screen. React Native's Modal
+  // component resets Android's window flags when it closes, so we must re-apply
+  // whenever any popup modal is dismissed and also whenever the screen gains focus.
+  useFocusEffect(
+    useCallback(() => {
+      StatusBar.setHidden(true, 'none');
+      return () => StatusBar.setHidden(false, 'none');
+    }, []),
+  );
+
+  useEffect(() => {
+    if (!anyPopupOpen) {
+      StatusBar.setHidden(true, 'none');
+    }
+  }, [anyPopupOpen]);
 
   useFocusEffect(
     useCallback(() => {
@@ -1599,15 +1640,6 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     keepControlsAwake();
   };
 
-  const handleSkipIntro = useCallback(() => {
-    if (!introSegment) return;
-    const target = Math.max(introSegment.endSec, currentTime);
-    playerRef.current?.seekTo(target);
-    setCurrentTime(target);
-    markSkipCompleted();
-    keepControlsAwake();
-  }, [currentTime, introSegment, keepControlsAwake, markSkipCompleted, setCurrentTime]);
-
   const handleMarkIntroStart = useCallback(() => {
     setIntroContributionStartSec(Math.max(0, currentTime));
     setIntroContributionError(null);
@@ -1670,8 +1702,8 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
       setIntroContributionSuccess(t('skip_intro_submit_success'));
       setIntroContributionStartSec(null);
       setIntroContributionEndSec(null);
-      if (skipIntroEnabled) {
-        await refreshIntroSegment();
+      if (skipSegmentsEnabled) {
+        await refreshSegments();
       }
     } catch (nextError) {
       setIntroContributionError(nextError instanceof Error ? nextError.message : t('common_error'));
@@ -1685,9 +1717,9 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     introContributionEndSec,
     introContributionStartSec,
     introDbApiKey,
-    refreshIntroSegment,
+    refreshSegments,
     season,
-    skipIntroEnabled,
+    skipSegmentsEnabled,
     t,
   ]);
 
@@ -1815,6 +1847,106 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
       closeMpvPlayer();
     });
   }, [closeMpvPlayer, handleWatchThreshold]);
+
+  const openNextEpisodeSheet = useCallback(() => {
+    if (!activeAction?.nextEpisodeTarget) return;
+    markActionHandled();
+    setPaused(true);
+    setShowNextEpisodeSheet(true);
+  }, [activeAction, markActionHandled, setPaused]);
+
+  const handleOpenEpisodes = useCallback(() => {
+    if (type !== 'tv' || season == null || episode == null) return;
+    clearControlsTimer();
+    setShowControls(false);
+    setShowEpisodesSheet(true);
+  }, [clearControlsTimer, episode, season, type]);
+
+  const handleEpisodeSelect = useCallback((selectedSeason: number, selectedEpisode: number) => {
+    setShowEpisodesSheet(false);
+    if (selectedSeason === season && selectedEpisode === episode) return;
+    const showTitle = title ? title.replace(/\s+S\d+\s*E\d+.*$/i, '').trim() : '';
+    navigation.navigate('EpisodeStreams', {
+      showId: movieId,
+      showTitle: showTitle || title,
+      imdbId,
+      season: selectedSeason,
+      episodeNumber: selectedEpisode,
+    });
+  }, [episode, imdbId, movieId, navigation, season, title]);
+
+  const handleNextEpisodeStream = useCallback((stream: AddonStream, allStreams: AddonStream[]) => {
+    const nextEpisodeTarget = activeAction?.nextEpisodeTarget;
+    if (!nextEpisodeTarget) return;
+
+    setShowNextEpisodeSheet(false);
+    playbackCompletedRef.current = true;
+    watchThresholdFiredRef.current = true;
+
+    const epCode = `S${String(nextEpisodeTarget.season).padStart(2, '0')}E${String(nextEpisodeTarget.episodeNumber).padStart(2, '0')}`;
+    const playerTitle = `${nextEpisodeTarget.showTitle}  ${epCode}`;
+    const streamIdentity = (
+      stream.infoHash?.toLowerCase()
+      ?? stream.url
+      ?? `${stream.addonId}:${stream.behaviorHints?.filename ?? stream.title ?? stream.name ?? ''}`
+    ).trim();
+
+    void handleWatchThreshold().finally(() => {
+      skipPortraitOnBlurRef.current = true;
+      navigation.replace('MpvPlayer', {
+        streamUrl: stream.url ?? null,
+        headers: MAGIC_HEADERS,
+        type: 'tv',
+        title: playerTitle,
+        season: nextEpisodeTarget.season,
+        episode: nextEpisodeTarget.episodeNumber,
+        backdrop: nextEpisodeTarget.episodeStill ?? nextEpisodeTarget.showBackdrop,
+        poster: nextEpisodeTarget.showPoster,
+        progressKey: nextEpisodeTarget.progressKey,
+        resolveOnMount: !stream.url && !!stream.infoHash,
+        resolverMovieId: String(nextEpisodeTarget.showId),
+        resolverImdbId: nextEpisodeTarget.imdbId,
+        resolverType: 'tv',
+        activeStream: stream,
+        sourceStreams: allStreams,
+        activeSourceIdentity: streamIdentity,
+        returnToPlayerParams: {
+          movieId: String(nextEpisodeTarget.showId),
+          imdbId: nextEpisodeTarget.imdbId,
+          type: 'tv',
+          title: playerTitle,
+          backdrop: nextEpisodeTarget.showBackdrop,
+          poster: nextEpisodeTarget.showPoster,
+          season: nextEpisodeTarget.season,
+          episode: nextEpisodeTarget.episodeNumber,
+          progressKey: nextEpisodeTarget.progressKey,
+        },
+      });
+    });
+  }, [activeAction, handleWatchThreshold, navigation]);
+
+  const handleSegmentAction = useCallback(() => {
+    if (!activeAction) return;
+    if (activeAction.kind === 'next_episode') {
+      openNextEpisodeSheet();
+      return;
+    }
+
+    const target = Math.max(activeAction.targetTimeSec ?? currentTime, currentTime);
+    playerRef.current?.seekTo(target);
+    setCurrentTime(target);
+    markActionHandled();
+    scheduleControlsAutoHide(true);
+  }, [activeAction, currentTime, openNextEpisodeSheet, markActionHandled, scheduleControlsAutoHide, setCurrentTime]);
+
+  useEffect(() => {
+    if (!autoPlayNextEpisodeEnabled) return undefined;
+    if (activeAction?.kind !== 'next_episode') return undefined;
+    const timer = setTimeout(() => {
+      openNextEpisodeSheet();
+    }, 1200);
+    return () => clearTimeout(timer);
+  }, [activeAction, autoPlayNextEpisodeEnabled, openNextEpisodeSheet]);
 
   const switchSourceInPlayer = useCallback((sourceOption: MpvSourceOption) => {
     if (!sourceOption.identity) return;
@@ -2110,13 +2242,23 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
         </View>
       )}
 
-      {!loading && shouldShowSkipIntro && !anyPopupOpen && (
+      {(!loading || hasImmediateAction) && activeAction && !anyPopupOpen && (
         <SkipIntroButton
-          label={t('skip_intro_button')}
-          onPress={handleSkipIntro}
+          label={t(activeAction.labelKey)}
+          onPress={handleSegmentAction}
           bottom={controlsVisible ? insets.bottom + 104 : insets.bottom + 18}
         />
       )}
+
+      <NextEpisodeStreamsSheet
+        visible={showNextEpisodeSheet}
+        target={activeAction?.nextEpisodeTarget ?? null}
+        preferBingeGroupNextEpisode={preferBingeGroupNextEpisode}
+        preferredAddonName={preferBingeGroupNextEpisode ? (currentActiveStream?.addonName ?? null) : null}
+        preferredQualityGroup={preferBingeGroupNextEpisode ? (currentActiveStream ? (parseStream(currentActiveStream).quality ?? currentActiveStream.quality ?? null) : null) : null}
+        onSelectStream={handleNextEpisodeStream}
+        onDismiss={() => { setShowNextEpisodeSheet(false); setPaused(false); }}
+      />
 
       {controlsVisible && !loading && (
         <Animated.View
@@ -2125,7 +2267,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
         >
           <View style={styles.topActions}>
             <TouchableOpacity style={styles.topIconBtn} onPress={closeMpvPlayer} activeOpacity={0.85}>
-              <Ionicons name="close" size={24} color="#fff" />
+              <Ionicons name="arrow-back" size={24} color="#fff" />
             </TouchableOpacity>
           </View>
         </Animated.View>
@@ -2176,7 +2318,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
                   width: progressBarWidth * Math.min(currentTime / Math.max(duration, 1), 1),
                 }]} />
                 <View style={[styles.progressThumbDot, {
-                  left: Math.max(0, progressBarWidth * Math.min(currentTime / Math.max(duration, 1), 1) - 7.5),
+                  left: Math.max(0, progressBarWidth * Math.min(currentTime / Math.max(duration, 1), 1) - 9),
                 }]} />
               </View>
               {/* Native slider — transparent, handles all touch */}
@@ -2215,86 +2357,117 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
           </View>
 
           <View style={[styles.floatingDock, { bottom: insets.bottom + 16 }]}>
+            {/* Zoom */}
             <TouchableOpacity
-              style={styles.dockBtn}
-              onPress={() => {
-                keepControlsAwake();
-                cycleResizeMode();
-              }}
-              activeOpacity={0.85}
+              style={styles.dockPillItem}
+              onPress={() => { keepControlsAwake(); cycleResizeMode(); }}
+              activeOpacity={0.75}
             >
-              <Ionicons name={RESIZE_MODE_ICONS[resizeMode]} size={21} color="#fff" />
-              <Text style={styles.dockRateText}>{resizeModeLabels[resizeMode]}</Text>
+              <Ionicons name={RESIZE_MODE_ICONS[resizeMode]} size={19} color="rgba(255,255,255,0.92)" />
+              <Text style={styles.dockPillLabel}>Zoom</Text>
             </TouchableOpacity>
+
+            <View style={styles.dockPillSep} />
+
+            {/* Speed */}
             <TouchableOpacity
-              style={styles.dockBtn}
+              style={styles.dockPillItem}
               onPress={cyclePlaybackRate}
-              activeOpacity={0.85}
+              activeOpacity={0.75}
             >
-              <Ionicons name="speedometer-outline" size={21} color="#fff" />
-              <Text style={styles.dockRateText}>{speedLabel}</Text>
+              <Text style={styles.dockPillSpeedIcon}>{speedLabel}</Text>
+              <Text style={styles.dockPillLabel}>Speed</Text>
             </TouchableOpacity>
+
+            <View style={styles.dockPillSep} />
+
+            {/* Subs */}
             <TouchableOpacity
-              style={styles.dockBtn}
-              onPress={() => {
-                clearControlsTimer();
-                setShowControls(false);
-                setShowTrackPicker(true);
-              }}
-              activeOpacity={0.85}
+              style={styles.dockPillItem}
+              onPress={() => { clearControlsTimer(); setShowControls(false); setShowTrackPicker(true); }}
+              activeOpacity={0.75}
             >
-              <View style={styles.ccIconWrap}>
-                <Text style={styles.ccIconText}>CC</Text>
-              </View>
-              {/* Show a dot while OS subtitle search is in progress */}
-              {subtitle.searchState === 'loading' && (
-                <View style={styles.dockBadgeDot} />
-              )}
-              {/* Show active indicator when an OS subtitle is loaded */}
-              {subtitle.activeExternalSubId !== null && (
-                <View style={[styles.dockBadgeDot, styles.dockBadgeDotActive]} />
-              )}
+              <Ionicons name="chatbubble-ellipses-outline" size={19} color="rgba(255,255,255,0.92)" />
+              <Text style={styles.dockPillLabel}>Subs</Text>
+              {subtitle.activeExternalSubId !== null && <View style={styles.dockActiveDot} />}
             </TouchableOpacity>
+
+            <View style={styles.dockPillSep} />
+
+            {/* Audio */}
             <TouchableOpacity
-              style={styles.dockBtn}
-              onPress={() => {
-                clearControlsTimer();
-                setShowControls(false);
-                setShowAudioModal(true);
-              }}
-              activeOpacity={0.85}
+              style={styles.dockPillItem}
+              onPress={() => { clearControlsTimer(); setShowControls(false); setShowAudioModal(true); }}
+              activeOpacity={0.75}
             >
-              <Ionicons name="musical-notes-outline" size={21} color="#fff" />
+              <Ionicons name="volume-medium-outline" size={19} color="rgba(255,255,255,0.92)" />
+              <Text style={styles.dockPillLabel}>Audio</Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.dockBtn}
-              onPress={() => {
-                clearControlsTimer();
-                setShowControls(false);
-                setShowInfoModal(true);
-              }}
-              activeOpacity={0.85}
-            >
-              <Ionicons name="information-circle-outline" size={22} color="#fff" />
-            </TouchableOpacity>
-            {canContributeIntro && (
-              <TouchableOpacity
-                style={styles.dockBtn}
-                onPress={() => {
-                  clearControlsTimer();
-                  setShowControls(false);
-                  setIntroContributionError(null);
-                  setIntroContributionSuccess(null);
-                  setShowIntroContributionSheet(true);
-                }}
-                activeOpacity={0.85}
-              >
-                <Ionicons name="create-outline" size={21} color="#fff" />
-              </TouchableOpacity>
+
+            {sourceOptions.length > 1 && (
+              <>
+                <View style={styles.dockPillSep} />
+                {/* Sources */}
+                <TouchableOpacity
+                  style={styles.dockPillItem}
+                  onPress={() => { clearControlsTimer(); setShowControls(false); setShowSourcesModal(true); }}
+                  activeOpacity={0.75}
+                >
+                  <Ionicons name="layers-outline" size={19} color="rgba(255,255,255,0.92)" />
+                  <Text style={styles.dockPillLabel}>Sources</Text>
+                </TouchableOpacity>
+              </>
+            )}
+
+            {type === 'tv' && season != null && episode != null && (
+              <>
+                <View style={styles.dockPillSep} />
+                {/* Episodes */}
+                <TouchableOpacity
+                  style={styles.dockPillItem}
+                  onPress={handleOpenEpisodes}
+                  activeOpacity={0.75}
+                >
+                  <Ionicons name="list-outline" size={19} color="rgba(255,255,255,0.92)" />
+                  <Text style={styles.dockPillLabel}>Episodes</Text>
+                </TouchableOpacity>
+              </>
             )}
           </View>
         </Animated.View>
       )}
+
+      <InPlayerSourcesSheet
+        visible={showSourcesModal}
+        streams={resolvedSourceStreams}
+        activeStreamIdentity={activeSourceIdentity}
+        onSelectStream={stream => {
+          const opt = sourceOptions.find(o => o.identity === streamIdentityKey(stream));
+          if (opt) switchSourceInPlayer(opt);
+        }}
+        onReload={() => {
+          setShowSourcesModal(false);
+          const showTitle = title ? title.replace(/\s+S\d+\s*E\d+.*$/i, '').trim() : '';
+          navigation.navigate('EpisodeStreams', {
+            showId: movieId,
+            showTitle: showTitle || title,
+            imdbId,
+            season,
+            episodeNumber: episode,
+          });
+        }}
+        onDismiss={() => setShowSourcesModal(false)}
+      />
+
+      <InPlayerEpisodesSheet
+        visible={showEpisodesSheet}
+        showId={movieId}
+        showTitle={title ? title.replace(/\s+S\d+\s*E\d+.*$/i, '').trim() : title}
+        currentSeason={season ?? 1}
+        currentEpisode={episode ?? 1}
+        onSelectEpisode={handleEpisodeSelect}
+        onDismiss={() => setShowEpisodesSheet(false)}
+      />
 
       <Modal visible={showAudioModal} transparent animationType="fade" onRequestClose={() => setShowAudioModal(false)}>
         <View style={styles.modalRoot}>
@@ -2302,8 +2475,8 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>{t('player_audio')}</Text>
-              <TouchableOpacity onPress={() => setShowAudioModal(false)}>
-                <Ionicons name="close" size={22} color="rgba(255,255,255,0.8)" />
+              <TouchableOpacity style={styles.modalPillClose} onPress={() => setShowAudioModal(false)}>
+                <Text style={styles.modalPillCloseText}>Close</Text>
               </TouchableOpacity>
             </View>
             <ScrollView style={styles.modalList} showsVerticalScrollIndicator={false}>
@@ -2341,8 +2514,8 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>{t('player_subtitles')}</Text>
-              <TouchableOpacity onPress={() => setShowTrackPicker(false)}>
-                <Ionicons name="close" size={22} color="rgba(255,255,255,0.8)" />
+              <TouchableOpacity style={styles.modalPillClose} onPress={() => setShowTrackPicker(false)}>
+                <Text style={styles.modalPillCloseText}>Close</Text>
               </TouchableOpacity>
             </View>
 
@@ -2664,8 +2837,8 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>{t('mpv_media_info')}</Text>
-              <TouchableOpacity onPress={() => setShowInfoModal(false)}>
-                <Ionicons name="close" size={22} color="rgba(255,255,255,0.8)" />
+              <TouchableOpacity style={styles.modalPillClose} onPress={() => setShowInfoModal(false)}>
+                <Text style={styles.modalPillCloseText}>Close</Text>
               </TouchableOpacity>
             </View>
             <ScrollView style={styles.modalList} showsVerticalScrollIndicator={false}>
@@ -3022,24 +3195,25 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   progressTrackRail: {
-    height: 5,
-    backgroundColor: 'rgba(255,255,255,0.22)',
-    borderRadius: 3,
+    height: 8,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderRadius: 4,
   },
   progressTrackFill: {
     position: 'absolute',
     left: 0,
-    top: 17.5,
+    top: 16,
     height: 5,
+    height: 8,
     backgroundColor: '#3ea6ff',
-    borderRadius: 3,
+    borderRadius: 4,
   },
   progressThumbDot: {
     position: 'absolute',
-    top: 12.5,
-    width: 15,
-    height: 15,
-    borderRadius: 7.5,
+    top: 11,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
     backgroundColor: '#fff',
   },
   timePillRow: {
@@ -3068,32 +3242,63 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    borderRadius: 30,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    backgroundColor: 'rgba(0,0,0,0.56)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.24)',
+    borderRadius: 32,
+    paddingHorizontal: 6,
+    paddingVertical: 6,
+    backgroundColor: 'rgba(14,16,24,0.88)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.12)',
   },
-  dockBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+  dockPillItem: {
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 26,
+    gap: 4,
+    minWidth: 56,
   },
-  dockRateText: {
-    position: 'absolute',
-    bottom: -4,
-    color: '#fff',
+  dockPillLabel: {
+    color: 'rgba(255,255,255,0.78)',
     fontSize: 10,
     fontWeight: '700',
-    backgroundColor: 'rgba(62,166,255,0.92)',
-    borderRadius: 8,
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    overflow: 'hidden',
+    letterSpacing: 0.2,
+  },
+  dockPillSpeedIcon: {
+    color: 'rgba(255,255,255,0.92)',
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+  },
+  dockPillSep: {
+    width: StyleSheet.hairlineWidth,
+    height: 28,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+  },
+  dockActiveDot: {
+    position: 'absolute',
+    top: 6,
+    right: 8,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#00e676',
+  },
+  // Legacy — kept for safety
+  dockBtn: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center' },
+  dockRateText: { position: 'absolute', bottom: -4, color: '#fff', fontSize: 10, fontWeight: '700' },
+  modalPillClose: {
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 7,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.16)',
+  },
+  modalPillCloseText: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 13,
+    fontWeight: '700',
   },
   modalRoot: {
     flex: 1,
@@ -3107,26 +3312,27 @@ const styles = StyleSheet.create({
   },
   modalCard: {
     width: '100%',
-    maxWidth: 560,
-    maxHeight: '70%',
-    borderRadius: 18,
-    backgroundColor: 'rgba(18,18,20,0.92)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.15)',
+    maxWidth: 520,
+    maxHeight: '75%',
+    borderRadius: 20,
+    backgroundColor: 'rgba(18,20,28,0.97)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.12)',
     overflow: 'hidden',
   },
   modalHeader: {
-    height: 52,
-    paddingHorizontal: 14,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 16,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.12)',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.1)',
   },
   modalTitle: {
     color: '#fff',
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: '800',
   },
   modalList: {

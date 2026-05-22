@@ -3246,11 +3246,27 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                 visible={showSources}
                 streams={allStreams}
                 activeStreamIdentity={activeStream ? (activeStream.infoHash?.toLowerCase() ?? activeStream.url ?? `${activeStream.addonId}:${activeStream.behaviorHints?.filename ?? activeStream.title ?? activeStream.name ?? ''}`.trim()) : undefined}
-                onSelectStream={stream => closePlayerDrawer()}
-                onReload={() => {
-                    closePlayerDrawer();
+                onSelectStream={stream => {
+                    if (isSameStream(activeStream, stream)) { setShowSources(false); return; }
+                    setShowSources(false);
+                    setLoading(true);
+                    showSwitchingMessage();
+                    const resumeAtSec = Math.max(player.currentTime || 0, playbackPosRef.current || 0);
+                    activeStreamRef.current = stream;
+                    activeStreamIndexRef.current = allStreams.findIndex(c => c === stream);
+                    void resolveStreamToUrlWithTimeout(stream).then(async ({ url, isStale }) => {
+                        if (isStale) return;
+                        if (url) {
+                            await playStreamObject(url, stream, { resumeAtSec });
+                        } else {
+                            if (offerStreamingServerFallback(stream, resumeAtSec, () => { setIsError(true); setLoading(false); })) return;
+                            setIsError(true);
+                            setLoading(false);
+                        }
+                    }).catch(() => { setLoading(false); setIsError(true); });
                 }}
-                onDismiss={closePlayerDrawer}
+                onReload={() => setShowSources(false)}
+                onDismiss={() => setShowSources(false)}
             />
 
             <InPlayerEpisodesSheet
@@ -3391,8 +3407,8 @@ export const PlayerScreen = ({ route, navigation }: any) => {
 
                             {/* Sources */}
                             <TouchableOpacity
-                                style={[styles.pillItem, showPlayerDrawer && activeDrawerSection === 'sources' && styles.pillItemActive]}
-                                onPress={() => openPlayerDrawer('sources')}
+                                style={[styles.pillItem, showSources && styles.pillItemActive]}
+                                onPress={() => { setShowSources(true); setShowControls(false); }}
                                 hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
                             >
                                 <Ionicons name="layers-outline" size={19} color="rgba(255,255,255,0.92)" />
@@ -3417,40 +3433,6 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                     </View>
                 </Animated.View>
             )}
-            {/* SOURCES DRAWER (LEFT) */}
-            <Modal
-                visible={showSources}
-                transparent={true}
-                animationType="fade"
-                statusBarTranslucent={true}
-                onRequestClose={closePlayerDrawer}
-            >
-                <View style={StyleSheet.absoluteFill}>
-                    <Pressable 
-                        style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.6)' }]} 
-                        onPress={closePlayerDrawer} 
-                    />
-                    <View style={styles.centeredDrawerOuter}>
-                        <View style={styles.centeredDrawerCard}>
-                            <View style={styles.drawerHeader}>
-                                <Text style={styles.drawerTitle}>{activeDrawerTitle}</Text>
-                                <TouchableOpacity onPress={closePlayerDrawer} style={styles.pillCloseBtn}>
-                                    <Text style={styles.pillCloseBtnText}>Close</Text>
-                                </TouchableOpacity>
-                            </View>
-                            <ScrollView 
-                                showsVerticalScrollIndicator={false} 
-                                contentContainerStyle={{ paddingBottom: 60, paddingHorizontal: 20 }}
-                                scrollEventThrottle={16}
-                                style={{ flex: 1 }}
-                                keyboardShouldPersistTaps="handled"
-                            >
-                                {renderDrawerContent()}
-                            </ScrollView>
-                        </View>
-                    </View>
-                </View>
-            </Modal>
 
             {/* SETTINGS DRAWER (RIGHT) */}
             <Modal

@@ -252,6 +252,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 20,
     paddingBottom: 14,
+    flexShrink: 0,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: 'rgba(255,255,255,0.1)',
   },
@@ -295,6 +296,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   tabScroll: {
+    flexShrink: 0,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: 'rgba(255,255,255,0.08)',
   },
@@ -326,7 +328,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   list: {
-    flex: 1,
+    flexShrink: 1,
   },
   emptyWrap: {
     alignItems: 'center',

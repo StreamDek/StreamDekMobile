@@ -2275,8 +2275,6 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
 
       {controlsVisible && !loading && (
         <Animated.View pointerEvents="box-none" style={[StyleSheet.absoluteFillObject, { opacity: controlsOpacity }]}>
-          <View pointerEvents="none" style={styles.controlsShade} />
-
           <View style={styles.centerControls}>
             <TouchableOpacity style={styles.seekVisualBtn} onPress={() => seekBy(-10)} activeOpacity={0.85}>
               <View style={styles.seekNumericWrap}>
@@ -3020,10 +3018,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
     textAlign: 'center',
-  },
-  controlsShade: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.16)',
   },
   topOverlay: {
     position: 'absolute',

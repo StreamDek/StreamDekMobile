@@ -154,7 +154,6 @@ class MPVView @JvmOverloads constructor(
     }
 
     private fun initOptions() {
-        ensureSubtitleFontsDir()
         MPVLib.setOptionString("profile", "fast")
         MPVLib.setOptionString("msg-level", "all=info")
         MPVLib.setOptionString("vo", "gpu")
@@ -177,9 +176,9 @@ class MPVView @JvmOverloads constructor(
         MPVLib.setOptionString("network-timeout", "60")
         MPVLib.setOptionString("sub-auto", "fuzzy")
         MPVLib.setOptionString("sub-visibility", "yes")
-        MPVLib.setOptionString("sub-font", "sans-serif")
-        MPVLib.setOptionString("sub-font-provider", "auto")
-        MPVLib.setOptionString("sub-fonts-dir", subtitleFontsDir?.absolutePath ?: "")
+        MPVLib.setOptionString("sub-font", "Roboto")
+        MPVLib.setOptionString("sub-font-provider", "none")
+        MPVLib.setOptionString("sub-fonts-dir", "/system/fonts")
         MPVLib.setOptionString("sub-codepage", "auto")
         MPVLib.setOptionString("embeddedfonts", "yes")
         MPVLib.setOptionString("sid", "auto")

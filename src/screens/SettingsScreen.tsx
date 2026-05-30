@@ -36,6 +36,7 @@ import { useAddons } from '../context/AddonContext';
 import { useDebrid } from '../context/DebridContext';
 import { useTrakt } from '../context/TraktContext';
 import { useTorrentServer } from '../context/TorrentServerContext';
+import { useAppUpdate } from '../context/AppUpdateContext';
 import { fetchAccountBootstrap } from '../utils/accountPreferences';
 import { invalidateSharedCache } from '../utils/sharedDataCache';
 import { checkSyncAllowed, getSyncOverCellular, setSyncOverCellular } from '../utils/cellularGuard';
@@ -333,6 +334,7 @@ export function SettingsScreen({ navigation, route }: any) {
   const { refreshAccounts } = useDebrid();
   const { checkStatus } = useTrakt();
   const { config: torrentServerConfig, status: torrentServerStatus, updateConfig: updateTorrentServerConfig } = useTorrentServer();
+  const { autoCheckEnabled, setAutoCheckEnabled, currentVersion, availableRelease, isChecking: updateChecking, statusMessage: updateStatusMessage, errorMessage: updateErrorMessage, checkNow } = useAppUpdate();
   const { theme, appearance, resolvedAppearance, setAppearance, setThemeId, showHeroSynopsis, setShowHeroSynopsis } = useTheme();
   const { language, setLanguage, t } = useLanguage();
   const title = t((SECTION_TITLE_KEYS as Record<string, any>)[detailSection] ?? 'settings_title');
@@ -715,6 +717,15 @@ export function SettingsScreen({ navigation, route }: any) {
 
               {detailSection === 'general-playback' ? (
                 <>
+                  <Text style={styles.sectionTitle}>{t('settings_updates')}</Text>
+                  <View style={styles.card}>
+                    <SettingRow icon="cloud-download-outline" iconColor={safeIconColor('#22c55e')} label={t('settings_updates_auto_check')} subtitle={t('settings_updates_auto_check_sub')} right={<AppleToggle value={autoCheckEnabled} onValueChange={value => { void setAutoCheckEnabled(value); }} onColor={colors.toggleOn} />} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="download-outline" iconColor={safeIconColor('#38bdf8')} label={t('settings_updates_status')} subtitle={updateErrorMessage ?? updateStatusMessage ?? t('settings_updates_status_sub')} value={availableRelease ? availableRelease.versionName : (updateChecking ? 'Checking' : (currentVersion?.versionName ?? 'Current'))} onPress={() => { void checkNow(); }} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="refresh-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_updates_check_now')} subtitle={t('settings_updates_check_now_sub')} value={updateChecking ? 'Checking' : undefined} onPress={() => { void checkNow(); }} />
+                  </View>
+
                   <Text style={styles.sectionTitle}>{t('settings_general')}</Text>
                   <View style={styles.card}>
                     <SettingRow icon="language-outline" iconColor={safeIconColor('#9b5de5')} label={t('settings_language')} subtitle={t('settings_language_sub_current')} value={`${language.flag} ${language.name}`} onPress={() => setPicker('language')} />

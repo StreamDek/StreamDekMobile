@@ -1173,12 +1173,6 @@ export const PlayerScreen = ({ route, navigation }: any) => {
     }, [loading, navigation, pictureInPictureEnabled, setIsPlaying, shouldUseEmbeddedVideoPlayer]);
 
     // Re-hide status bar whenever a modal closes — Android resets window flags on Modal dismiss.
-    useEffect(() => {
-        if (!introOverlayBlocked && !showNextEpisodeSheet && !showEpisodesSheet) {
-            StatusBar.setHidden(true);
-        }
-    }, [introOverlayBlocked, showNextEpisodeSheet, showEpisodesSheet]);
-
     useEffect(() => { playerRef.current = player; }, [player]);
     useEffect(() => { allStreamsRef.current = allStreams; }, [allStreams]);
     useEffect(() => { activeStreamRef.current = activeStream; }, [activeStream]);
@@ -2387,6 +2381,12 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         || showCompatibilitySuggestion
         || showIntroContributionSheet
         || showIntroContributionConfirm;
+
+    useEffect(() => {
+        if (!introOverlayBlocked && !showNextEpisodeSheet && !showEpisodesSheet) {
+            StatusBar.setHidden(true);
+        }
+    }, [introOverlayBlocked, showNextEpisodeSheet, showEpisodesSheet]);
 
     useEffect(() => {
         if (!castNativeModuleAvailable) {

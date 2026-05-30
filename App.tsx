@@ -44,10 +44,12 @@ import { DisplaySettingsProvider } from './src/context/DisplaySettingsContext';
 import { TmdbApiKeyProvider } from './src/context/TmdbApiKeyContext';
 import { ProfileProvider, useProfile } from './src/context/ProfileContext';
 import { AppLifecycleProvider } from './src/context/AppLifecycleContext';
+import { AppUpdateProvider } from './src/context/AppUpdateContext';
 import { ProfileSwitcherScreen } from './src/screens/ProfileSwitcherScreen';
 import { ManageProfilesScreen } from './src/screens/ManageProfilesScreen';
 import { EditProfileScreen } from './src/screens/EditProfileScreen';
 import { useTheme } from './src/context/ThemeContext';
+import { UpdatePrompt } from './src/components/UpdatePrompt';
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -309,8 +311,11 @@ export default function App() {
                               <DebridProvider>
                                 <AddonProvider>
                                   <TmdbApiKeyProvider>
-                                    <AppNavigation />
-                                    <AnimatedSplash />
+                                    <AppUpdateProvider>
+                                      <AppNavigation />
+                                      <UpdatePrompt />
+                                      <AnimatedSplash />
+                                    </AppUpdateProvider>
                                   </TmdbApiKeyProvider>
                                 </AddonProvider>
                               </DebridProvider>

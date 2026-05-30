@@ -179,5 +179,74 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.apk.outputs.apk_path }}
-          generate_release_notes: false
+          generate_release_notes: true
           fail_on_unmatched_files: true
+
+      - name: Read generated release notes
+        id: release_meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh release view "$GITHUB_REF_NAME" --json body --jq '.body // ""' > dist/release-notes.txt
+          published_at="$(gh release view "$GITHUB_REF_NAME" --json publishedAt --jq '.publishedAt // ""')"
+          echo "notes_path=dist/release-notes.txt" >> "$GITHUB_OUTPUT"
+          echo "published_at=$published_at" >> "$GITHUB_OUTPUT"
+
+      - name: Generate update manifest asset
+        id: manifest
+        shell: bash
+        env:
+          UPDATE_PLATFORM: android-mobile
+          UPDATE_PACKAGE_NAME: com.anonymous.streamdekmobile
+          UPDATE_VERSION_CODE: ${{ github.run_number }}
+          UPDATE_VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          UPDATE_ASSET_NAME: streamdek-${{ github.ref_name }}.apk
+          UPDATE_APK_PATH: ${{ steps.apk.outputs.apk_path }}
+          UPDATE_APK_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/streamdek-${{ github.ref_name }}.apk
+          UPDATE_MANIFEST_OUTPUT_PATH: dist/latest.json
+          UPDATE_REQUIRED: "false"
+          UPDATE_RELEASE_NOTES_FILE: ${{ steps.release_meta.outputs.notes_path }}
+          UPDATE_PUBLISHED_AT: ${{ steps.release_meta.outputs.published_at }}
+        run: |
+          set -Eeuo pipefail
+          node ./scripts/generate-update-manifest.js
+          echo "manifest_path=dist/latest.json" >> "$GITHUB_OUTPUT"
+
+      - name: Upload update manifest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamdek-${{ github.ref_name }}-update-manifest
+          path: ${{ steps.manifest.outputs.manifest_path }}
+          if-no-files-found: error
+
+      - name: Prepare remote manifest directory
+        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: DEPLOY_PATH
+          script_stop: true
+          script: |
+            set -Eeuo pipefail
+            if [ -z "${DEPLOY_PATH:-}" ]; then
+              echo "DEPLOY_PATH secret is required."
+              exit 1
+            fi
+            mkdir -p "$DEPLOY_PATH/release-manifests/android-mobile"
+
+      - name: Upload update manifest to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: ${{ steps.manifest.outputs.manifest_path }}
+          target: ${{ secrets.DEPLOY_PATH }}/release-manifests/android-mobile
+          strip_components: 1

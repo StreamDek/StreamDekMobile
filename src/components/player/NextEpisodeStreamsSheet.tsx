@@ -68,7 +68,6 @@ export function NextEpisodeStreamsSheet({
   const backdropAnim = useRef(new Animated.Value(0)).current;
   const panelAnim = useRef(new Animated.Value(400)).current;
 
-  // Stable refs so interval callbacks always see latest values
   const streamsRef = useRef<AddonStream[]>([]);
   const onSelectStreamRef = useRef(onSelectStream);
   const onDismissRef = useRef(onDismiss);
@@ -93,7 +92,7 @@ export function NextEpisodeStreamsSheet({
     if (!preferBingeRef.current) return sorted[0] ?? null;
     const normAddon = preferredAddonRef.current?.trim().toLowerCase() ?? '';
     const normQuality = preferredQualityGroupRef.current?.trim().toLowerCase() ?? '';
-    const binge = candidates.filter(s => {
+    const binge = candidates.filter((s) => {
       const addonOk = normAddon ? (s.addonName ?? '').trim().toLowerCase() === normAddon : true;
       const qualOk = normQuality
         ? (parseStream(s).quality ?? s.quality ?? '').trim().toLowerCase() === normQuality
@@ -112,7 +111,7 @@ export function NextEpisodeStreamsSheet({
 
   const fetchStreams = useCallback(async () => {
     if (!target) return;
-    const enabled = addons.filter(a => a.enabled);
+    const enabled = addons.filter((a) => a.enabled);
     if (enabled.length === 0 && !ultraActive) {
       setLoading(false);
       return;
@@ -140,9 +139,9 @@ export function NextEpisodeStreamsSheet({
 
     const merge = (incoming: AddonStream[]) => {
       for (const s of incoming) {
-        const k = streamKey(s);
-        if (!k || seen.has(k)) continue;
-        seen.add(k);
+        const key = streamKey(s);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
         accumulated.push(s);
       }
     };
@@ -163,7 +162,7 @@ export function NextEpisodeStreamsSheet({
 
     publish();
 
-    const requests = ordered.map(async addon => {
+    const requests = ordered.map(async (addon) => {
       try {
         const res = await fetch(
           `${API_BASE}/addons/streams/single/${addon.id}/series/${encodeURIComponent(videoId)}`,
@@ -173,7 +172,7 @@ export function NextEpisodeStreamsSheet({
         const data = await res.json();
         merge(data.streams ?? []);
       } catch {
-        // ignore abort / network errors
+        // Ignore abort and network errors.
       } finally {
         pending = Math.max(0, pending - 1);
         publish();
@@ -191,7 +190,7 @@ export function NextEpisodeStreamsSheet({
           const data = await res.json();
           merge(data.streams ?? []);
         } catch {
-          // ignore
+          // Ignore abort and network errors.
         } finally {
           pending = Math.max(0, pending - 1);
           publish();
@@ -202,7 +201,6 @@ export function NextEpisodeStreamsSheet({
     await Promise.allSettled(requests);
   }, [addons, buildRequestHeaders, target, ultraActive]);
 
-  // Animate in/out based on visible
   useEffect(() => {
     if (visible) {
       setOpen(true);
@@ -226,14 +224,12 @@ export function NextEpisodeStreamsSheet({
     }
   }, [visible]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Countdown tick
   useEffect(() => {
     if (countdown === null || countdown <= 0) return;
-    const timer = setTimeout(() => setCountdown(c => (c !== null && c > 0 ? c - 1 : c)), 1000);
+    const timer = setTimeout(() => setCountdown((value) => (value !== null && value > 0 ? value - 1 : value)), 1000);
     return () => clearTimeout(timer);
   }, [countdown]);
 
-  // Auto-select when countdown hits zero
   useEffect(() => {
     if (countdown !== 0) return;
     const best = pickBest(streamsRef.current);
@@ -262,19 +258,16 @@ export function NextEpisodeStreamsSheet({
 
   return (
     <Modal visible={open} transparent animationType="none" onRequestClose={onDismiss}>
-      {/* Backdrop */}
       <Animated.View style={[StyleSheet.absoluteFillObject, { opacity: backdropAnim, backgroundColor: 'rgba(0,0,0,0.75)' }]}>
         <Pressable style={StyleSheet.absoluteFillObject} onPress={onDismiss} />
       </Animated.View>
 
-      {/* Panel */}
       <Animated.View
         style={[
           styles.panel,
           { backgroundColor: panelBg, paddingBottom: insets.bottom + 8, transform: [{ translateY: panelAnim }] },
         ]}
       >
-        {/* Hero image */}
         <View style={styles.heroWrap}>
           {backdropUri ? (
             <Image source={{ uri: backdropUri }} style={StyleSheet.absoluteFillObject} contentFit="cover" />
@@ -288,21 +281,19 @@ export function NextEpisodeStreamsSheet({
           </View>
         </View>
 
-        {/* Countdown bar */}
         {countdown !== null && countdown > 0 && streams.length > 0 && (
           <View style={[styles.countdownRow, { borderBottomColor: borderColor }]}>
             <Text style={[styles.countdownText, { color: isLight ? '#374151' : '#d1d5db' }]}>
-              {t('next_episode_autoplay_in', { seconds: countdown }) ?? `Auto-playing in ${countdown}s`}
+              {(t as any)('next_episode_autoplay_in', { seconds: countdown }) ?? `Auto-playing in ${countdown}s`}
             </Text>
             <TouchableOpacity onPress={cancelAutoPlay} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
               <Text style={[styles.countdownCancelText, { color: colors.accentSoft }]}>
-                {t('cancel') ?? 'Cancel'}
+                {t('common_cancel') ?? 'Cancel'}
               </Text>
             </TouchableOpacity>
           </View>
         )}
 
-        {/* Stream list */}
         <ScrollView
           style={styles.scroll}
           contentContainerStyle={styles.scrollContent}
@@ -313,7 +304,7 @@ export function NextEpisodeStreamsSheet({
             <View style={styles.emptyWrap}>
               <ActivityIndicator color={colors.accent} />
               <Text style={[styles.emptyText, { color: isLight ? '#6b7280' : '#9ca3af' }]}>
-                {t('streams_finding') ?? 'Finding streams…'}
+                {t('streams_loading') ?? 'Finding streams…'}
               </Text>
             </View>
           )}
@@ -321,7 +312,7 @@ export function NextEpisodeStreamsSheet({
             <View style={styles.emptyWrap}>
               <Ionicons name="cloud-offline-outline" size={32} color={isLight ? '#9ca3af' : '#6b7280'} />
               <Text style={[styles.emptyText, { color: isLight ? '#6b7280' : '#9ca3af' }]}>
-                {t('streams_none_found') ?? 'No streams found.'}
+                {t('streams_no_streams') ?? 'No streams found.'}
               </Text>
             </View>
           )}
@@ -338,28 +329,25 @@ export function NextEpisodeStreamsSheet({
             <View style={styles.pendingRow}>
               <ActivityIndicator size="small" color={colors.mutedText} />
               <Text style={[styles.pendingText, { color: isLight ? '#9ca3af' : '#6b7280' }]}>
-                {t('streams_loading_more') ?? 'Loading more…'}
+                {t('streams_loading') ?? 'Loading more…'}
               </Text>
             </View>
           )}
         </ScrollView>
 
-        {/* Cancel button */}
         <TouchableOpacity
           style={[styles.cancelBtn, { borderColor }]}
           onPress={onDismiss}
           activeOpacity={0.75}
         >
           <Text style={[styles.cancelBtnText, { color: isLight ? '#374151' : '#d1d5db' }]}>
-            {t('cancel') ?? 'Cancel'}
+            {t('common_cancel') ?? 'Cancel'}
           </Text>
         </TouchableOpacity>
       </Animated.View>
     </Modal>
   );
 }
-
-// ── Stream row ────────────────────────────────────────────────────────────────
 
 function StreamRow({
   stream,
@@ -376,10 +364,10 @@ function StreamRow({
   const isCached = stream.cachedBy.length > 0;
 
   const qualityColors: Record<string, { bg: string; text: string }> = {
-    '4K':    { bg: '#FFD70022', text: '#FFD700' },
+    '4K': { bg: '#FFD70022', text: '#FFD700' },
     '1080p': { bg: '#00e67622', text: '#00e676' },
-    '720p':  { bg: '#29b6f622', text: '#29b6f6' },
-    '480p':  { bg: '#78909c22', text: '#78909c' },
+    '720p': { bg: '#29b6f622', text: '#29b6f6' },
+    '480p': { bg: '#78909c22', text: '#78909c' },
   };
   const qColor = parsed.quality
     ? (qualityColors[parsed.quality] ?? { bg: '#a89ff822', text: '#a89ff8' })
@@ -396,12 +384,10 @@ function StreamRow({
       activeOpacity={0.75}
       style={[styles.streamRow, { backgroundColor: rowBg, borderColor: rowBorder }]}
     >
-      {/* Quality badge */}
       <View style={[styles.qualityBadge, { backgroundColor: qColor.bg }]}>
         <Text style={[styles.qualityText, { color: qColor.text }]}>{parsed.quality ?? '?'}</Text>
       </View>
 
-      {/* Meta */}
       <View style={styles.streamMeta}>
         <Text style={[styles.streamProvider, { color: isLight ? '#111827' : '#f3f4f6' }]} numberOfLines={1}>
           {parsed.providerLine}
@@ -418,9 +404,9 @@ function StreamRow({
           {parsed.seeds != null && (
             <Tag isLight={isLight} label={`👤 ${parsed.seeds}`} />
           )}
-          {isCached && stream.cachedBy.map(p => (
-            <View key={p} style={[styles.tag, { backgroundColor: 'rgba(0,230,118,0.15)', borderColor: 'transparent' }]}>
-              <Text style={[styles.tagText, { color: '#00e676' }]}>⚡ {p}</Text>
+          {isCached && stream.cachedBy.map((provider) => (
+            <View key={provider} style={[styles.tag, { backgroundColor: 'rgba(0,230,118,0.15)', borderColor: 'transparent' }]}>
+              <Text style={[styles.tagText, { color: '#00e676' }]}>⚡ {provider}</Text>
             </View>
           ))}
           {stream.url && !isCached && (
@@ -440,19 +426,19 @@ function StreamRow({
 
 function Tag({ isLight, label }: { isLight: boolean; label: string }) {
   return (
-    <View style={[
-      styles.tag,
-      {
-        backgroundColor: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)',
-        borderColor: isLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.1)',
-      },
-    ]}>
+    <View
+      style={[
+        styles.tag,
+        {
+          backgroundColor: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)',
+          borderColor: isLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.1)',
+        },
+      ]}
+    >
       <Text style={[styles.tagText, { color: isLight ? '#6b7280' : '#9ca3af' }]}>{label}</Text>
     </View>
   );
 }
-
-// ── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   panel: {

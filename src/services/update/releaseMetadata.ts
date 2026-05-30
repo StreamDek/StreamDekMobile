@@ -15,16 +15,7 @@ export async function fetchLatestAndroidMobileRelease(signal?: AbortSignal): Pro
   });
 
   if (!response.ok) {
-    let detail = '';
-    try {
-      const payload = await response.json() as Record<string, unknown>;
-      if (typeof payload.error === 'string') {
-        detail = payload.error;
-      }
-    } catch {
-      detail = '';
-    }
-    throw new Error(detail || `Update server returned ${response.status}.`);
+    throw new Error('UPDATE_CHECK_UNAVAILABLE');
   }
 
   return parseUpdateManifest(await response.json());

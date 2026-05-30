@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  StatusBar, Dimensions, RefreshControl, FlatList,
+  StatusBar, Dimensions, RefreshControl, FlatList, Platform,
 } from 'react-native';
-import { BlurTargetView } from 'expo-blur';
+import { BlurTargetView, BlurView } from 'expo-blur';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -42,6 +43,22 @@ const H_PAD = 14;
 const CARD_GAP = 8;
 const cardWidth = (cols: number) => (SCREEN_WIDTH - H_PAD * 2 - CARD_GAP * (cols - 1)) / cols;
 const GRID_SKELETON = Array.from({ length: 12 }, (_, i) => ({ id: `watch-skeleton-${i}` }));
+
+function hexToRgba(hex: string, alpha: number) {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function darkenHex(hex: string, factor: number) {
+  const h = hex.replace('#', '');
+  const r = Math.floor(parseInt(h.substring(0, 2), 16) * factor);
+  const g = Math.floor(parseInt(h.substring(2, 4), 16) * factor);
+  const b = Math.floor(parseInt(h.substring(4, 6), 16) * factor);
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
 
 type FilterType = 'all' | 'movie' | 'tv';
 
@@ -120,16 +137,45 @@ function WatchCard({ item, onPress, onLongPress, width }: { item: any; onPress: 
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const makeStyles = (c: ThemeColors) => StyleSheet.create({
+const makeStyles = (c: ThemeColors, isLightAppearance: boolean, headerBgRgba: string) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.bg },
-  // Sticky header — absolutely positioned so content scrolls behind (transparency visible)
-  stickyHeader: {
+  headerContainer: {
     position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10,
-    backgroundColor: c.bgHeader,
-    paddingHorizontal: 20, paddingBottom: 12,
+    paddingHorizontal: 14,
   },
-  headerFade: { position: 'absolute', left: 0, right: 0, height: 32, zIndex: 9 },
-  headerRow: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 },
+  headerShell: {
+    borderRadius: 24,
+    backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.08)' : 'rgba(15,23,42,0.10)',
+    borderWidth: 1,
+    borderColor: isLightAppearance ? 'rgba(255,255,255,0.72)' : 'rgba(255,255,255,0.18)',
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOpacity: isLightAppearance ? 0.16 : 0.26,
+    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 16,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 14,
+  },
+  headerBlurFill: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  headerGlassTint: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: headerBgRgba,
+  },
+  headerGlassGradient: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  headerGlassGlow: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  headerContent: {
+    position: 'relative',
+    zIndex: 1,
+  },
+  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
   heading: { color: c.textPrimary, fontSize: 28, fontWeight: '900', letterSpacing: 0.5 },
   countBadge: { borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4, backgroundColor: c.cardBg, borderWidth: 1, borderColor: c.border },
   countText: { color: c.accentSoft, fontSize: 12, fontWeight: '700' },
@@ -161,13 +207,20 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export const WatchlistScreen = ({ navigation }: any) => {
-  const blurTargetRef = React.useRef<View | null>(null);
+  const [blurTarget, setBlurTarget] = useState<View | null>(null);
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { activeProfile } = useProfile();
-  const { theme: { colors } } = useTheme();
+  const { theme: { colors }, resolvedAppearance } = useTheme();
   const { t } = useLanguage();
-  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const isLightAppearance = resolvedAppearance === 'light';
+  const headerBgRgba = useMemo(
+    () => (resolvedAppearance === 'light'
+      ? hexToRgba(colors.bgHeaderSolid, 0.032)
+      : hexToRgba(darkenHex(colors.bgHeaderSolid, 1), 0.03)),
+    [colors.bgHeaderSolid, resolvedAppearance],
+  );
+  const styles = useMemo(() => makeStyles(colors, isLightAppearance, headerBgRgba), [colors, headerBgRgba, isLightAppearance]);
   const { isConnected, watchlist: traktWatchlist, refreshWatchlist } = useTrakt();
   const storageOwnerId = getProfileStorageOwnerId(user?.uid, activeProfile?.id);
   const legacyOwnerId = user?.uid ?? null;
@@ -300,161 +353,190 @@ export const WatchlistScreen = ({ navigation }: any) => {
   ];
 
   return (
-    <View style={{ flex: 1 }}>
-      <BlurTargetView ref={blurTargetRef} style={{ flex: 1 }}>
-    <View style={styles.container}>
-      <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
+    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      <BlurTargetView ref={setBlurTarget as any} style={{ flex: 1 }}>
+        <View style={styles.container}>
+          <StatusBar barStyle={resolvedAppearance === 'light' ? 'dark-content' : 'light-content'} translucent backgroundColor="transparent" />
 
-      <ActionSheet
-        visible={!!longPressItem}
-        onClose={() => setLongPressItem(null)}
-        title={longPressItem?.title}
-        subtitle={longPressItem?.year ? String(longPressItem.year) : undefined}
-        actions={buildActions(longPressItem)}
-      />
-      <ConfirmSheet
-        visible={!!seriesWatchConfirmItem}
-        onClose={() => setSeriesWatchConfirmItem(null)}
-        title={t('watched_series_title')}
-        message={t('watched_series_msg')}
-        confirmLabel={t('watched_series_confirm')}
-        cancelLabel={t('common_cancel')}
-        onConfirm={() => { if (seriesWatchConfirmItem) handleSeriesMarkWatched(seriesWatchConfirmItem); }}
-      />
+          <ActionSheet
+            visible={!!longPressItem}
+            onClose={() => setLongPressItem(null)}
+            title={longPressItem?.title}
+            subtitle={longPressItem?.year ? String(longPressItem.year) : undefined}
+            actions={buildActions(longPressItem)}
+          />
+          <ConfirmSheet
+            visible={!!seriesWatchConfirmItem}
+            onClose={() => setSeriesWatchConfirmItem(null)}
+            title={t('watched_series_title')}
+            message={t('watched_series_msg')}
+            confirmLabel={t('watched_series_confirm')}
+            cancelLabel={t('common_cancel')}
+            onConfirm={() => { if (seriesWatchConfirmItem) handleSeriesMarkWatched(seriesWatchConfirmItem); }}
+          />
 
-      {/* Sticky header — 30% transparent with bottom fade */}
-      <View
-        style={[styles.stickyHeader, { paddingTop: insets.top + 26 }]}
-        onLayout={e => setHeaderHeight(e.nativeEvent.layout.height)}
-      >
-        <View style={styles.headerRow}>
-          <Text style={styles.heading}>{t('watchlist_heading')}</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            {allItems.length > 0 && (
-              <View style={styles.countBadge}>
-                <Text style={styles.countText}>
-                  {t(allItems.length === 1 ? 'watchlist_count_singular' : 'watchlist_count_plural', { n: allItems.length })}
-                </Text>
+          {initialLoading ? (
+            <View style={{ paddingTop: headerHeight, paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 24 }}>
+              <View style={{ paddingHorizontal: 20, paddingTop: 12 }}>
+                <SkeletonText style={{ width: 184, height: 18, marginBottom: 12 }} />
+                <View style={styles.filterRow}>
+                  <SkeletonBlock style={{ width: 70, height: 34, borderRadius: 20 }} />
+                  <SkeletonBlock style={{ width: 88, height: 34, borderRadius: 20 }} />
+                  <SkeletonBlock style={{ width: 76, height: 34, borderRadius: 20 }} />
+                </View>
               </View>
-            )}
-            <TouchableOpacity
-              onPress={toggleGridCols}
-              style={styles.colToggleBtn}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Ionicons name={gridCols === 3 ? 'grid-outline' : 'apps-outline'} size={18} color={colors.accentSoft} />
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <View style={styles.filterRow}>
-          {FILTERS.map(f => (
-            <TouchableOpacity
-              key={f.key}
-              style={[styles.filterPill, filter === f.key && styles.filterPillOn]}
-              onPress={() => setFilter(f.key)}
-              activeOpacity={0.75}
-            >
-              <Text style={[styles.filterText, filter === f.key && styles.filterTextOn]}>{f.label}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        {allItems.length > 0 && <Text style={styles.instruction}>{t('watchlist_instruction')}</Text>}
-      </View>
-
-      {/* All content areas need paddingTop so they start below the absolute header */}
-      {initialLoading ? (
-        <View style={{ paddingTop: headerHeight, paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 24 }}>
-          <View style={{ paddingHorizontal: 20, paddingTop: 12 }}>
-            <SkeletonText style={{ width: 184, height: 18, marginBottom: 12 }} />
-            <View style={styles.filterRow}>
-              <SkeletonBlock style={{ width: 70, height: 34, borderRadius: 20 }} />
-              <SkeletonBlock style={{ width: 88, height: 34, borderRadius: 20 }} />
-              <SkeletonBlock style={{ width: 76, height: 34, borderRadius: 20 }} />
-            </View>
-          </View>
-          <View style={styles.gridSkeleton}>
-            {Array.from({ length: 4 }).map((_, ri) => (
-              <View key={`skeleton-row-${ri}`} style={styles.gridSkeletonRow}>
-                {GRID_SKELETON.slice(0, gridCols).map((item, ci) => (
-                  <View key={`${ri}-${item.id}`} style={ci < gridCols - 1 ? { marginRight: CARD_GAP } : null}>
-                    <SkeletonMediaCard width={CARD_WIDTH} compactGrid />
+              <View style={styles.gridSkeleton}>
+                {Array.from({ length: 4 }).map((_, ri) => (
+                  <View key={`skeleton-row-${ri}`} style={styles.gridSkeletonRow}>
+                    {GRID_SKELETON.slice(0, gridCols).map((item, ci) => (
+                      <View key={`${ri}-${item.id}`} style={ci < gridCols - 1 ? { marginRight: CARD_GAP } : null}>
+                        <SkeletonMediaCard width={CARD_WIDTH} compactGrid />
+                      </View>
+                    ))}
                   </View>
                 ))}
               </View>
-            ))}
-          </View>
-        </View>
-      ) : allItems.length === 0 ? (
-        <View style={[styles.empty, { paddingTop: headerHeight }]}>
-          <View style={styles.emptyIconWrap}>
-            <Ionicons name="bookmark-outline" size={40} color={colors.placeholder} />
-          </View>
-          <Text style={styles.emptyTitle}>{t('watchlist_empty_title')}</Text>
-          <Text style={styles.emptyDesc}>{t('watchlist_empty_desc')}</Text>
-        </View>
-      ) : filteredItems.length === 0 ? (
-        <View style={[styles.empty, { paddingTop: headerHeight }]}>
-          <View style={styles.emptyIconWrap}>
-            <Ionicons name={filter === 'movie' ? 'film-outline' : 'tv-outline'} size={40} color={colors.placeholder} />
-          </View>
-          <Text style={styles.emptyTitle}>
-            {t('watchlist_no_type', {
-              type: t(filter === 'movie' ? 'watchlist_filter_movies' : 'watchlist_filter_series'),
-            })}
-          </Text>
-          <Text style={styles.emptyDesc}>
-            {t('watchlist_no_type_sub', {
-              type: t(filter === 'movie' ? 'watchlist_filter_movies' : 'watchlist_filter_series'),
-            })}
-          </Text>
-        </View>
-      ) : (
-        <FlatList
-          key={`watchlist-grid-${gridCols}`}
-          data={filteredItems}
-          keyExtractor={(item, i) => mediaListItemKey(item, i)}
-          numColumns={gridCols}
-          columnWrapperStyle={styles.gridRow}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              tintColor={colors.accentSoft}
-              progressViewOffset={headerHeight}
-            />
-          }
-          contentContainerStyle={[styles.grid, { paddingTop: headerHeight + 16, paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 24 }]}
-          renderItem={({ item, index }) => {
-            const ci = index % gridCols;
-            const isLast = ci === gridCols - 1;
-            return (
-              <View style={ci < gridCols - 1 ? { marginRight: CARD_GAP } : null}>
-                <WatchCard
-                  item={item}
-                  width={CARD_WIDTH}
-                  onPress={() => navigation.navigate('Detail', { movieId: item.id, type: item.type })}
-                  onLongPress={() => handleLongPress(item)}
-                />
+            </View>
+          ) : allItems.length === 0 ? (
+            <View style={[styles.empty, { paddingTop: headerHeight }]}>
+              <View style={styles.emptyIconWrap}>
+                <Ionicons name="bookmark-outline" size={40} color={colors.placeholder} />
               </View>
-            );
-          }}
-          getItemLayout={(_, index) => {
-            const cardH = Math.round(CARD_WIDTH * 1.5);
-            const rowH = cardH + 42; // Estimate for title/meta and row margin
-            return { length: rowH, offset: rowH * index, index };
-          }}
-          removeClippedSubviews
-          initialNumToRender={10}
-          maxToRenderPerBatch={10}
-          windowSize={5}
-        />
-      )}
-    </View>
+              <Text style={styles.emptyTitle}>{t('watchlist_empty_title')}</Text>
+              <Text style={styles.emptyDesc}>{t('watchlist_empty_desc')}</Text>
+            </View>
+          ) : filteredItems.length === 0 ? (
+            <View style={[styles.empty, { paddingTop: headerHeight }]}>
+              <View style={styles.emptyIconWrap}>
+                <Ionicons name={filter === 'movie' ? 'film-outline' : 'tv-outline'} size={40} color={colors.placeholder} />
+              </View>
+              <Text style={styles.emptyTitle}>
+                {t('watchlist_no_type', {
+                  type: t(filter === 'movie' ? 'watchlist_filter_movies' : 'watchlist_filter_series'),
+                })}
+              </Text>
+              <Text style={styles.emptyDesc}>
+                {t('watchlist_no_type_sub', {
+                  type: t(filter === 'movie' ? 'watchlist_filter_movies' : 'watchlist_filter_series'),
+                })}
+              </Text>
+            </View>
+          ) : (
+            <FlatList
+              key={`watchlist-grid-${gridCols}`}
+              data={filteredItems}
+              keyExtractor={(item, i) => mediaListItemKey(item, i)}
+              numColumns={gridCols}
+              columnWrapperStyle={styles.gridRow}
+              showsVerticalScrollIndicator={false}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  tintColor={colors.accentSoft}
+                  progressViewOffset={headerHeight}
+                />
+              }
+              contentContainerStyle={[styles.grid, { paddingTop: headerHeight + 16, paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 24 }]}
+              renderItem={({ item, index }) => {
+                const ci = index % gridCols;
+                const isLast = ci === gridCols - 1;
+                return (
+                  <View style={ci < gridCols - 1 ? { marginRight: CARD_GAP } : null}>
+                    <WatchCard
+                      item={item}
+                      width={CARD_WIDTH}
+                      onPress={() => navigation.navigate('Detail', { movieId: item.id, type: item.type })}
+                      onLongPress={() => handleLongPress(item)}
+                    />
+                  </View>
+                );
+              }}
+              getItemLayout={(_, index) => {
+                const cardH = Math.round(CARD_WIDTH * 1.5);
+                const rowH = cardH + 42;
+                return { length: rowH, offset: rowH * index, index };
+              }}
+              removeClippedSubviews
+              initialNumToRender={10}
+              maxToRenderPerBatch={10}
+              windowSize={5}
+            />
+          )}
+        </View>
       </BlurTargetView>
-      <StackBottomNav activeTab="Watchlist" blurTarget={blurTargetRef} />
+
+      <View
+        style={[styles.headerContainer, { top: insets.top + 8 }]}
+        onLayout={e => setHeaderHeight(e.nativeEvent.layout.height + insets.top + 8)}
+      >
+        <View style={styles.headerShell}>
+          <BlurView
+            tint={isLightAppearance ? 'light' : 'dark'}
+            intensity={isLightAppearance ? 78 : 86}
+            blurMethod={Platform.OS === 'android' && blurTarget ? 'dimezisBlurViewSdk31Plus' : undefined}
+            blurTarget={Platform.OS === 'android' ? { current: blurTarget } : undefined}
+            style={styles.headerBlurFill}
+          />
+          <View style={styles.headerGlassTint} pointerEvents="none" />
+          <LinearGradient
+            colors={isLightAppearance
+              ? ['rgba(255,255,255,0.075)', 'rgba(214,191,255,0.03)', 'rgba(255,214,236,0.04)']
+              : ['rgba(255,255,255,0.024)', 'rgba(168,159,248,0.02)', 'rgba(255,255,255,0.012)']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.headerGlassGradient}
+            pointerEvents="none"
+          />
+          <View
+            style={[
+              styles.headerGlassGlow,
+              {
+                backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.012)' : 'rgba(255,255,255,0.008)',
+              },
+            ]}
+            pointerEvents="none"
+          />
+          <View style={styles.headerContent}>
+            <View style={styles.headerRow}>
+              <Text style={styles.heading}>{t('watchlist_heading')}</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                {allItems.length > 0 && (
+                  <View style={styles.countBadge}>
+                    <Text style={styles.countText}>
+                      {t(allItems.length === 1 ? 'watchlist_count_singular' : 'watchlist_count_plural', { n: allItems.length })}
+                    </Text>
+                  </View>
+                )}
+                <TouchableOpacity
+                  onPress={toggleGridCols}
+                  style={styles.colToggleBtn}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Ionicons name={gridCols === 3 ? 'grid-outline' : 'apps-outline'} size={18} color={colors.accentSoft} />
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <View style={styles.filterRow}>
+              {FILTERS.map(f => (
+                <TouchableOpacity
+                  key={f.key}
+                  style={[styles.filterPill, filter === f.key && styles.filterPillOn]}
+                  onPress={() => setFilter(f.key)}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[styles.filterText, filter === f.key && styles.filterTextOn]}>{f.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {allItems.length > 0 && <Text style={styles.instruction}>{t('watchlist_instruction')}</Text>}
+          </View>
+        </View>
+      </View>
+
+      <StackBottomNav activeTab="Watchlist" blurTarget={Platform.OS === 'android' ? { current: blurTarget } : undefined} />
     </View>
   );
 };

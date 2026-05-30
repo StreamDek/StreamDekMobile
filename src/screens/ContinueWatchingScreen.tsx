@@ -2,9 +2,9 @@ import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  StatusBar, RefreshControl, Dimensions,
+  StatusBar, RefreshControl, Dimensions, Platform,
 } from 'react-native';
-import { BlurTargetView } from 'expo-blur';
+import { BlurTargetView, BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { runIdle } from '../utils/idleTask';
 import { Image } from 'expo-image';
@@ -29,6 +29,22 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CARD_GAP = 8;
 const H_PAD    = 12;
 const cardWidth = (cols: number) => Math.floor((SCREEN_WIDTH - H_PAD * 2 - CARD_GAP * (cols - 1)) / cols);
+
+function hexToRgba(hex: string, alpha: number) {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function darkenHex(hex: string, factor: number) {
+  const h = hex.replace('#', '');
+  const r = Math.floor(parseInt(h.substring(0, 2), 16) * factor);
+  const g = Math.floor(parseInt(h.substring(2, 4), 16) * factor);
+  const b = Math.floor(parseInt(h.substring(4, 6), 16) * factor);
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
 
 function formatDuration(minutes: number): string {
   if (minutes < 60) return `${minutes}m`;
@@ -203,7 +219,7 @@ function GridSection({
 
 // ── Screen ────────────────────────────────────────────────────────────────────
 
-const makeStyles = (c: ThemeColors) => StyleSheet.create({
+const makeStyles = (c: ThemeColors, isLightAppearance: boolean, headerBgRgba: string) => StyleSheet.create({
   container:  { flex: 1, backgroundColor: c.bg },
   bottomAmbient: {
     position: 'absolute',
@@ -213,10 +229,41 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     height: 220,
     pointerEvents: 'none',
   } as any,
-  header: {
+  headerContainer: {
     position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10,
-    paddingHorizontal: 16, paddingBottom: 12,
-    backgroundColor: c.bgHeader,
+    paddingHorizontal: 14,
+  },
+  headerShell: {
+    borderRadius: 24,
+    backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.08)' : 'rgba(15,23,42,0.10)',
+    borderWidth: 1,
+    borderColor: isLightAppearance ? 'rgba(255,255,255,0.72)' : 'rgba(255,255,255,0.18)',
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOpacity: isLightAppearance ? 0.16 : 0.26,
+    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 16,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 14,
+  },
+  headerBlurFill: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  headerGlassTint: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: headerBgRgba,
+  },
+  headerGlassGradient: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  headerGlassGlow: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  headerContent: {
+    position: 'relative',
+    zIndex: 1,
   },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
   filterRow:     { flexDirection: 'row', gap: 8 },
@@ -245,11 +292,18 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
 });
 
 export const ContinueWatchingScreen = ({ navigation }: any) => {
-  const blurTargetRef = React.useRef<View | null>(null);
+  const [blurTarget, setBlurTarget] = useState<View | null>(null);
   const insets = useSafeAreaInsets();
-  const { theme: { colors } } = useTheme();
+  const { theme: { colors }, resolvedAppearance } = useTheme();
   const { t } = useLanguage();
-  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const isLightAppearance = resolvedAppearance === 'light';
+  const headerBgRgba = useMemo(
+    () => (resolvedAppearance === 'light'
+      ? hexToRgba(colors.bgHeaderSolid, 0.032)
+      : hexToRgba(darkenHex(colors.bgHeaderSolid, 1), 0.03)),
+    [colors.bgHeaderSolid, resolvedAppearance],
+  );
+  const styles = useMemo(() => makeStyles(colors, isLightAppearance, headerBgRgba), [colors, headerBgRgba, isLightAppearance]);
 
   const { continueWatching, refreshContinueWatching } = useTrakt();
   const { user } = useAuth();
@@ -354,115 +408,146 @@ export const ContinueWatchingScreen = ({ navigation }: any) => {
   const total = filteredLocal.length + filteredTrakt.length;
 
   return (
-    <View style={{ flex: 1 }}>
-      <BlurTargetView ref={blurTargetRef} style={{ flex: 1 }}>
-    <View style={styles.container}>
-      <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
-      <LinearGradient
-        colors={[
-          'rgba(0,0,0,0)',
-          colors.accent + '10',
-          colors.accent + '1c',
-        ]}
-        locations={[0, 0.58, 1]}
-        style={styles.bottomAmbient}
-      />
+    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      <BlurTargetView ref={setBlurTarget as any} style={{ flex: 1 }}>
+        <View style={styles.container}>
+          <StatusBar barStyle={resolvedAppearance === 'light' ? 'dark-content' : 'light-content'} translucent backgroundColor="transparent" />
+          <LinearGradient
+            colors={[
+              'rgba(0,0,0,0)',
+              colors.accent + '10',
+              colors.accent + '1c',
+            ]}
+            locations={[0, 0.58, 1]}
+            style={styles.bottomAmbient}
+          />
 
-      <ActionSheet
-        visible={!!longPressItem}
-        onClose={() => setLongPressItem(null)}
-        title={longPressItem?.title}
-        subtitle={longPressItem?.year ? String(longPressItem.year) : undefined}
-        actions={buildActions(longPressItem)}
-      />
-      <ConfirmSheet
-        visible={!!seriesWatchConfirmItem}
-        onClose={() => setSeriesWatchConfirmItem(null)}
-        title="Mark Series as Watched"
-        message="This will mark all episodes of this series as watched. Continue?"
-        confirmLabel="Mark Watched"
-        cancelLabel="Cancel"
-        onConfirm={() => { if (seriesWatchConfirmItem) handleSeriesMarkWatched(seriesWatchConfirmItem); }}
-      />
+          <ActionSheet
+            visible={!!longPressItem}
+            onClose={() => setLongPressItem(null)}
+            title={longPressItem?.title}
+            subtitle={longPressItem?.year ? String(longPressItem.year) : undefined}
+            actions={buildActions(longPressItem)}
+          />
+          <ConfirmSheet
+            visible={!!seriesWatchConfirmItem}
+            onClose={() => setSeriesWatchConfirmItem(null)}
+            title="Mark Series as Watched"
+            message="This will mark all episodes of this series as watched. Continue?"
+            confirmLabel="Mark Watched"
+            cancelLabel="Cancel"
+            onConfirm={() => { if (seriesWatchConfirmItem) handleSeriesMarkWatched(seriesWatchConfirmItem); }}
+          />
+
+          {total === 0 && !refreshing ? (
+            <View style={[styles.empty, { paddingTop: headerHeight }]}>
+              <View style={styles.emptyIconWrap}>
+                <Ionicons name="play-circle-outline" size={40} color={colors.textSecondary} />
+              </View>
+              <Text style={styles.emptyTitle}>Nothing here yet</Text>
+              <Text style={styles.emptyDesc}>
+                Start watching something — your in-progress titles will appear here automatically.
+              </Text>
+            </View>
+          ) : (
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} progressViewOffset={headerHeight} />}
+              contentContainerStyle={[styles.content, { paddingTop: headerHeight + 12, paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 24 }]}
+            >
+              <GridSection
+                title="In Progress (Local)"
+                icon="play-circle-outline"
+                accentColor={colors.accent}
+                items={filteredLocal}
+                emptyMessage="No local in-progress titles yet."
+                navigation={navigation}
+                onLongPress={handleLongPress}
+                cardW={CARD_WIDTH}
+              />
+              <GridSection
+                title="In Progress (Trakt)"
+                icon="time-outline"
+                accentColor="#00b8d4"
+                items={filteredTrakt}
+                navigation={navigation}
+                onLongPress={handleLongPress}
+                cardW={CARD_WIDTH}
+              />
+            </ScrollView>
+          )}
+        </View>
+      </BlurTargetView>
 
       <View
-        style={[styles.header, { paddingTop: insets.top + 26 }]}
-        onLayout={e => setHeaderHeight(e.nativeEvent.layout.height)}
+        style={[styles.headerContainer, { top: insets.top + 8 }]}
+        onLayout={e => setHeaderHeight(e.nativeEvent.layout.height + insets.top + 8)}
       >
-        <View style={styles.headerRow}>
-          <Text style={styles.heading}>Continue Watching</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            {total > 0 && (
-              <View style={styles.countBadge}>
-                <Text style={styles.countText}>
-                  {total} title{total !== 1 ? 's' : ''}
-                </Text>
+        <View style={styles.headerShell}>
+          <BlurView
+            tint={isLightAppearance ? 'light' : 'dark'}
+            intensity={isLightAppearance ? 78 : 86}
+            blurMethod={Platform.OS === 'android' && blurTarget ? 'dimezisBlurViewSdk31Plus' : undefined}
+            blurTarget={Platform.OS === 'android' ? { current: blurTarget } : undefined}
+            style={styles.headerBlurFill}
+          />
+          <View style={styles.headerGlassTint} pointerEvents="none" />
+          <LinearGradient
+            colors={isLightAppearance
+              ? ['rgba(255,255,255,0.075)', 'rgba(214,191,255,0.03)', 'rgba(255,214,236,0.04)']
+              : ['rgba(255,255,255,0.024)', 'rgba(168,159,248,0.02)', 'rgba(255,255,255,0.012)']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.headerGlassGradient}
+            pointerEvents="none"
+          />
+          <View
+            style={[
+              styles.headerGlassGlow,
+              {
+                backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.012)' : 'rgba(255,255,255,0.008)',
+              },
+            ]}
+            pointerEvents="none"
+          />
+          <View style={styles.headerContent}>
+            <View style={styles.headerRow}>
+              <Text style={styles.heading}>Continue</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                {total > 0 && (
+                  <View style={styles.countBadge}>
+                    <Text style={styles.countText}>
+                      {total} title{total !== 1 ? 's' : ''}
+                    </Text>
+                  </View>
+                )}
+                <TouchableOpacity
+                  onPress={toggleGridCols}
+                  style={styles.colToggleBtn}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Ionicons name={gridCols === 3 ? 'grid-outline' : 'apps-outline'} size={18} color={colors.accentSoft} />
+                </TouchableOpacity>
               </View>
-            )}
-            <TouchableOpacity
-              onPress={toggleGridCols}
-              style={styles.colToggleBtn}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Ionicons name={gridCols === 3 ? 'grid-outline' : 'apps-outline'} size={18} color={colors.accentSoft} />
-            </TouchableOpacity>
-          </View>
-        </View>
+            </View>
 
-        <View style={styles.filterRow}>
-          {FILTERS.map(f => (
-            <TouchableOpacity
-              key={f.key}
-              style={[styles.filterPill, filter === f.key && styles.filterPillOn]}
-              onPress={() => setFilter(f.key)}
-              activeOpacity={0.75}
-            >
-              <Text style={[styles.filterText, filter === f.key && styles.filterTextOn]}>{f.label}</Text>
-            </TouchableOpacity>
-          ))}
+            <View style={styles.filterRow}>
+              {FILTERS.map(f => (
+                <TouchableOpacity
+                  key={f.key}
+                  style={[styles.filterPill, filter === f.key && styles.filterPillOn]}
+                  onPress={() => setFilter(f.key)}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[styles.filterText, filter === f.key && styles.filterTextOn]}>{f.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
         </View>
       </View>
 
-      {total === 0 && !refreshing ? (
-        <View style={[styles.empty, { paddingTop: headerHeight }]}>
-          <View style={styles.emptyIconWrap}>
-            <Ionicons name="play-circle-outline" size={40} color={colors.textSecondary} />
-          </View>
-          <Text style={styles.emptyTitle}>Nothing here yet</Text>
-          <Text style={styles.emptyDesc}>
-            Start watching something — your in-progress titles will appear here automatically.
-          </Text>
-        </View>
-      ) : (
-        <ScrollView
-          showsVerticalScrollIndicator={false}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} progressViewOffset={headerHeight} />}
-          contentContainerStyle={[styles.content, { paddingTop: headerHeight + 12, paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 24 }]}
-        >
-          <GridSection
-            title="In Progress (Local)"
-            icon="play-circle-outline"
-            accentColor={colors.accent}
-            items={filteredLocal}
-            emptyMessage="No local in-progress titles yet."
-            navigation={navigation}
-            onLongPress={handleLongPress}
-            cardW={CARD_WIDTH}
-          />
-          <GridSection
-            title="In Progress (Trakt)"
-            icon="time-outline"
-            accentColor="#00b8d4"
-            items={filteredTrakt}
-            navigation={navigation}
-            onLongPress={handleLongPress}
-            cardW={CARD_WIDTH}
-          />
-        </ScrollView>
-      )}
-    </View>
-      </BlurTargetView>
-      <StackBottomNav activeTab="ContinueWatching" blurTarget={blurTargetRef} />
+      <StackBottomNav activeTab="ContinueWatching" blurTarget={Platform.OS === 'android' ? { current: blurTarget } : undefined} />
     </View>
   );
 };

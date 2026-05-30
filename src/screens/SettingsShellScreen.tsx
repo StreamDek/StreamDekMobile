@@ -125,11 +125,18 @@ export function SettingsShellScreen({ navigation }: any) {
   const { accounts } = useDebrid();
   const { isConnected: traktConnected } = useTrakt();
   const { t } = useLanguage();
-  const { availableRelease, isChecking, errorMessage, statusMessage, checkNow } = useAppUpdate();
+  const { availableRelease, isChecking, errorMessage, statusMessage } = useAppUpdate();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const appVersion = Constants.expoConfig?.version ?? '0.0.0';
 
   const enabledAddonCount = addons.filter(addon => addon.enabled).length + (ultraEntitled && ultraBoostEnabled ? 1 : 0);
+  const updatesSubtitle = errorMessage
+    ? t('settings_updates_unavailable_sub')
+    : isChecking
+      ? t('settings_updates_checking_sub')
+      : availableRelease
+        ? t('settings_updates_available_sub', { version: availableRelease.versionName })
+        : (statusMessage ?? t('settings_updates_sub'));
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -188,22 +195,6 @@ export function SettingsShellScreen({ navigation }: any) {
                   subtitle={t('settings_home_appearance_sub')}
                   onPress={() => navigation.navigate('SettingsDetail', { section: 'home-appearance' })}
                 />
-                <View style={styles.divider} />
-                <NavRow
-                  icon="download-outline"
-                  iconColor="#22c55e"
-                  label={t('settings_updates')}
-                  subtitle={
-                    errorMessage
-                      ? errorMessage
-                      : isChecking
-                        ? t('settings_updates_check_now_sub')
-                        : availableRelease
-                          ? `Version ${availableRelease.versionName} is available`
-                          : (statusMessage ?? t('settings_updates_sub'))
-                  }
-                  onPress={() => navigation.navigate('SettingsDetail', { section: 'general-playback' })}
-                />
               </View>
 
               <Text style={styles.sectionTitle}>{t('settings_services_section')}</Text>
@@ -252,10 +243,19 @@ export function SettingsShellScreen({ navigation }: any) {
                 />
               </View>
 
+              <Text style={styles.sectionTitle}>{t('settings_about_section')}</Text>
+              <View style={styles.card}>
+                <NavRow
+                  icon="download-outline"
+                  iconColor="#22c55e"
+                  label={t('settings_updates')}
+                  subtitle={updatesSubtitle}
+                  value={availableRelease ? t('settings_updates_latest_value') : undefined}
+                  onPress={() => navigation.navigate('SettingsDetail', { section: 'app-updates' })}
+                />
+              </View>
+
               <View style={styles.aboutBlock}>
-                <TouchableOpacity onPress={() => { void checkNow(); }} activeOpacity={0.82}>
-                  <Text style={[styles.aboutLine, { color: colors.accent }]}>{t('settings_updates_check_now')}</Text>
-                </TouchableOpacity>
                 <Text style={styles.aboutLine}>{t('settings_made_with')}</Text>
                 <Text style={styles.aboutLine}>{t('settings_version_label', { version: appVersion })}</Text>
               </View>

@@ -14,6 +14,7 @@ import com.facebook.react.common.ReleaseLevel
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint
 import com.anonymous.streamdekmobile.torrent.TorrentServerPackage
 import com.anonymous.streamdekmobile.mpv.MpvPackage
+import com.anonymous.streamdekmobile.updates.AppUpdatePackage
 
 import expo.modules.ApplicationLifecycleDispatcher
 import expo.modules.ExpoReactHostFactory
@@ -31,6 +32,7 @@ class MainApplication : Application(), ReactApplication {
           Log.i(TAG, "Adding TorrentServerPackage")
           add(TorrentServerPackage())
           add(PiPPackage())
+          add(AppUpdatePackage())
           if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Log.i(TAG, "Adding MpvPackage (sdk=${Build.VERSION.SDK_INT})")
             add(MpvPackage())

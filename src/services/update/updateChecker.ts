@@ -33,7 +33,7 @@ export async function checkForAndroidUpdate(): Promise<UpdateCheckOutcome> {
   } catch (error) {
     return {
       status: 'error',
-      message: error instanceof Error ? error.message : 'Update check failed.',
+      message: error instanceof Error && error.message ? error.message : 'UPDATE_CHECK_UNAVAILABLE',
     };
   }
 }

@@ -65,6 +65,23 @@ function describeUpdateError(error: unknown): string {
   }
 }
 
+function describeUpdateCheckError(message: string): string {
+  if (
+    message === 'UPDATE_CHECK_UNAVAILABLE'
+    || /update_manifest/i.test(message)
+    || /release endpoint/i.test(message)
+    || /update server returned/i.test(message)
+  ) {
+    return 'Unable to check for updates right now. Please try again in a little while.';
+  }
+
+  if (/network request failed/i.test(message) || /fetch/i.test(message)) {
+    return 'Unable to reach the update service right now. Check your connection and try again.';
+  }
+
+  return 'Unable to check for updates right now. Please try again in a little while.';
+}
+
 export function AppUpdateProvider({ children }: { children: React.ReactNode }) {
   const [autoCheckEnabled, setAutoCheckEnabledState] = useState(true);
   const [settingsReady, setSettingsReady] = useState(false);
@@ -129,7 +146,7 @@ export function AppUpdateProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (outcome.status === 'error') {
-        setErrorMessage(outcome.message);
+        setErrorMessage(describeUpdateCheckError(outcome.message));
         if (options?.manual) {
           setStatusMessage(null);
         }

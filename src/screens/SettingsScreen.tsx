@@ -54,6 +54,7 @@ const SECTION_TITLE_KEYS = {
   'general-playback': 'settings_detail_general_playback',
   'home-appearance': 'settings_detail_home_appearance',
   'account-services': 'settings_detail_account_services',
+  'app-updates': 'settings_detail_app_updates',
 } as const;
 
 type PickerOption = {
@@ -381,6 +382,18 @@ export function SettingsScreen({ navigation, route }: any) {
   const [syncOverCellular, setSyncOverCellularState] = useState(false);
   const safeIconColor = React.useCallback((color: string) => getVisibleIconColor(color, resolvedAppearance, theme.id, colors.textPrimary), [colors.textPrimary, resolvedAppearance, theme.id]);
   const homeSectionSettingsKey = profileScopedStorageKey('home_sections', user?.uid, activeProfile?.id);
+  const updatesStatusSubtitle = updateErrorMessage
+    ? t('settings_updates_unavailable_sub')
+    : updateChecking
+      ? t('settings_updates_checking_sub')
+      : availableRelease
+        ? t('settings_updates_available_sub', { version: availableRelease.versionName })
+        : (updateStatusMessage ?? t('settings_updates_status_sub'));
+  const updatesStatusValue = updateChecking
+    ? undefined
+    : availableRelease
+      ? t('settings_updates_latest_value')
+      : t('settings_updates_current_value');
 
   const defaultHomeSections = useMemo<HomeLayoutSection[]>(() => {
     if (metadataProvider === 'cinemeta') {
@@ -717,15 +730,6 @@ export function SettingsScreen({ navigation, route }: any) {
 
               {detailSection === 'general-playback' ? (
                 <>
-                  <Text style={styles.sectionTitle}>{t('settings_updates')}</Text>
-                  <View style={styles.card}>
-                    <SettingRow icon="cloud-download-outline" iconColor={safeIconColor('#22c55e')} label={t('settings_updates_auto_check')} subtitle={t('settings_updates_auto_check_sub')} right={<AppleToggle value={autoCheckEnabled} onValueChange={value => { void setAutoCheckEnabled(value); }} onColor={colors.toggleOn} />} />
-                    <View style={styles.divider} />
-                    <SettingRow icon="download-outline" iconColor={safeIconColor('#38bdf8')} label={t('settings_updates_status')} subtitle={updateErrorMessage ?? updateStatusMessage ?? t('settings_updates_status_sub')} value={availableRelease ? availableRelease.versionName : (updateChecking ? 'Checking' : (currentVersion?.versionName ?? 'Current'))} onPress={() => { void checkNow(); }} />
-                    <View style={styles.divider} />
-                    <SettingRow icon="refresh-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_updates_check_now')} subtitle={t('settings_updates_check_now_sub')} value={updateChecking ? 'Checking' : undefined} onPress={() => { void checkNow(); }} />
-                  </View>
-
                   <Text style={styles.sectionTitle}>{t('settings_general')}</Text>
                   <View style={styles.card}>
                     <SettingRow icon="language-outline" iconColor={safeIconColor('#9b5de5')} label={t('settings_language')} subtitle={t('settings_language_sub_current')} value={`${language.flag} ${language.name}`} onPress={() => setPicker('language')} />
@@ -939,6 +943,19 @@ export function SettingsScreen({ navigation, route }: any) {
                       <Text style={[styles.actionButtonText, { color: '#ffffff' }]}>{t('settings_sign_out')}</Text>
                     </TouchableOpacity>
                   ) : null}
+                </>
+              ) : null}
+
+              {detailSection === 'app-updates' ? (
+                <>
+                  <Text style={styles.sectionTitle}>{t('settings_updates')}</Text>
+                  <View style={styles.card}>
+                    <SettingRow icon="cloud-download-outline" iconColor={safeIconColor('#22c55e')} label={t('settings_updates_auto_check')} subtitle={t('settings_updates_auto_check_sub')} right={<AppleToggle value={autoCheckEnabled} onValueChange={value => { void setAutoCheckEnabled(value); }} onColor={colors.toggleOn} />} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="download-outline" iconColor={safeIconColor('#38bdf8')} label={t('settings_updates_check_now')} subtitle={updatesStatusSubtitle} value={updatesStatusValue} onPress={() => { void checkNow(); }} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="phone-portrait-outline" iconColor={safeIconColor('#64748b')} label={t('settings_updates_status')} subtitle={t('settings_updates_installed_version_sub')} value={currentVersion?.versionName ?? undefined} />
+                  </View>
                 </>
               ) : null}
             </View>

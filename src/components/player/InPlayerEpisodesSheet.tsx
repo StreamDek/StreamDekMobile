@@ -23,6 +23,26 @@ interface EpisodeInfo {
   air_date: string | null;
 }
 
+type TmdbSeasonPayload = {
+  seasons?: Array<{
+    season_number?: number | string | null;
+    seasonNumber?: number | string | null;
+    name?: string | null;
+  }> | null;
+};
+
+type TmdbEpisodePayload = {
+  episodes?: Array<{
+    episode_number?: number | string | null;
+    episodeNumber?: number | string | null;
+    name?: string | null;
+    overview?: string | null;
+    still?: string | null;
+    still_path?: string | null;
+    air_date?: string | null;
+  }> | null;
+};
+
 export interface InPlayerEpisodesSheetProps {
   visible: boolean;
   showId: string | number;
@@ -33,7 +53,7 @@ export interface InPlayerEpisodesSheetProps {
   onDismiss: () => void;
 }
 
-async function fetchJson(path: string, signal?: AbortSignal): Promise<any | null> {
+async function fetchJson<T>(path: string, signal?: AbortSignal): Promise<T | null> {
   try {
     const res = await tmdbFetch(path, signal ? { signal } : undefined);
     if (!res.ok) return null;
@@ -99,15 +119,15 @@ export function InPlayerEpisodesSheet({
   useEffect(() => {
     if (!visible || !showId) return;
     let cancelled = false;
-    fetchJson(`/tmdb/details/tv/${showId}`).then(data => {
+    fetchJson<TmdbSeasonPayload>(`/tmdb/details/tv/${showId}`).then(data => {
       if (cancelled) return;
       const raw = Array.isArray(data?.seasons) ? data.seasons : [];
       const parsed: SeasonInfo[] = raw
-        .map((s: any) => ({
+        .map((s) => ({
           season_number: Number(s?.season_number ?? s?.seasonNumber ?? 0),
           name: String(s?.name ?? `Season ${s?.season_number ?? ''}`),
         }))
-        .filter(s => s.season_number > 0)
+        .filter((season) => season.season_number > 0)
         .sort((a, b) => a.season_number - b.season_number);
       setSeasons(parsed);
       setLoadingSeasons(false);
@@ -121,16 +141,16 @@ export function InPlayerEpisodesSheet({
     let cancelled = false;
     setLoadingEpisodes(true);
     setEpisodes([]);
-    fetchJson(`/tmdb/season/${showId}/${selectedSeason}`).then(data => {
+    fetchJson<TmdbEpisodePayload>(`/tmdb/season/${showId}/${selectedSeason}`).then(data => {
       if (cancelled) return;
       const raw = Array.isArray(data?.episodes) ? data.episodes : [];
-      const parsed: EpisodeInfo[] = raw.map((ep: any) => ({
+      const parsed: EpisodeInfo[] = raw.map((ep) => ({
         episode_number: Number(ep?.episode_number ?? ep?.episodeNumber ?? 0),
         name: ep?.name ?? null,
         overview: ep?.overview ?? null,
         still: ep?.still ?? ep?.still_path ?? null,
         air_date: ep?.air_date ?? null,
-      })).filter(ep => ep.episode_number > 0);
+      })).filter((episode) => episode.episode_number > 0);
       setEpisodes(parsed);
       setLoadingEpisodes(false);
     });

@@ -21,6 +21,7 @@ import { useAddons } from '../context/AddonContext';
 import { useDebrid } from '../context/DebridContext';
 import { useTrakt } from '../context/TraktContext';
 import { useLanguage } from '../context/LanguageContext';
+import { useAppUpdate } from '../context/AppUpdateContext';
 import { PROFILE_AVATARS } from '../utils/profileApi';
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
@@ -124,6 +125,7 @@ export function SettingsShellScreen({ navigation }: any) {
   const { accounts } = useDebrid();
   const { isConnected: traktConnected } = useTrakt();
   const { t } = useLanguage();
+  const { availableRelease, isChecking, errorMessage, statusMessage, checkNow } = useAppUpdate();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const appVersion = Constants.expoConfig?.version ?? '0.0.0';
 
@@ -186,6 +188,22 @@ export function SettingsShellScreen({ navigation }: any) {
                   subtitle={t('settings_home_appearance_sub')}
                   onPress={() => navigation.navigate('SettingsDetail', { section: 'home-appearance' })}
                 />
+                <View style={styles.divider} />
+                <NavRow
+                  icon="download-outline"
+                  iconColor="#22c55e"
+                  label={t('settings_updates')}
+                  subtitle={
+                    errorMessage
+                      ? errorMessage
+                      : isChecking
+                        ? t('settings_updates_check_now_sub')
+                        : availableRelease
+                          ? `Version ${availableRelease.versionName} is available`
+                          : (statusMessage ?? t('settings_updates_sub'))
+                  }
+                  onPress={() => navigation.navigate('SettingsDetail', { section: 'general-playback' })}
+                />
               </View>
 
               <Text style={styles.sectionTitle}>{t('settings_services_section')}</Text>
@@ -235,6 +253,9 @@ export function SettingsShellScreen({ navigation }: any) {
               </View>
 
               <View style={styles.aboutBlock}>
+                <TouchableOpacity onPress={() => { void checkNow(); }} activeOpacity={0.82}>
+                  <Text style={[styles.aboutLine, { color: colors.accent }]}>{t('settings_updates_check_now')}</Text>
+                </TouchableOpacity>
                 <Text style={styles.aboutLine}>{t('settings_made_with')}</Text>
                 <Text style={styles.aboutLine}>{t('settings_version_label', { version: appVersion })}</Text>
               </View>

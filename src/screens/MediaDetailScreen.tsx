@@ -46,6 +46,7 @@ import { StackBottomNav, BOTTOM_NAV_HEIGHT } from '../components/StackBottomNav'
 import { MediaDetailSkeleton } from '../components/Skeleton';
 import { RatingBadge } from '../components/RatingBadge';
 import { getProfileStorageOwnerId, progressFileStorageKey } from '../utils/profileStorage';
+import { getStreamCapableAddons } from '../utils/addonCapabilities';
 
 
 
@@ -432,6 +433,8 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+    flexWrap: 'nowrap',
+    flexShrink: 0,
   },
   trailerBtn: {
     backgroundColor: isLightAppearance ? c.cardBg : (vividAmbient ? c.inputBg + '99' : c.inputBg),
@@ -484,6 +487,16 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     alignSelf: 'center' as const,
     marginBottom: -1,
     transform: [{ scale: 0.68 }],
+  },
+  tabLabelWrap: {
+    minWidth: 64,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
+  },
+  tabLoadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
   },
   tabText: { color: isLightAppearance ? c.textPrimary : c.subText, fontSize: 13, fontWeight: '700' },
   activeTabText: { color: isLightAppearance ? c.textPrimary : c.accentSoft },
@@ -873,7 +886,7 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   centeredActionsWrap: { paddingHorizontal: 14, gap: 10, marginBottom: 16, marginTop: 0 },
   centeredCombinedRow: {
     flexDirection: 'row' as const, justifyContent: 'center' as const,
-    gap: 8, flexWrap: 'wrap' as const, alignItems: 'center' as const,
+    gap: 8, flexWrap: 'nowrap' as const, alignItems: 'center' as const,
   },
   // Unified pill used for both tab chips AND icon buttons in centered mode
   centeredPill: {
@@ -1115,13 +1128,13 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const isMovieDetail = type !== 'tv';
   const useCompactDetailLayout = uiStyle === 'centered' || uiStyle === 'glass';
   const useGlassDetailLayout = uiStyle === 'glass';
-  const hasEnabledAddons = useMemo(
-    () => addons.some((a: any) => a.enabled),
+  const streamCapableAddons = useMemo(
+    () => getStreamCapableAddons(addons),
     [addons],
   );
   const ultraActive = ultraEntitled && ultraBoostEnabled;
-  const hasStreamSources = hasEnabledAddons || ultraActive;
-  const sourceCount = addons.filter((a: any) => a.enabled).length + (ultraActive ? 1 : 0);
+  const hasStreamSources = streamCapableAddons.length > 0 || ultraActive;
+  const sourceCount = streamCapableAddons.length + (ultraActive ? 1 : 0);
   const shouldPreloadStreams = isMovieDetail && !!media && !addonsLoading && hasStreamSources;
   // Always start as false — the reset effect below will set it to true once
   // we know whether a preload is actually needed (after media + user are ready).
@@ -1595,8 +1608,8 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
 
   // Stable signature of which addons are currently enabled (sorted for stability)
   const enabledAddonsSig = useMemo(
-    () => `${addons.filter((a: any) => a.enabled).map((a: any) => a.id).sort().join(',')}|ultra:${ultraActive ? '1' : '0'}`,
-    [addons, ultraActive],
+    () => `${streamCapableAddons.map(addon => addon.id).sort().join(',')}|ultra:${ultraActive ? '1' : '0'}`,
+    [streamCapableAddons, ultraActive],
   );
   const prevEnabledSigRef = useRef(enabledAddonsSig);
 
@@ -2406,16 +2419,20 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                     tab === 'streams' && streamsTabLocked && styles.centeredTabPillDisabled,
                   ]}
                 >
-                  {tab === 'streams' && streamsTabLoadingIndicator ? (
-                    <ActivityIndicator size="small" color={colors.accentSoft} style={styles.tabInlineSpinner} />
-                  ) : null}
-                  <Text style={[styles.centeredPillText, (useGlassDetailLayout && tab === 'seasons' ? showSeasonsPanel : activeTab === tab) && styles.centeredPillTextActive]}>
+                  <View style={styles.tabLabelWrap}>
+                    {tab === 'streams' && streamsTabLoadingIndicator ? (
+                      <View pointerEvents="none" style={styles.tabLoadingOverlay}>
+                        <ActivityIndicator size="small" color={colors.accentSoft} style={styles.tabInlineSpinner} />
+                      </View>
+                    ) : null}
+                  <Text style={[styles.centeredPillText, (useGlassDetailLayout && tab === 'seasons' ? showSeasonsPanel : activeTab === tab) && styles.centeredPillTextActive, tab === 'streams' && streamsTabLoadingIndicator && { opacity: 0.18 }]}>
                   {tab === 'streams'
                       ? `⚡ ${t('media_streams')}${streams.length > 0 ? ` (${streams.length})` : ''}`
                       : useGlassDetailLayout && tab === 'seasons'
                         ? (showSeasonsPanel ? t('media_hide_seasons') : t('media_show_seasons'))
                         : t(`media_${tab}` as any)}
                   </Text>
+                  </View>
                 </TouchableOpacity>
               ))}
               {media.trailerKey && (
@@ -2462,16 +2479,20 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                 disabled={tab === 'streams' && streamsTabLocked}
                 style={[styles.tab, (useGlassDetailLayout && tab === 'seasons' ? showSeasonsPanel : activeTab === tab) && styles.activeTab, tab === 'streams' && streamsTabLocked && styles.tabDisabled]}
               >
-                {tab === 'streams' && streamsTabLoadingIndicator ? (
-                  <ActivityIndicator size="small" color={colors.accentSoft} style={styles.tabInlineSpinner} />
-                ) : null}
-                <Text style={[styles.tabText, (useGlassDetailLayout && tab === 'seasons' ? showSeasonsPanel : activeTab === tab) && styles.activeTabText]}>
+                <View style={styles.tabLabelWrap}>
+                  {tab === 'streams' && streamsTabLoadingIndicator ? (
+                    <View pointerEvents="none" style={styles.tabLoadingOverlay}>
+                      <ActivityIndicator size="small" color={colors.accentSoft} style={styles.tabInlineSpinner} />
+                    </View>
+                  ) : null}
+                <Text style={[styles.tabText, (useGlassDetailLayout && tab === 'seasons' ? showSeasonsPanel : activeTab === tab) && styles.activeTabText, tab === 'streams' && streamsTabLoadingIndicator && { opacity: 0.18 }]}>
                   {tab === 'streams'
                     ? `⚡ ${t('media_streams')}${streams.length > 0 ? ` (${streams.length})` : ''}`
                     : useGlassDetailLayout && tab === 'seasons'
                       ? (showSeasonsPanel ? t('media_hide_seasons') : t('media_show_seasons'))
                       : t(`media_${tab}` as any)}
                 </Text>
+                </View>
               </TouchableOpacity>
             ))}
           </View>
@@ -2483,7 +2504,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
-              style={{ paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border }}
+              style={{ paddingVertical: 10 }}
               contentContainerStyle={{ paddingHorizontal: 14, gap: 8, paddingRight: 18 }}
             >
               {(['all', ...addonNames] as string[]).map(name => {
@@ -3173,7 +3194,7 @@ function StreamsTab({
   isLightAppearance: boolean;
   presentation?: 'list' | 'rail';
 }) {
-  const enabledAddons = addons.filter(a => a.enabled);
+  const enabledAddons = getStreamCapableAddons(addons);
   const hasStreamSources = enabledAddons.length > 0 || ultraActive;
   const streamSourceCount = enabledAddons.length + (ultraActive ? 1 : 0);
   const getStreamSourceLabel = useMemo(() => {
@@ -3334,14 +3355,14 @@ function StreamsTab({
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator
-        style={{ maxHeight: 150 }}
+        style={{ maxHeight: 166 }}
         contentContainerStyle={{ paddingHorizontal: 12, paddingRight: 20, paddingVertical: 10, alignItems: 'stretch' }}
         nestedScrollEnabled
       >
         {pendingCount > 0 && (
           <View style={{
             width: 154,
-            height: 128,
+            height: 144,
             marginRight: 12,
             borderRadius: 12,
             borderWidth: 1,
@@ -3358,12 +3379,12 @@ function StreamsTab({
           </View>
         )}
         {sortedVisibleStreams.map((stream, idx) => (
-          <View key={`${stream.addonName}-${stream.infoHash ?? stream.url ?? idx}`} style={{ width: Math.min(SCREEN_WIDTH * 0.82, 330), height: 128, marginRight: 12 }}>
+          <View key={`${stream.addonName}-${stream.infoHash ?? stream.url ?? idx}`} style={{ width: Math.min(SCREEN_WIDTH * 0.82, 330), height: 144, marginRight: 12 }}>
             <StreamRow
               stream={stream}
               colors={colors}
               onPlay={() => onPlay(stream)}
-              style={{ flex: 1, marginBottom: 0, alignItems: 'flex-start' }}
+              style={{ flex: 1, height: '100%', marginBottom: 0, alignItems: 'flex-start', overflow: 'hidden' }}
               sourceLabel={getStreamSourceLabel(stream.addonName)}
             />
           </View>

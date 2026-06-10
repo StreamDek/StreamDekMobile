@@ -112,9 +112,11 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 8,
     borderWidth: 1,
+    overflow: 'hidden',
   },
   meta: {
     flex: 1,
+    minWidth: 0,
   },
   sourceLabel: {
     fontSize: 9,

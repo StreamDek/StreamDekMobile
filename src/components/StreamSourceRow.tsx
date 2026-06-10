@@ -1,9 +1,11 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import { StyleProp, StyleSheet, Text, TouchableOpacity, View, ViewStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { AddonStream } from '../context/AddonContext';
 import { ThemeColors } from '../context/ThemeContext';
 import { useDisplaySettings } from '../context/DisplaySettingsContext';
+import { useFusionBadges } from '../context/FusionBadgeContext';
+import { FusionBadgeRow } from './FusionBadgeRow';
 import { formatSeeds, parseStream } from '../utils/streamParser';
 
 interface StreamSourceRowProps {
@@ -12,46 +14,15 @@ interface StreamSourceRowProps {
   onPress: () => void;
   active?: boolean;
   style?: StyleProp<ViewStyle>;
+  sourceLabel?: string;
 }
 
-export function StreamSourceRow({ stream, colors, onPress, active = false, style }: StreamSourceRowProps) {
+export function StreamSourceRow({ stream, colors, onPress, active = false, style, sourceLabel }: StreamSourceRowProps) {
   const parsed = parseStream(stream);
   const isCached = stream.cachedBy.length > 0;
   const isLightAppearance = colors.bg === '#f4f6fb';
-  const isMonochromeDark = !isLightAppearance && colors.accent === '#ffffff' && colors.buttonText === '#111111';
   const { vividAmbientEnabled } = useDisplaySettings();
-
-  const qColor = useMemo(() => {
-    if (isMonochromeDark) {
-      return { bg: colors.cardBg, text: colors.textPrimary };
-    }
-
-    const qualityColors: Record<string, { bg: string; text: string }> = {
-      '4K': {
-        bg: isLightAppearance ? 'rgba(17,24,39,0.16)' : '#FFD70022',
-        text: isLightAppearance ? '#101828' : '#FFD700',
-      },
-      '1080p': {
-        bg: isLightAppearance ? 'rgba(17,24,39,0.16)' : '#00e67622',
-        text: isLightAppearance ? '#101828' : '#00e676',
-      },
-      '720p': {
-        bg: isLightAppearance ? 'rgba(17,24,39,0.14)' : '#29b6f622',
-        text: isLightAppearance ? '#101828' : '#29b6f6',
-      },
-      '480p': {
-        bg: isLightAppearance ? 'rgba(17,24,39,0.12)' : '#78909c22',
-        text: isLightAppearance ? '#101828' : '#78909c',
-      },
-    };
-
-    return parsed.quality
-      ? (qualityColors[parsed.quality] ?? {
-          bg: isLightAppearance ? 'rgba(17,24,39,0.12)' : '#a89ff822',
-          text: isLightAppearance ? '#101828' : '#a89ff8',
-        })
-      : { bg: colors.inputBg, text: colors.mutedText };
-  }, [colors.cardBg, colors.inputBg, colors.mutedText, colors.textPrimary, isLightAppearance, isMonochromeDark, parsed.quality]);
+  const { badgePosition, showSizeBadges } = useFusionBadges();
 
   return (
     <TouchableOpacity
@@ -66,13 +37,17 @@ export function StreamSourceRow({ stream, colors, onPress, active = false, style
         style,
       ]}
     >
-      <View style={[styles.qualityBadge, { backgroundColor: qColor.bg }]}>
-        <Text style={[styles.qualityText, { color: qColor.text }]}>
-          {parsed.quality ?? '?'}
-        </Text>
-      </View>
-
       <View style={styles.meta}>
+        {!!sourceLabel && (
+          <Text style={[styles.sourceLabel, { color: colors.mutedText }]} numberOfLines={1}>
+            {sourceLabel}
+          </Text>
+        )}
+
+        {badgePosition === 'top' && (
+          <FusionBadgeRow stream={stream} style={{ marginBottom: 4 }} />
+        )}
+
         <Text style={[styles.providerLine, { color: colors.textPrimary }]} numberOfLines={1}>
           {parsed.providerLine}
         </Text>
@@ -90,7 +65,7 @@ export function StreamSourceRow({ stream, colors, onPress, active = false, style
         )}
 
         <View style={styles.badges}>
-          {parsed.size && (
+          {parsed.size && showSizeBadges && (
             <View style={[styles.badge, { backgroundColor: colors.cardBg, borderColor: colors.border }]}>
               <Text style={[styles.badgeText, { color: colors.textSecondary }]}>SIZE {parsed.size}</Text>
             </View>
@@ -111,6 +86,10 @@ export function StreamSourceRow({ stream, colors, onPress, active = false, style
             </View>
           )}
         </View>
+
+        {badgePosition === 'bottom' && (
+          <FusionBadgeRow stream={stream} style={{ marginTop: 4 }} />
+        )}
       </View>
 
       <Ionicons
@@ -134,19 +113,15 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     borderWidth: 1,
   },
-  qualityBadge: {
-    paddingHorizontal: 7,
-    paddingVertical: 5,
-    borderRadius: 6,
-    minWidth: 46,
-    alignItems: 'center',
-  },
-  qualityText: {
-    fontSize: 10,
-    fontWeight: '900',
-  },
   meta: {
     flex: 1,
+  },
+  sourceLabel: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    marginBottom: 3,
   },
   providerLine: {
     color: '#e8e8f0',

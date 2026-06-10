@@ -7,6 +7,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../../context/ThemeContext';
 import { AddonStream } from '../../context/AddonContext';
+import { useFusionBadges } from '../../context/FusionBadgeContext';
+import { FusionBadgeRow } from '../FusionBadgeRow';
 import { parseStream, formatSeeds } from '../../utils/streamParser';
 
 export interface InPlayerSourcesSheetProps {
@@ -38,16 +40,7 @@ function SourceCard({
 }) {
   const parsed = parseStream(stream);
   const isCached = stream.cachedBy.length > 0;
-
-  const qualityColors: Record<string, { bg: string; text: string }> = {
-    '4K':    { bg: '#FFD70020', text: '#FFD700' },
-    '1080p': { bg: '#00e67618', text: '#00e676' },
-    '720p':  { bg: '#29b6f618', text: '#29b6f6' },
-    '480p':  { bg: '#78909c18', text: '#78909c' },
-  };
-  const qColor = parsed.quality
-    ? (qualityColors[parsed.quality] ?? { bg: '#a89ff818', text: '#a89ff8' })
-    : { bg: 'rgba(255,255,255,0.06)', text: 'rgba(255,255,255,0.5)' };
+  const { badgePosition, showSizeBadges } = useFusionBadges();
 
   return (
     <TouchableOpacity
@@ -75,11 +68,8 @@ function SourceCard({
         )}
       </View>
 
-      {/* Quality — large */}
-      {!!parsed.quality && (
-        <View style={[styles.qualityBadge, { backgroundColor: qColor.bg }]}>
-          <Text style={[styles.qualityText, { color: qColor.text }]}>{parsed.quality}</Text>
-        </View>
+      {badgePosition === 'top' && (
+        <FusionBadgeRow stream={stream} style={{ marginBottom: 6 }} />
       )}
 
       {/* Filename */}
@@ -97,10 +87,10 @@ function SourceCard({
         {parsed.seeds != null && (
           <Text style={styles.metaItem}>👤 {formatSeeds(parsed.seeds)}</Text>
         )}
-        {!!stream.size && (
+        {!!stream.size && showSizeBadges && (
           <Text style={styles.metaItem}>💾 {stream.size}</Text>
         )}
-        {!!parsed.size && !stream.size && (
+        {!!parsed.size && !stream.size && showSizeBadges && (
           <Text style={styles.metaItem}>💾 {parsed.size}</Text>
         )}
         {isCached && stream.cachedBy.map(p => (
@@ -110,6 +100,10 @@ function SourceCard({
           <Text style={styles.metaItem}>🔗 Direct</Text>
         )}
       </View>
+
+      {badgePosition === 'bottom' && (
+        <FusionBadgeRow stream={stream} style={{ marginTop: 6 }} />
+      )}
 
       {/* Footer: addon label */}
       <Text style={styles.addonFooter}>{stream.addonName ?? stream.addonId}</Text>
@@ -380,18 +374,6 @@ const styles = StyleSheet.create({
     color: '#111',
     fontSize: 10,
     fontWeight: '800',
-  },
-  qualityBadge: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
-    marginBottom: 2,
-  },
-  qualityText: {
-    fontSize: 18,
-    fontWeight: '900',
-    letterSpacing: -0.5,
   },
   filename: {
     color: 'rgba(255,255,255,0.65)',

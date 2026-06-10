@@ -16,6 +16,9 @@ import { useAddons, AddonStream } from '../context/AddonContext';
 import { useDebrid } from '../context/DebridContext';
 import { useLanguage } from '../context/LanguageContext';
 import { useDisplaySettings } from '../context/DisplaySettingsContext';
+import { useFusionBadges } from '../context/FusionBadgeContext';
+import { FusionBadgeRow } from '../components/FusionBadgeRow';
+import { GlassBackButton } from '../components/GlassBackButton';
 import { useUIStyle } from '../context/UIStyleContext';
 import { useWatched } from '../context/WatchedContext';
 import { useWatchProgress, episodeProgressKey } from '../context/WatchProgressContext';
@@ -174,30 +177,6 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   glassHeroScrim: {
     ...StyleSheet.absoluteFillObject,
   } as any,
-  backBtn: {
-    position: 'absolute', left: 16,
-    width: 48, height: 48, borderRadius: 24,
-    backgroundColor: 'transparent',
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: isLightAppearance ? 'rgba(255,255,255,0.52)' : 'rgba(255,255,255,0.14)',
-    justifyContent: 'center', alignItems: 'center',
-    shadowColor: '#000',
-    shadowOpacity: isLightAppearance ? 0.12 : 0.24,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 10,
-  },
-  backBtnGlassTint: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.06)' : 'rgba(15,23,42,0.08)',
-  },
-  backBtnGlassHighlight: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 24,
-    borderTopWidth: 1,
-    borderTopColor: isLightAppearance ? 'rgba(255,255,255,0.30)' : 'rgba(255,255,255,0.08)',
-  },
   titleSection: {
     paddingHorizontal: 20, paddingTop: 12, paddingBottom: 16,
     borderBottomColor: c.border,
@@ -279,18 +258,7 @@ function StreamRow({ stream, colors, onPlay, isLightAppearance, glass = false }:
   const isCached = stream.cachedBy.length > 0;
   const isMonochromeDark = !isLightAppearance && colors.accent === '#ffffff' && colors.buttonText === '#111111';
   const { vividAmbientEnabled } = useDisplaySettings();
-
-  const qualityColors: Record<string, { bg: string; text: string }> = {
-    '4K':    { bg: colors.bg === '#f4f6fb' ? 'rgba(17,24,39,0.16)' : '#FFD70022', text: colors.bg === '#f4f6fb' ? '#101828' : '#FFD700' },
-    '1080p': { bg: colors.bg === '#f4f6fb' ? 'rgba(17,24,39,0.16)' : '#00e67622', text: colors.bg === '#f4f6fb' ? '#101828' : '#00e676' },
-    '720p':  { bg: colors.bg === '#f4f6fb' ? 'rgba(17,24,39,0.14)' : '#29b6f622', text: colors.bg === '#f4f6fb' ? '#101828' : '#29b6f6' },
-    '480p':  { bg: colors.bg === '#f4f6fb' ? 'rgba(17,24,39,0.12)' : '#78909c22', text: colors.bg === '#f4f6fb' ? '#101828' : '#78909c' },
-  };
-  const qColor = parsed.quality
-    ? (isMonochromeDark
-      ? { bg: colors.cardBg, text: colors.textPrimary }
-      : (qualityColors[parsed.quality] ?? { bg: colors.bg === '#f4f6fb' ? 'rgba(17,24,39,0.12)' : '#a89ff822', text: colors.bg === '#f4f6fb' ? '#101828' : '#a89ff8' }))
-    : { bg: colors.inputBg, text: colors.mutedText };
+  const { badgePosition, showSizeBadges } = useFusionBadges();
 
   const rowStyle = {
     flexDirection: 'row' as const,
@@ -322,13 +290,12 @@ function StreamRow({ stream, colors, onPlay, isLightAppearance, glass = false }:
       activeOpacity={0.75}
       style={rowStyle}
     >
-      {/* Quality badge */}
-      <View style={{ paddingHorizontal: 7, paddingVertical: 5, borderRadius: 6, backgroundColor: qColor.bg, minWidth: 46, alignItems: 'center' }}>
-        <Text style={{ fontSize: 10, fontWeight: '900', color: qColor.text }}>{parsed.quality ?? '?'}</Text>
-      </View>
-
       {/* Meta */}
       <View style={{ flex: 1 }}>
+        {badgePosition === 'top' && (
+          <FusionBadgeRow stream={stream} style={{ marginBottom: 4 }} />
+        )}
+
         {/* Provider / release group */}
         <Text style={{ color: colors.textPrimary, fontSize: 13, fontWeight: '700', marginBottom: 2 }} numberOfLines={1}>
           {parsed.providerLine}
@@ -353,7 +320,7 @@ function StreamRow({ stream, colors, onPlay, isLightAppearance, glass = false }:
 
         {/* Tag pills */}
         <View style={{ flexDirection: 'row', gap: 4, flexWrap: 'wrap' }}>
-          {parsed.size && (
+          {parsed.size && showSizeBadges && (
             <View style={{ paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: glass ? (isLightAppearance ? 'rgba(8,10,14,0.14)' : 'rgba(255,255,255,0.06)') : colors.cardBg, borderWidth: 1, borderColor: glass ? (isLightAppearance ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.10)') : colors.border }}>
               <Text style={{ color: colors.mutedText, fontSize: 9, fontWeight: '700' }}>💾 {parsed.size}</Text>
             </View>
@@ -374,6 +341,10 @@ function StreamRow({ stream, colors, onPlay, isLightAppearance, glass = false }:
             </View>
           )}
         </View>
+
+        {badgePosition === 'bottom' && (
+          <FusionBadgeRow stream={stream} style={{ marginTop: 4 }} />
+        )}
       </View>
 
       <Ionicons name="play-circle-outline" size={22} color={isCached ? (isMonochromeDark ? colors.textPrimary : colors.toggleOn) : colors.accentSoft} />
@@ -961,31 +932,15 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
           </View>
         ) : null}
         {/* Back button — fixed outside scroll so it never moves */}
-        <TouchableOpacity
+        <GlassBackButton
           onPress={() => navigation.goBack()}
-          style={[styles.backBtn, { top: insets.top + 12, zIndex: 20 }]}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-        >
-          <BlurView
-            tint={isLightAppearance ? 'light' : 'dark'}
-            intensity={isLightAppearance ? 80 : 72}
-            blurMethod={Platform.OS === 'android' ? 'dimezisBlurViewSdk31Plus' : undefined}
-            blurTarget={Platform.OS === 'android' ? blurTargetRef : undefined}
-            style={StyleSheet.absoluteFillObject}
-          />
-          <View pointerEvents="none" style={styles.backBtnGlassTint} />
-          <View
-            pointerEvents="none"
-            style={[StyleSheet.absoluteFillObject, {
-              borderRadius: 24,
-              borderWidth: 1,
-              borderColor: isLightAppearance ? 'rgba(255,255,255,0.56)' : 'rgba(255,255,255,0.16)',
-              backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.08)' : 'rgba(10,12,18,0.10)',
-            }]}
-          />
-          <View pointerEvents="none" style={styles.backBtnGlassHighlight} />
-          <Ionicons name="chevron-back" size={20} color={isLightAppearance ? colors.textPrimary : '#ffffff'} />
-        </TouchableOpacity>
+          top={insets.top + 12}
+          left={16}
+          zIndex={20}
+          iconSize={20}
+          blurTarget={blurTargetRef}
+          iconColor={isLightAppearance ? colors.textPrimary : '#ffffff'}
+        />
         <PageWrapper
           style={useGlassDetailLayout ? styles.glassContainer : styles.container}
           contentContainerStyle={{ flexGrow: 1 }}

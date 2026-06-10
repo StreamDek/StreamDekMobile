@@ -38,6 +38,7 @@ import { RadialLoaderScreen } from './src/components/RadialLoaderScreen';
 import { TorrentServerProvider } from './src/context/TorrentServerContext';
 import { StreamSelectionProvider } from './src/context/StreamSelectionContext';
 import { PlaybackSettingsProvider } from './src/context/PlaybackSettingsContext';
+import { FusionBadgeProvider } from './src/context/FusionBadgeContext';
 import { SubtitleProvider } from './src/context/SubtitleContext';
 import { UIStyleProvider } from './src/context/UIStyleContext';
 import { DisplaySettingsProvider } from './src/context/DisplaySettingsContext';
@@ -307,6 +308,7 @@ export default function App() {
                         <TorrentServerProvider>
                           <StreamSelectionProvider>
                             <PlaybackSettingsProvider>
+                              <FusionBadgeProvider>
                               <SubtitleProvider>
                               <DebridProvider>
                                 <AddonProvider>
@@ -320,6 +322,7 @@ export default function App() {
                                 </AddonProvider>
                               </DebridProvider>
                               </SubtitleProvider>
+                              </FusionBadgeProvider>
                             </PlaybackSettingsProvider>
                           </StreamSelectionProvider>
                         </TorrentServerProvider>

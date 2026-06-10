@@ -11,6 +11,7 @@ import {
   TextInput,
   ActivityIndicator,
   Dimensions,
+  Image,
 } from 'react-native';
 import Slider from '@react-native-community/slider';
 import DraggableFlatList, { RenderItemParams } from 'react-native-draggable-flatlist';
@@ -29,6 +30,8 @@ import { useDisplaySettings } from '../context/DisplaySettingsContext';
 import { useTmdbApiKey } from '../context/TmdbApiKeyContext';
 import { useStreamSelectionSettings } from '../context/StreamSelectionContext';
 import { usePlaybackSettings } from '../context/PlaybackSettingsContext';
+import { useFusionBadges, MAX_FUSION_BADGE_URLS } from '../context/FusionBadgeContext';
+import { groupSourceFilters, countEnabledFilters, countGroupsWithFilters, FusionBadgeSource } from '../utils/fusionBadges';
 import { useSubtitles } from '../context/SubtitleContext';
 import { useAuth } from '../context/AuthContext';
 import { useProfile } from '../context/ProfileContext';
@@ -55,6 +58,7 @@ const SECTION_TITLE_KEYS = {
   'home-appearance': 'settings_detail_home_appearance',
   'account-services': 'settings_detail_account_services',
   'app-updates': 'settings_detail_app_updates',
+  'streams': 'settings_detail_streams',
 } as const;
 
 type PickerOption = {
@@ -71,7 +75,7 @@ function getVisibleIconColor(color: string, resolvedAppearance: 'dark' | 'light'
   return color;
 }
 
-type PickerKind = 'appearance' | 'theme' | 'language' | 'quality' | 'fileSize' | 'pageStyle' | 'continueStyle' | 'metadataProvider' | 'decoder' | 'surface' | 'streamingMode' | null;
+type PickerKind = 'appearance' | 'theme' | 'language' | 'quality' | 'fileSize' | 'pageStyle' | 'continueStyle' | 'metadataProvider' | 'decoder' | 'surface' | 'streamingMode' | 'badgePosition' | null;
 type HomeLayoutSection = { id: string; title: string; endpoint: string; enabled: boolean };
 const CURRENT_YEAR = new Date().getFullYear();
 function makeStyles(c: ThemeColors) {
@@ -205,6 +209,51 @@ function makeStyles(c: ThemeColors) {
     layoutDragActive: {
       backgroundColor: c.cardBgElevated ?? c.cardBg,
       borderRadius: 16,
+    },
+    badgeUrlCard: {
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 16,
+      padding: 14,
+      gap: 8,
+      backgroundColor: c.cardBgElevated ?? c.cardBg,
+    },
+    badgeUrlText: { color: c.textPrimary, fontSize: 13, fontWeight: '700', fontFamily: 'monospace' },
+    badgeUrlStatus: { color: c.textSecondary, fontSize: 12 },
+    badgeUrlStatusRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    badgeUrlError: { color: '#ef4444', fontSize: 12, fontWeight: '600' },
+    badgeUrlActions: { flexDirection: 'row', gap: 10, marginTop: 2 },
+    badgeUrlActionButton: {
+      width: 34,
+      height: 34,
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: c.border,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    badgeGroupTitle: {
+      color: c.textPrimary,
+      fontSize: 13,
+      fontWeight: '800',
+      letterSpacing: 0.4,
+      textTransform: 'uppercase',
+      marginBottom: 10,
+    },
+    badgeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+    badgePreviewItem: {
+      alignItems: 'center',
+      gap: 6,
+      width: 84,
+    },
+    badgePreviewImage: {
+      width: 64,
+      height: 26,
+    },
+    badgePreviewLabel: {
+      color: c.textSecondary,
+      fontSize: 10,
+      textAlign: 'center',
     },
   });
 }
@@ -371,6 +420,19 @@ export function SettingsScreen({ navigation, route }: any) {
     setNextEpisodeThresholdMinutes,
   } = usePlaybackSettings();
   const { autoLoadEnabled, setAutoLoadEnabled, preferHI, setPreferHI, preferForced, setPreferForced } = useSubtitles();
+  const {
+    fusionBadgesEnabled,
+    setFusionBadgesEnabled,
+    showSizeBadges,
+    setShowSizeBadges,
+    badgePosition,
+    setBadgePosition,
+    badgeUrls,
+    addBadgeUrl,
+    removeBadgeUrl,
+    refreshBadgeUrl,
+    sources: fusionBadgeSources,
+  } = useFusionBadges();
   const { colors } = theme;
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const [picker, setPicker] = useState<PickerKind>(null);
@@ -380,6 +442,11 @@ export function SettingsScreen({ navigation, route }: any) {
   const [introDbDraft, setIntroDbDraft] = useState(introDbApiKey);
   const [syncRefreshing, setSyncRefreshing] = useState(false);
   const [syncOverCellular, setSyncOverCellularState] = useState(false);
+  const [showBadgeUrlsModal, setShowBadgeUrlsModal] = useState(false);
+  const [badgeUrlDraft, setBadgeUrlDraft] = useState('');
+  const [badgeUrlSubmitting, setBadgeUrlSubmitting] = useState(false);
+  const [badgeUrlError, setBadgeUrlError] = useState<string | null>(null);
+  const [previewBadgeUrl, setPreviewBadgeUrl] = useState<string | null>(null);
   const safeIconColor = React.useCallback((color: string) => getVisibleIconColor(color, resolvedAppearance, theme.id, colors.textPrimary), [colors.textPrimary, resolvedAppearance, theme.id]);
   const homeSectionSettingsKey = profileScopedStorageKey('home_sections', user?.uid, activeProfile?.id);
   const updatesStatusSubtitle = updateErrorMessage
@@ -525,6 +592,14 @@ export function SettingsScreen({ navigation, route }: any) {
     { value: 'surface', label: t('settings_surface_view') },
     { value: 'texture', label: t('settings_texture_view') },
   ];
+  const badgePositionOptions: PickerOption[] = [
+    { value: 'top', label: t('settings_badge_position_top') },
+    { value: 'bottom', label: t('settings_badge_position_bottom') },
+  ];
+  const badgePositionValueLabelMap: Record<string, string> = {
+    top: t('settings_badge_position_top'),
+    bottom: t('settings_badge_position_bottom'),
+  };
   const qualityValueLabelMap: Record<string, string> = {
     '4k': '4K',
     '1080p': '1080p',
@@ -594,6 +669,7 @@ export function SettingsScreen({ navigation, route }: any) {
     : picker === 'metadataProvider' ? metadataOptions
     : picker === 'decoder' ? decoderOptions
     : picker === 'surface' ? surfaceOptions
+    : picker === 'badgePosition' ? badgePositionOptions
     : [];
 
   const pickerValue = picker === 'appearance' ? appearance
@@ -607,6 +683,7 @@ export function SettingsScreen({ navigation, route }: any) {
     : picker === 'metadataProvider' ? metadataProvider
     : picker === 'decoder' ? decoderMode
     : picker === 'surface' ? renderSurface
+    : picker === 'badgePosition' ? badgePosition
     : '';
 
   const handlePickerSelect = (value: string | number) => {
@@ -630,6 +707,7 @@ export function SettingsScreen({ navigation, route }: any) {
       case 'metadataProvider': void setMetadataProvider(value as any); break;
       case 'decoder': void setDecoderMode(value as any); break;
       case 'surface': void setRenderSurface(value as any); break;
+      case 'badgePosition': void setBadgePosition(value as any); break;
       default: break;
     }
   };
@@ -666,6 +744,33 @@ export function SettingsScreen({ navigation, route }: any) {
       setSyncRefreshing(false);
     }
   }, [checkStatus, refreshAccounts, refreshAddons, syncRefreshing, user]);
+
+  const handleAddBadgeUrl = React.useCallback(async () => {
+    const url = badgeUrlDraft.trim();
+    if (!url || badgeUrlSubmitting) return;
+
+    setBadgeUrlSubmitting(true);
+    setBadgeUrlError(null);
+    try {
+      const result = await addBadgeUrl(url);
+      if (result.ok) {
+        setBadgeUrlDraft('');
+      } else {
+        setBadgeUrlError(result.error ?? t('settings_fusion_badge_url_error'));
+      }
+    } finally {
+      setBadgeUrlSubmitting(false);
+    }
+  }, [addBadgeUrl, badgeUrlDraft, badgeUrlSubmitting, t]);
+
+  const totalActiveFusionBadges = useMemo(() => {
+    return badgeUrls.reduce((sum, url) => {
+      const source = fusionBadgeSources[url]?.source;
+      return sum + (source ? countEnabledFilters(source) : 0);
+    }, 0);
+  }, [badgeUrls, fusionBadgeSources]);
+
+  const previewSource: FusionBadgeSource | null = previewBadgeUrl ? (fusionBadgeSources[previewBadgeUrl]?.source ?? null) : null;
 
   const persistHomeLayoutSections = React.useCallback(async (sections: HomeLayoutSection[]) => {
     setHomeLayoutSections(sections);
@@ -958,13 +1063,28 @@ export function SettingsScreen({ navigation, route }: any) {
                   </View>
                 </>
               ) : null}
+
+              {detailSection === 'streams' ? (
+                <>
+                  <Text style={styles.sectionTitle}>{t('settings_fusion_style')}</Text>
+                  <View style={styles.card}>
+                    <SettingRow icon="pricetags-outline" iconColor={safeIconColor('#ec4899')} label={t('settings_fusion_badges_enabled')} subtitle={t('settings_fusion_badges_enabled_sub')} right={<AppleToggle value={fusionBadgesEnabled} onValueChange={value => { void setFusionBadgesEnabled(value); }} onColor={colors.toggleOn} />} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="archive-outline" iconColor={safeIconColor('#f97316')} label={t('settings_show_size_badges')} subtitle={t('settings_show_size_badges_sub')} right={<AppleToggle value={showSizeBadges} onValueChange={value => { void setShowSizeBadges(value); }} onColor={colors.toggleOn} />} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="swap-vertical-outline" iconColor={safeIconColor('#22d3ee')} label={t('settings_badge_position')} subtitle={t('settings_badge_position_sub')} value={badgePositionValueLabelMap[badgePosition] ?? badgePosition} onPress={() => setPicker('badgePosition')} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="link-outline" iconColor={safeIconColor('#a78bfa')} label={t('settings_fusion_badge_urls')} subtitle={t('settings_fusion_badge_urls_sub', { count: badgeUrls.length, max: MAX_FUSION_BADGE_URLS, badges: totalActiveFusionBadges })} onPress={() => setShowBadgeUrlsModal(true)} />
+                  </View>
+                </>
+              ) : null}
             </View>
           </ScrollView>
         </View>
       </BlurTargetView>
       <PickerModal
         visible={picker !== null}
-        title={picker === 'appearance' ? t('settings_appearance') : picker === 'theme' ? t('settings_theme') : picker === 'language' ? t('settings_language') : picker === 'quality' ? t('settings_preferred_stream_quality') : picker === 'fileSize' ? t('settings_max_file_size') : picker === 'streamingMode' ? t('settings_streaming_mode') : picker === 'pageStyle' ? t('settings_page_style') : picker === 'continueStyle' ? t('settings_continue_watching_style') : picker === 'metadataProvider' ? t('settings_catalog_metadata') : picker === 'decoder' ? t('settings_decoder_mode') : picker === 'surface' ? t('settings_render_surface') : t('settings_picker_choose')}
+        title={picker === 'appearance' ? t('settings_appearance') : picker === 'theme' ? t('settings_theme') : picker === 'language' ? t('settings_language') : picker === 'quality' ? t('settings_preferred_stream_quality') : picker === 'fileSize' ? t('settings_max_file_size') : picker === 'streamingMode' ? t('settings_streaming_mode') : picker === 'pageStyle' ? t('settings_page_style') : picker === 'continueStyle' ? t('settings_continue_watching_style') : picker === 'metadataProvider' ? t('settings_catalog_metadata') : picker === 'decoder' ? t('settings_decoder_mode') : picker === 'surface' ? t('settings_render_surface') : picker === 'badgePosition' ? t('settings_badge_position') : t('settings_picker_choose')}
         subtitle={picker === 'metadataProvider' ? t('settings_catalog_metadata_sub') : undefined}
         options={pickerOptions}
         selectedValue={pickerValue as any}
@@ -995,6 +1115,107 @@ export function SettingsScreen({ navigation, route }: any) {
             </View>
           </Pressable>
           </GestureHandlerRootView>
+        </Pressable>
+      </Modal>
+      <Modal visible={showBadgeUrlsModal} transparent animationType="slide" statusBarTranslucent onRequestClose={() => setShowBadgeUrlsModal(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setShowBadgeUrlsModal(false)}>
+          <Pressable style={[styles.modalCard, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
+            <Text style={styles.modalTitle}>{t('settings_fusion_badge_urls_modal_title')}</Text>
+            <Text style={styles.modalSub}>{t('settings_fusion_badge_urls_modal_sub', { max: MAX_FUSION_BADGE_URLS })}</Text>
+
+            <ScrollView style={styles.modalScroll} contentContainerStyle={{ gap: 12, paddingBottom: 4 }} showsVerticalScrollIndicator={false}>
+              {badgeUrls.length === 0 ? (
+                <Text style={styles.rowSub}>{t('settings_fusion_badge_urls_empty')}</Text>
+              ) : badgeUrls.map(url => {
+                const state = fusionBadgeSources[url];
+                const source = state?.source;
+                return (
+                  <View key={url} style={styles.badgeUrlCard}>
+                    <Text style={styles.badgeUrlText} numberOfLines={1}>{url}</Text>
+                    {state?.loading ? (
+                      <View style={styles.badgeUrlStatusRow}>
+                        <ActivityIndicator size="small" color={colors.accent} />
+                      </View>
+                    ) : state?.error ? (
+                      <Text style={styles.badgeUrlError}>{t('settings_fusion_badge_url_error')}</Text>
+                    ) : source ? (
+                      <Text style={styles.badgeUrlStatus}>
+                        {t('settings_fusion_badge_url_active')} · {t('settings_fusion_badge_url_status', { enabled: countEnabledFilters(source), groups: countGroupsWithFilters(source) })}
+                      </Text>
+                    ) : null}
+                    <View style={styles.badgeUrlActions}>
+                      <TouchableOpacity onPress={() => setPreviewBadgeUrl(url)} style={styles.badgeUrlActionButton} activeOpacity={0.78}>
+                        <Ionicons name="eye-outline" size={18} color={colors.textSecondary} />
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={() => { void refreshBadgeUrl(url); }} style={styles.badgeUrlActionButton} activeOpacity={0.78}>
+                        <Ionicons name="refresh-outline" size={18} color={colors.textSecondary} />
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={() => { void removeBadgeUrl(url); }} style={styles.badgeUrlActionButton} activeOpacity={0.78}>
+                        <Ionicons name="trash-outline" size={18} color="#ef4444" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                );
+              })}
+            </ScrollView>
+
+            {badgeUrls.length < MAX_FUSION_BADGE_URLS ? (
+              <View style={{ gap: 10, marginTop: 12 }}>
+                <TextInput
+                  value={badgeUrlDraft}
+                  onChangeText={text => { setBadgeUrlDraft(text); setBadgeUrlError(null); }}
+                  placeholder={t('settings_fusion_badge_url_placeholder')}
+                  placeholderTextColor={colors.placeholder}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  style={styles.textInput}
+                />
+                {badgeUrlError ? <Text style={styles.badgeUrlError}>{badgeUrlError}</Text> : null}
+                <TouchableOpacity
+                  style={[styles.actionButton, { backgroundColor: colors.accent, opacity: badgeUrlSubmitting ? 0.6 : 1 }]}
+                  onPress={() => { void handleAddBadgeUrl(); }}
+                  activeOpacity={0.82}
+                  disabled={badgeUrlSubmitting}
+                >
+                  {badgeUrlSubmitting ? (
+                    <ActivityIndicator size="small" color={colors.buttonText} />
+                  ) : (
+                    <Text style={[styles.actionButtonText, { color: colors.buttonText }]}>{t('settings_fusion_badge_url_import')}</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <Text style={[styles.helper, { paddingHorizontal: 0 }]}>{t('settings_fusion_badge_urls_limit', { max: MAX_FUSION_BADGE_URLS })}</Text>
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
+      <Modal visible={!!previewBadgeUrl} transparent animationType="slide" statusBarTranslucent onRequestClose={() => setPreviewBadgeUrl(null)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setPreviewBadgeUrl(null)}>
+          <Pressable style={[styles.modalCard, { paddingBottom: insets.bottom + 16, maxHeight: Math.floor(windowHeight * 0.8) }]} onPress={() => {}}>
+            <Text style={styles.modalTitle}>{t('settings_fusion_badge_preview_title')}</Text>
+            {previewBadgeUrl ? <Text style={styles.modalSub} numberOfLines={1}>{previewBadgeUrl}</Text> : null}
+            {previewSource ? (
+              <Text style={styles.layoutHint}>{t('settings_fusion_badge_preview_count', { count: countEnabledFilters(previewSource) })}</Text>
+            ) : null}
+            <ScrollView style={styles.modalScroll} contentContainerStyle={{ gap: 16, paddingBottom: 24 }} showsVerticalScrollIndicator={false}>
+              {previewSource ? groupSourceFilters(previewSource).map(({ group, badges }) => (
+                <View key={group.id || 'special'}>
+                  <Text style={styles.badgeGroupTitle}>{group.name}</Text>
+                  <View style={styles.badgeGrid}>
+                    {badges.map(badge => (
+                      <View key={badge.id} style={styles.badgePreviewItem}>
+                        <Image source={{ uri: badge.imageURL }} resizeMode="contain" style={styles.badgePreviewImage} />
+                        <Text style={styles.badgePreviewLabel} numberOfLines={1}>{badge.name}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )) : (
+                <ActivityIndicator size="small" color={colors.accent} />
+              )}
+            </ScrollView>
+          </Pressable>
         </Pressable>
       </Modal>
       <StackBottomNav activeTab="Settings" blurTarget={blurTargetRef} />

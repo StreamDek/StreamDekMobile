@@ -20,6 +20,7 @@ import { PrimaryActionButton, getPrimaryActionPalette } from '../components/Prim
 import { ActionSheet } from '../components/ActionSheet';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import { StreamSourceRow } from '../components/StreamSourceRow';
+import { GlassBackButton } from '../components/GlassBackButton';
 import { useAuth } from '../context/AuthContext';
 import { useProfile } from '../context/ProfileContext';
 import { useTheme, ThemeColors } from '../context/ThemeContext';
@@ -281,30 +282,6 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   glassHeroImageScrim: {
     ...StyleSheet.absoluteFillObject,
   } as any,
-  glassBackBtn: {
-    top: 0,
-    left: 16,
-    zIndex: 5,
-    borderWidth: 0,
-    borderColor: 'transparent',
-  },
-  glassBackSurface: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: isLightAppearance ? 'rgba(255,255,255,0.56)' : 'rgba(255,255,255,0.16)',
-    backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.08)' : 'rgba(10,12,18,0.10)',
-  },
-  backBtnGlassTint: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.06)' : 'rgba(15,23,42,0.08)',
-  },
-  backBtnGlassHighlight: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 24,
-    borderTopWidth: 1,
-    borderTopColor: isLightAppearance ? 'rgba(255,255,255,0.30)' : 'rgba(255,255,255,0.08)',
-  },
   backdropGlassOverlay: {
     position: 'absolute',
     left: 8,
@@ -394,21 +371,6 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     borderRadius: 16,
   },
   backdropGradient: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 208 },
-  backBtn: {
-    position: 'absolute', top: 0, left: 16,
-    width: 48, height: 48, borderRadius: 24,
-    backgroundColor: 'transparent',
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: isLightAppearance ? 'rgba(255,255,255,0.48)' : 'rgba(255,255,255,0.14)',
-    justifyContent: 'center', alignItems: 'center',
-    shadowColor: '#000',
-    shadowOpacity: isLightAppearance ? 0.12 : 0.24,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 10,
-  },
-  backText: { color: isLightAppearance ? c.textPrimary : '#fff', fontSize: 28, fontWeight: '300', lineHeight: 34, marginTop: -2 },
   metaRow: { flexDirection: 'row', padding: 14, paddingTop: 12, marginTop: -50, gap: 16 },
   poster: { width: 100, height: 150, borderRadius: 12, borderWidth: 2, borderColor: c.accent + '44' },
   metaInfo: { flex: 1, paddingTop: 60 },
@@ -1997,19 +1959,13 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
             </View>
           ) : null}
           {useGlassDetailLayout ? (
-            <TouchableOpacity onPress={() => navigation.goBack()} style={[styles.backBtn, styles.glassBackBtn, { top: insets.top + 14 }]}>
-              <BlurView
-                tint={isLightAppearance ? 'light' : 'dark'}
-                intensity={isLightAppearance ? 100 : 118}
-                blurMethod={Platform.OS === 'android' ? 'dimezisBlurViewSdk31Plus' : undefined}
-                blurTarget={Platform.OS === 'android' ? blurTargetRef : undefined}
-                style={StyleSheet.absoluteFillObject}
-              />
-              <View pointerEvents="none" style={styles.backBtnGlassTint} />
-              <View pointerEvents="none" style={styles.glassBackSurface} />
-              <View pointerEvents="none" style={styles.backBtnGlassHighlight} />
-              <Ionicons name="chevron-back" size={24} color={isLightAppearance ? colors.textPrimary : '#fff'} />
-            </TouchableOpacity>
+            <GlassBackButton
+              onPress={() => navigation.goBack()}
+              top={insets.top + 14}
+              left={16}
+              blurTarget={blurTargetRef}
+              iconColor={isLightAppearance ? colors.textPrimary : '#fff'}
+            />
           ) : null}
           <PageWrapper
             style={useGlassDetailLayout ? styles.glassContainer : styles.container}
@@ -3180,19 +3136,14 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
       </View>
         </PageWrapper>
         {!useGlassDetailLayout ? (
-          <TouchableOpacity onPress={() => navigation.goBack()} style={[styles.backBtn, { top: insets.top + 10, zIndex: 40 }]}>
-            <BlurView
-              tint={isLightAppearance ? 'light' : 'dark'}
-              intensity={isLightAppearance ? 100 : 118}
-              blurMethod={Platform.OS === 'android' ? 'dimezisBlurViewSdk31Plus' : undefined}
-              blurTarget={Platform.OS === 'android' ? blurTargetRef : undefined}
-              style={StyleSheet.absoluteFillObject}
-            />
-            <View pointerEvents="none" style={styles.backBtnGlassTint} />
-            <View pointerEvents="none" style={styles.glassBackSurface} />
-            <View pointerEvents="none" style={styles.backBtnGlassHighlight} />
-            <Ionicons name="chevron-back" size={24} color={isLightAppearance ? colors.textPrimary : '#fff'} />
-          </TouchableOpacity>
+          <GlassBackButton
+            onPress={() => navigation.goBack()}
+            top={insets.top + 10}
+            left={16}
+            zIndex={40}
+            blurTarget={blurTargetRef}
+            iconColor={isLightAppearance ? colors.textPrimary : '#fff'}
+          />
         ) : null}
       </BlurTargetView>
       <StackBottomNav blurTarget={blurTargetRef} />
@@ -3408,7 +3359,13 @@ function StreamsTab({
         )}
         {sortedVisibleStreams.map((stream, idx) => (
           <View key={`${stream.addonName}-${stream.infoHash ?? stream.url ?? idx}`} style={{ width: Math.min(SCREEN_WIDTH * 0.82, 330), height: 128, marginRight: 12 }}>
-            <StreamRow stream={stream} colors={colors} onPlay={() => onPlay(stream)} style={{ flex: 1, marginBottom: 0, alignItems: 'flex-start' }} />
+            <StreamRow
+              stream={stream}
+              colors={colors}
+              onPlay={() => onPlay(stream)}
+              style={{ flex: 1, marginBottom: 0, alignItems: 'flex-start' }}
+              sourceLabel={getStreamSourceLabel(stream.addonName)}
+            />
           </View>
         ))}
       </ScrollView>
@@ -3472,6 +3429,6 @@ function StreamsTab({
   );
 }
 
-function StreamRow({ stream, colors, onPlay, style }: { stream: AddonStream; colors: any; onPlay: () => void; style?: any }) {
-  return <StreamSourceRow stream={stream} colors={colors} onPress={onPlay} style={style} />;
+function StreamRow({ stream, colors, onPlay, style, sourceLabel }: { stream: AddonStream; colors: any; onPlay: () => void; style?: any; sourceLabel?: string }) {
+  return <StreamSourceRow stream={stream} colors={colors} onPress={onPlay} style={style} sourceLabel={sourceLabel} />;
 }

@@ -148,10 +148,28 @@ function parseProviderLine(stream: AddonStream): string {
   return nameLine || stream.addonName;
 }
 
+const RESOLUTION_TOKEN_PATTERN = /[\s.\-_]*\b(?:2160p|4k|uhd|1440p|1080p|720p|576p|480p|360p)\b[\s.\-_]*/gi;
+
+/**
+ * Strips resolution tokens (1080p, 4K, etc.) from raw scene-release filenames,
+ * since they're now shown via Fusion Badges. Only applied to unformatted
+ * filenames — addon-curated titles/descriptions are left as-is.
+ */
+function stripResolutionTokens(text: string): string {
+  return text
+    .replace(RESOLUTION_TOKEN_PATTERN, match => (match.includes('.') ? '.' : ' '))
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\.{2,}/g, '.')
+    .replace(/^[\s.\-_]+|[\s.\-_]+$/g, '')
+    .trim();
+}
+
 function parseFileTitle(stream: AddonStream): string | null {
-  // Prefer behaviorHints.filename if available
-  if (stream.behaviorHints?.filename) return stream.behaviorHints.filename;
-  // Otherwise, take the first non-empty line of the title description
+  // Prefer behaviorHints.filename if available — these are raw scene-release
+  // filenames, so strip resolution tokens already covered by Fusion Badges.
+  if (stream.behaviorHints?.filename) return stripResolutionTokens(stream.behaviorHints.filename);
+  // Otherwise, take the first non-empty line of the title description. Addons
+  // such as AIOStreams already provide a nicely formatted result — preserve it as-is.
   const title = `${stream.title ?? ''}\n${stream.description ?? ''}`
     .split('\n')
     .map(l => l.trim())

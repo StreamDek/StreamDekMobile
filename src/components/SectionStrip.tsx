@@ -13,6 +13,7 @@ interface SectionStripProps {
   onItemPress: (item: any) => void;
   onItemLongPress?: (item: any) => void;
   loading?: boolean;
+  badgeLabel?: string;
   cardVariant?: 'portrait' | 'landscape';
   cardLayout?: 'stacked' | 'horizontal';
   /** Override the default MediaCard with a custom renderer. */
@@ -28,6 +29,16 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     paddingHorizontal: 20, marginBottom: 14,
   },
   sectionTitle: { color: c.textPrimary, fontSize: 23, fontWeight: '700', letterSpacing: 0.3 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1, paddingRight: 12 },
+  badge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: c.accent + '44',
+    backgroundColor: c.accent + '12',
+  },
+  badgeText: { color: c.accentSoft, fontSize: 10, fontWeight: '800', letterSpacing: 0.7, textTransform: 'uppercase' },
   viewAllBtn: {
     paddingVertical: 4, paddingHorizontal: 10, borderRadius: 20,
     borderWidth: 1, borderColor: c.accent + '55', backgroundColor: c.accent + '18',
@@ -36,7 +47,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   list: { paddingHorizontal: 20 },
 });
 
-export const SectionStrip = memo<SectionStripProps>(({ title, data, onViewAll, onItemPress, onItemLongPress, loading = false, cardVariant = 'portrait', cardLayout = 'stacked', renderCard }) => {
+export const SectionStrip = memo<SectionStripProps>(({ title, data, onViewAll, onItemPress, onItemLongPress, loading = false, badgeLabel, cardVariant = 'portrait', cardLayout = 'stacked', renderCard }) => {
   const { theme: { colors } } = useTheme();
   const { t } = useLanguage();
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -67,7 +78,14 @@ export const SectionStrip = memo<SectionStripProps>(({ title, data, onViewAll, o
           </>
         ) : (
           <>
-            <Text style={styles.sectionTitle}>{title}</Text>
+            <View style={styles.titleRow}>
+              <Text style={styles.sectionTitle}>{title}</Text>
+              {badgeLabel ? (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>{badgeLabel}</Text>
+                </View>
+              ) : null}
+            </View>
             <TouchableOpacity onPress={onViewAll} activeOpacity={0.7} style={styles.viewAllBtn}>
               <Text style={styles.viewAllText}>{t('common_view_all')}</Text>
             </TouchableOpacity>

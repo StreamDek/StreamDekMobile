@@ -12,6 +12,8 @@ import {
   ActivityIndicator,
   Dimensions,
   Image,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import Slider from '@react-native-community/slider';
 import DraggableFlatList, { RenderItemParams } from 'react-native-draggable-flatlist';
@@ -45,6 +47,7 @@ import { invalidateSharedCache } from '../utils/sharedDataCache';
 import { checkSyncAllowed, getSyncOverCellular, setSyncOverCellular } from '../utils/cellularGuard';
 import { Storage } from '../utils/storage';
 import { profileScopedStorageKey } from '../utils/profileStorage';
+import { buildAddonHomeSections, buildDefaultHomeSections } from '../utils/homeCatalogSections';
 import {
   CinematicSkeleton,
   GlassSkeleton,
@@ -78,6 +81,16 @@ function getVisibleIconColor(color: string, resolvedAppearance: 'dark' | 'light'
 type PickerKind = 'appearance' | 'theme' | 'language' | 'quality' | 'fileSize' | 'pageStyle' | 'continueStyle' | 'metadataProvider' | 'decoder' | 'surface' | 'streamingMode' | 'badgePosition' | null;
 type HomeLayoutSection = { id: string; title: string; endpoint: string; enabled: boolean };
 const CURRENT_YEAR = new Date().getFullYear();
+function getHomeSectionStorageKeys(userId: string | null | undefined, profileId: string | null | undefined): string[] {
+  const keys = [
+    profileScopedStorageKey('home_sections', userId, profileId),
+  ];
+  if (userId && profileId) {
+    keys.push(profileScopedStorageKey('home_sections', userId, null));
+  }
+  keys.push('home_sections');
+  return Array.from(new Set(keys));
+}
 function makeStyles(c: ThemeColors) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: c.bg },
@@ -380,7 +393,7 @@ export function SettingsScreen({ navigation, route }: any) {
   const detailSection = route?.params?.section ?? 'general-playback';
   const { user, signOut } = useAuth();
   const { activeProfile } = useProfile();
-  const { refreshAddons } = useAddons();
+  const { addons, refreshAddons } = useAddons();
   const { refreshAccounts } = useDebrid();
   const { checkStatus } = useTrakt();
   const { config: torrentServerConfig, status: torrentServerStatus, updateConfig: updateTorrentServerConfig } = useTorrentServer();
@@ -448,7 +461,10 @@ export function SettingsScreen({ navigation, route }: any) {
   const [badgeUrlError, setBadgeUrlError] = useState<string | null>(null);
   const [previewBadgeUrl, setPreviewBadgeUrl] = useState<string | null>(null);
   const safeIconColor = React.useCallback((color: string) => getVisibleIconColor(color, resolvedAppearance, theme.id, colors.textPrimary), [colors.textPrimary, resolvedAppearance, theme.id]);
-  const homeSectionSettingsKey = profileScopedStorageKey('home_sections', user?.uid, activeProfile?.id);
+  const homeSectionStorageKeys = useMemo(
+    () => getHomeSectionStorageKeys(user?.uid, activeProfile?.id),
+    [activeProfile?.id, user?.uid],
+  );
   const updatesStatusSubtitle = updateErrorMessage
     ? t('settings_updates_unavailable_sub')
     : updateChecking
@@ -463,28 +479,20 @@ export function SettingsScreen({ navigation, route }: any) {
       : t('settings_updates_current_value');
 
   const defaultHomeSections = useMemo<HomeLayoutSection[]>(() => {
-    if (metadataProvider === 'cinemeta') {
-      return [
-        { id: 'networks', title: t('section_networks'), endpoint: '/tmdb/networks', enabled: true },
-        { id: 'featured_movie', title: t('section_featured_movies'), endpoint: '/cinemeta/catalog/movie/imdbRating', enabled: true },
-        { id: 'featured_tv', title: t('section_featured_series'), endpoint: '/cinemeta/catalog/series/imdbRating', enabled: true },
-        { id: 'popular_movie', title: t('section_popular_movies'), endpoint: '/cinemeta/catalog/movie/top', enabled: true },
-        { id: 'popular_tv', title: t('section_popular_tv'), endpoint: '/cinemeta/catalog/series/top', enabled: true },
-        { id: 'documentaries', title: t('section_documentaries'), endpoint: '/cinemeta/catalog/movie/top?genre=Documentary', enabled: false },
-        { id: 'new_movie', title: t('section_new_movies'), endpoint: `/cinemeta/catalog/movie/year/${CURRENT_YEAR}`, enabled: false },
-        { id: 'new_tv', title: t('section_new_series'), endpoint: `/cinemeta/catalog/series/year/${CURRENT_YEAR}`, enabled: false },
-      ];
-    }
-
-    return [
-      { id: 'networks', title: t('section_networks'), endpoint: '/tmdb/networks', enabled: true },
-      { id: 'trending_movie', title: t('section_trending_movies'), endpoint: '/tmdb/trending/movie', enabled: true },
-      { id: 'trending_tv', title: t('section_trending_tv'), endpoint: '/tmdb/trending/tv', enabled: true },
-      { id: 'documentaries', title: t('section_documentaries'), endpoint: '/tmdb/discover?type=movie&genre_id=99&sort_by=popularity.desc', enabled: false },
-      { id: 'popular_movie', title: t('section_popular_movies'), endpoint: '/tmdb/popular/movie', enabled: false },
-      { id: 'popular_tv', title: t('section_popular_tv'), endpoint: '/tmdb/popular/tv', enabled: false },
-    ];
-  }, [metadataProvider, t]);
+    const base = buildDefaultHomeSections(metadataProvider, CURRENT_YEAR, {
+      networks: t('section_networks'),
+      featuredMovies: t('section_featured_movies'),
+      featuredSeries: t('section_featured_series'),
+      popularMovies: t('section_popular_movies'),
+      popularTv: t('section_popular_tv'),
+      documentaries: t('section_documentaries'),
+      newMovies: t('section_new_movies'),
+      newSeries: t('section_new_series'),
+      trendingMovies: t('section_trending_movies'),
+      trendingTv: t('section_trending_tv'),
+    });
+    return [...base, ...buildAddonHomeSections(addons)];
+  }, [addons, metadataProvider, t]);
 
   React.useEffect(() => { setTmdbDraft(tmdbApiKey); }, [tmdbApiKey]);
   React.useEffect(() => { setIntroDbDraft(introDbApiKey); }, [introDbApiKey]);
@@ -497,7 +505,11 @@ export function SettingsScreen({ navigation, route }: any) {
     let cancelled = false;
     void (async () => {
       try {
-        const saved = await Storage.getItem(homeSectionSettingsKey) ?? await Storage.getItem('home_sections');
+        let saved: string | null = null;
+        for (const key of homeSectionStorageKeys) {
+          saved = await Storage.getItem(key);
+          if (saved) break;
+        }
         if (!saved) {
           if (!cancelled) setHomeLayoutSections(defaultHomeSections);
           return;
@@ -524,7 +536,7 @@ export function SettingsScreen({ navigation, route }: any) {
     return () => {
       cancelled = true;
     };
-  }, [defaultHomeSections, homeSectionSettingsKey]);
+  }, [defaultHomeSections, homeSectionStorageKeys]);
 
   const handleSetSyncOverCellular = React.useCallback(async (value: boolean) => {
     setSyncOverCellularState(value);
@@ -774,11 +786,12 @@ export function SettingsScreen({ navigation, route }: any) {
 
   const persistHomeLayoutSections = React.useCallback(async (sections: HomeLayoutSection[]) => {
     setHomeLayoutSections(sections);
-    await Storage.setItem(homeSectionSettingsKey, JSON.stringify(sections.map(section => ({
+    const payload = JSON.stringify(sections.map(section => ({
       id: section.id,
       enabled: section.enabled,
-    }))));
-  }, [homeSectionSettingsKey]);
+    })));
+    await Promise.all(homeSectionStorageKeys.map(key => Storage.setItem(key, payload)));
+  }, [homeSectionStorageKeys]);
 
   const toggleHomeLayoutSection = React.useCallback((id: string, enabled: boolean) => {
     const next = homeLayoutSections.map(section => (
@@ -1127,12 +1140,14 @@ export function SettingsScreen({ navigation, route }: any) {
         </Pressable>
       </Modal>
       <Modal visible={showBadgeUrlsModal} transparent animationType="slide" statusBarTranslucent onRequestClose={() => setShowBadgeUrlsModal(false)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setShowBadgeUrlsModal(false)}>
-          <Pressable style={[styles.modalCard, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
+        <View style={styles.modalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowBadgeUrlsModal(false)} />
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ justifyContent: 'flex-end' }}>
+            <Pressable style={[styles.modalCard, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
             <Text style={styles.modalTitle}>{t('settings_fusion_badge_urls_modal_title')}</Text>
             <Text style={styles.modalSub}>{t('settings_fusion_badge_urls_modal_sub', { max: MAX_FUSION_BADGE_URLS })}</Text>
 
-            <ScrollView style={styles.modalScroll} contentContainerStyle={{ gap: 12, paddingBottom: 4 }} showsVerticalScrollIndicator={false}>
+            <ScrollView style={styles.modalScroll} contentContainerStyle={{ gap: 12, paddingBottom: 4 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               {badgeUrls.length === 0 ? (
                 <Text style={styles.rowSub}>{t('settings_fusion_badge_urls_empty')}</Text>
               ) : badgeUrls.map(url => {
@@ -1177,6 +1192,8 @@ export function SettingsScreen({ navigation, route }: any) {
                   placeholderTextColor={colors.placeholder}
                   autoCapitalize="none"
                   autoCorrect={false}
+                  returnKeyType="done"
+                  onSubmitEditing={() => { void handleAddBadgeUrl(); }}
                   style={styles.textInput}
                 />
                 {badgeUrlError ? <Text style={styles.badgeUrlError}>{badgeUrlError}</Text> : null}
@@ -1196,18 +1213,20 @@ export function SettingsScreen({ navigation, route }: any) {
             ) : (
               <Text style={[styles.helper, { paddingHorizontal: 0 }]}>{t('settings_fusion_badge_urls_limit', { max: MAX_FUSION_BADGE_URLS })}</Text>
             )}
-          </Pressable>
-        </Pressable>
+            </Pressable>
+          </KeyboardAvoidingView>
+        </View>
       </Modal>
       <Modal visible={!!previewBadgeUrl} transparent animationType="slide" statusBarTranslucent onRequestClose={() => setPreviewBadgeUrl(null)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setPreviewBadgeUrl(null)}>
+        <View style={styles.modalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setPreviewBadgeUrl(null)} />
           <Pressable style={[styles.modalCard, { paddingBottom: insets.bottom + 16, maxHeight: Math.floor(windowHeight * 0.8) }]} onPress={() => {}}>
             <Text style={styles.modalTitle}>{t('settings_fusion_badge_preview_title')}</Text>
             {previewBadgeUrl ? <Text style={styles.modalSub} numberOfLines={1}>{previewBadgeUrl}</Text> : null}
             {previewSource ? (
               <Text style={styles.layoutHint}>{t('settings_fusion_badge_preview_count', { count: countEnabledFilters(previewSource) })}</Text>
             ) : null}
-            <ScrollView style={styles.modalScroll} contentContainerStyle={{ gap: 16, paddingBottom: 24 }} showsVerticalScrollIndicator={false}>
+            <ScrollView style={styles.modalScroll} contentContainerStyle={{ gap: 16, paddingBottom: 24 }} showsVerticalScrollIndicator={false} nestedScrollEnabled keyboardShouldPersistTaps="handled">
               {previewSource ? groupSourceFilters(previewSource).map(({ group, badges }) => (
                 <View key={group.id || 'special'}>
                   <Text style={styles.badgeGroupTitle}>{group.name}</Text>
@@ -1225,7 +1244,7 @@ export function SettingsScreen({ navigation, route }: any) {
               )}
             </ScrollView>
           </Pressable>
-        </Pressable>
+        </View>
       </Modal>
       <StackBottomNav activeTab="Settings" blurTarget={blurTargetRef} />
     </View>

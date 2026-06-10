@@ -33,6 +33,7 @@ import { sortStreams } from '../utils/streamSelection';
 import { isExpoGoRuntime } from '../utils/runtime';
 import { buildAuthHeaders } from '../utils/authHeaders';
 import { getMobileClientIdentityHeaders } from '../utils/clientIdentity';
+import { getStreamCapableAddons } from '../utils/addonCapabilities';
 
 const IMG_HEIGHT = 230;
 
@@ -394,7 +395,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
   // AbortController for the in-flight progressive fetch
   const abortRef = useRef<AbortController | null>(null);
 
-  const enabledAddons = addons.filter(a => a.enabled);
+  const enabledAddons = useMemo(() => getStreamCapableAddons(addons), [addons]);
   const ultraActive = ultraEntitled && ultraBoostEnabled;
   const hasStreamSources = enabledAddons.length > 0 || ultraActive;
   const sourceCount = enabledAddons.length + (ultraActive ? 1 : 0);
@@ -444,7 +445,7 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
   // Fetch streams for this episode progressively — each addon updates the UI
   // as soon as it responds instead of waiting for all of them.
   const fetchEpisodeStreams = useCallback(async () => {
-    const currentEnabled = addons.filter(a => a.enabled);
+    const currentEnabled = getStreamCapableAddons(addons);
     if (currentEnabled.length === 0 && !ultraActive) { setLoading(false); return; }
 
     // Cancel any previous in-flight fetch
@@ -472,12 +473,14 @@ export const EpisodeStreamsScreen = ({ route, navigation }: any) => {
 
     const headers = await buildRequestHeaders();
     const orderedAddons = [...currentEnabled].sort((a, b) => a.position - b.position);
+    const streamCapableAddonIds = new Set(orderedAddons.map(addon => addon.id));
     let pending = orderedAddons.length + (ultraActive ? 1 : 0);
     let accumulated: AddonStream[] = [];
     const seen = new Set<string>();
 
     const mergeIncoming = (incoming: AddonStream[]) => {
       for (const stream of incoming) {
+        if (stream.addonId && !streamCapableAddonIds.has(stream.addonId)) continue;
         const key = streamIdentity(stream);
         if (!key || seen.has(key)) continue;
         seen.add(key);

@@ -9,6 +9,7 @@ import { DebridProviderName } from './DebridContext';
 import { buildAuthHeaders } from '../utils/authHeaders';
 import { getMobileClientIdentityHeaders } from '../utils/clientIdentity';
 import { getSharedCachedAsync, invalidateSharedCache } from '../utils/sharedDataCache';
+import { getStreamCapableAddons } from '../utils/addonCapabilities';
 
 const CACHE_TTL = 10 * 60 * 1000;
 const ULTRA_BOOST_STORAGE_KEY = 'streamdek_ultra_boost_enabled';
@@ -25,6 +26,10 @@ export interface AddonManifest {
   version: string;
   description?: string;
   logo?: string;
+  url?: string;
+  baseUrl?: string;
+  manifestUrl?: string;
+  transportUrl?: string;
   resources: (string | { name: string; types: string[] })[];
   types: string[];
   catalogs: { type: string; id: string; name: string }[];
@@ -35,6 +40,10 @@ export interface InstalledAddon {
   id: string;
   enabled: boolean;
   position: number;
+  url?: string;
+  baseUrl?: string;
+  manifestUrl?: string;
+  transportUrl?: string;
   manifest: AddonManifest;
 }
 
@@ -302,17 +311,20 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
     videoId: string,
   ): Promise<AddonStream[]> => {
     try {
+      const streamCapableAddonIds = new Set(getStreamCapableAddons(addons).map(addon => addon.id));
       const res = await fetch(
         `${API_BASE}/addons/streams/${type}/${encodeURIComponent(videoId)}`,
         { headers: await buildAddonHeaders({ includeContentType: false }) },
       );
       if (!res.ok) return [];
       const data = await res.json();
-      return data.streams ?? [];
+      return (data.streams ?? []).filter((stream: AddonStream) => (
+        !stream.addonId || streamCapableAddonIds.has(stream.addonId)
+      ));
     } catch {
       return [];
     }
-  }, [buildAddonHeaders]);
+  }, [addons, buildAddonHeaders]);
 
   const fetchStreamsProgressive = useCallback(async (
     type: string,
@@ -320,8 +332,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
     onUpdate: (streams: AddonStream[], pendingCount: number) => void,
     signal?: AbortSignal,
   ): Promise<void> => {
-    const enabledAddons = addons
-      .filter(a => a.enabled)
+    const enabledAddons = getStreamCapableAddons(addons)
       .sort((a, b) => a.position - b.position);
     const ultraActive = ultraEntitled && ultraBoostEnabled;
     const enabledAddonKey = enabledAddons.map(a => `${a.id}:${a.position}`).join(',');

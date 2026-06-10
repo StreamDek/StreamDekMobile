@@ -852,20 +852,20 @@ export function SettingsScreen({ navigation, route }: any) {
                   <View style={styles.card}>
                     <SettingRow icon="play-circle-outline" iconColor={safeIconColor('#6366f1')} label={t('settings_picture_in_picture')} subtitle={t('settings_picture_in_picture_sub')} right={<AppleToggle value={pictureInPictureEnabled} onValueChange={value => { void setPictureInPictureEnabled(value); }} onColor={colors.toggleOn} />} />
                     <View style={styles.divider} />
-                    <SettingRow icon="albums-outline" iconColor={safeIconColor('#22d3ee')} label={t('settings_show_streams_list')} subtitle={t('settings_show_streams_list_sub')} right={<AppleToggle value={showStreamsList} onValueChange={value => { void setShowStreamsList(value); }} onColor={colors.toggleOn} />} />
-                    <View style={styles.divider} />
-                    <SettingRow icon="swap-horizontal-outline" iconColor={safeIconColor('#14b8a6')} label={t('settings_streaming_mode')} subtitle={torrentServerConfig.streamingMode === 'server' ? t('settings_streaming_mode_server_sub') : t('settings_streaming_mode_regular_sub')} value={torrentServerConfig.streamingMode === 'server' ? t('settings_streaming_mode') : t('settings_local_server')} onPress={() => setPicker('streamingMode')} />
-                    <View style={styles.divider} />
-                    <SettingRow icon="server-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_streaming_server_url')} subtitle={torrentServerConfig.streamingMode === 'server' ? (torrentServerStatus.isOnline ? torrentServerStatus.url : t('settings_streaming_mode_server_sub')) : t('settings_streaming_server_url_sub')} value={torrentServerConfig.streamingMode === 'server' ? (torrentServerStatus.isOnline ? 'Online' : 'Offline') : 'Inactive'} />
-                    <View style={styles.divider} />
-                    <SettingRow icon="resize-outline" iconColor={safeIconColor('#22c55e')} label={t('settings_preferred_stream_quality')} subtitle={t('settings_preferred_stream_quality_sub')} value={qualityValueLabelMap[String(preferredQuality)] ?? String(preferredQuality)} onPress={() => setPicker('quality')} />
-                    <View style={styles.divider} />
-                    <SettingRow icon="archive-outline" iconColor={safeIconColor('#f97316')} label={t('settings_max_file_size')} subtitle={t('settings_max_file_size_sub')} value={maxFileSizeGB === 0 ? t('settings_unlimited') : `${maxFileSizeGB} GB`} onPress={() => setPicker('fileSize')} />
-                    <View style={styles.divider} />
                     <SettingRow icon="tv-outline" iconColor={safeIconColor('#a78bfa')} label={t('settings_decoder_mode')} subtitle={t('settings_decoder_mode_sub')} value={decoderValueLabelMap[String(decoderMode)] ?? String(decoderMode)} onPress={() => setPicker('decoder')} />
                     <View style={styles.divider} />
                     <SettingRow icon="scan-outline" iconColor={safeIconColor('#38bdf8')} label={t('settings_render_surface')} subtitle={t('settings_render_surface_sub')} value={surfaceValueLabelMap[String(renderSurface)] ?? String(renderSurface)} onPress={() => setPicker('surface')} />
+                  </View>
+
+                  <Text style={styles.sectionTitle}>{t('settings_local_server_section')}</Text>
+                  <View style={styles.card}>
+                    <SettingRow icon="swap-horizontal-outline" iconColor={safeIconColor('#14b8a6')} label={t('settings_streaming_mode')} subtitle={torrentServerConfig.streamingMode === 'server' ? t('settings_streaming_mode_server_sub') : t('settings_streaming_mode_regular_sub')} value={torrentServerConfig.streamingMode === 'server' ? t('settings_streaming_mode') : t('settings_local_server')} onPress={() => setPicker('streamingMode')} />
                     <View style={styles.divider} />
+                    <SettingRow icon="server-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_streaming_server_url')} subtitle={torrentServerConfig.streamingMode === 'server' ? (torrentServerStatus.isOnline ? torrentServerStatus.url : t('settings_streaming_mode_server_sub')) : t('settings_streaming_server_url_sub')} value={torrentServerConfig.streamingMode === 'server' ? (torrentServerStatus.isOnline ? 'Online' : 'Offline') : 'Inactive'} />
+                  </View>
+
+                  <Text style={styles.sectionTitle}>{t('settings_playback_automation')}</Text>
+                  <View style={styles.card}>
                     <SettingRow icon="play-forward-outline" iconColor={safeIconColor('#60a5fa')} label={t('settings_skip_intro')} subtitle={t('settings_skip_intro_sub')} right={<AppleToggle value={skipSegmentsEnabled} onValueChange={value => { void setSkipSegmentsEnabled(value); }} onColor={colors.toggleOn} />} />
                     <View style={styles.divider} />
                     <SettingRow icon="play-skip-forward-outline" iconColor={safeIconColor('#22c55e')} label={t('settings_auto_play_next_episode')} subtitle={t('settings_auto_play_next_episode_sub')} right={<AppleToggle value={autoPlayNextEpisodeEnabled} onValueChange={value => { void setAutoPlayNextEpisodeEnabled(value); }} onColor={colors.toggleOn} />} />
@@ -1066,6 +1066,15 @@ export function SettingsScreen({ navigation, route }: any) {
 
               {detailSection === 'streams' ? (
                 <>
+                  <Text style={styles.sectionTitle}>{t('settings_streams_nav_label')}</Text>
+                  <View style={styles.card}>
+                    <SettingRow icon="albums-outline" iconColor={safeIconColor('#22d3ee')} label={t('settings_show_streams_list')} subtitle={t('settings_show_streams_list_sub')} right={<AppleToggle value={showStreamsList} onValueChange={value => { void setShowStreamsList(value); }} onColor={colors.toggleOn} />} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="resize-outline" iconColor={safeIconColor('#22c55e')} label={t('settings_preferred_stream_quality')} subtitle={t('settings_preferred_stream_quality_sub')} value={qualityValueLabelMap[String(preferredQuality)] ?? String(preferredQuality)} onPress={() => setPicker('quality')} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="archive-outline" iconColor={safeIconColor('#f97316')} label={t('settings_max_file_size')} subtitle={t('settings_max_file_size_sub')} value={maxFileSizeGB === 0 ? t('settings_unlimited') : `${maxFileSizeGB} GB`} onPress={() => setPicker('fileSize')} />
+                  </View>
+
                   <Text style={styles.sectionTitle}>{t('settings_fusion_style')}</Text>
                   <View style={styles.card}>
                     <SettingRow icon="pricetags-outline" iconColor={safeIconColor('#ec4899')} label={t('settings_fusion_badges_enabled')} subtitle={t('settings_fusion_badges_enabled_sub')} right={<AppleToggle value={fusionBadgesEnabled} onValueChange={value => { void setFusionBadgesEnabled(value); }} onColor={colors.toggleOn} />} />

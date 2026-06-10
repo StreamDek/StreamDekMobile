@@ -134,6 +134,7 @@ const en = {
   settings_sync_cellular: 'Sync on Cellular',
   settings_sync_cellular_sub: 'Allow account and addon sync when not on Wi-Fi.',
   settings_playback:       'Playback',
+  settings_playback_automation: 'Playback Automation',
   settings_subtitles:      'Subtitles',
   settings_show_streams_list: 'Show Streams List',
   settings_show_streams_list_sub: 'Show the streams tab on media pages.',

@@ -175,7 +175,30 @@ jobs:
           path: ${{ steps.apk.outputs.apk_path }}
           if-no-files-found: error
 
-      - name: Create GitHub Release
+      - name: Detect custom release notes
+        id: release_notes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          notes_path=".github/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$notes_path" ]; then
+            echo "body_path=$notes_path" >> "$GITHUB_OUTPUT"
+            echo "has_custom=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "body_path=" >> "$GITHUB_OUTPUT"
+            echo "has_custom=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release (custom notes)
+        if: steps.release_notes.outputs.has_custom == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.apk.outputs.apk_path }}
+          body_path: ${{ steps.release_notes.outputs.body_path }}
+          fail_on_unmatched_files: true
+
+      - name: Create GitHub Release (generated notes)
+        if: steps.release_notes.outputs.has_custom != 'true'
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.apk.outputs.apk_path }}

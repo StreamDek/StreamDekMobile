@@ -16,6 +16,7 @@ import { ConfirmSheet } from '../components/ConfirmSheet';
 import { FadeInView, SkeletonMediaCard } from '../components/Skeleton';
 import { useTheme, ThemeColors } from '../context/ThemeContext';
 import { useLanguage } from '../context/LanguageContext';
+import { useAddons } from '../context/AddonContext';
 import { useLongPressActions } from '../hooks/useLongPressActions';
 import { mediaListItemKey } from '../utils/watchlist';
 import { StackBottomNav, BOTTOM_NAV_HEIGHT } from '../components/StackBottomNav';
@@ -116,6 +117,7 @@ export const BrowseScreen = ({ navigation, route }: any) => {
   const isNetworkBrowse = String(endpoint || '').includes('/tmdb/network/');
   const { theme: { colors }, resolvedAppearance } = useTheme();
   const { t } = useLanguage();
+  const { addons } = useAddons();
   const styles     = useMemo(() => makeStyles(colors), [colors]);
   const insets     = useSafeAreaInsets();
   const blurTargetRef = useRef<View | null>(null);
@@ -174,6 +176,11 @@ export const BrowseScreen = ({ navigation, route }: any) => {
   // Build the correct endpoint depending on whether a genre is selected
   const buildUrl = useCallback((pageNum: number, genre: Genre | null, options?: { contentType?: 'all' | 'movie' | 'tv' }) => {
     if (endpoint) {
+      if (String(endpoint).startsWith('addon://')) {
+        const parsed = new URL(String(endpoint));
+        if (pageNum > 1) parsed.searchParams.set('skip', String((pageNum - 1) * 100));
+        return parsed.toString();
+      }
       if (String(endpoint).startsWith('/cinemeta/')) {
         const params = new URLSearchParams();
         const skip = Math.max(0, (pageNum - 1) * 100);
@@ -204,8 +211,11 @@ export const BrowseScreen = ({ navigation, route }: any) => {
     requestAbortRef.current = controller;
     try {
       const url = buildUrl(pageNum, genre, options);
-      const data = endpoint && String(endpoint).startsWith('/cinemeta/')
-        ? await fetchMetadataCatalog(url, { signal: controller.signal })
+      const addon = endpoint && String(endpoint).startsWith('addon://')
+        ? addons.find(candidate => String(endpoint).includes(`://${encodeURIComponent(candidate.id)}/`)) ?? null
+        : null;
+      const data = endpoint && (String(endpoint).startsWith('/cinemeta/') || String(endpoint).startsWith('addon://'))
+        ? await fetchMetadataCatalog(url, { signal: controller.signal, addon })
         : await (async () => {
           const res  = await tmdbFetch(url, { signal: controller.signal });
           if (!res.ok) return null;
@@ -226,7 +236,7 @@ export const BrowseScreen = ({ navigation, route }: any) => {
         requestAbortRef.current = null;
       }
     }
-  }, [buildUrl, endpoint]);
+  }, [addons, buildUrl, endpoint]);
 
   useEffect(() => {
     let cancelled = false;

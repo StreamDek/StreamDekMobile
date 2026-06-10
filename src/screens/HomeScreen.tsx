@@ -49,9 +49,11 @@ import { ContinueWatchingCard } from '../components/ContinueWatchingCard';
 import { useDisplaySettings } from '../context/DisplaySettingsContext';
 import { getProfileStorageOwnerId, profileScopedStorageKey, progressIndexStorageKey } from '../utils/profileStorage';
 import { useTmdbApiKey } from '../context/TmdbApiKeyContext';
+import { useAddons } from '../context/AddonContext';
 import { getDeviceProfile } from '../utils/deviceProfile';
 import { invalidateSharedCache } from '../utils/sharedDataCache';
 import { IdleTaskHandle, runIdle } from '../utils/idleTask';
+import { buildAddonHomeSections, buildDefaultHomeSections } from '../utils/homeCatalogSections';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const HERO_HEIGHT = 616;
@@ -61,6 +63,17 @@ const HOME_SECTION_CACHE_KEY = 'home_section_cache';
 const homeSectionMemoryCache = new Map<string, Record<string, any[]>>();
 const SECTION_UPDATE_FLUSH_MS = 80;
 const AnimatedFlatList = Animated.createAnimatedComponent(FlatList<any>);
+
+function getHomeSectionStorageKeys(userId: string | null | undefined, profileId: string | null | undefined): string[] {
+  const keys = [
+    profileScopedStorageKey('home_sections', userId, profileId),
+  ];
+  if (userId && profileId) {
+    keys.push(profileScopedStorageKey('home_sections', userId, null));
+  }
+  keys.push('home_sections');
+  return Array.from(new Set(keys));
+}
 
 function formatContinueTime(positionSec?: number | null): string | null {
   if (!positionSec || !Number.isFinite(positionSec) || positionSec <= 0) return null;
@@ -579,6 +592,7 @@ export const HomeScreen = ({ navigation }: any) => {
   const { continueWatchingStyle, vividAmbientEnabled } = useDisplaySettings();
   const { setAppReady } = useAppReady();
   const { metadataProvider } = useTmdbApiKey();
+  const { addons } = useAddons();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const isDarkAppearance = resolvedAppearance === 'dark';
   const isMonochromeDark = isDarkAppearance;
@@ -586,28 +600,20 @@ export const HomeScreen = ({ navigation }: any) => {
   const { isMovieWatched, isSeriesWatched, toggleMovieWatched, markAllEpisodesWatched, unmarkSeriesWatched } = useWatched();
 
   const defaultSections = useMemo(() => {
-    if (metadataProvider === 'cinemeta') {
-      return [
-        { id: 'networks', title: t('section_networks'), endpoint: '/tmdb/networks', enabled: true },
-        { id: 'featured_movie', title: t('section_featured_movies'), endpoint: '/cinemeta/catalog/movie/imdbRating', enabled: true },
-        { id: 'featured_tv', title: t('section_featured_series'), endpoint: '/cinemeta/catalog/series/imdbRating', enabled: true },
-        { id: 'popular_movie', title: t('section_popular_movies'), endpoint: '/cinemeta/catalog/movie/top', enabled: true },
-        { id: 'popular_tv', title: t('section_popular_tv'), endpoint: '/cinemeta/catalog/series/top', enabled: true },
-        { id: DOCUMENTARY_SECTION_ID, title: t('section_documentaries'), endpoint: '/cinemeta/catalog/movie/top?genre=Documentary', enabled: false },
-        { id: 'new_movie', title: t('section_new_movies'), endpoint: `/cinemeta/catalog/movie/year/${CURRENT_YEAR}`, enabled: false },
-        { id: 'new_tv', title: t('section_new_series'), endpoint: `/cinemeta/catalog/series/year/${CURRENT_YEAR}`, enabled: false },
-      ];
-    }
-
-    return [
-      { id: 'networks', title: t('section_networks'), endpoint: '/tmdb/networks', enabled: true },
-      { id: 'trending_movie', title: t('section_trending_movies'), endpoint: '/tmdb/trending/movie', enabled: true },
-      { id: 'trending_tv', title: t('section_trending_tv'), endpoint: '/tmdb/trending/tv', enabled: true },
-      { id: DOCUMENTARY_SECTION_ID, title: t('section_documentaries'), endpoint: '/tmdb/discover?type=movie&genre_id=99&sort_by=popularity.desc', enabled: false },
-      { id: 'popular_movie', title: t('section_popular_movies'), endpoint: '/tmdb/popular/movie', enabled: false },
-      { id: 'popular_tv', title: t('section_popular_tv'), endpoint: '/tmdb/popular/tv', enabled: false },
-    ];
-  }, [metadataProvider, t]);
+    const base = buildDefaultHomeSections(metadataProvider, CURRENT_YEAR, {
+      networks: t('section_networks'),
+      featuredMovies: t('section_featured_movies'),
+      featuredSeries: t('section_featured_series'),
+      popularMovies: t('section_popular_movies'),
+      popularTv: t('section_popular_tv'),
+      documentaries: t('section_documentaries'),
+      newMovies: t('section_new_movies'),
+      newSeries: t('section_new_series'),
+      trendingMovies: t('section_trending_movies'),
+      trendingTv: t('section_trending_tv'),
+    });
+    return [...base, ...buildAddonHomeSections(addons)];
+  }, [addons, metadataProvider, t]);
 
   const {
     isConnected: traktConnected,
@@ -637,7 +643,10 @@ export const HomeScreen = ({ navigation }: any) => {
     setLocalContinueWatching([]);
   }, [activeProfileId]);
   const legacyOwnerId = user?.uid ?? null;
-  const sectionSettingsKey = profileScopedStorageKey('home_sections', user?.uid, activeProfile?.id);
+  const sectionSettingsKeys = useMemo(
+    () => getHomeSectionStorageKeys(user?.uid, activeProfile?.id),
+    [activeProfile?.id, user?.uid],
+  );
   const sectionCacheKey = profileScopedStorageKey(`${HOME_SECTION_CACHE_KEY}:${metadataProvider}`, user?.uid, activeProfile?.id);
 
   const [longPressItem,          setLongPressItem]          = useState<any | null>(null);
@@ -726,7 +735,11 @@ export const HomeScreen = ({ navigation }: any) => {
   });
   const loadSectionConfig = useCallback(async () => {
     try {
-      const saved = await Storage.getItem(sectionSettingsKey) ?? await Storage.getItem('home_sections');
+      let saved: string | null = null;
+      for (const key of sectionSettingsKeys) {
+        saved = await Storage.getItem(key);
+        if (saved) break;
+      }
       if (saved) {
         const savedSections: any[] = JSON.parse(saved);
         const savedMap = new Map(savedSections.map(s => [s.id, s]));
@@ -747,7 +760,7 @@ export const HomeScreen = ({ navigation }: any) => {
       setSections(defaultSections);
       return defaultSections;
     }
-  }, [defaultSections, sectionSettingsKey]);
+  }, [defaultSections, sectionSettingsKeys]);
 
   const loadWatchlist = useCallback(async () => {
     try {
@@ -850,7 +863,10 @@ export const HomeScreen = ({ navigation }: any) => {
 
     const fetchSection = async (s: typeof enabledSections[number]) => {
         try {
-          const data = await fetchMetadataCatalog(s.endpoint);
+          const addon = s.id.startsWith('addon:')
+            ? addons.find(candidate => s.id.startsWith(`addon:${candidate.id}:`)) ?? null
+            : null;
+          const data = await fetchMetadataCatalog(s.endpoint, { addon });
           if (sectionFetchRequestIdRef.current !== requestId) return;
           fetchedAny = true;
           nextResults[s.id] = data.results || [];
@@ -904,7 +920,7 @@ export const HomeScreen = ({ navigation }: any) => {
       setLoading(false);
     }
     return fetchedAny;
-  }, [deviceProfile.performanceClass, isForeground, sectionCacheKey]);
+  }, [addons, deviceProfile.performanceClass, isForeground, sectionCacheKey]);
 
   const fetchTraktSections = useCallback(async () => {
     if (!traktConnected || !user) return;
@@ -1945,12 +1961,13 @@ export const HomeScreen = ({ navigation }: any) => {
       const sData = sectionData[section.id];
       const isLoading = loading || sData === undefined;
       if (!isLoading && (!sData || sData.length === 0)) continue;
-      const title = defaultSections.find(d => d.id === section.id)?.title ?? section.title;
+      const title = section.title;
       rows.push({
         key: `section:${section.id}`,
         kind: section.id === 'networks' ? 'networks' : 'section',
         sectionId: section.id,
         title,
+        badgeLabel: section.source === 'addon' ? 'Addon' : undefined,
         data: sData ?? [],
         loading: isLoading,
       });
@@ -2014,6 +2031,7 @@ export const HomeScreen = ({ navigation }: any) => {
         return (
           <SectionStrip
             title={item.title}
+            badgeLabel={item.badgeLabel}
             data={item.data}
             loading={item.loading}
             onViewAll={() => handleViewAll(item.sectionId, item.title)}

@@ -41,6 +41,86 @@ export interface FusionBadgeGroupMatches {
 
 const SPECIAL_GROUP: FusionBadgeGroup = { id: '', name: 'Special' };
 
+function coerceString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback;
+}
+
+function sanitizeLooseJson(raw: string): string {
+  return raw.replace(
+    /("(?:[^"\\]|\\.)*"|\btrue\b|\bfalse\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\]|\})\s+(?="[^"]+"\s*:)/g,
+    '$1, ',
+  );
+}
+
+function normalizeFusionBadgeSource(payload: any, url: string): FusionBadgeSource {
+  const payloadGroups = Array.isArray(payload?.groups) ? payload.groups : [];
+  const payloadFilters = Array.isArray(payload?.filters)
+    ? payload.filters
+    : Array.isArray(payload)
+      ? payload
+      : Array.isArray(payload?.badges)
+        ? payload.badges
+        : [];
+
+  const groups: FusionBadgeGroup[] = payloadGroups
+    .map((group: any, index: number) => ({
+      id: coerceString(group?.id, `group-${index}`),
+      name: coerceString(group?.name, coerceString(group?.label, `Group ${index + 1}`)),
+      isExpanded: typeof group?.isExpanded === 'boolean' ? group.isExpanded : undefined,
+      color: typeof group?.color === 'string' ? group.color : undefined,
+      borderColor: typeof group?.borderColor === 'string' ? group.borderColor : undefined,
+    }))
+    .filter((group: FusionBadgeGroup) => group.id.length > 0 && group.name.length > 0);
+
+  const knownGroupIds = new Set(groups.map(group => group.id));
+  const filters: FusionBadgeFilter[] = payloadFilters
+    .map((filter: any, index: number) => {
+      const groupId = coerceString(
+        filter?.groupId,
+        coerceString(filter?.group, coerceString(filter?.category, '')),
+      );
+      const imageURL = coerceString(
+        filter?.imageURL,
+        coerceString(filter?.imageUrl, coerceString(filter?.image, coerceString(filter?.url))),
+      );
+      const pattern = coerceString(filter?.pattern, coerceString(filter?.regex));
+      const name = coerceString(filter?.name, coerceString(filter?.label, `Badge ${index + 1}`));
+
+      if (!groupId || !imageURL || !pattern || !name) return null;
+
+      if (!knownGroupIds.has(groupId)) {
+        knownGroupIds.add(groupId);
+        groups.push({ id: groupId, name: groupId });
+      }
+
+      return {
+        id: coerceString(filter?.id, `${groupId}-${index}`),
+        groupId,
+        name,
+        pattern,
+        imageURL,
+        tagColor: typeof filter?.tagColor === 'string' ? filter.tagColor : undefined,
+        borderColor: typeof filter?.borderColor === 'string' ? filter.borderColor : undefined,
+        textColor: typeof filter?.textColor === 'string' ? filter.textColor : undefined,
+        tagStyle: typeof filter?.tagStyle === 'string' ? filter.tagStyle : undefined,
+        isEnabled: typeof filter?.isEnabled === 'boolean' ? filter.isEnabled : true,
+        type: typeof filter?.type === 'string' ? filter.type : undefined,
+      };
+    })
+    .filter((filter: FusionBadgeFilter | null): filter is FusionBadgeFilter => !!filter);
+
+  if (filters.length === 0) {
+    throw new Error('This URL does not contain any Fusion badge filters');
+  }
+
+  return {
+    url,
+    groups,
+    filters,
+    fetchedAt: typeof payload?.fetchedAt === 'string' ? payload.fetchedAt : new Date().toISOString(),
+  };
+}
+
 // ── Pattern compilation ─────────────────────────────────────────────────────────
 // Filter patterns are PCRE-style strings prefixed with `(?i)` for case-insensitive
 // matching. JS RegExp doesn't support inline `(?i)`, so it's stripped and replaced
@@ -185,16 +265,34 @@ export async function fetchFusionBadgeSource(
     headers: await buildAuthHeaders(user, { includeContentType: false }),
   });
 
-  if (!response.ok) {
-    let message = 'Failed to load Fusion badge source';
-    try {
-      const data = await response.json();
-      message = data?.error ?? message;
-    } catch {
-      // ignore — use default message
-    }
+  if (response.ok) {
+    return normalizeFusionBadgeSource(await response.json(), url);
+  }
+
+  let message = 'Failed to load Fusion badge source';
+  try {
+    const data = await response.json();
+    message = data?.error ?? message;
+  } catch {
+    // ignore and use default message
+  }
+
+  let raw = '';
+  try {
+    const directResponse = await fetch(url);
+    if (!directResponse.ok) throw new Error(message);
+    raw = await directResponse.text();
+  } catch {
     throw new Error(message);
   }
 
-  return response.json();
+  try {
+    return normalizeFusionBadgeSource(JSON.parse(raw), url);
+  } catch {
+    try {
+      return normalizeFusionBadgeSource(JSON.parse(sanitizeLooseJson(raw)), url);
+    } catch {
+      throw new Error(message);
+    }
+  }
 }

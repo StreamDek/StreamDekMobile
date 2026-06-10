@@ -195,6 +195,14 @@ export function SettingsShellScreen({ navigation }: any) {
                   subtitle={t('settings_home_appearance_sub')}
                   onPress={() => navigation.navigate('SettingsDetail', { section: 'home-appearance' })}
                 />
+                <View style={styles.divider} />
+                <NavRow
+                  icon="pricetags-outline"
+                  iconColor="#ec4899"
+                  label={t('settings_streams_nav_label')}
+                  subtitle={t('settings_streams_nav_sub')}
+                  onPress={() => navigation.navigate('SettingsDetail', { section: 'streams' })}
+                />
               </View>
 
               <Text style={styles.sectionTitle}>{t('settings_services_section')}</Text>

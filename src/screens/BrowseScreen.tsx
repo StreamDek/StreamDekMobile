@@ -20,6 +20,7 @@ import { useAddons } from '../context/AddonContext';
 import { useLongPressActions } from '../hooks/useLongPressActions';
 import { mediaListItemKey } from '../utils/watchlist';
 import { StackBottomNav, BOTTOM_NAV_HEIGHT } from '../components/StackBottomNav';
+import { isExpoGoRuntime } from '../utils/runtime';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const H_PAD = 14;
@@ -113,11 +114,23 @@ interface Genre { id: number; name: string }
 type NetworkSortMode = 'year' | 'title' | 'rating';
 
 export const BrowseScreen = ({ navigation, route }: any) => {
+  const expoGoRuntime = isExpoGoRuntime();
   const { type, title, endpoint } = route.params || {};
+  const endpointCatalogType = useMemo(() => {
+    if (!String(endpoint || '').startsWith('addon://')) return null;
+    try {
+      const parsed = new URL(String(endpoint));
+      const [typeSegment] = parsed.pathname.replace(/^\/+/, '').split('/');
+      const decoded = decodeURIComponent(typeSegment ?? '').toLowerCase();
+      return decoded === 'series' ? 'tv' : decoded;
+    } catch {
+      return null;
+    }
+  }, [endpoint]);
   const isNetworkBrowse = String(endpoint || '').includes('/tmdb/network/');
   const { theme: { colors }, resolvedAppearance } = useTheme();
   const { t } = useLanguage();
-  const { addons } = useAddons();
+  const { addons, fetchStreams } = useAddons();
   const styles     = useMemo(() => makeStyles(colors), [colors]);
   const insets     = useSafeAreaInsets();
   const blurTargetRef = useRef<View | null>(null);
@@ -148,6 +161,7 @@ export const BrowseScreen = ({ navigation, route }: any) => {
     if (sortMode === 'rating') return 'Rating';
     return 'Year';
   }, [sortMode]);
+  const cardVariant = endpointCatalogType === 'sport' || type === 'sport' ? 'landscape' : 'portrait';
 
   useEffect(() => {
     Storage.getItem('streamdek_grid_cols').then(v => { if (v === '2' || v === '3') setGridCols(Number(v) as 2 | 3); });
@@ -306,6 +320,33 @@ export const BrowseScreen = ({ navigation, route }: any) => {
   const countLabel = items.length > 0
     ? `${items.length}${totalPages > 1 ? '+' : ''}`
     : null;
+  const handleItemPress = useCallback(async (item: any) => {
+    if (item?.type === 'sport') {
+      const streams = await fetchStreams('sport', String(item.id));
+      if (!streams.length) return;
+      navigation.navigate(expoGoRuntime ? 'Player' : 'MpvPlayer', {
+        movieId: String(item.id),
+        type: 'movie',
+        title: item.title,
+        synopsis: item.description ?? undefined,
+        backdrop: item.backdrop ?? item.poster ?? undefined,
+        poster: item.poster ?? undefined,
+        resolveOnMount: true,
+        sourceStreams: streams,
+        resolverMovieId: String(item.id),
+        returnToPlayerParams: {
+          movieId: String(item.id),
+          type: 'movie',
+          title: item.title,
+          synopsis: item.description ?? undefined,
+          backdrop: item.backdrop ?? item.poster ?? undefined,
+          poster: item.poster ?? undefined,
+        },
+      });
+      return;
+    }
+    navigation.navigate('Detail', { movieId: item.id, type: item.type || type });
+  }, [expoGoRuntime, fetchStreams, navigation, type]);
 
   return (
     <View style={{ flex: 1 }}>
@@ -481,8 +522,9 @@ export const BrowseScreen = ({ navigation, route }: any) => {
                 item={item}
                 width={CARD_WIDTH}
                 compactGrid
-                onPress={() => navigation.navigate('Detail', { movieId: item.id, type: item.type || type })}
-                onLongPress={handleLongPress}
+                variant={cardVariant}
+                onPress={() => { void handleItemPress(item); }}
+                onLongPress={item?.type === 'sport' ? undefined : handleLongPress}
               />
             )}
           />

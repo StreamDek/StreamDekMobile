@@ -1,6 +1,7 @@
 import { API_BASE } from '../constants/api';
 import type { InstalledAddon } from '../context/AddonContext';
 import { getMobileClientIdentityHeaders } from './clientIdentity';
+import { loadStoredAuthSession } from '../lib/authClient';
 import { tmdbFetch } from './tmdbFetch';
 import { getSharedCachedAsync } from './sharedDataCache';
 
@@ -11,7 +12,7 @@ export interface MetadataCatalogItem {
   id: string;
   tmdbId?: number | null;
   imdbId?: string | null;
-  type: 'movie' | 'tv';
+  type: 'movie' | 'tv' | 'sport';
   title: string;
   year?: number;
   poster?: string | null;
@@ -29,9 +30,10 @@ export interface MetadataCatalogResponse {
 
 type AddonCatalogDescriptor = {
   addonId: string;
-  type: 'movie' | 'tv';
+  type: 'movie' | 'tv' | 'sport';
   catalogId: string;
   skip?: number;
+  baseUrl?: string;
 };
 
 function parseRuntimeMinutes(value: unknown): number | null {
@@ -71,9 +73,15 @@ function normalizeCinemetaItem(item: any): MetadataCatalogItem {
   };
 }
 
-function normalizeAddonCatalogItem(item: any, fallbackType: 'movie' | 'tv'): MetadataCatalogItem {
+function normalizeAddonCatalogItem(item: any, fallbackType: 'movie' | 'tv' | 'sport'): MetadataCatalogItem {
   const rawType = String(item?.type ?? fallbackType).toLowerCase();
-  const type = rawType === 'series' ? 'tv' : rawType === 'tv' ? 'tv' : 'movie';
+  const type = rawType === 'series'
+    ? 'tv'
+    : rawType === 'tv'
+      ? 'tv'
+      : rawType === 'sport'
+        ? 'sport'
+        : 'movie';
   const tmdbId = Number(item?.moviedb_id ?? item?.tmdbId);
   const rawId = typeof item?.id === 'string' ? item.id : String(item?.id ?? '');
   const imdbId = typeof item?.imdb_id === 'string'
@@ -110,22 +118,36 @@ function parseAddonCatalogEndpoint(endpoint: string): AddonCatalogDescriptor | n
     const parsed = new URL(endpoint);
     const addonId = decodeURIComponent(parsed.hostname);
     const [typeSegment, catalogSegment] = parsed.pathname.replace(/^\/+/, '').split('/');
-    const type = decodeURIComponent(typeSegment ?? '') as 'movie' | 'tv';
+    const type = decodeURIComponent(typeSegment ?? '') as 'movie' | 'tv' | 'sport';
     const catalogId = decodeURIComponent(catalogSegment ?? '');
-    if (!addonId || !catalogId || (type !== 'movie' && type !== 'tv')) return null;
+    if (!addonId || !catalogId || (type !== 'movie' && type !== 'tv' && type !== 'sport')) return null;
     const skip = Number(parsed.searchParams.get('skip'));
     return {
       addonId,
       type,
       catalogId,
       skip: Number.isFinite(skip) && skip > 0 ? skip : undefined,
+      baseUrl: (() => {
+        const baseUrl = parsed.searchParams.get('transport') ?? parsed.searchParams.get('baseUrl') ?? parsed.searchParams.get('manifestUrl');
+        if (typeof baseUrl !== 'string') return undefined;
+        const trimmed = baseUrl.trim();
+        if (!/^https?:\/\//i.test(trimmed)) return undefined;
+        return trimmed.replace(/\/manifest\.json.*$/i, '').replace(/\/+$/, '');
+      })(),
     };
   } catch {
     return null;
   }
 }
 
-function resolveAddonBaseUrl(addon: InstalledAddon | null | undefined): string | null {
+function resolveAddonBaseUrl(addon: InstalledAddon | null | undefined, baseUrlHint?: string | null): string | null {
+  if (typeof baseUrlHint === 'string') {
+    const trimmed = baseUrlHint.trim();
+    if (/^https?:\/\//i.test(trimmed)) {
+      return trimmed.replace(/\/manifest\.json.*$/i, '').replace(/\/+$/, '');
+    }
+  }
+
   const manifest = addon?.manifest as Record<string, any> | undefined;
   const candidates = [
     (addon as Record<string, any> | undefined)?.transportUrl,
@@ -154,14 +176,15 @@ async function fetchAddonCatalogDirect(
   descriptor: AddonCatalogDescriptor,
   options?: { signal?: AbortSignal },
 ): Promise<MetadataCatalogResponse> {
-  const baseUrl = resolveAddonBaseUrl(addon);
+  const baseUrl = resolveAddonBaseUrl(addon, descriptor.baseUrl);
   if (!baseUrl) throw new Error('Addon base URL unavailable');
 
   const extra = new URLSearchParams();
   if (descriptor.skip) extra.set('skip', String(descriptor.skip));
 
   const query = extra.toString();
-  const url = `${baseUrl}/catalog/${descriptor.type === 'tv' ? 'series' : descriptor.type}/${encodeURIComponent(descriptor.catalogId)}${query ? `/${query}` : ''}.json`;
+  const catalogType = descriptor.type === 'tv' ? 'series' : descriptor.type;
+  const url = `${baseUrl}/catalog/${catalogType}/${encodeURIComponent(descriptor.catalogId)}${query ? `/${query}` : ''}.json`;
   const response = await fetch(url, options?.signal ? { signal: options.signal } : undefined);
   if (!response.ok) throw new Error(`Addon catalog fetch failed: ${response.status}`);
   const data = await response.json();
@@ -179,34 +202,33 @@ async function fetchAddonCatalogViaBackend(
   descriptor: AddonCatalogDescriptor,
   options?: { signal?: AbortSignal },
 ): Promise<MetadataCatalogResponse> {
-  const headers = await getMobileClientIdentityHeaders();
-  const suffix = descriptor.skip ? `?skip=${descriptor.skip}` : '';
-  const candidatePaths = [
-    `/addons/catalog/single/${encodeURIComponent(descriptor.addonId)}/${descriptor.type}/${encodeURIComponent(descriptor.catalogId)}${suffix}`,
-    `/addons/catalogs/single/${encodeURIComponent(descriptor.addonId)}/${descriptor.type}/${encodeURIComponent(descriptor.catalogId)}${suffix}`,
-    `/addons/catalog/${encodeURIComponent(descriptor.addonId)}/${descriptor.type}/${encodeURIComponent(descriptor.catalogId)}${suffix}`,
-  ];
-
-  for (const path of candidatePaths) {
-    const response = await fetch(`${API_BASE}${path}`, {
-      headers,
-      signal: options?.signal,
-    }).catch(() => null);
-
-    if (!response || response.status === 404) continue;
-    if (!response.ok) throw new Error(`Addon catalog proxy failed: ${response.status}`);
-
-    const data = await response.json();
-    const metas = Array.isArray(data?.metas) ? data.metas : Array.isArray(data?.results) ? data.results : [];
-    return {
-      results: metas
-        .map((item: any) => normalizeAddonCatalogItem(item, descriptor.type))
-        .filter((item: MetadataCatalogItem) => item.id.length > 0),
-      total_pages: data?.total_pages ?? (data?.hasMore ? 2 : 1),
-    };
+  const headers: Record<string, string> = { ...(await getMobileClientIdentityHeaders()) };
+  // The backend scopes addons to the signed-in user; without auth it falls
+  // back to the device scope and won't find an account's installed addons.
+  const session = await loadStoredAuthSession().catch(() => null);
+  if (session?.user?.accessToken) {
+    headers.Authorization = `Bearer ${session.user.accessToken}`;
+    headers['x-user-id'] = session.user.uid;
   }
 
-  throw new Error('Addon catalog endpoint unavailable');
+  const catalogType = descriptor.type === 'tv' ? 'series' : descriptor.type;
+  const suffix = descriptor.skip ? `?skip=${descriptor.skip}` : '';
+  const path = `/addons/${encodeURIComponent(descriptor.addonId)}/catalog/${catalogType}/${encodeURIComponent(descriptor.catalogId)}${suffix}`;
+
+  const response = await fetch(`${API_BASE}${path}`, {
+    headers,
+    signal: options?.signal,
+  });
+  if (!response.ok) throw new Error(`Addon catalog proxy failed: ${response.status}`);
+
+  const data = await response.json();
+  const metas = Array.isArray(data?.metas) ? data.metas : Array.isArray(data?.results) ? data.results : [];
+  return {
+    results: metas
+      .map((item: any) => normalizeAddonCatalogItem(item, descriptor.type))
+      .filter((item: MetadataCatalogItem) => item.id.length > 0),
+    total_pages: data?.total_pages ?? (data?.hasMore ? 2 : 1),
+  };
 }
 
 function buildCinemetaUrl(endpoint: string): string {
@@ -232,8 +254,32 @@ export async function fetchMetadataCatalog(
         try {
           return await fetchAddonCatalogDirect(addon, addonDescriptor, options);
         } catch {
+          if (addonDescriptor.baseUrl) {
+            return fetchAddonCatalogDirect({
+              ...addon,
+              baseUrl: addonDescriptor.baseUrl,
+              transportUrl: addonDescriptor.baseUrl,
+            }, addonDescriptor, options);
+          }
           return fetchAddonCatalogViaBackend(addonDescriptor, options);
         }
+      }
+      if (addonDescriptor.baseUrl) {
+        return fetchAddonCatalogDirect({
+          id: addonDescriptor.addonId,
+          enabled: true,
+          position: 0,
+          baseUrl: addonDescriptor.baseUrl,
+          transportUrl: addonDescriptor.baseUrl,
+          manifest: {
+            id: addonDescriptor.addonId,
+            name: addonDescriptor.addonId,
+            version: '0',
+            resources: [],
+            types: [addonDescriptor.type],
+            catalogs: [],
+          },
+        }, addonDescriptor, options);
       }
       return fetchAddonCatalogViaBackend(addonDescriptor, options);
     };

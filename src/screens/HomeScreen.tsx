@@ -54,6 +54,7 @@ import { getDeviceProfile } from '../utils/deviceProfile';
 import { invalidateSharedCache } from '../utils/sharedDataCache';
 import { IdleTaskHandle, runIdle } from '../utils/idleTask';
 import { buildAddonHomeSections, buildDefaultHomeSections } from '../utils/homeCatalogSections';
+import { isExpoGoRuntime } from '../utils/runtime';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const HERO_HEIGHT = 616;
@@ -580,6 +581,7 @@ const AnimatedDot = React.memo(function AnimatedDot({ active, activeColor, inact
 });
 
 export const HomeScreen = ({ navigation }: any) => {
+  const expoGoRuntime = isExpoGoRuntime();
   const blurTargetRef = useRef<View | null>(null);
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
@@ -592,7 +594,7 @@ export const HomeScreen = ({ navigation }: any) => {
   const { continueWatchingStyle, vividAmbientEnabled } = useDisplaySettings();
   const { setAppReady } = useAppReady();
   const { metadataProvider } = useTmdbApiKey();
-  const { addons } = useAddons();
+  const { addons, fetchStreams } = useAddons();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const isDarkAppearance = resolvedAppearance === 'dark';
   const isMonochromeDark = isDarkAppearance;
@@ -1369,9 +1371,33 @@ export const HomeScreen = ({ navigation }: any) => {
     setRefreshing(false);
   }, [fetchCatalogSections, fetchTraktSections, loadWatchlist, loadWatchlistRemovals, loadLocalProgress, traktConnected, refreshContinueWatching, refreshWatchlist, sections]);
 
-  const handleItemPress = useCallback((item: any) => {
+  const handleItemPress = useCallback(async (item: any) => {
+    if (item?.type === 'sport') {
+      const streams = await fetchStreams('sport', String(item.id));
+      if (!streams.length) return;
+      navigation.navigate(expoGoRuntime ? 'Player' : 'MpvPlayer', {
+        movieId: String(item.id),
+        type: 'movie',
+        title: item.title,
+        synopsis: item.description ?? undefined,
+        backdrop: item.backdrop ?? item.poster ?? undefined,
+        poster: item.poster ?? undefined,
+        resolveOnMount: true,
+        sourceStreams: streams,
+        resolverMovieId: String(item.id),
+        returnToPlayerParams: {
+          movieId: String(item.id),
+          type: 'movie',
+          title: item.title,
+          synopsis: item.description ?? undefined,
+          backdrop: item.backdrop ?? item.poster ?? undefined,
+          poster: item.poster ?? undefined,
+        },
+      });
+      return;
+    }
     navigation.navigate('Detail', { movieId: item.id, type: item.type || 'movie' });
-  }, [navigation]);
+  }, [expoGoRuntime, fetchStreams, navigation]);
 
   const handleHeroRewatchPress = useCallback((item: any) => {
     const progressKey = movieProgressKey(Number(item.id));
@@ -1497,6 +1523,7 @@ export const HomeScreen = ({ navigation }: any) => {
   }, [markAllEpisodesWatched]);
 
   const handleLongPress = useCallback((item: any) => {
+    if (item?.type === 'sport') return;
     setLongPressItem(item);
   }, []);
 
@@ -1968,6 +1995,7 @@ export const HomeScreen = ({ navigation }: any) => {
         sectionId: section.id,
         title,
         badgeLabel: section.source === 'addon' ? 'Addon' : undefined,
+        cardVariant: section.contentType === 'sport' ? 'landscape' : 'portrait',
         data: sData ?? [],
         loading: isLoading,
       });
@@ -2034,6 +2062,7 @@ export const HomeScreen = ({ navigation }: any) => {
             badgeLabel={item.badgeLabel}
             data={item.data}
             loading={item.loading}
+            cardVariant={item.cardVariant}
             onViewAll={() => handleViewAll(item.sectionId, item.title)}
             onItemPress={handleItemPress}
             onItemLongPress={handleLongPress}

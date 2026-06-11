@@ -113,6 +113,7 @@ function makeStyles(c: ThemeColors) {
     rowValue: { color: c.textSecondary, fontSize: 13, fontWeight: '600' },
     divider: { height: 1, backgroundColor: c.borderSoft, marginLeft: 58 },
     modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' },
+    modalBackdropCentered: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 18 },
     modalCard: {
       backgroundColor: c.cardBg,
       borderTopLeftRadius: 26,
@@ -121,6 +122,25 @@ function makeStyles(c: ThemeColors) {
       borderColor: c.border,
       paddingHorizontal: 20,
       paddingTop: 20,
+    },
+    modalSheet: {
+      justifyContent: 'flex-end',
+      flex: 1,
+    },
+    modalBody: {
+      flexShrink: 1,
+      minHeight: 0,
+    },
+    modalPopupCard: {
+      width: '100%',
+      maxWidth: 560,
+      backgroundColor: c.cardBg,
+      borderRadius: 24,
+      borderWidth: 1,
+      borderColor: c.border,
+      paddingHorizontal: 20,
+      paddingTop: 20,
+      paddingBottom: 16,
     },
     modalTitle: { color: c.textPrimary, fontSize: 19, fontWeight: '800' },
     modalSub: { color: c.textSecondary, fontSize: 13, lineHeight: 18, marginTop: 6, marginBottom: 8 },
@@ -139,7 +159,7 @@ function makeStyles(c: ThemeColors) {
     optionTitle: { color: c.textPrimary, fontSize: 15, fontWeight: '700' },
     optionSub: { color: c.textSecondary, fontSize: 12, lineHeight: 17, marginTop: 3 },
     accentSwatch: { width: 16, height: 16, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)' },
-    modalScroll: { maxHeight: 420, marginTop: 14 },
+    modalScroll: { marginTop: 14, flexGrow: 0, minHeight: 0 },
     layoutModalScroll: { marginTop: 14 },
     layoutModalContent: { paddingBottom: 40 },
     layoutFooterSpacer: { height: 120 },
@@ -267,6 +287,38 @@ function makeStyles(c: ThemeColors) {
       color: c.textSecondary,
       fontSize: 10,
       textAlign: 'center',
+    },
+    badgeSourcePickerCard: {
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 16,
+      padding: 14,
+      gap: 10,
+      backgroundColor: c.cardBgElevated ?? c.cardBg,
+    },
+    badgeSourcePickerOption: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 12,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+    },
+    badgeSourcePickerText: {
+      flex: 1,
+    },
+    badgeSourcePickerTitle: {
+      color: c.textPrimary,
+      fontSize: 13,
+      fontWeight: '700',
+      fontFamily: 'monospace',
+    },
+    badgeSourcePickerSub: {
+      color: c.textSecondary,
+      fontSize: 11,
+      marginTop: 2,
     },
   });
 }
@@ -444,6 +496,8 @@ export function SettingsScreen({ navigation, route }: any) {
     addBadgeUrl,
     removeBadgeUrl,
     refreshBadgeUrl,
+    activeBadgeUrl,
+    setActiveBadgeUrl,
     sources: fusionBadgeSources,
   } = useFusionBadges();
   const { colors } = theme;
@@ -775,12 +829,17 @@ export function SettingsScreen({ navigation, route }: any) {
     }
   }, [addBadgeUrl, badgeUrlDraft, badgeUrlSubmitting, t]);
 
+  const effectiveActiveBadgeUrl = badgeUrls.length > 2
+    ? ((activeBadgeUrl && badgeUrls.includes(activeBadgeUrl) ? activeBadgeUrl : (badgeUrls[0] ?? null)))
+    : null;
+  const activeBadgeSourceLabel = effectiveActiveBadgeUrl ?? (badgeUrls[0] ?? null);
   const totalActiveFusionBadges = useMemo(() => {
-    return badgeUrls.reduce((sum, url) => {
+    const activeUrls = badgeUrls.length > 2 && effectiveActiveBadgeUrl ? [effectiveActiveBadgeUrl] : badgeUrls;
+    return activeUrls.reduce((sum, url) => {
       const source = fusionBadgeSources[url]?.source;
       return sum + (source ? countEnabledFilters(source) : 0);
     }, 0);
-  }, [badgeUrls, fusionBadgeSources]);
+  }, [badgeUrls, effectiveActiveBadgeUrl, fusionBadgeSources]);
 
   const previewSource: FusionBadgeSource | null = previewBadgeUrl ? (fusionBadgeSources[previewBadgeUrl]?.source ?? null) : null;
 
@@ -1096,7 +1155,17 @@ export function SettingsScreen({ navigation, route }: any) {
                     <View style={styles.divider} />
                     <SettingRow icon="swap-vertical-outline" iconColor={safeIconColor('#22d3ee')} label={t('settings_badge_position')} subtitle={t('settings_badge_position_sub')} value={badgePositionValueLabelMap[badgePosition] ?? badgePosition} onPress={() => setPicker('badgePosition')} />
                     <View style={styles.divider} />
-                    <SettingRow icon="link-outline" iconColor={safeIconColor('#a78bfa')} label={t('settings_fusion_badge_urls')} subtitle={t('settings_fusion_badge_urls_sub', { count: badgeUrls.length, max: MAX_FUSION_BADGE_URLS, badges: totalActiveFusionBadges })} onPress={() => setShowBadgeUrlsModal(true)} />
+                    <SettingRow
+                      icon="link-outline"
+                      iconColor={safeIconColor('#a78bfa')}
+                      label={t('settings_fusion_badge_urls')}
+                      subtitle={
+                        badgeUrls.length > 2 && activeBadgeSourceLabel
+                          ? `${t('settings_fusion_badge_urls_sub', { count: badgeUrls.length, max: MAX_FUSION_BADGE_URLS, badges: totalActiveFusionBadges })}\n${t('settings_fusion_badge_active_source')}: ${activeBadgeSourceLabel}`
+                          : t('settings_fusion_badge_urls_sub', { count: badgeUrls.length, max: MAX_FUSION_BADGE_URLS, badges: totalActiveFusionBadges })
+                      }
+                      onPress={() => setShowBadgeUrlsModal(true)}
+                    />
                   </View>
                 </>
               ) : null}
@@ -1142,17 +1211,67 @@ export function SettingsScreen({ navigation, route }: any) {
       <Modal visible={showBadgeUrlsModal} transparent animationType="slide" statusBarTranslucent onRequestClose={() => setShowBadgeUrlsModal(false)}>
         <View style={styles.modalBackdrop}>
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowBadgeUrlsModal(false)} />
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ justifyContent: 'flex-end' }}>
-            <Pressable style={[styles.modalCard, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Math.max(insets.top, 12)}
+            style={styles.modalSheet}
+          >
+            <Pressable
+              style={[
+                styles.modalCard,
+                { paddingBottom: insets.bottom + 16, maxHeight: Math.floor(windowHeight * 0.88) },
+              ]}
+              onPress={() => {}}
+            >
             <Text style={styles.modalTitle}>{t('settings_fusion_badge_urls_modal_title')}</Text>
             <Text style={styles.modalSub}>{t('settings_fusion_badge_urls_modal_sub', { max: MAX_FUSION_BADGE_URLS })}</Text>
 
-            <ScrollView style={styles.modalScroll} contentContainerStyle={{ gap: 12, paddingBottom: 4 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+            <View style={styles.modalBody}>
+            <ScrollView
+              style={styles.modalScroll}
+              contentContainerStyle={{ gap: 12, paddingBottom: 20 }}
+              showsVerticalScrollIndicator
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+              nestedScrollEnabled
+            >
+              {badgeUrls.length < MAX_FUSION_BADGE_URLS ? (
+                <View style={{ gap: 10 }}>
+                  <TextInput
+                    value={badgeUrlDraft}
+                    onChangeText={text => { setBadgeUrlDraft(text); setBadgeUrlError(null); }}
+                    placeholder={t('settings_fusion_badge_url_placeholder')}
+                    placeholderTextColor={colors.placeholder}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    returnKeyType="done"
+                    onSubmitEditing={() => { void handleAddBadgeUrl(); }}
+                    style={styles.textInput}
+                  />
+                  {badgeUrlError ? <Text style={styles.badgeUrlError}>{badgeUrlError}</Text> : null}
+                  <TouchableOpacity
+                    style={[styles.actionButton, { backgroundColor: colors.accent, opacity: badgeUrlSubmitting ? 0.6 : 1 }]}
+                    onPress={() => { void handleAddBadgeUrl(); }}
+                    activeOpacity={0.82}
+                    disabled={badgeUrlSubmitting}
+                  >
+                    {badgeUrlSubmitting ? (
+                      <ActivityIndicator size="small" color={colors.buttonText} />
+                    ) : (
+                      <Text style={[styles.actionButtonText, { color: colors.buttonText }]}>{t('settings_fusion_badge_url_import')}</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <Text style={[styles.helper, { paddingHorizontal: 0, paddingBottom: 0 }]}>{t('settings_fusion_badge_urls_limit', { max: MAX_FUSION_BADGE_URLS })}</Text>
+              )}
+
               {badgeUrls.length === 0 ? (
                 <Text style={styles.rowSub}>{t('settings_fusion_badge_urls_empty')}</Text>
               ) : badgeUrls.map(url => {
                 const state = fusionBadgeSources[url];
                 const source = state?.source;
+                const selected = effectiveActiveBadgeUrl === url;
                 return (
                   <View key={url} style={styles.badgeUrlCard}>
                     <Text style={styles.badgeUrlText} numberOfLines={1}>{url}</Text>
@@ -1168,6 +1287,22 @@ export function SettingsScreen({ navigation, route }: any) {
                       </Text>
                     ) : null}
                     <View style={styles.badgeUrlActions}>
+                      {badgeUrls.length > 2 ? (
+                        <TouchableOpacity
+                          onPress={() => { void setActiveBadgeUrl(url); }}
+                          style={[
+                            styles.badgeUrlActionButton,
+                            selected && { borderColor: colors.accent, backgroundColor: colors.accent + '12' },
+                          ]}
+                          activeOpacity={0.78}
+                        >
+                          <Ionicons
+                            name={selected ? 'radio-button-on' : 'radio-button-off'}
+                            size={18}
+                            color={selected ? colors.accent : colors.textSecondary}
+                          />
+                        </TouchableOpacity>
+                      ) : null}
                       <TouchableOpacity onPress={() => setPreviewBadgeUrl(url)} style={styles.badgeUrlActionButton} activeOpacity={0.78}>
                         <Ionicons name="eye-outline" size={18} color={colors.textSecondary} />
                       </TouchableOpacity>
@@ -1182,51 +1317,29 @@ export function SettingsScreen({ navigation, route }: any) {
                 );
               })}
             </ScrollView>
-
-            {badgeUrls.length < MAX_FUSION_BADGE_URLS ? (
-              <View style={{ gap: 10, marginTop: 12 }}>
-                <TextInput
-                  value={badgeUrlDraft}
-                  onChangeText={text => { setBadgeUrlDraft(text); setBadgeUrlError(null); }}
-                  placeholder={t('settings_fusion_badge_url_placeholder')}
-                  placeholderTextColor={colors.placeholder}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  returnKeyType="done"
-                  onSubmitEditing={() => { void handleAddBadgeUrl(); }}
-                  style={styles.textInput}
-                />
-                {badgeUrlError ? <Text style={styles.badgeUrlError}>{badgeUrlError}</Text> : null}
-                <TouchableOpacity
-                  style={[styles.actionButton, { backgroundColor: colors.accent, opacity: badgeUrlSubmitting ? 0.6 : 1 }]}
-                  onPress={() => { void handleAddBadgeUrl(); }}
-                  activeOpacity={0.82}
-                  disabled={badgeUrlSubmitting}
-                >
-                  {badgeUrlSubmitting ? (
-                    <ActivityIndicator size="small" color={colors.buttonText} />
-                  ) : (
-                    <Text style={[styles.actionButtonText, { color: colors.buttonText }]}>{t('settings_fusion_badge_url_import')}</Text>
-                  )}
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <Text style={[styles.helper, { paddingHorizontal: 0 }]}>{t('settings_fusion_badge_urls_limit', { max: MAX_FUSION_BADGE_URLS })}</Text>
-            )}
+            </View>
             </Pressable>
           </KeyboardAvoidingView>
         </View>
       </Modal>
-      <Modal visible={!!previewBadgeUrl} transparent animationType="slide" statusBarTranslucent onRequestClose={() => setPreviewBadgeUrl(null)}>
-        <View style={styles.modalBackdrop}>
+      <Modal visible={!!previewBadgeUrl} transparent animationType="fade" statusBarTranslucent onRequestClose={() => setPreviewBadgeUrl(null)}>
+        <View style={styles.modalBackdropCentered}>
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setPreviewBadgeUrl(null)} />
-          <Pressable style={[styles.modalCard, { paddingBottom: insets.bottom + 16, maxHeight: Math.floor(windowHeight * 0.8) }]} onPress={() => {}}>
+          <View
+            style={[styles.modalPopupCard, { maxHeight: Math.floor(windowHeight * 0.82), paddingBottom: Math.max(insets.bottom, 16) }]}
+          >
             <Text style={styles.modalTitle}>{t('settings_fusion_badge_preview_title')}</Text>
             {previewBadgeUrl ? <Text style={styles.modalSub} numberOfLines={1}>{previewBadgeUrl}</Text> : null}
             {previewSource ? (
               <Text style={styles.layoutHint}>{t('settings_fusion_badge_preview_count', { count: countEnabledFilters(previewSource) })}</Text>
             ) : null}
-            <ScrollView style={styles.modalScroll} contentContainerStyle={{ gap: 16, paddingBottom: 24 }} showsVerticalScrollIndicator={false} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+            <View style={styles.modalBody}>
+            <ScrollView
+              style={styles.modalScroll}
+              contentContainerStyle={{ gap: 16, paddingBottom: 24 }}
+              showsVerticalScrollIndicator
+              keyboardShouldPersistTaps="handled"
+            >
               {previewSource ? groupSourceFilters(previewSource).map(({ group, badges }) => (
                 <View key={group.id || 'special'}>
                   <Text style={styles.badgeGroupTitle}>{group.name}</Text>
@@ -1243,7 +1356,8 @@ export function SettingsScreen({ navigation, route }: any) {
                 <ActivityIndicator size="small" color={colors.accent} />
               )}
             </ScrollView>
-          </Pressable>
+            </View>
+          </View>
         </View>
       </Modal>
       <StackBottomNav activeTab="Settings" blurTarget={blurTargetRef} />

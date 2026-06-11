@@ -243,6 +243,10 @@ const en = {
   settings_fusion_badge_cancel: 'Cancel',
   settings_fusion_badge_urls_empty: 'No Fusion badge sources imported yet.',
   settings_fusion_badge_urls_limit: 'You can import up to {max} URLs.',
+  settings_fusion_badge_active_source: 'Active Badge Source',
+  settings_fusion_badge_active_source_sub: 'When more than two badge sources are imported, choose which one should be used for matching.',
+  settings_fusion_badge_source_in_use: 'Currently in use',
+  settings_fusion_badge_source_tap_to_use: 'Tap to use this source',
 
   update_available_badge: 'Update available',
   update_required_badge: 'Required update',

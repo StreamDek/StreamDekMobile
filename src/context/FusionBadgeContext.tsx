@@ -38,6 +38,8 @@ type FusionBadgeContextValue = {
   badgePosition: BadgePosition;
   setBadgePosition: (value: BadgePosition) => Promise<void>;
   badgeUrls: string[];
+  activeBadgeUrl: string | null;
+  setActiveBadgeUrl: (url: string | null) => Promise<void>;
   addBadgeUrl: (url: string) => Promise<{ ok: boolean; error?: string }>;
   removeBadgeUrl: (url: string) => Promise<void>;
   refreshBadgeUrl: (url: string) => Promise<void>;
@@ -55,6 +57,8 @@ const FusionBadgeContext = createContext<FusionBadgeContextValue>({
   badgePosition: 'bottom',
   setBadgePosition: async () => {},
   badgeUrls: [DEFAULT_FUSION_BADGE_URL],
+  activeBadgeUrl: null,
+  setActiveBadgeUrl: async () => {},
   addBadgeUrl: async () => ({ ok: false, error: 'Not ready' }),
   removeBadgeUrl: async () => {},
   refreshBadgeUrl: async () => {},
@@ -69,6 +73,7 @@ type Settings = {
   showSizeBadges: boolean;
   badgePosition: BadgePosition;
   badgeUrls: string[];
+  activeBadgeUrl: string | null;
 };
 
 const DEFAULT_SETTINGS: Settings = {
@@ -76,6 +81,7 @@ const DEFAULT_SETTINGS: Settings = {
   showSizeBadges: true,
   badgePosition: 'bottom',
   badgeUrls: [DEFAULT_FUSION_BADGE_URL],
+  activeBadgeUrl: null,
 };
 
 export const FusionBadgeProvider = ({ children }: { children: React.ReactNode }) => {
@@ -86,6 +92,7 @@ export const FusionBadgeProvider = ({ children }: { children: React.ReactNode })
   const [showSizeBadges, setShowSizeBadgesState] = useState(DEFAULT_SETTINGS.showSizeBadges);
   const [badgePosition, setBadgePositionState] = useState<BadgePosition>(DEFAULT_SETTINGS.badgePosition);
   const [badgeUrls, setBadgeUrlsState] = useState<string[]>(DEFAULT_SETTINGS.badgeUrls);
+  const [activeBadgeUrl, setActiveBadgeUrlState] = useState<string | null>(DEFAULT_SETTINGS.activeBadgeUrl);
   const [sources, setSources] = useState<Record<string, FusionBadgeSourceState>>({});
   const [isReady, setIsReady] = useState(false);
 
@@ -145,18 +152,26 @@ export const FusionBadgeProvider = ({ children }: { children: React.ReactNode })
     const nextBadgeUrls = Array.isArray(remoteStreams.fusionBadgeUrls) && remoteStreams.fusionBadgeUrls.length > 0
       ? remoteStreams.fusionBadgeUrls.filter((u: unknown): u is string => typeof u === 'string' && u.trim().length > 0).slice(0, MAX_FUSION_BADGE_URLS)
       : settingsRef.current.badgeUrls;
+    const requestedActiveBadgeUrl = typeof remoteStreams.activeFusionBadgeUrl === 'string' && remoteStreams.activeFusionBadgeUrl.trim().length > 0
+      ? remoteStreams.activeFusionBadgeUrl.trim()
+      : settingsRef.current.activeBadgeUrl;
+    const nextActiveBadgeUrl = nextBadgeUrls.length > 2
+      ? (requestedActiveBadgeUrl && nextBadgeUrls.includes(requestedActiveBadgeUrl) ? requestedActiveBadgeUrl : nextBadgeUrls[0] ?? null)
+      : null;
 
     settingsRef.current = {
       fusionBadgesEnabled: nextFusionBadgesEnabled,
       showSizeBadges: nextShowSizeBadges,
       badgePosition: nextBadgePosition,
       badgeUrls: nextBadgeUrls,
+      activeBadgeUrl: nextActiveBadgeUrl,
     };
 
     setFusionBadgesEnabledState(nextFusionBadgesEnabled);
     setShowSizeBadgesState(nextShowSizeBadges);
     setBadgePositionState(nextBadgePosition);
     setBadgeUrlsState(nextBadgeUrls);
+    setActiveBadgeUrlState(nextActiveBadgeUrl);
 
     void Storage.setItem(settingsStorageKey, JSON.stringify(settingsRef.current));
 
@@ -187,12 +202,19 @@ export const FusionBadgeProvider = ({ children }: { children: React.ReactNode })
             badgeUrls: Array.isArray(parsed?.badgeUrls) && parsed.badgeUrls.length > 0
               ? parsed.badgeUrls.filter((u: unknown): u is string => typeof u === 'string' && u.trim().length > 0).slice(0, MAX_FUSION_BADGE_URLS)
               : DEFAULT_SETTINGS.badgeUrls,
+            activeBadgeUrl: typeof parsed?.activeBadgeUrl === 'string' && parsed.activeBadgeUrl.trim().length > 0
+              ? parsed.activeBadgeUrl.trim()
+              : DEFAULT_SETTINGS.activeBadgeUrl,
           };
+          next.activeBadgeUrl = next.badgeUrls.length > 2 && next.activeBadgeUrl && next.badgeUrls.includes(next.activeBadgeUrl)
+            ? next.activeBadgeUrl
+            : (next.badgeUrls.length > 2 ? (next.badgeUrls[0] ?? null) : null);
           settingsRef.current = next;
           setFusionBadgesEnabledState(next.fusionBadgesEnabled);
           setShowSizeBadgesState(next.showSizeBadges);
           setBadgePositionState(next.badgePosition);
           setBadgeUrlsState(next.badgeUrls);
+          setActiveBadgeUrlState(next.activeBadgeUrl);
         } catch {
           // Ignore malformed persisted settings.
         }
@@ -240,6 +262,7 @@ export const FusionBadgeProvider = ({ children }: { children: React.ReactNode })
           showSizeBadges: snapshot.showSizeBadges,
           badgePosition: snapshot.badgePosition,
           fusionBadgeUrls: snapshot.badgeUrls,
+          activeFusionBadgeUrl: snapshot.activeBadgeUrl,
         },
       });
       persistTimerRef.current = null;
@@ -262,6 +285,15 @@ export const FusionBadgeProvider = ({ children }: { children: React.ReactNode })
     if (!isReady) hasLocalOverrideDuringHydrationRef.current = true;
     setBadgePositionState(value);
     persist({ ...settingsRef.current, badgePosition: value });
+  }, [isReady, persist]);
+
+  const setActiveBadgeUrl = useCallback(async (url: string | null) => {
+    const normalized = url && settingsRef.current.badgeUrls.length > 2 && settingsRef.current.badgeUrls.includes(url)
+      ? url
+      : null;
+    if (!isReady) hasLocalOverrideDuringHydrationRef.current = true;
+    setActiveBadgeUrlState(normalized);
+    persist({ ...settingsRef.current, activeBadgeUrl: normalized });
   }, [isReady, persist]);
 
   const addBadgeUrl = useCallback(async (rawUrl: string): Promise<{ ok: boolean; error?: string }> => {
@@ -289,16 +321,28 @@ export const FusionBadgeProvider = ({ children }: { children: React.ReactNode })
 
     if (!isReady) hasLocalOverrideDuringHydrationRef.current = true;
     const nextUrls = [...settingsRef.current.badgeUrls, url];
+    const nextActiveBadgeUrl = nextUrls.length > 2
+      ? (settingsRef.current.activeBadgeUrl && nextUrls.includes(settingsRef.current.activeBadgeUrl)
+        ? settingsRef.current.activeBadgeUrl
+        : url)
+      : null;
     setBadgeUrlsState(nextUrls);
-    persist({ ...settingsRef.current, badgeUrls: nextUrls });
+    setActiveBadgeUrlState(nextActiveBadgeUrl);
+    persist({ ...settingsRef.current, badgeUrls: nextUrls, activeBadgeUrl: nextActiveBadgeUrl });
     return { ok: true };
   }, [isReady, persist, persistSourcesCache, user]);
 
   const removeBadgeUrl = useCallback(async (url: string) => {
     if (!isReady) hasLocalOverrideDuringHydrationRef.current = true;
     const nextUrls = settingsRef.current.badgeUrls.filter(u => u !== url);
+    const nextActiveBadgeUrl = nextUrls.length > 2
+      ? (settingsRef.current.activeBadgeUrl && nextUrls.includes(settingsRef.current.activeBadgeUrl)
+        ? settingsRef.current.activeBadgeUrl
+        : (nextUrls[0] ?? null))
+      : null;
     setBadgeUrlsState(nextUrls);
-    persist({ ...settingsRef.current, badgeUrls: nextUrls });
+    setActiveBadgeUrlState(nextActiveBadgeUrl);
+    persist({ ...settingsRef.current, badgeUrls: nextUrls, activeBadgeUrl: nextActiveBadgeUrl });
     setSources(prev => {
       const next = { ...prev };
       delete next[url];
@@ -312,8 +356,13 @@ export const FusionBadgeProvider = ({ children }: { children: React.ReactNode })
   }, [loadSource]);
 
   const activeSources = useMemo(
-    () => badgeUrls.map(url => sources[url]?.source).filter((s): s is FusionBadgeSource => !!s),
-    [badgeUrls, sources],
+    () => {
+      const activeUrls = badgeUrls.length > 2 && activeBadgeUrl && badgeUrls.includes(activeBadgeUrl)
+        ? [activeBadgeUrl]
+        : badgeUrls;
+      return activeUrls.map(url => sources[url]?.source).filter((s): s is FusionBadgeSource => !!s);
+    },
+    [activeBadgeUrl, badgeUrls, sources],
   );
 
   const getBadgeGroupsForStream = useCallback((stream: AddonStream): FusionBadgeGroupMatches[] => {
@@ -333,6 +382,8 @@ export const FusionBadgeProvider = ({ children }: { children: React.ReactNode })
     badgePosition,
     setBadgePosition,
     badgeUrls,
+    activeBadgeUrl,
+    setActiveBadgeUrl,
     addBadgeUrl,
     removeBadgeUrl,
     refreshBadgeUrl,
@@ -344,7 +395,7 @@ export const FusionBadgeProvider = ({ children }: { children: React.ReactNode })
     fusionBadgesEnabled, setFusionBadgesEnabled,
     showSizeBadges, setShowSizeBadges,
     badgePosition, setBadgePosition,
-    badgeUrls, addBadgeUrl, removeBadgeUrl, refreshBadgeUrl,
+    badgeUrls, activeBadgeUrl, setActiveBadgeUrl, addBadgeUrl, removeBadgeUrl, refreshBadgeUrl,
     sources, getBadgesForStream, getBadgeGroupsForStream,
     isReady,
   ]);

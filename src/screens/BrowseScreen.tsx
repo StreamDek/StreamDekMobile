@@ -130,7 +130,7 @@ export const BrowseScreen = ({ navigation, route }: any) => {
   const isNetworkBrowse = String(endpoint || '').includes('/tmdb/network/');
   const { theme: { colors }, resolvedAppearance } = useTheme();
   const { t } = useLanguage();
-  const { addons, fetchStreams } = useAddons();
+  const { addons, fetchStreams, fetchStreamsForAddon } = useAddons();
   const styles     = useMemo(() => makeStyles(colors), [colors]);
   const insets     = useSafeAreaInsets();
   const blurTargetRef = useRef<View | null>(null);
@@ -353,8 +353,40 @@ export const BrowseScreen = ({ navigation, route }: any) => {
       });
       return;
     }
+    // Addon-native items (e.g. debrid cloud catalogs) carry ids only their own
+    // addon understands — the detail screen can't resolve them. Fetch the
+    // stream straight from the owning addon (a direct debrid link) and play.
+    const itemId = String(item?.id ?? '');
+    const hasStandardId = /^tt\d+$/.test(itemId) || /^\d+$/.test(itemId);
+    if (item?.addonId && !hasStandardId) {
+      const nativeType = typeof item.addonStreamType === 'string' && item.addonStreamType.length > 0
+        ? item.addonStreamType
+        : (item.type === 'tv' ? 'series' : 'movie');
+      const streams = await fetchStreamsForAddon(item.addonId, nativeType, itemId);
+      if (!streams.length) return;
+      navigation.navigate(expoGoRuntime ? 'Player' : 'MpvPlayer', {
+        movieId: itemId,
+        type: 'movie',
+        title: item.title,
+        synopsis: item.description ?? undefined,
+        backdrop: item.backdrop ?? item.poster ?? undefined,
+        poster: item.poster ?? undefined,
+        resolveOnMount: true,
+        sourceStreams: streams,
+        resolverMovieId: itemId,
+        returnToPlayerParams: {
+          movieId: itemId,
+          type: 'movie',
+          title: item.title,
+          synopsis: item.description ?? undefined,
+          backdrop: item.backdrop ?? item.poster ?? undefined,
+          poster: item.poster ?? undefined,
+        },
+      });
+      return;
+    }
     navigation.navigate('Detail', { movieId: item.id, type: item.type || type });
-  }, [expoGoRuntime, fetchStreams, navigation, type]);
+  }, [expoGoRuntime, fetchStreams, fetchStreamsForAddon, navigation, type]);
 
   return (
     <View style={{ flex: 1 }}>

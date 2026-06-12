@@ -1,5 +1,6 @@
 import React from 'react';
-import { Image, StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
+import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
+import { Image } from 'expo-image';
 import { AddonStream } from '../context/AddonContext';
 import { useFusionBadges } from '../context/FusionBadgeContext';
 
@@ -14,9 +15,11 @@ interface FusionBadgeRowProps {
 export function FusionBadgeRow({ stream, style, badgeHeight = 18 }: FusionBadgeRowProps) {
   const { fusionBadgesEnabled, isReady, getBadgesForStream } = useFusionBadges();
 
-  if (!isReady || !fusionBadgesEnabled) return null;
+  const badges = React.useMemo(
+    () => (isReady && fusionBadgesEnabled ? getBadgesForStream(stream) : []),
+    [fusionBadgesEnabled, getBadgesForStream, isReady, stream],
+  );
 
-  const badges = getBadgesForStream(stream);
   if (badges.length === 0) return null;
 
   return (
@@ -27,7 +30,12 @@ export function FusionBadgeRow({ stream, style, badgeHeight = 18 }: FusionBadgeR
           <Image
             key={badge.id}
             source={{ uri: badge.imageURL }}
-            resizeMode="contain"
+            contentFit="contain"
+            cachePolicy="memory-disk"
+            // Badge packs can ship animated GIF/WebP icons; animating dozens of
+            // them across stream rows overwhelms the UI thread, so render the
+            // first frame only.
+            autoplay={false}
             style={{ height: badgeHeight, width: isFlag ? badgeHeight : badgeHeight * 2.2 }}
           />
         );

@@ -365,10 +365,22 @@ export const FusionBadgeProvider = ({ children }: { children: React.ReactNode })
     [activeBadgeUrl, badgeUrls, sources],
   );
 
+  // Matching runs user-supplied regexes over every filter — far too expensive to
+  // repeat on every row render. Results are cached per stream object and the
+  // cache is replaced whenever the active sources change.
+  const matchCache = useMemo(
+    () => new WeakMap<AddonStream, FusionBadgeGroupMatches[]>(),
+    [activeSources],
+  );
+
   const getBadgeGroupsForStream = useCallback((stream: AddonStream): FusionBadgeGroupMatches[] => {
     if (!fusionBadgesEnabled || activeSources.length === 0) return [];
-    return matchFusionBadges(stream, activeSources);
-  }, [activeSources, fusionBadgesEnabled]);
+    const cached = matchCache.get(stream);
+    if (cached) return cached;
+    const result = matchFusionBadges(stream, activeSources);
+    matchCache.set(stream, result);
+    return result;
+  }, [activeSources, fusionBadgesEnabled, matchCache]);
 
   const getBadgesForStream = useCallback((stream: AddonStream): FusionBadgeFilter[] => {
     return flattenFusionBadges(getBadgeGroupsForStream(stream));

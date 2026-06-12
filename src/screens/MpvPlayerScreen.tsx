@@ -347,6 +347,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     // Season + episode — present when type === 'tv'
     season: routeSeason,
     episode: routeEpisode,
+    isLive: routeIsLive,
   } = route.params ?? {};
 
   // Normalise season/episode to numbers (route params can be strings or numbers)
@@ -365,6 +366,9 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
   const returnParams = returnToPlayerParams && typeof returnToPlayerParams === 'object'
     ? (returnToPlayerParams as Record<string, unknown>)
     : null;
+  // Live broadcasts (sport/live-TV addons) have no meaningful duration or
+  // seekable timeline, so seeking, resume and short-source filtering are disabled.
+  const isLiveStream = Boolean(routeIsLive ?? returnParams?.isLive);
   const movieId = String(
     resolverMovieId
     ?? routeParams.movieId
@@ -1272,6 +1276,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     const loadedDuration = Number(event?.nativeEvent?.duration ?? 0);
     if (
       effectiveShortSourceFilterEnabled
+      && !isLiveStream
       && Number.isFinite(loadedDuration)
       && loadedDuration > 0
       && loadedDuration < MIN_ACCEPTABLE_STREAM_DURATION_SEC
@@ -2276,13 +2281,15 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
       {controlsVisible && !loading && (
         <Animated.View pointerEvents="box-none" style={[StyleSheet.absoluteFillObject, { opacity: controlsOpacity }]}>
           <View style={styles.centerControls}>
-            <TouchableOpacity style={styles.seekVisualBtn} onPress={() => seekBy(-10)} activeOpacity={0.85}>
-              <View style={styles.seekNumericWrap}>
-                <Ionicons name="refresh-outline" size={58} color="rgba(255,255,255,0.64)"
-                  style={{ transform: [{ scaleX: -1 }] }} />
-                <Text style={styles.seekNumericText}>10</Text>
-              </View>
-            </TouchableOpacity>
+            {!isLiveStream && (
+              <TouchableOpacity style={styles.seekVisualBtn} onPress={() => seekBy(-10)} activeOpacity={0.85}>
+                <View style={styles.seekNumericWrap}>
+                  <Ionicons name="refresh-outline" size={58} color="rgba(255,255,255,0.64)"
+                    style={{ transform: [{ scaleX: -1 }] }} />
+                  <Text style={styles.seekNumericText}>10</Text>
+                </View>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
               style={styles.heroPlayBtn}
               onPress={() => {
@@ -2293,14 +2300,26 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
             >
               <Ionicons name={paused ? 'play' : 'pause'} size={38} color="rgba(255,255,255,0.70)" />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.seekVisualBtn} onPress={() => seekBy(10)} activeOpacity={0.85}>
-              <View style={styles.seekNumericWrap}>
-                <Ionicons name="refresh-outline" size={58} color="rgba(255,255,255,0.64)" />
-                <Text style={styles.seekNumericText}>10</Text>
-              </View>
-            </TouchableOpacity>
+            {!isLiveStream && (
+              <TouchableOpacity style={styles.seekVisualBtn} onPress={() => seekBy(10)} activeOpacity={0.85}>
+                <View style={styles.seekNumericWrap}>
+                  <Ionicons name="refresh-outline" size={58} color="rgba(255,255,255,0.64)" />
+                  <Text style={styles.seekNumericText}>10</Text>
+                </View>
+              </TouchableOpacity>
+            )}
           </View>
 
+          {isLiveStream ? (
+            <View style={[styles.timelineBlock, { bottom: insets.bottom + 92 }]}>
+              <View style={styles.timePillRow}>
+                <View style={[styles.timePill, { flexDirection: 'row', alignItems: 'center', gap: 6 }]}>
+                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#ef4444' }} />
+                  <Text style={styles.timePillText}>LIVE</Text>
+                </View>
+              </View>
+            </View>
+          ) : (
           <View style={[styles.timelineBlock, { bottom: insets.bottom + 92 }]}>
             <View
               style={styles.sliderWrap}
@@ -2353,6 +2372,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
               </View>
             </View>
           </View>
+          )}
 
           <View style={[styles.floatingDock, { bottom: insets.bottom + 16 }]}>
             {/* Zoom */}

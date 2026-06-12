@@ -155,7 +155,7 @@ export const FusionBadgeProvider = ({ children }: { children: React.ReactNode })
     const requestedActiveBadgeUrl = typeof remoteStreams.activeFusionBadgeUrl === 'string' && remoteStreams.activeFusionBadgeUrl.trim().length > 0
       ? remoteStreams.activeFusionBadgeUrl.trim()
       : settingsRef.current.activeBadgeUrl;
-    const nextActiveBadgeUrl = nextBadgeUrls.length > 2
+    const nextActiveBadgeUrl = nextBadgeUrls.length > 1
       ? (requestedActiveBadgeUrl && nextBadgeUrls.includes(requestedActiveBadgeUrl) ? requestedActiveBadgeUrl : nextBadgeUrls[0] ?? null)
       : null;
 
@@ -206,9 +206,9 @@ export const FusionBadgeProvider = ({ children }: { children: React.ReactNode })
               ? parsed.activeBadgeUrl.trim()
               : DEFAULT_SETTINGS.activeBadgeUrl,
           };
-          next.activeBadgeUrl = next.badgeUrls.length > 2 && next.activeBadgeUrl && next.badgeUrls.includes(next.activeBadgeUrl)
+          next.activeBadgeUrl = next.badgeUrls.length > 1 && next.activeBadgeUrl && next.badgeUrls.includes(next.activeBadgeUrl)
             ? next.activeBadgeUrl
-            : (next.badgeUrls.length > 2 ? (next.badgeUrls[0] ?? null) : null);
+            : (next.badgeUrls.length > 1 ? (next.badgeUrls[0] ?? null) : null);
           settingsRef.current = next;
           setFusionBadgesEnabledState(next.fusionBadgesEnabled);
           setShowSizeBadgesState(next.showSizeBadges);
@@ -288,7 +288,7 @@ export const FusionBadgeProvider = ({ children }: { children: React.ReactNode })
   }, [isReady, persist]);
 
   const setActiveBadgeUrl = useCallback(async (url: string | null) => {
-    const normalized = url && settingsRef.current.badgeUrls.length > 2 && settingsRef.current.badgeUrls.includes(url)
+    const normalized = url && settingsRef.current.badgeUrls.length > 1 && settingsRef.current.badgeUrls.includes(url)
       ? url
       : null;
     if (!isReady) hasLocalOverrideDuringHydrationRef.current = true;
@@ -321,7 +321,7 @@ export const FusionBadgeProvider = ({ children }: { children: React.ReactNode })
 
     if (!isReady) hasLocalOverrideDuringHydrationRef.current = true;
     const nextUrls = [...settingsRef.current.badgeUrls, url];
-    const nextActiveBadgeUrl = nextUrls.length > 2
+    const nextActiveBadgeUrl = nextUrls.length > 1
       ? (settingsRef.current.activeBadgeUrl && nextUrls.includes(settingsRef.current.activeBadgeUrl)
         ? settingsRef.current.activeBadgeUrl
         : url)
@@ -335,7 +335,7 @@ export const FusionBadgeProvider = ({ children }: { children: React.ReactNode })
   const removeBadgeUrl = useCallback(async (url: string) => {
     if (!isReady) hasLocalOverrideDuringHydrationRef.current = true;
     const nextUrls = settingsRef.current.badgeUrls.filter(u => u !== url);
-    const nextActiveBadgeUrl = nextUrls.length > 2
+    const nextActiveBadgeUrl = nextUrls.length > 1
       ? (settingsRef.current.activeBadgeUrl && nextUrls.includes(settingsRef.current.activeBadgeUrl)
         ? settingsRef.current.activeBadgeUrl
         : (nextUrls[0] ?? null))
@@ -357,7 +357,7 @@ export const FusionBadgeProvider = ({ children }: { children: React.ReactNode })
 
   const activeSources = useMemo(
     () => {
-      const activeUrls = badgeUrls.length > 2 && activeBadgeUrl && badgeUrls.includes(activeBadgeUrl)
+      const activeUrls = badgeUrls.length > 1 && activeBadgeUrl && badgeUrls.includes(activeBadgeUrl)
         ? [activeBadgeUrl]
         : badgeUrls;
       return activeUrls.map(url => sources[url]?.source).filter((s): s is FusionBadgeSource => !!s);

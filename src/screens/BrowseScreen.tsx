@@ -322,7 +322,13 @@ export const BrowseScreen = ({ navigation, route }: any) => {
     : null;
   const handleItemPress = useCallback(async (item: any) => {
     if (item?.type === 'sport') {
-      const streams = await fetchStreams('sport', String(item.id));
+      // Live items request streams with the addon's native type; native 'tv'
+      // (live channels) goes out as 'live-tv' to stay distinct from series.
+      const nativeType = typeof item.addonStreamType === 'string' && item.addonStreamType.length > 0
+        ? item.addonStreamType
+        : 'sport';
+      const streamRequestType = nativeType === 'tv' ? 'live-tv' : nativeType;
+      const streams = await fetchStreams(streamRequestType, String(item.id));
       if (!streams.length) return;
       navigation.navigate(expoGoRuntime ? 'Player' : 'MpvPlayer', {
         movieId: String(item.id),
@@ -334,6 +340,7 @@ export const BrowseScreen = ({ navigation, route }: any) => {
         resolveOnMount: true,
         sourceStreams: streams,
         resolverMovieId: String(item.id),
+        isLive: true,
         returnToPlayerParams: {
           movieId: String(item.id),
           type: 'movie',
@@ -341,6 +348,7 @@ export const BrowseScreen = ({ navigation, route }: any) => {
           synopsis: item.description ?? undefined,
           backdrop: item.backdrop ?? item.poster ?? undefined,
           poster: item.poster ?? undefined,
+          isLive: true,
         },
       });
       return;

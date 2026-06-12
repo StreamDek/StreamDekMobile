@@ -2,6 +2,7 @@ import { API_BASE } from '../constants/api';
 import type { InstalledAddon } from '../context/AddonContext';
 import { getMobileClientIdentityHeaders } from './clientIdentity';
 import { loadStoredAuthSession } from '../lib/authClient';
+import { mapAddonCatalogType } from './homeCatalogSections';
 import { tmdbFetch } from './tmdbFetch';
 import { getSharedCachedAsync } from './sharedDataCache';
 
@@ -21,6 +22,8 @@ export interface MetadataCatalogItem {
   rating?: number;
   description?: string;
   runtime?: number | null;
+  /** Stremio-native type to use when requesting streams for live addon items (e.g. 'tv', 'events'). */
+  addonStreamType?: string;
 }
 
 export interface MetadataCatalogResponse {
@@ -34,6 +37,8 @@ type AddonCatalogDescriptor = {
   catalogId: string;
   skip?: number;
   baseUrl?: string;
+  /** Stremio-native catalog type ('series', 'tv', 'events', …) used to build addon URLs. */
+  addonType?: string;
 };
 
 function parseRuntimeMinutes(value: unknown): number | null {
@@ -73,15 +78,15 @@ function normalizeCinemetaItem(item: any): MetadataCatalogItem {
   };
 }
 
-function normalizeAddonCatalogItem(item: any, fallbackType: 'movie' | 'tv' | 'sport'): MetadataCatalogItem {
-  const rawType = String(item?.type ?? fallbackType).toLowerCase();
-  const type = rawType === 'series'
-    ? 'tv'
-    : rawType === 'tv'
-      ? 'tv'
-      : rawType === 'sport'
-        ? 'sport'
-        : 'movie';
+function normalizeAddonCatalogItem(
+  item: any,
+  fallbackType: 'movie' | 'tv' | 'sport',
+  fallbackNativeType?: string,
+): MetadataCatalogItem {
+  const rawNativeType = String(item?.type ?? '').toLowerCase();
+  const mappedType = rawNativeType ? mapAddonCatalogType(rawNativeType) : null;
+  const type = mappedType ?? fallbackType;
+  const nativeType = mappedType ? rawNativeType : (fallbackNativeType ?? '').toLowerCase();
   const tmdbId = Number(item?.moviedb_id ?? item?.tmdbId);
   const rawId = typeof item?.id === 'string' ? item.id : String(item?.id ?? '');
   const imdbId = typeof item?.imdb_id === 'string'
@@ -109,6 +114,7 @@ function normalizeAddonCatalogItem(item: any, fallbackType: 'movie' | 'tv' | 'sp
     rating: Number.isFinite(rawRating) ? rawRating : 0,
     description: item?.description ?? '',
     runtime: parseRuntimeMinutes(item?.runtime),
+    addonStreamType: type === 'sport' ? (nativeType || 'sport') : undefined,
   };
 }
 
@@ -122,11 +128,13 @@ function parseAddonCatalogEndpoint(endpoint: string): AddonCatalogDescriptor | n
     const catalogId = decodeURIComponent(catalogSegment ?? '');
     if (!addonId || !catalogId || (type !== 'movie' && type !== 'tv' && type !== 'sport')) return null;
     const skip = Number(parsed.searchParams.get('skip'));
+    const rawAddonType = (parsed.searchParams.get('addonType') ?? '').trim().toLowerCase();
     return {
       addonId,
       type,
       catalogId,
       skip: Number.isFinite(skip) && skip > 0 ? skip : undefined,
+      addonType: /^[a-z][a-z0-9_-]*$/.test(rawAddonType) ? rawAddonType : undefined,
       baseUrl: (() => {
         const baseUrl = parsed.searchParams.get('transport') ?? parsed.searchParams.get('baseUrl') ?? parsed.searchParams.get('manifestUrl');
         if (typeof baseUrl !== 'string') return undefined;
@@ -183,7 +191,7 @@ async function fetchAddonCatalogDirect(
   if (descriptor.skip) extra.set('skip', String(descriptor.skip));
 
   const query = extra.toString();
-  const catalogType = descriptor.type === 'tv' ? 'series' : descriptor.type;
+  const catalogType = descriptor.addonType ?? (descriptor.type === 'tv' ? 'series' : descriptor.type);
   const url = `${baseUrl}/catalog/${catalogType}/${encodeURIComponent(descriptor.catalogId)}${query ? `/${query}` : ''}.json`;
   const response = await fetch(url, options?.signal ? { signal: options.signal } : undefined);
   if (!response.ok) throw new Error(`Addon catalog fetch failed: ${response.status}`);
@@ -192,7 +200,7 @@ async function fetchAddonCatalogDirect(
 
   return {
     results: metas
-      .map((item: any) => normalizeAddonCatalogItem(item, descriptor.type))
+      .map((item: any) => normalizeAddonCatalogItem(item, descriptor.type, descriptor.addonType))
       .filter((item: MetadataCatalogItem) => item.id.length > 0),
     total_pages: data?.hasMore ? 2 : 1,
   };
@@ -211,9 +219,9 @@ async function fetchAddonCatalogViaBackend(
     headers['x-user-id'] = session.user.uid;
   }
 
-  const catalogType = descriptor.type === 'tv' ? 'series' : descriptor.type;
+  const catalogType = descriptor.addonType ?? (descriptor.type === 'tv' ? 'series' : descriptor.type);
   const suffix = descriptor.skip ? `?skip=${descriptor.skip}` : '';
-  const path = `/addons/${encodeURIComponent(descriptor.addonId)}/catalog/${catalogType}/${encodeURIComponent(descriptor.catalogId)}${suffix}`;
+  const path = `/addons/${encodeURIComponent(descriptor.addonId)}/catalog/${encodeURIComponent(catalogType)}/${encodeURIComponent(descriptor.catalogId)}${suffix}`;
 
   const response = await fetch(`${API_BASE}${path}`, {
     headers,
@@ -225,7 +233,7 @@ async function fetchAddonCatalogViaBackend(
   const metas = Array.isArray(data?.metas) ? data.metas : Array.isArray(data?.results) ? data.results : [];
   return {
     results: metas
-      .map((item: any) => normalizeAddonCatalogItem(item, descriptor.type))
+      .map((item: any) => normalizeAddonCatalogItem(item, descriptor.type, descriptor.addonType))
       .filter((item: MetadataCatalogItem) => item.id.length > 0),
     total_pages: data?.total_pages ?? (data?.hasMore ? 2 : 1),
   };

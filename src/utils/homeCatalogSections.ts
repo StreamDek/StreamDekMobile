@@ -9,6 +9,19 @@ export type HomeCatalogSection = {
   contentType?: 'movie' | 'tv' | 'sport' | 'mixed';
 };
 
+// Stremio-native catalog types that represent live content. Note that native
+// 'tv' means live television channels — series catalogs use 'series'.
+export const LIVE_ADDON_CATALOG_TYPES = new Set([
+  'tv', 'channel', 'channels', 'event', 'events', 'live', 'sport', 'sports',
+]);
+
+export function mapAddonCatalogType(rawType: string): 'movie' | 'tv' | 'sport' | null {
+  if (rawType === 'movie') return 'movie';
+  if (rawType === 'series') return 'tv';
+  if (LIVE_ADDON_CATALOG_TYPES.has(rawType)) return 'sport';
+  return null;
+}
+
 function resolveAddonCatalogBaseUrl(addon: InstalledAddon): string | null {
   const manifest = addon.manifest as Record<string, any> | undefined;
   const candidates = [
@@ -72,6 +85,29 @@ export function buildDefaultHomeSections(
   ];
 }
 
+const MAX_SECTION_TITLE_LENGTH = 30;
+
+function truncateAtWordBoundary(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  const cut = text.slice(0, maxLength - 1);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > maxLength * 0.5 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+export function buildAddonSectionTitle(addonName: string, catalogName?: string | null): string {
+  const addon = (addonName ?? '').trim();
+  const catalog = (catalogName ?? '').trim();
+  if (!catalog) return truncateAtWordBoundary(addon, MAX_SECTION_TITLE_LENGTH);
+  // Skip the addon prefix when the catalog name already identifies it.
+  if (!addon || catalog.toLowerCase().includes(addon.toLowerCase())) {
+    return truncateAtWordBoundary(catalog, MAX_SECTION_TITLE_LENGTH);
+  }
+  const combined = `${addon} - ${catalog}`;
+  if (combined.length <= MAX_SECTION_TITLE_LENGTH) return combined;
+  // Prefer the more descriptive catalog name over a truncated combination.
+  return truncateAtWordBoundary(catalog, MAX_SECTION_TITLE_LENGTH);
+}
+
 export function buildAddonHomeSections(addons: InstalledAddon[]): HomeCatalogSection[] {
   return addons
     .filter(addon => addon.enabled)
@@ -80,18 +116,19 @@ export function buildAddonHomeSections(addons: InstalledAddon[]): HomeCatalogSec
       const catalogs = Array.isArray(addon.manifest?.catalogs) ? addon.manifest.catalogs : [];
       return catalogs.flatMap<HomeCatalogSection>((catalog, index) => {
         const rawType = String(catalog?.type ?? '').toLowerCase();
-        const type = rawType === 'series' ? 'tv' : rawType;
+        const type = mapAddonCatalogType(rawType);
         const catalogId = String(catalog?.id ?? '').trim();
-        if (!catalogId || (type !== 'movie' && type !== 'tv' && type !== 'sport')) return [];
+        if (!catalogId || !type) return [];
 
         const version = encodeURIComponent(String(addon.manifest?.version ?? '0'));
         const transport = resolveAddonCatalogBaseUrl(addon);
         const params = new URLSearchParams({ v: version });
         if (transport) params.set('transport', transport);
+        // Carry the addon's native type so catalog/stream URLs hit the right path
+        // (internal 'tv' = series, but native 'tv' = live channels).
+        params.set('addonType', rawType);
         const endpoint = `addon://${encodeURIComponent(addon.id)}/${encodeURIComponent(type)}/${encodeURIComponent(catalogId)}?${params.toString()}`;
-        const title = catalog?.name?.trim()
-          ? `${addon.manifest.name} - ${catalog.name.trim()}`
-          : addon.manifest.name;
+        const title = buildAddonSectionTitle(addon.manifest.name, catalog?.name);
 
         return [{
           id: `addon:${addon.id}:${type}:${catalogId}:${index}`,

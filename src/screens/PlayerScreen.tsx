@@ -585,7 +585,10 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         preferredSourceIdentity: paramPreferredSourceIdentity,
         season: routeSeason,
         episode: routeEpisode,
+        isLive: routeIsLive,
     } = route.params ?? {};
+    // Live broadcasts have no seekable timeline — hide seek controls and show a LIVE pill.
+    const isLiveStream = Boolean(routeIsLive);
     const loadingArtworkUri = paramBackdrop ?? paramPoster ?? null;
     const titleLogoUri = typeof paramTitleLogo === 'string' && paramTitleLogo.length > 0
         ? paramTitleLogo
@@ -3281,14 +3284,16 @@ export const PlayerScreen = ({ route, navigation }: any) => {
 
             {shouldUseEmbeddedVideoPlayer && showControls && !loading && (
                 <Animated.View style={[styles.centerContainer, { opacity: controlsOpacity }]} pointerEvents="box-none">
-                    <TouchableOpacity
-                        style={styles.centerBtn}
-                        onPress={() => seekBy(-10)}
-                        hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
-                    >
-                        <Ionicons name="play-back-circle-outline" size={56} color="rgba(255,255,255,0.88)" />
-                        <Text style={styles.skipText}>10</Text>
-                    </TouchableOpacity>
+                    {!isLiveStream && (
+                        <TouchableOpacity
+                            style={styles.centerBtn}
+                            onPress={() => seekBy(-10)}
+                            hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
+                        >
+                            <Ionicons name="play-back-circle-outline" size={56} color="rgba(255,255,255,0.88)" />
+                            <Text style={styles.skipText}>10</Text>
+                        </TouchableOpacity>
+                    )}
                     <TouchableOpacity
                         style={styles.mainPlayBtn}
                         onPress={handlePlayPause}
@@ -3296,19 +3301,31 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                     >
                         <Ionicons name={isPlaying ? 'pause' : 'play'} size={32} color="rgba(255,255,255,0.95)" />
                     </TouchableOpacity>
-                    <TouchableOpacity
-                        style={styles.centerBtn}
-                        onPress={() => seekBy(10)}
-                        hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
-                    >
-                        <Ionicons name="play-forward-circle-outline" size={56} color="rgba(255,255,255,0.88)" />
-                        <Text style={styles.skipText}>10</Text>
-                    </TouchableOpacity>
+                    {!isLiveStream && (
+                        <TouchableOpacity
+                            style={styles.centerBtn}
+                            onPress={() => seekBy(10)}
+                            hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
+                        >
+                            <Ionicons name="play-forward-circle-outline" size={56} color="rgba(255,255,255,0.88)" />
+                            <Text style={styles.skipText}>10</Text>
+                        </TouchableOpacity>
+                    )}
                 </Animated.View>
             )}
             {shouldUseEmbeddedVideoPlayer && showControls && !loading && (
                 <Animated.View style={[styles.bottomBar, { paddingBottom: insets.bottom + 12 }, { opacity: controlsOpacity }]}>
-                    {/* Progress + time */}
+                    {/* Progress + time (replaced by a LIVE pill for live broadcasts) */}
+                    {isLiveStream ? (
+                        <View style={styles.sliderContainer}>
+                            <View style={styles.timeRow}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#ef4444' }} />
+                                    <Text style={styles.timeLabel}>LIVE</Text>
+                                </View>
+                            </View>
+                        </View>
+                    ) : (
                     <View style={styles.sliderContainer}>
                         <View
                             style={styles.sliderWrap}
@@ -3349,6 +3366,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
                             <Text style={styles.timeLabel}>{formatTime(duration)}</Text>
                         </View>
                     </View>
+                    )}
 
                     {/* Pill action bar */}
                     <View style={styles.pillBarWrap}>

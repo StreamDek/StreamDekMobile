@@ -28,6 +28,9 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv
       alignSelf: 'center',
       width: '100%',
       maxWidth: isTv ? 760 : 460,
+      // Never exceed the backdrop — the body shrinks and the notes scroll, so
+      // the footer always stays below the content instead of covering it.
+      maxHeight: '100%',
       borderRadius: isTv ? 30 : 26,
       borderWidth: 1,
       borderColor: colors.border,
@@ -36,9 +39,9 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv
     },
     hero: {
       paddingHorizontal: isTv ? 28 : 22,
-      paddingTop: isTv ? 26 : 22,
-      paddingBottom: 16,
-      gap: 10,
+      paddingTop: isTv ? 24 : 20,
+      paddingBottom: 12,
+      gap: 8,
       backgroundColor: colors.bgHeaderSolid,
     },
     badge: {
@@ -72,8 +75,15 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv
     },
     body: {
       paddingHorizontal: isTv ? 28 : 22,
-      paddingTop: 18,
-      gap: 12,
+      paddingTop: 14,
+      gap: 10,
+      flexShrink: 1,
+      minHeight: 0,
+    },
+    metaRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 18,
     },
     sectionLabel: {
       color: colors.textSecondary,
@@ -82,7 +92,9 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv
       letterSpacing: 0.5,
     },
     notes: {
-      maxHeight: isTv ? 220 : 180,
+      maxHeight: isTv ? 260 : 240,
+      flexShrink: 1,
+      minHeight: 72,
       borderRadius: 18,
       borderWidth: 1,
       borderColor: colors.border,
@@ -139,6 +151,13 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv
       borderWidth: 1,
       borderColor: colors.border,
     },
+    // Solid (fully opaque) disabled treatment — opacity on the button would
+    // let the content behind it show through.
+    disabledButton: {
+      backgroundColor: colors.inputBg,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
     primaryButtonText: {
       color: colors.buttonText,
       fontSize: isTv ? 16 : 15,
@@ -146,6 +165,11 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv
     },
     secondaryButtonText: {
       color: colors.textPrimary,
+      fontSize: isTv ? 16 : 15,
+      fontWeight: '800',
+    },
+    disabledButtonText: {
+      color: colors.textSecondary,
       fontSize: isTv ? 16 : 15,
       fontWeight: '800',
     },
@@ -169,16 +193,26 @@ function UpdateButton({
   const handlePress = () => {
     if (!disabled) onPress();
   };
+  const buttonStyle = disabled
+    ? styles.disabledButton
+    : primary
+      ? styles.primaryButton
+      : styles.secondaryButton;
+  const textStyle = disabled
+    ? styles.disabledButtonText
+    : primary
+      ? styles.primaryButtonText
+      : styles.secondaryButtonText;
 
   if (isTv) {
     return (
       <TVFocusable
         onPress={handlePress}
-        style={[styles.button, primary ? styles.primaryButton : styles.secondaryButton, disabled && { opacity: 0.6 }]}
-        normalStyle={{ backgroundColor: primary ? colors.accent : colors.inputBg }}
+        style={[styles.button, buttonStyle]}
+        normalStyle={{ backgroundColor: disabled ? colors.inputBg : (primary ? colors.accent : colors.inputBg) }}
         focusedStyle={{ borderColor: primary ? colors.buttonText : colors.accent, borderWidth: 2 }}
       >
-        <Text style={primary ? styles.primaryButtonText : styles.secondaryButtonText}>{label}</Text>
+        <Text style={textStyle}>{label}</Text>
       </TVFocusable>
     );
   }
@@ -188,9 +222,9 @@ function UpdateButton({
       onPress={handlePress}
       activeOpacity={disabled ? 1 : 0.84}
       disabled={disabled}
-      style={[styles.button, primary ? styles.primaryButton : styles.secondaryButton, disabled && { opacity: 0.6 }]}
+      style={[styles.button, buttonStyle]}
     >
-      <Text style={primary ? styles.primaryButtonText : styles.secondaryButtonText}>{label}</Text>
+      <Text style={textStyle}>{label}</Text>
     </TouchableOpacity>
   );
 }
@@ -248,24 +282,26 @@ export function UpdatePrompt() {
             <Text style={styles.title}>
               {isMandatory ? t('update_required_title') : t('update_available_title')}
             </Text>
-            <Text style={styles.subtitle}>
-              {isMandatory
-                ? (availableRelease.requiredReason || t('update_required_subtitle'))
-                : t('update_available_subtitle', { version: availableRelease.versionName })}
-            </Text>
+            {isMandatory ? (
+              <Text style={styles.subtitle}>
+                {availableRelease.requiredReason || t('update_required_subtitle')}
+              </Text>
+            ) : null}
           </View>
 
           <View style={styles.body}>
-            <Text style={styles.infoText}>
-              <Text style={styles.infoStrong}>{t('update_version_label')} </Text>
-              {availableRelease.versionName}
-            </Text>
-            {availableRelease.fileSizeBytes ? (
+            <View style={styles.metaRow}>
               <Text style={styles.infoText}>
-                <Text style={styles.infoStrong}>{t('update_size_label')} </Text>
-                {(availableRelease.fileSizeBytes / (1024 * 1024)).toFixed(1)} MB
+                <Text style={styles.infoStrong}>{t('update_version_label')} </Text>
+                {availableRelease.versionName}
               </Text>
-            ) : null}
+              {availableRelease.fileSizeBytes ? (
+                <Text style={styles.infoText}>
+                  <Text style={styles.infoStrong}>{t('update_size_label')} </Text>
+                  {(availableRelease.fileSizeBytes / (1024 * 1024)).toFixed(1)} MB
+                </Text>
+              ) : null}
+            </View>
             <Text style={styles.sectionLabel}>{t('update_release_notes')}</Text>
             <ScrollView style={styles.notes} showsVerticalScrollIndicator={false}>
               <Text style={styles.notesText}>

@@ -15,6 +15,19 @@ export const LIVE_ADDON_CATALOG_TYPES = new Set([
   'tv', 'channel', 'channels', 'event', 'events', 'live', 'sport', 'sports',
 ]);
 
+// Catalogs that list a user's own debrid/cloud files. Items in these catalogs
+// must play directly from the owning addon — even when they carry real
+// IMDb/TMDB ids — instead of opening the detail page and hunting for sources.
+const DEBRID_CATALOG_KEYWORDS = [
+  'debrid', 'torbox', 'premiumize', 'alldebrid', 'offcloud', 'easydebrid',
+  'put.io', 'putio', 'pikpak', 'seedr', 'cloud', 'download',
+];
+
+export function isDebridCatalog(identityText: string): boolean {
+  const text = identityText.toLowerCase();
+  return DEBRID_CATALOG_KEYWORDS.some(keyword => text.includes(keyword));
+}
+
 export function mapAddonCatalogType(rawType: string): 'movie' | 'tv' | 'sport' | null {
   if (rawType === 'movie') return 'movie';
   if (rawType === 'series') return 'tv';
@@ -129,6 +142,10 @@ export function buildAddonHomeSections(addons: InstalledAddon[]): HomeCatalogSec
         // Carry the addon's native type so catalog/stream URLs hit the right path
         // (internal 'tv' = series, but native 'tv' = live channels).
         params.set('addonType', rawType);
+        const catalogIdentity = [addon.manifest?.id, addon.manifest?.name, catalogId, catalog?.name]
+          .filter(Boolean)
+          .join(' ');
+        if (isDebridCatalog(catalogIdentity)) params.set('direct', '1');
         const endpoint = `addon://${encodeURIComponent(addon.id)}/${encodeURIComponent(type)}/${encodeURIComponent(catalogId)}?${params.toString()}`;
         const title = buildAddonSectionTitle(addon.manifest.name, catalog?.name);
 

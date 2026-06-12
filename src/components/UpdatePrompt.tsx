@@ -155,21 +155,26 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv
 function UpdateButton({
   label,
   primary,
+  disabled,
   onPress,
 }: {
   label: string;
   primary?: boolean;
+  disabled?: boolean;
   onPress: () => void;
 }) {
   const { theme: { colors } } = useTheme();
   const isTv = getDeviceProfile().isTv;
   const styles = useMemo(() => makeStyles(colors, isTv), [colors, isTv]);
+  const handlePress = () => {
+    if (!disabled) onPress();
+  };
 
   if (isTv) {
     return (
       <TVFocusable
-        onPress={onPress}
-        style={[styles.button, primary ? styles.primaryButton : styles.secondaryButton]}
+        onPress={handlePress}
+        style={[styles.button, primary ? styles.primaryButton : styles.secondaryButton, disabled && { opacity: 0.6 }]}
         normalStyle={{ backgroundColor: primary ? colors.accent : colors.inputBg }}
         focusedStyle={{ borderColor: primary ? colors.buttonText : colors.accent, borderWidth: 2 }}
       >
@@ -180,9 +185,10 @@ function UpdateButton({
 
   return (
     <TouchableOpacity
-      onPress={onPress}
-      activeOpacity={0.84}
-      style={[styles.button, primary ? styles.primaryButton : styles.secondaryButton]}
+      onPress={handlePress}
+      activeOpacity={disabled ? 1 : 0.84}
+      disabled={disabled}
+      style={[styles.button, primary ? styles.primaryButton : styles.secondaryButton, disabled && { opacity: 0.6 }]}
     >
       <Text style={primary ? styles.primaryButtonText : styles.secondaryButtonText}>{label}</Text>
     </TouchableOpacity>
@@ -274,7 +280,7 @@ export function UpdatePrompt() {
             {!isMandatory ? (
               <UpdateButton label={t('update_button_later')} onPress={dismissPrompt} />
             ) : null}
-            <UpdateButton label={primaryLabel} primary onPress={() => { void startUpdate(); }} />
+            <UpdateButton label={primaryLabel} primary disabled={isDownloading} onPress={() => { void startUpdate(); }} />
           </View>
         </Pressable>
       </Pressable>

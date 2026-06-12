@@ -6,6 +6,7 @@ import { checkForAndroidUpdate } from '../services/update/updateChecker';
 import { ensureInstallPermission } from '../services/update/permissionHandler';
 import { downloadAndValidateRelease } from '../services/update/downloader';
 import { launchUpdateInstaller } from '../services/update/installer';
+import { validateApk } from '../services/update/nativeBridge';
 
 const AUTO_UPDATE_CHECKS_KEY = 'streamdek_auto_update_checks';
 const FOREGROUND_CHECK_INTERVAL_MS = 1000 * 60 * 60 * 6;
@@ -99,6 +100,12 @@ export function AppUpdateProvider({ children }: { children: React.ReactNode }) {
   const lastForegroundCheckAtRef = useRef(0);
   const checkingRef = useRef(false);
   const mountedRef = useRef(true);
+  // Re-entry guard: tapping "Update Now" while a download/install is already
+  // in flight must not start a second download.
+  const updateInFlightRef = useRef(false);
+  // The validated APK from a previous attempt — reused when the installer was
+  // cancelled or the user retries, instead of downloading the file again.
+  const downloadedApkRef = useRef<{ versionCode: number; filePath: string } | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -202,6 +209,8 @@ export function AppUpdateProvider({ children }: { children: React.ReactNode }) {
 
   const startUpdate = useCallback(async () => {
     if (!availableRelease || Platform.OS !== 'android') return;
+    if (updateInFlightRef.current) return;
+    updateInFlightRef.current = true;
 
     setErrorMessage(null);
     setPromptVisible(true);
@@ -215,18 +224,43 @@ export function AppUpdateProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      setIsDownloading(true);
-      setProgress(null);
-      setStatusMessage(`Downloading version ${availableRelease.versionName}...`);
+      // Reuse the APK from a previous attempt when it's still valid — the user
+      // shouldn't download the same release twice just because the installer
+      // was dismissed.
+      let apkFilePath: string | null = null;
+      const cachedApk = downloadedApkRef.current;
+      if (cachedApk && cachedApk.versionCode === availableRelease.versionCode) {
+        const validation = await validateApk(
+          cachedApk.filePath,
+          availableRelease.packageName,
+          availableRelease.versionCode,
+        ).catch(() => null);
+        if (validation?.isValid) {
+          apkFilePath = cachedApk.filePath;
+        } else {
+          downloadedApkRef.current = null;
+        }
+      }
 
-      const downloadResult = await downloadAndValidateRelease(availableRelease, setProgress);
-      setStatusMessage('Download complete. Opening the installer...');
+      if (apkFilePath) {
+        setStatusMessage('Update already downloaded. Opening the installer...');
+      } else {
+        setIsDownloading(true);
+        setProgress(null);
+        setStatusMessage(`Downloading version ${availableRelease.versionName}...`);
 
-      const installResult = await launchUpdateInstaller(downloadResult.filePath);
+        const downloadResult = await downloadAndValidateRelease(availableRelease, setProgress);
+        apkFilePath = downloadResult.filePath;
+        downloadedApkRef.current = { versionCode: availableRelease.versionCode, filePath: apkFilePath };
+        setStatusMessage('Download complete. Opening the installer...');
+      }
+
+      const installResult = await launchUpdateInstaller(apkFilePath);
       setIsDownloading(false);
       setProgress(null);
 
       if (installResult.status === 'installed') {
+        downloadedApkRef.current = null;
         setStatusMessage(`StreamDek ${availableRelease.versionName} was installed.`);
         setPromptVisible(false);
         return;
@@ -248,6 +282,8 @@ export function AppUpdateProvider({ children }: { children: React.ReactNode }) {
       setStatusMessage(null);
       setErrorMessage(describeUpdateError(error));
       setPromptVisible(true);
+    } finally {
+      updateInFlightRef.current = false;
     }
   }, [availableRelease]);
 

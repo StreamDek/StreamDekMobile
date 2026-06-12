@@ -1373,7 +1373,14 @@ export const HomeScreen = ({ navigation }: any) => {
 
   const handleItemPress = useCallback(async (item: any) => {
     if (item?.type === 'sport') {
-      const streams = await fetchStreams('sport', String(item.id));
+      // Live items must request streams with the addon's native type.
+      // Stremio-native 'tv' (live channels) is sent as 'live-tv' so the backend
+      // doesn't confuse it with the app-internal 'tv' (= series).
+      const nativeType = typeof item.addonStreamType === 'string' && item.addonStreamType.length > 0
+        ? item.addonStreamType
+        : 'sport';
+      const streamRequestType = nativeType === 'tv' ? 'live-tv' : nativeType;
+      const streams = await fetchStreams(streamRequestType, String(item.id));
       if (!streams.length) return;
       navigation.navigate(expoGoRuntime ? 'Player' : 'MpvPlayer', {
         movieId: String(item.id),
@@ -1385,6 +1392,7 @@ export const HomeScreen = ({ navigation }: any) => {
         resolveOnMount: true,
         sourceStreams: streams,
         resolverMovieId: String(item.id),
+        isLive: true,
         returnToPlayerParams: {
           movieId: String(item.id),
           type: 'movie',
@@ -1392,6 +1400,7 @@ export const HomeScreen = ({ navigation }: any) => {
           synopsis: item.description ?? undefined,
           backdrop: item.backdrop ?? item.poster ?? undefined,
           poster: item.poster ?? undefined,
+          isLive: true,
         },
       });
       return;
@@ -1994,7 +2003,6 @@ export const HomeScreen = ({ navigation }: any) => {
         kind: section.id === 'networks' ? 'networks' : 'section',
         sectionId: section.id,
         title,
-        badgeLabel: section.source === 'addon' ? 'Addon' : undefined,
         cardVariant: section.contentType === 'sport' ? 'landscape' : 'portrait',
         data: sData ?? [],
         loading: isLoading,
@@ -2059,7 +2067,6 @@ export const HomeScreen = ({ navigation }: any) => {
         return (
           <SectionStrip
             title={item.title}
-            badgeLabel={item.badgeLabel}
             data={item.data}
             loading={item.loading}
             cardVariant={item.cardVariant}

@@ -829,12 +829,12 @@ export function SettingsScreen({ navigation, route }: any) {
     }
   }, [addBadgeUrl, badgeUrlDraft, badgeUrlSubmitting, t]);
 
-  const effectiveActiveBadgeUrl = badgeUrls.length > 2
+  const effectiveActiveBadgeUrl = badgeUrls.length > 1
     ? ((activeBadgeUrl && badgeUrls.includes(activeBadgeUrl) ? activeBadgeUrl : (badgeUrls[0] ?? null)))
     : null;
   const activeBadgeSourceLabel = effectiveActiveBadgeUrl ?? (badgeUrls[0] ?? null);
   const totalActiveFusionBadges = useMemo(() => {
-    const activeUrls = badgeUrls.length > 2 && effectiveActiveBadgeUrl ? [effectiveActiveBadgeUrl] : badgeUrls;
+    const activeUrls = badgeUrls.length > 1 && effectiveActiveBadgeUrl ? [effectiveActiveBadgeUrl] : badgeUrls;
     return activeUrls.reduce((sum, url) => {
       const source = fusionBadgeSources[url]?.source;
       return sum + (source ? countEnabledFilters(source) : 0);
@@ -1160,7 +1160,7 @@ export function SettingsScreen({ navigation, route }: any) {
                       iconColor={safeIconColor('#a78bfa')}
                       label={t('settings_fusion_badge_urls')}
                       subtitle={
-                        badgeUrls.length > 2 && activeBadgeSourceLabel
+                        badgeUrls.length > 1 && activeBadgeSourceLabel
                           ? `${t('settings_fusion_badge_urls_sub', { count: badgeUrls.length, max: MAX_FUSION_BADGE_URLS, badges: totalActiveFusionBadges })}\n${t('settings_fusion_badge_active_source')}: ${activeBadgeSourceLabel}`
                           : t('settings_fusion_badge_urls_sub', { count: badgeUrls.length, max: MAX_FUSION_BADGE_URLS, badges: totalActiveFusionBadges })
                       }
@@ -1287,7 +1287,7 @@ export function SettingsScreen({ navigation, route }: any) {
                       </Text>
                     ) : null}
                     <View style={styles.badgeUrlActions}>
-                      {badgeUrls.length > 2 ? (
+                      {badgeUrls.length > 1 ? (
                         <TouchableOpacity
                           onPress={() => { void setActiveBadgeUrl(url); }}
                           style={[

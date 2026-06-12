@@ -9,7 +9,7 @@ import { DebridProviderName } from './DebridContext';
 import { buildAuthHeaders } from '../utils/authHeaders';
 import { getMobileClientIdentityHeaders } from '../utils/clientIdentity';
 import { getSharedCachedAsync, invalidateSharedCache } from '../utils/sharedDataCache';
-import { getStreamCapableAddons } from '../utils/addonCapabilities';
+import { getStreamCapableAddonsForType, toNativeStreamType } from '../utils/addonCapabilities';
 
 const CACHE_TTL = 10 * 60 * 1000;
 const ULTRA_BOOST_STORAGE_KEY = 'streamdek_ultra_boost_enabled';
@@ -313,7 +313,11 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
     videoId: string,
   ): Promise<AddonStream[]> => {
     try {
-      const streamCapableAddonIds = new Set(getStreamCapableAddons(addons).map(addon => addon.id));
+      // Only addons that declare support for this content type count as
+      // sources — live-only addons must not surface for movies/series.
+      const streamCapableAddonIds = new Set(
+        getStreamCapableAddonsForType(addons, toNativeStreamType(type)).map(addon => addon.id),
+      );
       const res = await fetch(
         `${API_BASE}/addons/streams/${type}/${encodeURIComponent(videoId)}`,
         { headers: await buildAddonHeaders({ includeContentType: false }) },
@@ -355,7 +359,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
     onUpdate: (streams: AddonStream[], pendingCount: number) => void,
     signal?: AbortSignal,
   ): Promise<void> => {
-    const enabledAddons = getStreamCapableAddons(addons)
+    const enabledAddons = getStreamCapableAddonsForType(addons, toNativeStreamType(type))
       .sort((a, b) => a.position - b.position);
     const ultraActive = ultraEntitled && ultraBoostEnabled;
     const enabledAddonKey = enabledAddons.map(a => `${a.id}:${a.position}`).join(',');

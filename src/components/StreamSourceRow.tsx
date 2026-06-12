@@ -17,8 +17,10 @@ interface StreamSourceRowProps {
   sourceLabel?: string;
 }
 
-export function StreamSourceRow({ stream, colors, onPress, active = false, style, sourceLabel }: StreamSourceRowProps) {
-  const parsed = parseStream(stream);
+// Memoized: stream rows render in long lists and parseStream runs several
+// regexes — neither should repeat when unrelated state changes upstream.
+export const StreamSourceRow = React.memo(function StreamSourceRow({ stream, colors, onPress, active = false, style, sourceLabel }: StreamSourceRowProps) {
+  const parsed = React.useMemo(() => parseStream(stream), [stream]);
   const isCached = stream.cachedBy.length > 0;
   const isLightAppearance = colors.bg === '#f4f6fb';
   const { vividAmbientEnabled } = useDisplaySettings();
@@ -99,7 +101,7 @@ export function StreamSourceRow({ stream, colors, onPress, active = false, style
       />
     </TouchableOpacity>
   );
-}
+});
 
 const styles = StyleSheet.create({
   row: {

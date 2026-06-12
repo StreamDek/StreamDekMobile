@@ -46,7 +46,7 @@ import { StackBottomNav, BOTTOM_NAV_HEIGHT } from '../components/StackBottomNav'
 import { MediaDetailSkeleton } from '../components/Skeleton';
 import { RatingBadge } from '../components/RatingBadge';
 import { getProfileStorageOwnerId, progressFileStorageKey } from '../utils/profileStorage';
-import { getStreamCapableAddons } from '../utils/addonCapabilities';
+import { getStreamCapableAddonsForType } from '../utils/addonCapabilities';
 
 
 
@@ -1129,8 +1129,8 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const useCompactDetailLayout = uiStyle === 'centered' || uiStyle === 'glass';
   const useGlassDetailLayout = uiStyle === 'glass';
   const streamCapableAddons = useMemo(
-    () => getStreamCapableAddons(addons),
-    [addons],
+    () => getStreamCapableAddonsForType(addons, type === 'tv' ? 'series' : 'movie'),
+    [addons, type],
   );
   const ultraActive = ultraEntitled && ultraBoostEnabled;
   const hasStreamSources = streamCapableAddons.length > 0 || ultraActive;
@@ -2837,7 +2837,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                       </View>
                     ) : (
                       <StreamsTab
-                        key={`glass-streams-${streams.length}-${streamsPending}-${selectedAddon}`}
+                        key={`glass-streams-${selectedAddon}`}
                         streams={streams}
                         loading={false}
                         pendingCount={streamsPending}
@@ -3135,7 +3135,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
 
           {activeTab === 'streams' && (
             <StreamsTab
-              key={`streams-${streams.length}-${streamsPending}-${selectedAddon}`}
+              key={`streams-${selectedAddon}`}
               streams={streams}
               loading={streamsLoading}
               pendingCount={streamsPending}
@@ -3174,6 +3174,10 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
 
 // ── Streams Tab Component ─────────────────────────────────────────────────────
 
+const INITIAL_STREAM_RENDER_LIMIT = 30;
+const STREAM_RENDER_LIMIT_STEP = 50;
+const RAIL_STREAM_RENDER_LIMIT = 15;
+
 function StreamsTab({
   streams, loading, pendingCount, addons, ultraActive, debridAccounts, colors, onPlay, user, navigation,
   selectedAddon, onFilterChange, t, isLightAppearance, presentation = 'list',
@@ -3194,7 +3198,8 @@ function StreamsTab({
   isLightAppearance: boolean;
   presentation?: 'list' | 'rail';
 }) {
-  const enabledAddons = getStreamCapableAddons(addons);
+  // StreamsTab only renders for movies — count movie-capable sources.
+  const enabledAddons = getStreamCapableAddonsForType(addons, 'movie');
   const hasStreamSources = enabledAddons.length > 0 || ultraActive;
   const streamSourceCount = enabledAddons.length + (ultraActive ? 1 : 0);
   const getStreamSourceLabel = useMemo(() => {
@@ -3212,6 +3217,10 @@ function StreamsTab({
     () => [...new Set(streams.map(s => s.addonName))],
     [streams],
   );
+  // The detail page scrolls in a plain ScrollView (no virtualization), so
+  // mounting hundreds of stream rows at once makes scrolling choppy. Render a
+  // window and let the user reveal more.
+  const [renderLimit, setRenderLimit] = useState(INITIAL_STREAM_RENDER_LIMIT);
 
   // Full spinner only while we have no results yet
   if (loading && streams.length === 0) {
@@ -3342,10 +3351,12 @@ function StreamsTab({
     : streams.filter(s => s.addonName === safeAddon);
 
   const sortedVisibleStreams = visibleStreams;
+  const limitedStreams = sortedVisibleStreams.slice(0, renderLimit);
+  const hiddenStreamCount = sortedVisibleStreams.length - limitedStreams.length;
 
   // Group visible streams by addon name
   const grouped: Record<string, AddonStream[]> = {};
-  for (const s of sortedVisibleStreams) {
+  for (const s of limitedStreams) {
     if (!grouped[s.addonName]) grouped[s.addonName] = [];
     grouped[s.addonName].push(s);
   }
@@ -3378,13 +3389,13 @@ function StreamsTab({
             </Text>
           </View>
         )}
-        {sortedVisibleStreams.map((stream, idx) => (
+        {sortedVisibleStreams.slice(0, RAIL_STREAM_RENDER_LIMIT).map((stream, idx) => (
           <View key={`${stream.addonName}-${stream.infoHash ?? stream.url ?? idx}`} style={{ width: Math.min(SCREEN_WIDTH * 0.82, 330), height: 144, marginRight: 12 }}>
             <StreamRow
               stream={stream}
               colors={colors}
-              onPlay={() => onPlay(stream)}
-              style={{ flex: 1, height: '100%', marginBottom: 0, alignItems: 'flex-start', overflow: 'hidden' }}
+              onPlay={onPlay}
+              style={railStreamRowStyle}
               sourceLabel={getStreamSourceLabel(stream.addonName)}
             />
           </View>
@@ -3442,14 +3453,33 @@ function StreamsTab({
             </Text>
           )}
           {addonStreams.map((stream, idx) => (
-            <StreamRow key={`${addonName}-${idx}`} stream={stream} colors={colors} onPlay={() => onPlay(stream)} />
+            <StreamRow key={`${addonName}-${idx}`} stream={stream} colors={colors} onPlay={onPlay} />
           ))}
         </View>
       ))}
+
+      {hiddenStreamCount > 0 && (
+        <TouchableOpacity
+          onPress={() => setRenderLimit(limit => limit + STREAM_RENDER_LIMIT_STEP)}
+          activeOpacity={0.85}
+          style={{
+            alignItems: 'center', paddingVertical: 12, borderRadius: 12, marginBottom: 16,
+            borderWidth: 1, borderColor: colors.accent + '55', backgroundColor: colors.accent + '10',
+          }}
+        >
+          <Text style={{ color: colors.accentSoft, fontSize: 13, fontWeight: '700' }}>
+            Show {Math.min(STREAM_RENDER_LIMIT_STEP, hiddenStreamCount)} more sources ({hiddenStreamCount} hidden)
+          </Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
 
-function StreamRow({ stream, colors, onPlay, style, sourceLabel }: { stream: AddonStream; colors: any; onPlay: () => void; style?: any; sourceLabel?: string }) {
-  return <StreamSourceRow stream={stream} colors={colors} onPress={onPlay} style={style} sourceLabel={sourceLabel} />;
-}
+// Hoisted so the rail rows keep a stable style reference for memoization.
+const railStreamRowStyle = { flex: 1, height: '100%' as const, marginBottom: 0, alignItems: 'flex-start' as const, overflow: 'hidden' as const };
+
+const StreamRow = React.memo(function StreamRow({ stream, colors, onPlay, style, sourceLabel }: { stream: AddonStream; colors: any; onPlay: (stream: AddonStream) => void; style?: any; sourceLabel?: string }) {
+  const handlePress = React.useCallback(() => onPlay(stream), [onPlay, stream]);
+  return <StreamSourceRow stream={stream} colors={colors} onPress={handlePress} style={style} sourceLabel={sourceLabel} />;
+});

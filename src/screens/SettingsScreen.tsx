@@ -265,6 +265,22 @@ function makeStyles(c: ThemeColors) {
       alignItems: 'center',
       justifyContent: 'center',
     },
+    badgeUrlActivePill: {
+      height: 34,
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: c.border,
+      paddingHorizontal: 10,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 6,
+    },
+    badgeUrlActivePillText: {
+      color: c.textSecondary,
+      fontSize: 12,
+      fontWeight: '700',
+    },
     badgeGroupTitle: {
       color: c.textPrimary,
       fontSize: 13,
@@ -1291,16 +1307,22 @@ export function SettingsScreen({ navigation, route }: any) {
                         <TouchableOpacity
                           onPress={() => { void setActiveBadgeUrl(url); }}
                           style={[
-                            styles.badgeUrlActionButton,
-                            selected && { borderColor: colors.accent, backgroundColor: colors.accent + '12' },
+                            styles.badgeUrlActivePill,
+                            selected && { borderColor: colors.accent, backgroundColor: colors.accent + '18' },
                           ]}
                           activeOpacity={0.78}
+                          accessibilityRole="radio"
+                          accessibilityState={{ selected }}
+                          accessibilityLabel={t(selected ? 'settings_fusion_badge_active_label' : 'settings_fusion_badge_set_active')}
                         >
                           <Ionicons
                             name={selected ? 'radio-button-on' : 'radio-button-off'}
-                            size={18}
+                            size={16}
                             color={selected ? colors.accent : colors.textSecondary}
                           />
+                          <Text style={[styles.badgeUrlActivePillText, selected && { color: colors.accent }]}>
+                            {t(selected ? 'settings_fusion_badge_active_label' : 'settings_fusion_badge_set_active')}
+                          </Text>
                         </TouchableOpacity>
                       ) : null}
                       <TouchableOpacity onPress={() => setPreviewBadgeUrl(url)} style={styles.badgeUrlActionButton} activeOpacity={0.78}>

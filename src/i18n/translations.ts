@@ -252,7 +252,7 @@ const en = {
 
   update_available_badge: 'Update available',
   update_required_badge: 'Required update',
-  update_available_title: 'A newer StreamDek build is ready',
+  update_available_title: 'New StreamDek Build Ready',
   update_required_title: 'A StreamDek update is required',
   update_available_subtitle: 'Version {version} is ready to download and install.',
   update_required_subtitle: 'This build is no longer supported. Update now to continue using StreamDek.',

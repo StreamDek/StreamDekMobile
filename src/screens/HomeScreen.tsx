@@ -2279,7 +2279,18 @@ export const HomeScreen = ({ navigation }: any) => {
       {!!heroTrailerVisible && <TrailerModal visible trailerKey={heroTrailerVisible} onClose={() => setHeroTrailerVisible(null)} />}
     </View>
       </BlurTargetView>
-      <StackBottomNav activeTab="Home" blurTarget={blurTargetRef} />
+      <StackBottomNav
+        activeTab="Home"
+        blurTarget={blurTargetRef}
+        onTabPress={(tabName) => {
+          // Already on Home — tapping the Home icon scrolls back to the top.
+          if (tabName === 'Home') {
+            homeListRef.current?.scrollToOffset({ offset: 0, animated: true });
+            return;
+          }
+          navigation.navigate('Main', { screen: tabName });
+        }}
+      />
     </View>
   );
 };

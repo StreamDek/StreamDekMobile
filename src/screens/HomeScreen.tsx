@@ -1405,12 +1405,12 @@ export const HomeScreen = ({ navigation }: any) => {
       });
       return;
     }
-    // Addon-native items (e.g. debrid cloud catalogs) carry ids only their own
-    // addon understands — the detail screen can't resolve them. Fetch the
-    // stream straight from the owning addon (a direct debrid link) and play.
+    // Debrid/cloud catalog items (directPlay) and addon-native ids the detail
+    // screen can't resolve both skip Detail: fetch the stream straight from
+    // the owning addon (a direct debrid link) and play immediately.
     const itemId = String(item?.id ?? '');
     const hasStandardId = /^tt\d+$/.test(itemId) || /^\d+$/.test(itemId);
-    if (item?.addonId && !hasStandardId) {
+    if (item?.addonId && (item.directPlay || !hasStandardId)) {
       const nativeType = typeof item.addonStreamType === 'string' && item.addonStreamType.length > 0
         ? item.addonStreamType
         : (item.type === 'tv' ? 'series' : 'movie');

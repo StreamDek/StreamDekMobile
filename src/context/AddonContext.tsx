@@ -80,6 +80,7 @@ interface AddonContextType {
   uninstallAddon(id: string): Promise<void>;
   toggleAddon(id: string, enabled: boolean): Promise<void>;
   fetchStreams(type: string, videoId: string): Promise<AddonStream[]>;
+  fetchStreamsForAddon(addonId: string, type: string, videoId: string): Promise<AddonStream[]>;
   fetchStreamsProgressive(
     type: string,
     videoId: string,
@@ -102,6 +103,7 @@ const AddonContext = createContext<AddonContextType>({
   uninstallAddon: async () => {},
   toggleAddon: async () => {},
   fetchStreams: async () => [],
+  fetchStreamsForAddon: async () => [],
   fetchStreamsProgressive: async () => {},
   refreshAddons: async () => {},
   reorderAddons: async () => {},
@@ -326,6 +328,27 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
     }
   }, [addons, buildAddonHeaders]);
 
+  // Fetches streams from one specific addon — used for addon-native catalog
+  // items (e.g. debrid cloud catalogs) where only the owning addon can serve
+  // the stream, so the full multi-addon aggregation would be wasted work.
+  const fetchStreamsForAddon = useCallback(async (
+    addonId: string,
+    type: string,
+    videoId: string,
+  ): Promise<AddonStream[]> => {
+    try {
+      const res = await fetch(
+        `${API_BASE}/addons/streams/single/${encodeURIComponent(addonId)}/${encodeURIComponent(type)}/${encodeURIComponent(videoId)}`,
+        { headers: await buildAddonHeaders({ includeContentType: false }) },
+      );
+      if (!res.ok) return [];
+      const data = await res.json();
+      return data?.streams ?? [];
+    } catch {
+      return [];
+    }
+  }, [buildAddonHeaders]);
+
   const fetchStreamsProgressive = useCallback(async (
     type: string,
     videoId: string,
@@ -425,6 +448,7 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
       uninstallAddon,
       toggleAddon,
       fetchStreams,
+      fetchStreamsForAddon,
       fetchStreamsProgressive,
       refreshAddons,
       reorderAddons,

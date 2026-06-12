@@ -19,6 +19,8 @@ export function mapAddonCatalogType(rawType: string): 'movie' | 'tv' | 'sport' |
   if (rawType === 'movie') return 'movie';
   if (rawType === 'series') return 'tv';
   if (LIVE_ADDON_CATALOG_TYPES.has(rawType)) return 'sport';
+  // Debrid cloud/download catalogs commonly publish under 'other'.
+  if (rawType === 'other') return 'movie';
   return null;
 }
 

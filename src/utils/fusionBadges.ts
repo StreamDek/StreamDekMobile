@@ -150,13 +150,20 @@ function getCompiledPattern(pattern: string): RegExp | null {
 
 // ── Stream matching ──────────────────────────────────────────────────────────────
 
+// Cap the searched text — very long stream descriptions are the usual trigger
+// for catastrophic backtracking in user-supplied badge patterns.
+const MAX_SEARCH_TEXT_LENGTH = 700;
+// A well-behaved pattern tests in microseconds; anything past this budget is
+// backtracking pathologically and gets disabled for the rest of the session.
+const SLOW_PATTERN_BUDGET_MS = 50;
+
 function streamSearchText(stream: AddonStream): string {
   return [
     stream.name ?? '',
     stream.title ?? '',
     stream.description ?? '',
     stream.behaviorHints?.filename ?? '',
-  ].join(' ');
+  ].join(' ').slice(0, MAX_SEARCH_TEXT_LENGTH);
 }
 
 /** Match a stream's metadata against one or more Fusion badge sources, grouped in source group order. */
@@ -185,7 +192,20 @@ export function matchFusionBadges(stream: AddonStream, sources: FusionBadgeSourc
       if (seenKeys.has(key)) continue;
 
       const re = getCompiledPattern(filter.pattern);
-      if (!re || !re.test(text)) continue;
+      if (!re) continue;
+      const startedAt = Date.now();
+      let matched = false;
+      try {
+        matched = re.test(text);
+      } catch {
+        matched = false;
+      }
+      if (Date.now() - startedAt > SLOW_PATTERN_BUDGET_MS) {
+        // Pathological pattern (catastrophic backtracking) — blacklist it so it
+        // can never stall the JS thread again this session.
+        patternCache.set(filter.pattern, null);
+      }
+      if (!matched) continue;
       seenKeys.add(key);
 
       let group = groupMap.get(filter.groupId);

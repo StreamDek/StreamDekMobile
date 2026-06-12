@@ -22,8 +22,10 @@ export interface MetadataCatalogItem {
   rating?: number;
   description?: string;
   runtime?: number | null;
-  /** Stremio-native type to use when requesting streams for live addon items (e.g. 'tv', 'events'). */
+  /** Stremio-native type to use when requesting streams for addon items (e.g. 'series', 'tv', 'events', 'other'). */
   addonStreamType?: string;
+  /** Id of the addon the item came from — set for addon catalog items. */
+  addonId?: string;
 }
 
 export interface MetadataCatalogResponse {
@@ -82,6 +84,7 @@ function normalizeAddonCatalogItem(
   item: any,
   fallbackType: 'movie' | 'tv' | 'sport',
   fallbackNativeType?: string,
+  addonId?: string,
 ): MetadataCatalogItem {
   const rawNativeType = String(item?.type ?? '').toLowerCase();
   const mappedType = rawNativeType ? mapAddonCatalogType(rawNativeType) : null;
@@ -114,7 +117,8 @@ function normalizeAddonCatalogItem(
     rating: Number.isFinite(rawRating) ? rawRating : 0,
     description: item?.description ?? '',
     runtime: parseRuntimeMinutes(item?.runtime),
-    addonStreamType: type === 'sport' ? (nativeType || 'sport') : undefined,
+    addonStreamType: nativeType || (type === 'sport' ? 'sport' : undefined),
+    addonId,
   };
 }
 
@@ -200,7 +204,7 @@ async function fetchAddonCatalogDirect(
 
   return {
     results: metas
-      .map((item: any) => normalizeAddonCatalogItem(item, descriptor.type, descriptor.addonType))
+      .map((item: any) => normalizeAddonCatalogItem(item, descriptor.type, descriptor.addonType, descriptor.addonId))
       .filter((item: MetadataCatalogItem) => item.id.length > 0),
     total_pages: data?.hasMore ? 2 : 1,
   };
@@ -233,7 +237,7 @@ async function fetchAddonCatalogViaBackend(
   const metas = Array.isArray(data?.metas) ? data.metas : Array.isArray(data?.results) ? data.results : [];
   return {
     results: metas
-      .map((item: any) => normalizeAddonCatalogItem(item, descriptor.type, descriptor.addonType))
+      .map((item: any) => normalizeAddonCatalogItem(item, descriptor.type, descriptor.addonType, descriptor.addonId))
       .filter((item: MetadataCatalogItem) => item.id.length > 0),
     total_pages: data?.total_pages ?? (data?.hasMore ? 2 : 1),
   };

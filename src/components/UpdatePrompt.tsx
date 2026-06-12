@@ -7,6 +7,7 @@ import {
   Text,
   TouchableOpacity,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -28,9 +29,9 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv
       alignSelf: 'center',
       width: '100%',
       maxWidth: isTv ? 760 : 460,
-      // Never exceed the backdrop — the body shrinks and the notes scroll, so
-      // the footer always stays below the content instead of covering it.
-      maxHeight: '100%',
+      // maxHeight is applied inline as a number computed from the window size —
+      // the body shrinks and the notes scroll, so the footer always lays out
+      // below the content instead of covering it.
       borderRadius: isTv ? 30 : 26,
       borderWidth: 1,
       borderColor: colors.border,
@@ -92,9 +93,8 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv
       letterSpacing: 0.5,
     },
     notes: {
-      maxHeight: isTv ? 260 : 240,
+      // Height is applied inline as a number computed from the window size.
       flexShrink: 1,
-      minHeight: 72,
       borderRadius: 18,
       borderWidth: 1,
       borderColor: colors.border,
@@ -231,6 +231,7 @@ function UpdateButton({
 
 export function UpdatePrompt() {
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const { theme: { colors } } = useTheme();
   const { t } = useLanguage();
   const {
@@ -246,6 +247,11 @@ export function UpdatePrompt() {
   } = useAppUpdate();
   const isTv = getDeviceProfile().isTv;
   const styles = useMemo(() => makeStyles(colors, isTv), [colors, isTv]);
+
+  // Explicit numeric sizing — percentage maxHeight inside a centered flex
+  // parent is unreliable on Android, which let the footer overlap the notes.
+  const cardMaxHeight = Math.max(360, windowHeight - insets.top - insets.bottom - 64);
+  const notesHeight = Math.min(isTv ? 240 : 200, Math.max(110, Math.round(windowHeight * 0.2)));
 
   if (!availableRelease) return null;
 
@@ -267,7 +273,7 @@ export function UpdatePrompt() {
         style={[styles.backdrop, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 12 }]}
         onPress={isMandatory ? undefined : dismissPrompt}
       >
-        <Pressable style={styles.card} onPress={() => {}}>
+        <Pressable style={[styles.card, { maxHeight: cardMaxHeight }]} onPress={() => {}}>
           <View style={styles.hero}>
             <View style={styles.badge}>
               <Ionicons
@@ -303,7 +309,7 @@ export function UpdatePrompt() {
               ) : null}
             </View>
             <Text style={styles.sectionLabel}>{t('update_release_notes')}</Text>
-            <ScrollView style={styles.notes} showsVerticalScrollIndicator={false}>
+            <ScrollView style={[styles.notes, { height: notesHeight }]} nestedScrollEnabled showsVerticalScrollIndicator>
               <Text style={styles.notesText}>
                 {availableRelease.releaseNotes || t('update_release_notes_empty')}
               </Text>

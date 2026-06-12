@@ -26,6 +26,8 @@ export interface MetadataCatalogItem {
   addonStreamType?: string;
   /** Id of the addon the item came from — set for addon catalog items. */
   addonId?: string;
+  /** Items from debrid/cloud catalogs play directly from the owning addon, bypassing the detail page. */
+  directPlay?: boolean;
 }
 
 export interface MetadataCatalogResponse {
@@ -41,6 +43,8 @@ type AddonCatalogDescriptor = {
   baseUrl?: string;
   /** Stremio-native catalog type ('series', 'tv', 'events', …) used to build addon URLs. */
   addonType?: string;
+  /** Debrid/cloud catalog — items play directly from the owning addon. */
+  directPlay?: boolean;
 };
 
 function parseRuntimeMinutes(value: unknown): number | null {
@@ -85,6 +89,7 @@ function normalizeAddonCatalogItem(
   fallbackType: 'movie' | 'tv' | 'sport',
   fallbackNativeType?: string,
   addonId?: string,
+  directPlay?: boolean,
 ): MetadataCatalogItem {
   const rawNativeType = String(item?.type ?? '').toLowerCase();
   const mappedType = rawNativeType ? mapAddonCatalogType(rawNativeType) : null;
@@ -119,6 +124,7 @@ function normalizeAddonCatalogItem(
     runtime: parseRuntimeMinutes(item?.runtime),
     addonStreamType: nativeType || (type === 'sport' ? 'sport' : undefined),
     addonId,
+    directPlay: directPlay || undefined,
   };
 }
 
@@ -139,6 +145,7 @@ function parseAddonCatalogEndpoint(endpoint: string): AddonCatalogDescriptor | n
       catalogId,
       skip: Number.isFinite(skip) && skip > 0 ? skip : undefined,
       addonType: /^[a-z][a-z0-9_-]*$/.test(rawAddonType) ? rawAddonType : undefined,
+      directPlay: parsed.searchParams.get('direct') === '1',
       baseUrl: (() => {
         const baseUrl = parsed.searchParams.get('transport') ?? parsed.searchParams.get('baseUrl') ?? parsed.searchParams.get('manifestUrl');
         if (typeof baseUrl !== 'string') return undefined;
@@ -204,7 +211,7 @@ async function fetchAddonCatalogDirect(
 
   return {
     results: metas
-      .map((item: any) => normalizeAddonCatalogItem(item, descriptor.type, descriptor.addonType, descriptor.addonId))
+      .map((item: any) => normalizeAddonCatalogItem(item, descriptor.type, descriptor.addonType, descriptor.addonId, descriptor.directPlay))
       .filter((item: MetadataCatalogItem) => item.id.length > 0),
     total_pages: data?.hasMore ? 2 : 1,
   };
@@ -237,7 +244,7 @@ async function fetchAddonCatalogViaBackend(
   const metas = Array.isArray(data?.metas) ? data.metas : Array.isArray(data?.results) ? data.results : [];
   return {
     results: metas
-      .map((item: any) => normalizeAddonCatalogItem(item, descriptor.type, descriptor.addonType, descriptor.addonId))
+      .map((item: any) => normalizeAddonCatalogItem(item, descriptor.type, descriptor.addonType, descriptor.addonId, descriptor.directPlay))
       .filter((item: MetadataCatalogItem) => item.id.length > 0),
     total_pages: data?.total_pages ?? (data?.hasMore ? 2 : 1),
   };

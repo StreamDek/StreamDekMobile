@@ -34,6 +34,7 @@ export interface AddonManifest {
   types: string[];
   catalogs: { type: string; id: string; name: string }[];
   idPrefixes?: string[];
+  behaviorHints?: { configurable?: boolean; configurationRequired?: boolean };
 }
 
 export interface InstalledAddon {

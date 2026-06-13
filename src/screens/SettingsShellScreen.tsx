@@ -14,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { BlurTargetView } from 'expo-blur';
 import { StackBottomNav } from '../components/StackBottomNav';
 import { BOTTOM_NAV_HEIGHT } from '../components/BottomNavBar';
+import { EntranceFade } from '../components/EntranceFade';
 import { useTheme, ThemeColors } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { useProfile } from '../context/ProfileContext';
@@ -155,9 +156,12 @@ export function SettingsShellScreen({ navigation }: any) {
             }}
           >
             <View style={styles.content}>
+              <EntranceFade index={0}>
               <Text style={styles.heading}>{t('settings_title')}</Text>
               <Text style={styles.subheading}>{t('settings_shell_subheading')}</Text>
+              </EntranceFade>
 
+              <EntranceFade index={1}>
               <Text style={styles.sectionTitle}>{t('settings_profiles_section')}</Text>
               <View style={styles.card}>
                 <NavRow
@@ -177,7 +181,9 @@ export function SettingsShellScreen({ navigation }: any) {
                   onPress={() => navigation.navigate('ManageProfiles')}
                 />
               </View>
+              </EntranceFade>
 
+              <EntranceFade index={2}>
               <Text style={styles.sectionTitle}>{t('settings_preferences_section')}</Text>
               <View style={styles.card}>
                 <NavRow
@@ -204,7 +210,9 @@ export function SettingsShellScreen({ navigation }: any) {
                   onPress={() => navigation.navigate('SettingsDetail', { section: 'streams' })}
                 />
               </View>
+              </EntranceFade>
 
+              <EntranceFade index={3}>
               <Text style={styles.sectionTitle}>{t('settings_services_section')}</Text>
               <View style={styles.card}>
                 <NavRow
@@ -239,7 +247,9 @@ export function SettingsShellScreen({ navigation }: any) {
                   onPress={() => navigation.navigate('LinkTv')}
                 />
               </View>
+              </EntranceFade>
 
+              <EntranceFade index={4}>
               <Text style={styles.sectionTitle}>{t('settings_account_section')}</Text>
               <View style={styles.card}>
                 <NavRow
@@ -250,7 +260,9 @@ export function SettingsShellScreen({ navigation }: any) {
                   onPress={() => navigation.navigate(user ? 'SettingsDetail' : 'Auth', user ? { section: 'account-services' } : undefined)}
                 />
               </View>
+              </EntranceFade>
 
+              <EntranceFade index={5}>
               <Text style={styles.sectionTitle}>{t('settings_about_section')}</Text>
               <View style={styles.card}>
                 <NavRow
@@ -262,11 +274,14 @@ export function SettingsShellScreen({ navigation }: any) {
                   onPress={() => navigation.navigate('SettingsDetail', { section: 'app-updates' })}
                 />
               </View>
+              </EntranceFade>
 
+              <EntranceFade index={6} variant="fade">
               <View style={styles.aboutBlock}>
                 <Text style={styles.aboutLine}>{t('settings_made_with')}</Text>
                 <Text style={styles.aboutLine}>{t('settings_version_label', { version: appVersion })}</Text>
               </View>
+              </EntranceFade>
             </View>
           </ScrollView>
         </View>

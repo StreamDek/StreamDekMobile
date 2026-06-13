@@ -28,7 +28,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 20, marginBottom: 14,
   },
-  sectionTitle: { color: c.textPrimary, fontSize: 23, fontWeight: '700', letterSpacing: 0.3 },
+  sectionTitle: { color: c.textPrimary, fontSize: 18, fontWeight: '800', letterSpacing: 0.3 },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1, paddingRight: 12 },
   badge: {
     paddingHorizontal: 8,

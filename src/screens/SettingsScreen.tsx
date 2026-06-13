@@ -23,6 +23,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { BlurTargetView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StackBottomNav } from '../components/StackBottomNav';
+import { EntranceFade } from '../components/EntranceFade';
 import { BOTTOM_NAV_HEIGHT } from '../components/BottomNavBar';
 import { AppleToggle } from '../components/AppleToggle';
 import { useTheme, THEMES, ThemeColors } from '../context/ThemeContext';
@@ -561,7 +562,7 @@ export function SettingsScreen({ navigation, route }: any) {
       trendingMovies: t('section_trending_movies'),
       trendingTv: t('section_trending_tv'),
     });
-    return [...base, ...buildAddonHomeSections(addons)];
+    return [...base, ...buildAddonHomeSections(addons, { movie: t('catalog_type_movies'), tv: t('catalog_type_series') })];
   }, [addons, metadataProvider, t]);
 
   React.useEffect(() => { setTmdbDraft(tmdbApiKey); }, [tmdbApiKey]);
@@ -911,6 +912,7 @@ export function SettingsScreen({ navigation, route }: any) {
           <StatusBar barStyle={resolvedAppearance === 'light' ? 'dark-content' : 'light-content'} translucent backgroundColor="transparent" />
           <LinearGradient colors={[colors.bgHeader, 'transparent']} style={{ position: 'absolute', top: 0, left: 0, right: 0, height: insets.top + 88, zIndex: 1 }} pointerEvents="none" />
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: insets.top + 22, paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 24 }}>
+            <EntranceFade>
             <View style={styles.content}>
               <TouchableOpacity onPress={() => navigation.goBack()} activeOpacity={0.78} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <Ionicons name="chevron-back" size={20} color={colors.textSecondary} />
@@ -1186,6 +1188,7 @@ export function SettingsScreen({ navigation, route }: any) {
                 </>
               ) : null}
             </View>
+            </EntranceFade>
           </ScrollView>
         </View>
       </BlurTargetView>
@@ -1206,15 +1209,17 @@ export function SettingsScreen({ navigation, route }: any) {
             <Text style={styles.modalTitle}>{t('settings_home_layout')}</Text>
             <Text style={styles.modalSub}>{t('settings_home_layout_modal_sub')}</Text>
             <Text style={styles.layoutHint}>{t('settings_home_layout_modal_hint')}</Text>
-            <View style={[styles.layoutModalScroll, { maxHeight: homeLayoutSheetMaxHeight - 92, minHeight: Math.min(420, Math.floor(windowHeight * 0.52)) }]}>
+            <View style={[styles.layoutModalScroll, { height: Math.max(280, homeLayoutSheetMaxHeight - 92 - (insets.bottom + 16)) }]}>
               <DraggableFlatList
+                style={{ flex: 1 }}
+                containerStyle={{ flex: 1 }}
                 data={homeLayoutSections}
                 keyExtractor={item => item.id}
                 renderItem={renderHomeLayoutItem}
                 onDragEnd={handleHomeLayoutReorder}
                 contentContainerStyle={styles.layoutModalContent}
                 showsVerticalScrollIndicator={false}
-                activationDistance={4}
+                activationDistance={20}
                 autoscrollSpeed={180}
                 ItemSeparatorComponent={() => <View style={styles.layoutDivider} />}
                 ListFooterComponent={<View style={styles.layoutFooterSpacer} />}

@@ -393,6 +393,8 @@ const en = {
   section_recommended:     'Recommended for You',
   section_trakt_trending:  'Trending on Trakt',
   section_watchlist:       'My Watchlist',
+  catalog_type_movies:     'Movies',
+  catalog_type_series:     'Series',
 
   // -- Home hero ----------------------------------------------------------------
   home_movie_badge: 'Movie',
@@ -499,6 +501,7 @@ const en = {
   addons_disabled:    'Disabled',
   addons_back_settings:'Settings',
   addons_install_failed: 'Failed to install addon',
+  addons_configure:   'Configure',
 
   // -- Streams / Episode streams ------------------------------------------------
   streams_no_streams:    'No streams available',

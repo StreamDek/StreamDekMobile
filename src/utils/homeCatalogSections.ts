@@ -37,7 +37,7 @@ export function mapAddonCatalogType(rawType: string): 'movie' | 'tv' | 'sport' |
   return null;
 }
 
-function resolveAddonCatalogBaseUrl(addon: InstalledAddon): string | null {
+export function resolveAddonCatalogBaseUrl(addon: InstalledAddon): string | null {
   const manifest = addon.manifest as Record<string, any> | undefined;
   const candidates = [
     addon.transportUrl,
@@ -59,6 +59,15 @@ function resolveAddonCatalogBaseUrl(addon: InstalledAddon): string | null {
   }
 
   return null;
+}
+
+// Returns the addon's "configure" page URL (Stremio convention: <base>/configure)
+// if the addon declares itself configurable via behaviorHints, otherwise null.
+export function getAddonConfigureUrl(addon: InstalledAddon): string | null {
+  if (!addon.manifest?.behaviorHints?.configurable) return null;
+  const base = resolveAddonCatalogBaseUrl(addon);
+  if (!base) return null;
+  return `${base}/configure`;
 }
 
 export function buildDefaultHomeSections(
@@ -109,26 +118,51 @@ function truncateAtWordBoundary(text: string, maxLength: number): string {
   return `${(lastSpace > maxLength * 0.5 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
 
-export function buildAddonSectionTitle(addonName: string, catalogName?: string | null): string {
+export function buildAddonSectionTitle(addonName: string, catalogName?: string | null, differentiator?: string | null): string {
   const addon = (addonName ?? '').trim();
   const catalog = (catalogName ?? '').trim();
-  if (!catalog) return truncateAtWordBoundary(addon, MAX_SECTION_TITLE_LENGTH);
-  // Skip the addon prefix when the catalog name already identifies it.
-  if (!addon || catalog.toLowerCase().includes(addon.toLowerCase())) {
-    return truncateAtWordBoundary(catalog, MAX_SECTION_TITLE_LENGTH);
+  const suffix = differentiator ? ` · ${differentiator}` : '';
+  const maxLength = Math.max(MAX_SECTION_TITLE_LENGTH - suffix.length, 1);
+
+  let base: string;
+  if (!catalog) {
+    base = truncateAtWordBoundary(addon, maxLength);
+  } else if (!addon || catalog.toLowerCase().includes(addon.toLowerCase())) {
+    // Skip the addon prefix when the catalog name already identifies it.
+    base = truncateAtWordBoundary(catalog, maxLength);
+  } else {
+    const combined = `${addon} - ${catalog}`;
+    // Prefer the more descriptive catalog name over a truncated combination.
+    base = combined.length <= maxLength ? combined : truncateAtWordBoundary(catalog, maxLength);
   }
-  const combined = `${addon} - ${catalog}`;
-  if (combined.length <= MAX_SECTION_TITLE_LENGTH) return combined;
-  // Prefer the more descriptive catalog name over a truncated combination.
-  return truncateAtWordBoundary(catalog, MAX_SECTION_TITLE_LENGTH);
+  return `${base}${suffix}`;
 }
 
-export function buildAddonHomeSections(addons: InstalledAddon[]): HomeCatalogSection[] {
+export function buildAddonHomeSections(
+  addons: InstalledAddon[],
+  typeLabels?: { movie: string; tv: string },
+): HomeCatalogSection[] {
   return addons
     .filter(addon => addon.enabled)
     .sort((a, b) => a.position - b.position)
     .flatMap<HomeCatalogSection>(addon => {
       const catalogs = Array.isArray(addon.manifest?.catalogs) ? addon.manifest.catalogs : [];
+
+      // Some addons publish separate movie/series catalogs that share the same
+      // display name (e.g. "Apple TV+ Popular" for both). Track which catalog
+      // names map to more than one content type so those rows can get a
+      // "Movies"/"Series" differentiator appended to their title.
+      const typesByName = new Map<string, Set<'movie' | 'tv' | 'sport'>>();
+      catalogs.forEach((catalog: any) => {
+        const rawType = String(catalog?.type ?? '').toLowerCase();
+        const type = mapAddonCatalogType(rawType);
+        const name = String(catalog?.name ?? '').trim().toLowerCase();
+        if (!type || !name) return;
+        const set = typesByName.get(name) ?? new Set();
+        set.add(type);
+        typesByName.set(name, set);
+      });
+
       return catalogs.flatMap<HomeCatalogSection>((catalog, index) => {
         const rawType = String(catalog?.type ?? '').toLowerCase();
         const type = mapAddonCatalogType(rawType);
@@ -147,7 +181,13 @@ export function buildAddonHomeSections(addons: InstalledAddon[]): HomeCatalogSec
           .join(' ');
         if (isDebridCatalog(catalogIdentity)) params.set('direct', '1');
         const endpoint = `addon://${encodeURIComponent(addon.id)}/${encodeURIComponent(type)}/${encodeURIComponent(catalogId)}?${params.toString()}`;
-        const title = buildAddonSectionTitle(addon.manifest.name, catalog?.name);
+
+        const catalogName = String(catalog?.name ?? '').trim();
+        const isAmbiguous = catalogName.length > 0 && (typesByName.get(catalogName.toLowerCase())?.size ?? 0) > 1;
+        const differentiator = isAmbiguous
+          ? (type === 'movie' ? typeLabels?.movie : type === 'tv' ? typeLabels?.tv : undefined)
+          : undefined;
+        const title = buildAddonSectionTitle(addon.manifest.name, catalog?.name, differentiator);
 
         return [{
           id: `addon:${addon.id}:${type}:${catalogId}:${index}`,

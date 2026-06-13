@@ -201,6 +201,24 @@ async function dispatchDirect(path: string, apiKey: string, signal?: AbortSignal
     };
   }
 
+  // /tmdb/find/imdb/tt1234567?type=movie|tv
+  const findM = path.match(/^\/tmdb\/find\/imdb\/(tt\d+)/);
+  if (findM) {
+    const imdbId = findM[1];
+    const qs = path.includes('?') ? path.slice(path.indexOf('?') + 1) : '';
+    const hintType = new URLSearchParams(qs).get('type');
+    const data = await get(`${TMDB_BASE}/find/${imdbId}?${base}&external_source=imdb_id`);
+    const tvMatch = data.tv_results?.[0];
+    const movieMatch = data.movie_results?.[0];
+    let result: { id: number; type: 'movie' | 'tv' } | null = null;
+    if (hintType === 'tv' && tvMatch) result = { id: tvMatch.id, type: 'tv' };
+    else if (hintType === 'movie' && movieMatch) result = { id: movieMatch.id, type: 'movie' };
+    else if (tvMatch) result = { id: tvMatch.id, type: 'tv' };
+    else if (movieMatch) result = { id: movieMatch.id, type: 'movie' };
+    if (!result) throw new Error('Not found');
+    return result;
+  }
+
   // /tmdb/season/123/1
   const seasonM = path.match(/^\/tmdb\/season\/(\d+)\/(\d+)$/);
   if (seasonM) {
@@ -314,7 +332,8 @@ function isCacheable(path: string): boolean {
     path.startsWith('/tmdb/search') ||
     path.startsWith('/tmdb/genres/') ||
     path.startsWith('/tmdb/network/') ||
-    path.startsWith('/tmdb/season/')
+    path.startsWith('/tmdb/season/') ||
+    path.startsWith('/tmdb/find/')
   );
 }
 
@@ -346,4 +365,20 @@ export async function tmdbFetch(path: string, options?: { signal?: AbortSignal }
   } catch {
     return { ok: false, status: 0, json: async () => null };
   }
+}
+
+/**
+ * Resolve a Stremio/addon-native IMDb id (`tt1234567`) to a TMDB numeric id.
+ * Used for catalog items from addons that don't provide TMDB ids (idPrefixes: ["tt"])
+ * so the detail page, progress tracking and watchlist — all keyed on numeric TMDB ids —
+ * work the same as for built-in catalogs.
+ */
+export async function resolveImdbToTmdbId(imdbId: string, hintType?: 'movie' | 'tv'): Promise<{ id: string; type: 'movie' | 'tv' } | null> {
+  if (!/^tt\d+$/.test(imdbId)) return null;
+  const qs = hintType ? `?type=${hintType}` : '';
+  const res = await tmdbFetch(`/tmdb/find/imdb/${imdbId}${qs}`);
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!data?.id) return null;
+  return { id: String(data.id), type: data.type === 'tv' ? 'tv' : 'movie' };
 }

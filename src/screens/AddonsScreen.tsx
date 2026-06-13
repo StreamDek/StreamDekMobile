@@ -6,6 +6,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { WebView } from 'react-native-webview';
 import { useTheme, ThemeColors } from '../context/ThemeContext';
 import { useAddons, InstalledAddon, UltraManifestMeta } from '../context/AddonContext';
 import { useDebrid, DEBRID_PROVIDERS, DebridProviderName, DebridService } from '../context/DebridContext';
@@ -13,6 +14,7 @@ import { useLanguage, TranslationKey } from '../context/LanguageContext';
 import { BOTTOM_NAV_HEIGHT } from '../components/BottomNavBar';
 import { AppleToggle } from '../components/AppleToggle';
 import { ConfirmSheet } from '../components/ConfirmSheet';
+import { getAddonConfigureUrl } from '../utils/homeCatalogSections';
 
 
 type Tab = 'addons' | 'debrid';
@@ -58,7 +60,23 @@ const makeStyles = (c: ThemeColors) => {
     backgroundColor: isLightAppearance ? 'rgba(17,24,39,0.08)' : c.inputBg, borderWidth: 1, borderColor: isLightAppearance ? 'rgba(17,24,39,0.18)' : c.inputBorder,
   },
   tagText:      { color: c.mutedText, fontSize: 10, fontWeight: '600' },
+  configBtn:    { marginLeft: 'auto' as any, padding: 4 },
   removeBtn:    { marginLeft: 'auto' as any, padding: 4 },
+  // ── Addon config WebView modal ──
+  configModal:  { flex: 1, backgroundColor: c.bg },
+  configHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: c.border,
+  },
+  configTitle:  { color: c.textPrimary, fontSize: 16, fontWeight: '800', flex: 1, marginRight: 12 },
+  configCloseBtn: {
+    width: 34, height: 34, borderRadius: 17, justifyContent: 'center', alignItems: 'center',
+    backgroundColor: c.inputBg, borderWidth: 1, borderColor: c.border,
+  },
+  configLoader: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    justifyContent: 'center', alignItems: 'center', backgroundColor: c.bg,
+  },
   // ── Debrid provider card ──
   debridCard: {
     backgroundColor: isLightAppearance ? '#ffffff' : c.cardBg, borderRadius: 14, borderWidth: 1,
@@ -249,6 +267,9 @@ export const AddonsScreen = ({ navigation, route }: any) => {
   // Remove addon confirmation modal
   const [removeAddonTarget, setRemoveAddonTarget] = useState<InstalledAddon | null>(null);
   const [removingAddon, setRemovingAddon]         = useState(false);
+
+  // Addon configuration WebView modal
+  const [configAddon, setConfigAddon] = useState<InstalledAddon | null>(null);
 
   // Custom themed alert state
   const [alert, setAlert] = useState<{
@@ -470,6 +491,7 @@ export const AddonsScreen = ({ navigation, route }: any) => {
                   onRemove={() => handleRemoveAddon(addon)}
                   onMoveUp={() => handleAddonMoveUp(index)}
                   onMoveDown={() => handleAddonMoveDown(index)}
+                  onConfigure={() => setConfigAddon(addon)}
                 />
               ))
             )}
@@ -677,6 +699,16 @@ export const AddonsScreen = ({ navigation, route }: any) => {
         </Pressable>
       </Modal>
 
+      {/* ── Addon Configuration WebView Modal ── */}
+      <AddonConfigModal
+        addon={configAddon}
+        url={configAddon ? getAddonConfigureUrl(configAddon) : null}
+        onClose={() => setConfigAddon(null)}
+        styles={styles}
+        colors={colors}
+        insets={insets}
+      />
+
       <ConfirmSheet
         visible={alert.visible}
         title={alert.title}
@@ -731,7 +763,7 @@ function UltraBoostCard({
 // ── Addon Card ────────────────────────────────────────────────────────────────
 
 function AddonCard({
-  addon, styles, colors, t, canMoveUp, canMoveDown, onToggle, onRemove, onMoveUp, onMoveDown,
+  addon, styles, colors, t, canMoveUp, canMoveDown, onToggle, onRemove, onMoveUp, onMoveDown, onConfigure,
 }: {
   addon: InstalledAddon;
   styles: ReturnType<typeof makeStyles>;
@@ -743,9 +775,11 @@ function AddonCard({
   onRemove: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
+  onConfigure: () => void;
 }) {
   const resources = addon.manifest.resources ?? [];
   const types     = addon.manifest.types ?? [];
+  const configUrl = getAddonConfigureUrl(addon);
 
   return (
     <View style={styles.addonCard}>
@@ -802,11 +836,66 @@ function AddonCard({
             </View>
           );
         })}
+        {configUrl ? (
+          <TouchableOpacity
+            style={styles.configBtn}
+            onPress={onConfigure}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="settings-outline" size={16} color={colors.accentSoft} />
+          </TouchableOpacity>
+        ) : null}
         <TouchableOpacity style={styles.removeBtn} onPress={onRemove} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           <Ionicons name="trash-outline" size={16} color="#c0392b" />
         </TouchableOpacity>
       </View>
     </View>
+  );
+}
+
+// ── Addon Configuration WebView Modal ───────────────────────────────────────────
+
+function AddonConfigModal({
+  addon, url, onClose, styles, colors, insets,
+}: {
+  addon: InstalledAddon | null;
+  url: string | null;
+  onClose: () => void;
+  styles: ReturnType<typeof makeStyles>;
+  colors: any;
+  insets: { top: number; bottom: number; left: number; right: number };
+}) {
+  const [loading, setLoading] = useState(true);
+
+  React.useEffect(() => {
+    if (addon) setLoading(true);
+  }, [addon]);
+
+  return (
+    <Modal visible={!!addon && !!url} animationType="slide" onRequestClose={onClose} statusBarTranslucent>
+      <View style={[styles.configModal, { paddingTop: insets.top }]}>
+        <View style={styles.configHeader}>
+          <Text style={styles.configTitle} numberOfLines={1}>{addon?.manifest.name}</Text>
+          <TouchableOpacity style={styles.configCloseBtn} onPress={onClose} activeOpacity={0.7}>
+            <Ionicons name="close" size={18} color={colors.textPrimary} />
+          </TouchableOpacity>
+        </View>
+        {url ? (
+          <View style={{ flex: 1 }}>
+            <WebView
+              source={{ uri: url }}
+              style={{ flex: 1, backgroundColor: colors.bg }}
+              onLoadEnd={() => setLoading(false)}
+            />
+            {loading ? (
+              <View style={styles.configLoader}>
+                <ActivityIndicator size="large" color={colors.accent} />
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+    </Modal>
   );
 }
 

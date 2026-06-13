@@ -71,7 +71,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 20, marginBottom: 14,
   },
-  sectionTitle: { color: c.textPrimary, fontSize: 23, fontWeight: '700', letterSpacing: 0.3 },
+  sectionTitle: { color: c.textPrimary, fontSize: 18, fontWeight: '800', letterSpacing: 0.3 },
   list: { paddingHorizontal: 20 },
   cardWrap: { marginRight: 14, width: 142 },
   card: {

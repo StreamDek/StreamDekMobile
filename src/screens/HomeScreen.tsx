@@ -12,7 +12,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Storage } from '../utils/storage';
 import { API_BASE } from '../constants/api';
-import { tmdbFetch } from '../utils/tmdbFetch';
+import { tmdbFetch, resolveImdbToTmdbId } from '../utils/tmdbFetch';
 import { fetchMetadataCatalog } from '../utils/metadataCatalogFetch';
 import { SectionStrip } from '../components/SectionStrip';
 import { NetworkStrip } from '../components/NetworkStrip';
@@ -54,6 +54,7 @@ import { getDeviceProfile } from '../utils/deviceProfile';
 import { invalidateSharedCache } from '../utils/sharedDataCache';
 import { IdleTaskHandle, runIdle } from '../utils/idleTask';
 import { buildAddonHomeSections, buildDefaultHomeSections } from '../utils/homeCatalogSections';
+import { EntranceFade } from '../components/EntranceFade';
 import { isExpoGoRuntime } from '../utils/runtime';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -614,7 +615,7 @@ export const HomeScreen = ({ navigation }: any) => {
       trendingMovies: t('section_trending_movies'),
       trendingTv: t('section_trending_tv'),
     });
-    return [...base, ...buildAddonHomeSections(addons)];
+    return [...base, ...buildAddonHomeSections(addons, { movie: t('catalog_type_movies'), tv: t('catalog_type_series') })];
   }, [addons, metadataProvider, t]);
 
   const {
@@ -688,6 +689,12 @@ export const HomeScreen = ({ navigation }: any) => {
   const hasCompletedInitialHomeLoadRef = useRef(false);
   const lastAutoFetchKeyRef = useRef<string | null>(null);
   const sectionFetchRequestIdRef = useRef(0);
+  // Rows animate in only during a short window after the first content
+  // arrives — rows mounted later (while scrolling) appear instantly. The
+  // decision is cached per row key so the wrapper tree stays stable across
+  // re-renders (a changing wrapper would remount the row and lose its state).
+  const homeEntranceWindowUntilRef = useRef<number | null>(null);
+  const rowEntranceEnabledRef = useRef(new Map<string, boolean>());
 
   useFocusEffect(
     useCallback(() => {
@@ -1410,6 +1417,7 @@ export const HomeScreen = ({ navigation }: any) => {
     // the owning addon (a direct debrid link) and play immediately.
     const itemId = String(item?.id ?? '');
     const hasStandardId = /^tt\d+$/.test(itemId) || /^\d+$/.test(itemId);
+    const isImdbId = /^tt\d+$/.test(itemId);
     if (item?.addonId && (item.directPlay || !hasStandardId)) {
       const nativeType = typeof item.addonStreamType === 'string' && item.addonStreamType.length > 0
         ? item.addonStreamType
@@ -1436,6 +1444,43 @@ export const HomeScreen = ({ navigation }: any) => {
         },
       });
       return;
+    }
+    // Addon catalogs (e.g. UltraMax) often only provide an IMDb id, no TMDB id.
+    // Resolve it to a TMDB numeric id first so the detail page, progress
+    // tracking and watchlist — all keyed on numeric TMDB ids — work normally.
+    if (isImdbId) {
+      const resolved = await resolveImdbToTmdbId(itemId, item.type === 'tv' ? 'tv' : 'movie');
+      if (resolved) {
+        navigation.navigate('Detail', { movieId: resolved.id, type: resolved.type, imdbId: itemId });
+        return;
+      }
+      if (item?.addonId) {
+        const nativeType = typeof item.addonStreamType === 'string' && item.addonStreamType.length > 0
+          ? item.addonStreamType
+          : (item.type === 'tv' ? 'series' : 'movie');
+        const streams = await fetchStreamsForAddon(item.addonId, nativeType, itemId);
+        if (!streams.length) return;
+        navigation.navigate(expoGoRuntime ? 'Player' : 'MpvPlayer', {
+          movieId: itemId,
+          type: 'movie',
+          title: item.title,
+          synopsis: item.description ?? undefined,
+          backdrop: item.backdrop ?? item.poster ?? undefined,
+          poster: item.poster ?? undefined,
+          resolveOnMount: true,
+          sourceStreams: streams,
+          resolverMovieId: itemId,
+          returnToPlayerParams: {
+            movieId: itemId,
+            type: 'movie',
+            title: item.title,
+            synopsis: item.description ?? undefined,
+            backdrop: item.backdrop ?? item.poster ?? undefined,
+            poster: item.poster ?? undefined,
+          },
+        });
+        return;
+      }
     }
     navigation.navigate('Detail', { movieId: item.id, type: item.type || 'movie' });
   }, [expoGoRuntime, fetchStreams, fetchStreamsForAddon, navigation]);
@@ -2065,7 +2110,16 @@ export const HomeScreen = ({ navigation }: any) => {
     user,
   ]);
 
-  const renderHomeRow = useCallback(({ item }: { item: any }) => {
+  const renderHomeRow = useCallback(({ item, index }: { item: any; index: number }) => {
+    let animateEntrance = rowEntranceEnabledRef.current.get(item.key);
+    if (animateEntrance === undefined) {
+      if (homeEntranceWindowUntilRef.current == null) {
+        homeEntranceWindowUntilRef.current = Date.now() + 1800;
+      }
+      animateEntrance = index < 7 && Date.now() < homeEntranceWindowUntilRef.current;
+      rowEntranceEnabledRef.current.set(item.key, animateEntrance);
+    }
+    const content = (() => {
     switch (item.kind) {
       case 'continue':
         return (
@@ -2143,6 +2197,14 @@ export const HomeScreen = ({ navigation }: any) => {
       default:
         return null;
     }
+    })();
+
+    if (!content) return null;
+    return (
+      <EntranceFade enabled={animateEntrance} index={Math.min(index, 6)}>
+        {content}
+      </EntranceFade>
+    );
   }, [
     allContinueWatching,
     combinedWatchlist,
@@ -2214,6 +2276,7 @@ export const HomeScreen = ({ navigation }: any) => {
         windowSize={deviceProfile.performanceClass === 'low' ? 5 : 7}
         removeClippedSubviews={deviceProfile.isTv}
         ListHeaderComponent={heroItems.length > 0 ? (
+          <EntranceFade variant="fade">
           <View style={{ marginBottom: uiStyle === 'glass' ? 24 : 18 }}>
             <View style={{ height: heroSectionHeight }} {...heroPanResponder.panHandlers}>
               <TouchableOpacity activeOpacity={1} onPress={() => handleItemPress(heroItems[heroIndex])} style={StyleSheet.absoluteFill}>
@@ -2240,6 +2303,7 @@ export const HomeScreen = ({ navigation }: any) => {
               ))}
             </View>
           </View>
+          </EntranceFade>
         ) : null}
       />
       <ActionSheet visible={!!longPressItem} onClose={() => setLongPressItem(null)} title={longPressItem?.title} subtitle={longPressItem?.year ? String(longPressItem.year) : undefined} actions={buildLongPressActions(longPressItem)} />

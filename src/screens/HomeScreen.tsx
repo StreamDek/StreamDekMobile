@@ -54,6 +54,7 @@ import { getDeviceProfile } from '../utils/deviceProfile';
 import { invalidateSharedCache } from '../utils/sharedDataCache';
 import { IdleTaskHandle, runIdle } from '../utils/idleTask';
 import { buildAddonHomeSections, buildDefaultHomeSections } from '../utils/homeCatalogSections';
+import { getHomeSectionStorageKeys, mergeSavedHomeSections } from '../utils/homeLayoutConfig';
 import { EntranceFade } from '../components/EntranceFade';
 import { isExpoGoRuntime } from '../utils/runtime';
 
@@ -65,17 +66,6 @@ const HOME_SECTION_CACHE_KEY = 'home_section_cache';
 const homeSectionMemoryCache = new Map<string, Record<string, any[]>>();
 const SECTION_UPDATE_FLUSH_MS = 80;
 const AnimatedFlatList = Animated.createAnimatedComponent(FlatList<any>);
-
-function getHomeSectionStorageKeys(userId: string | null | undefined, profileId: string | null | undefined): string[] {
-  const keys = [
-    profileScopedStorageKey('home_sections', userId, profileId),
-  ];
-  if (userId && profileId) {
-    keys.push(profileScopedStorageKey('home_sections', userId, null));
-  }
-  keys.push('home_sections');
-  return Array.from(new Set(keys));
-}
 
 function formatContinueTime(positionSec?: number | null): string | null {
   if (!positionSec || !Number.isFinite(positionSec) || positionSec <= 0) return null;
@@ -594,7 +584,7 @@ export const HomeScreen = ({ navigation }: any) => {
   const { uiStyle } = useUIStyle();
   const { continueWatchingStyle, vividAmbientEnabled } = useDisplaySettings();
   const { setAppReady } = useAppReady();
-  const { metadataProvider } = useTmdbApiKey();
+  const { metadataProvider, homeCatalogProviders } = useTmdbApiKey();
   const { addons, fetchStreams, fetchStreamsForAddon } = useAddons();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const isDarkAppearance = resolvedAppearance === 'dark';
@@ -603,7 +593,7 @@ export const HomeScreen = ({ navigation }: any) => {
   const { isMovieWatched, isSeriesWatched, toggleMovieWatched, markAllEpisodesWatched, unmarkSeriesWatched } = useWatched();
 
   const defaultSections = useMemo(() => {
-    const base = buildDefaultHomeSections(metadataProvider, CURRENT_YEAR, {
+    const base = buildDefaultHomeSections(homeCatalogProviders, CURRENT_YEAR, {
       networks: t('section_networks'),
       featuredMovies: t('section_featured_movies'),
       featuredSeries: t('section_featured_series'),
@@ -614,9 +604,9 @@ export const HomeScreen = ({ navigation }: any) => {
       newSeries: t('section_new_series'),
       trendingMovies: t('section_trending_movies'),
       trendingTv: t('section_trending_tv'),
-    });
+    }, metadataProvider);
     return [...base, ...buildAddonHomeSections(addons, { movie: t('catalog_type_movies'), tv: t('catalog_type_series') })];
-  }, [addons, metadataProvider, t]);
+  }, [addons, homeCatalogProviders, metadataProvider, t]);
 
   const {
     isConnected: traktConnected,
@@ -650,7 +640,11 @@ export const HomeScreen = ({ navigation }: any) => {
     () => getHomeSectionStorageKeys(user?.uid, activeProfile?.id),
     [activeProfile?.id, user?.uid],
   );
-  const sectionCacheKey = profileScopedStorageKey(`${HOME_SECTION_CACHE_KEY}:${metadataProvider}`, user?.uid, activeProfile?.id);
+  const sectionProviderKey = useMemo(
+    () => `${metadataProvider}:${homeCatalogProviders.slice().sort().join('+')}`,
+    [homeCatalogProviders, metadataProvider],
+  );
+  const sectionCacheKey = profileScopedStorageKey(`${HOME_SECTION_CACHE_KEY}:${sectionProviderKey}`, user?.uid, activeProfile?.id);
 
   const [longPressItem,          setLongPressItem]          = useState<any | null>(null);
   const [seriesWatchConfirmItem, setSeriesWatchConfirmItem] = useState<any | null>(null);
@@ -751,13 +745,9 @@ export const HomeScreen = ({ navigation }: any) => {
       }
       if (saved) {
         const savedSections: any[] = JSON.parse(saved);
-        const savedMap = new Map(savedSections.map(s => [s.id, s]));
-        // Preserve order + enabled state for known sections; append any new defaults
-        const known = savedSections
-          .filter(s => defaultSections.find(d => d.id === s.id))
-          .map(s => ({ ...defaultSections.find(d => d.id === s.id)!, enabled: s.enabled }));
-        const newOnes = defaultSections.filter(d => !savedMap.has(d.id));
-        const resolvedSections = [...known, ...newOnes];
+        const resolvedSections = Array.isArray(savedSections)
+          ? mergeSavedHomeSections(savedSections, defaultSections, homeCatalogProviders[0] ?? metadataProvider)
+          : defaultSections;
         setSections(resolvedSections);
         return resolvedSections;
       } else {
@@ -769,7 +759,7 @@ export const HomeScreen = ({ navigation }: any) => {
       setSections(defaultSections);
       return defaultSections;
     }
-  }, [defaultSections, sectionSettingsKeys]);
+  }, [defaultSections, homeCatalogProviders, metadataProvider, sectionSettingsKeys]);
 
   const loadWatchlist = useCallback(async () => {
     try {
@@ -937,11 +927,11 @@ export const HomeScreen = ({ navigation }: any) => {
     refreshRecommendations();
   }, [traktConnected, user, refreshTrending, refreshRecommendations]);
 
-  // Clear stale data and reload when the catalog provider switches
-  const prevProviderRef = useRef(metadataProvider);
+  // Clear stale data and reload when the home catalog sources change.
+  const prevProviderRef = useRef(sectionProviderKey);
   useEffect(() => {
-    if (prevProviderRef.current === metadataProvider) return;
-    prevProviderRef.current = metadataProvider;
+    if (prevProviderRef.current === sectionProviderKey) return;
+    prevProviderRef.current = sectionProviderKey;
     invalidateSharedCache('catalog:');
     hasCompletedInitialHomeLoadRef.current = false;
     sectionFetchRequestIdRef.current += 1;
@@ -958,7 +948,7 @@ export const HomeScreen = ({ navigation }: any) => {
       }
       await loadSectionConfig();
     })();
-  }, [defaultSections, loadCachedSectionData, loadSectionConfig, metadataProvider]);
+  }, [defaultSections, loadCachedSectionData, loadSectionConfig, sectionProviderKey]);
 
   useEffect(() => {
     let active = true;
@@ -1004,11 +994,11 @@ export const HomeScreen = ({ navigation }: any) => {
 
   useEffect(() => {
     if (sections.length === 0) return;
-    const fetchKey = `${metadataProvider}:${sections.map(section => `${section.id}:${section.enabled ? 1 : 0}:${section.endpoint}`).join('|')}`;
+    const fetchKey = `${sectionProviderKey}:${sections.map(section => `${section.id}:${section.enabled ? 1 : 0}:${section.endpoint}`).join('|')}`;
     if (lastAutoFetchKeyRef.current === fetchKey) return;
     lastAutoFetchKeyRef.current = fetchKey;
     void fetchCatalogSections(sections);
-  }, [fetchCatalogSections, metadataProvider, sections]);
+  }, [fetchCatalogSections, sectionProviderKey, sections]);
 
   // Home is the root tab — exit the app when the hardware back is pressed here.
   useFocusEffect(
@@ -1060,8 +1050,14 @@ export const HomeScreen = ({ navigation }: any) => {
   }, [traktConnected, fetchTraktSections, refreshContinueWatching, refreshWatchlist]);
 
   useEffect(() => {
-      const heroMovieId = metadataProvider === 'cinemeta' ? 'featured_movie' : 'trending_movie';
-      const heroTvId    = metadataProvider === 'cinemeta' ? 'featured_tv'    : 'trending_tv';
+      const heroMovieIdCandidates = metadataProvider === 'cinemeta'
+        ? ['cinemeta:featured_movie', 'tmdb:trending_movie']
+        : ['tmdb:trending_movie', 'cinemeta:featured_movie'];
+      const heroTvIdCandidates = metadataProvider === 'cinemeta'
+        ? ['cinemeta:featured_tv', 'tmdb:trending_tv']
+        : ['tmdb:trending_tv', 'cinemeta:featured_tv'];
+      const heroMovieId = heroMovieIdCandidates.find(id => Array.isArray(sectionData[id]) && sectionData[id].length > 0) ?? heroMovieIdCandidates[0];
+      const heroTvId = heroTvIdCandidates.find(id => Array.isArray(sectionData[id]) && sectionData[id].length > 0) ?? heroTvIdCandidates[0];
       const trendingMovies = (sectionData[heroMovieId] || []).slice(0, 8).map(i => ({ ...i, type: 'movie' }));
       const trendingTv = (sectionData[heroTvId] || []).slice(0, 8).map(i => ({ ...i, type: 'tv' }));
       const watchlistItems = combinedWatchlist
@@ -1389,14 +1385,22 @@ export const HomeScreen = ({ navigation }: any) => {
       const streamRequestType = nativeType === 'tv' ? 'live-tv' : nativeType;
       const streams = await fetchStreams(streamRequestType, String(item.id));
       if (!streams.length) return;
+      const immediateStream = streams.find(stream => typeof stream.url === 'string' && stream.url.length > 0) ?? null;
+      const immediateUrl = immediateStream?.url;
       navigation.navigate(expoGoRuntime ? 'Player' : 'MpvPlayer', {
         movieId: String(item.id),
+        streamUrl: immediateUrl,
+        activeStream: immediateStream ?? undefined,
+        preferredSourceIndex: immediateStream ? streams.findIndex(stream => stream === immediateStream) : undefined,
+        preferredSourceIdentity: immediateStream
+          ? (immediateStream.infoHash?.toLowerCase() ?? immediateStream.url ?? `${immediateStream.addonId}:${immediateStream.behaviorHints?.filename ?? immediateStream.title ?? immediateStream.name ?? ''}`.trim())
+          : undefined,
         type: 'movie',
         title: item.title,
         synopsis: item.description ?? undefined,
         backdrop: item.backdrop ?? item.poster ?? undefined,
         poster: item.poster ?? undefined,
-        resolveOnMount: true,
+        resolveOnMount: !immediateUrl,
         sourceStreams: streams,
         resolverMovieId: String(item.id),
         isLive: true,
@@ -2077,7 +2081,7 @@ export const HomeScreen = ({ navigation }: any) => {
       const title = section.title;
       rows.push({
         key: `section:${section.id}`,
-        kind: section.id === 'networks' ? 'networks' : 'section',
+        kind: section.id === 'networks' || section.id.endsWith(':networks') ? 'networks' : 'section',
         sectionId: section.id,
         title,
         cardVariant: section.contentType === 'sport' ? 'landscape' : 'portrait',

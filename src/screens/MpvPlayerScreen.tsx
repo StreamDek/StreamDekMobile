@@ -88,6 +88,7 @@ type MpvSourceOption = {
 };
 
 type RememberedStreamChoice = {
+  identity?: string;
   addonId?: string;
   infoHash?: string;
   url?: string;
@@ -183,11 +184,12 @@ function streamIdentityKey(stream: AddonStream | null | undefined): string {
   );
 }
 
-function serializeRememberedStream(stream: AddonStream, resolvedUrl?: string | null): RememberedStreamChoice {
+function serializeRememberedStream(stream: AddonStream): RememberedStreamChoice {
   return {
+    identity: streamIdentityKey(stream),
     addonId: stream.addonId,
     infoHash: stream.infoHash?.toLowerCase(),
-    url: stream.url ?? resolvedUrl ?? undefined,
+    url: stream.url ?? undefined,
     title: normalizeStreamText(stream.title),
     name: normalizeStreamText(stream.name),
     filename: normalizeStreamText(stream.behaviorHints?.filename),
@@ -199,9 +201,13 @@ function serializeRememberedStream(stream: AddonStream, resolvedUrl?: string | n
 function streamMatchesRemembered(stream: AddonStream, remembered: RememberedStreamChoice | null): boolean {
   if (!remembered) return false;
 
+  const rememberedIdentity = normalizeStreamText(remembered.identity);
+  const currentIdentity = streamIdentityKey(stream);
+  if (rememberedIdentity && currentIdentity && rememberedIdentity === currentIdentity) return true;
+
   const rememberedInfoHash = remembered.infoHash?.toLowerCase();
   if (rememberedInfoHash && stream.infoHash?.toLowerCase() === rememberedInfoHash) return true;
-  if (remembered.url && stream.url === remembered.url) return true;
+  if (remembered.url && stream.url && remembered.url === stream.url) return true;
   if (remembered.addonId && stream.addonId !== remembered.addonId) return false;
 
   const rememberedFilename = normalizeStreamText(remembered.filename);
@@ -216,7 +222,7 @@ function streamMatchesRemembered(stream: AddonStream, remembered: RememberedStre
   if (rememberedFilename && streamFilename && rememberedFilename === streamFilename) return true;
   if (rememberedTitle && streamTitle && rememberedTitle === streamTitle) return true;
 
-  if (rememberedInfoHash || remembered.url) return false;
+  if (rememberedInfoHash) return false;
 
   return !!rememberedName
     && !!streamName
@@ -665,7 +671,7 @@ export const MpvPlayerScreen = ({ route, navigation }: any) => {
     } else if (resolvedSourceStreams.length > 0) {
       const active = resolvedSourceStreams.find(stream => streamIdentityKey(stream) === activeSourceIdentity) ?? null;
       if (active) {
-        payload = serializeRememberedStream(active, resolvedStreamUrl);
+        payload = serializeRememberedStream(active);
       }
     }
     if (!payload) return;

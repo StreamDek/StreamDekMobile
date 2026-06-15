@@ -493,6 +493,16 @@ export function scoreStream(stream: AddonStream, options?: StreamScoreOptions): 
 
 export function sortStreams(streams: AddonStream[], options?: StreamScoreOptions): AddonStream[] {
   return [...streams].sort((a, b) => {
+    // 0. ACTIVE DEBRID CACHE (Absolute Top Priority): cachedBy is populated
+    // server-side only from the requesting user's own enabled debrid accounts,
+    // so any non-empty cachedBy means an active debrid service of theirs has
+    // this ready to stream instantly — float it above everything else.
+    const aCached = a.cachedBy.length > 0;
+    const bCached = b.cachedBy.length > 0;
+    if (aCached !== bCached) {
+      return aCached ? -1 : 1;
+    }
+
     const aText = streamText(a);
     const bText = streamText(b);
     const aParsed = parseStream(a);

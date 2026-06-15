@@ -12,6 +12,9 @@ import { PlayerScreen } from './src/screens/PlayerScreen';
 import { BrowseScreen } from './src/screens/BrowseScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
 import { SettingsShellScreen } from './src/screens/SettingsShellScreen';
+import { HomeLayoutSettingsScreen } from './src/screens/HomeLayoutSettingsScreen';
+import { ContinueWatchingStyleSettingsScreen } from './src/screens/ContinueWatchingStyleSettingsScreen';
+import { PageStyleSettingsScreen } from './src/screens/PageStyleSettingsScreen';
 import { MediaDetailScreen } from './src/screens/MediaDetailScreen';
 import { WatchlistScreen } from './src/screens/WatchlistScreen';
 import { SearchScreen } from './src/screens/SearchScreen';
@@ -235,6 +238,9 @@ function AppNavigation() {
               options={{ headerShown: false, presentation: 'modal', animation: 'slide_from_bottom', animationDuration: 300 }}
             />
             <Stack.Screen name="SettingsDetail" component={SettingsScreen} options={{ headerShown: false, animationDuration: 260 }} />
+            <Stack.Screen name="HomeLayoutSettings" component={HomeLayoutSettingsScreen} options={{ headerShown: false, animationDuration: 260 }} />
+            <Stack.Screen name="ContinueWatchingStyleSettings" component={ContinueWatchingStyleSettingsScreen} options={{ headerShown: false, animationDuration: 260 }} />
+            <Stack.Screen name="PageStyleSettings" component={PageStyleSettingsScreen} options={{ headerShown: false, animationDuration: 260 }} />
             <Stack.Screen name="Auth" component={AuthScreen} options={{ headerShown: false, presentation: 'modal', animation: 'slide_from_bottom', animationDuration: 300 }} />
             <Stack.Screen name="LinkTv" component={LinkTvScreen} options={{ headerShown: false, presentation: 'modal', animation: 'slide_from_bottom', animationDuration: 300 }} />
             <Stack.Screen

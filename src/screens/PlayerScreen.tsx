@@ -111,6 +111,7 @@ const SWITCHING_MESSAGES = [
     'Cueing up a different cut...',
 ];
 interface RememberedStreamChoice {
+    identity?: string;
     addonId?: string;
     infoHash?: string;
     url?: string;
@@ -167,11 +168,12 @@ function normalizeStreamText(value?: string | null): string {
     return (value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
-function serializeRememberedStream(stream: AddonStream, resolvedUrl?: string | null): RememberedStreamChoice {
+function serializeRememberedStream(stream: AddonStream): RememberedStreamChoice {
     return {
+        identity: streamIdentityKey(stream),
         addonId: stream.addonId,
         infoHash: stream.infoHash?.toLowerCase(),
-        url: stream.url ?? resolvedUrl ?? undefined,
+        url: stream.url ?? undefined,
         title: normalizeStreamText(stream.title),
         name: normalizeStreamText(stream.name),
         filename: normalizeStreamText(stream.behaviorHints?.filename),
@@ -183,10 +185,14 @@ function serializeRememberedStream(stream: AddonStream, resolvedUrl?: string | n
 function streamMatchesRemembered(stream: AddonStream, remembered: RememberedStreamChoice | null): boolean {
     if (!remembered) return false;
 
+    const rememberedIdentity = normalizeStreamText(remembered.identity);
+    const currentIdentity = streamIdentityKey(stream);
+    if (rememberedIdentity && currentIdentity && rememberedIdentity === currentIdentity) return true;
+
     const rememberedInfoHash = remembered.infoHash?.toLowerCase();
     if (rememberedInfoHash && stream.infoHash?.toLowerCase() === rememberedInfoHash) return true;
 
-    if (remembered.url && stream.url === remembered.url) return true;
+    if (remembered.url && stream.url && remembered.url === stream.url) return true;
 
     if (remembered.addonId && stream.addonId !== remembered.addonId) return false;
 
@@ -202,7 +208,7 @@ function streamMatchesRemembered(stream: AddonStream, remembered: RememberedStre
     if (rememberedFilename && streamFilename && rememberedFilename === streamFilename) return true;
     if (rememberedTitle && streamTitle && rememberedTitle === streamTitle) return true;
 
-    if (rememberedInfoHash || remembered.url) {
+    if (rememberedInfoHash) {
         return false;
     }
 
@@ -753,12 +759,12 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         if (Platform.OS !== 'android') return;
 
         player.bufferOptions = {
-            preferredForwardBufferDuration: 45,
-            minBufferForPlayback: 1.5,
+            preferredForwardBufferDuration: isLiveStream ? 10 : 45,
+            minBufferForPlayback: isLiveStream ? 0.35 : 1.5,
             maxBufferBytes: 256 * 1024 * 1024,
             prioritizeTimeOverSizeThreshold: true,
         };
-    }, [player]);
+    }, [isLiveStream, player]);
 
     useEffect(() => {
         setIntroContributionStartSec(null);
@@ -1336,7 +1342,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
             );
             await Storage.setItem(
                 lastStreamKey(user?.uid ?? null, type, imdbId ?? String(movieId)),
-                JSON.stringify(serializeRememberedStream(active, upstreamResolvedUrlRef.current)),
+                JSON.stringify(serializeRememberedStream(active)),
             );
         } catch {
             // Ignore preference persistence failures
@@ -1590,7 +1596,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
         if (!playbackUrl) return false;
         const preferredKey = lastStreamKey(user?.uid ?? null, type, imdbId ?? String(movieId));
         const preferredValue = activeStreamRef.current
-            ? serializeRememberedStream(activeStreamRef.current, upstreamResolvedUrlRef.current ?? playbackUrl)
+            ? serializeRememberedStream(activeStreamRef.current)
             : null;
         const sourceOptions = allStreamsRef.current.map((stream, index) => {
             const parsed = parseStream(stream);

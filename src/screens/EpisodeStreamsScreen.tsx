@@ -28,7 +28,8 @@ import { ConfirmSheet } from '../components/ConfirmSheet';
 import { ActionSheet } from '../components/ActionSheet';
 import { PrimaryActionButton, getPrimaryActionPalette } from '../components/PrimaryActionButton';
 import { StackBottomNav, BOTTOM_NAV_HEIGHT } from '../components/StackBottomNav';
-import { parseStream, formatSeeds } from '../utils/streamParser';
+import { parseStream } from '../utils/streamParser';
+import { getRawStreamText } from '../utils/rawStreamText';
 import { sortStreams } from '../utils/streamSelection';
 import { isExpoGoRuntime } from '../utils/runtime';
 import { buildAuthHeaders } from '../utils/authHeaders';
@@ -255,11 +256,11 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
 // ── StreamRow ─────────────────────────────────────────────────────────────────
 
 function StreamRow({ stream, colors, onPlay, isLightAppearance, glass = false }: { stream: AddonStream; colors: any; onPlay: () => void; isLightAppearance: boolean; glass?: boolean }) {
-  const parsed = parseStream(stream);
+  const rawText = getRawStreamText(stream);
   const isCached = stream.cachedBy.length > 0;
   const isMonochromeDark = !isLightAppearance && colors.accent === '#ffffff' && colors.buttonText === '#111111';
   const { vividAmbientEnabled } = useDisplaySettings();
-  const { badgePosition, showSizeBadges } = useFusionBadges();
+  const { badgePosition } = useFusionBadges();
 
   const rowStyle = {
     flexDirection: 'row' as const,
@@ -293,58 +294,24 @@ function StreamRow({ stream, colors, onPlay, isLightAppearance, glass = false }:
     >
       {/* Meta */}
       <View style={{ flex: 1 }}>
-        {badgePosition === 'top' && (
-          <FusionBadgeRow stream={stream} style={{ marginBottom: 4 }} />
+        {!!rawText.headline && (
+          <Text style={{ color: colors.textPrimary, fontSize: 13, fontWeight: '700', marginBottom: 4 }}>
+            {rawText.headline}
+          </Text>
         )}
-
-        {/* Provider / release group */}
-        <Text style={{ color: colors.textPrimary, fontSize: 13, fontWeight: '700', marginBottom: 2 }} numberOfLines={1}>
-          {parsed.providerLine}
-        </Text>
-
-        {/* Media Title (Filename) */}
-        {!!parsed.fileTitle && (
+        {badgePosition === 'top' && (
+          <FusionBadgeRow stream={stream} style={{ marginBottom: rawText.lines.length > 0 ? 6 : 2 }} />
+        )}
+        {rawText.lines.length > 0 && (
           <ExpandableText
-            text={parsed.fileTitle}
-            style={{ color: colors.subText, fontSize: 11, marginBottom: 4, lineHeight: 16 }}
-            maxLines={3}
+            text={rawText.lines.join('\n')}
+            style={{ color: colors.subText, fontSize: 11, lineHeight: 17 }}
+            maxLines={6}
             moreColor={colors.accentSoft}
           />
         )}
-
-        {/* Spec line: source • codec • audio • HDR */}
-        {!!parsed.specLine && (
-          <Text style={{ color: colors.accentSoft, fontSize: 11, fontWeight: '600', marginBottom: 4 }} numberOfLines={1}>
-            {parsed.specLine}
-          </Text>
-        )}
-
-        {/* Tag pills */}
-        <View style={{ flexDirection: 'row', gap: 4, flexWrap: 'wrap' }}>
-          {parsed.size && showSizeBadges && (
-            <View style={{ paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: glass ? (isLightAppearance ? 'rgba(8,10,14,0.14)' : 'rgba(255,255,255,0.06)') : colors.cardBg, borderWidth: 1, borderColor: glass ? (isLightAppearance ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.10)') : colors.border }}>
-              <Text style={{ color: colors.mutedText, fontSize: 9, fontWeight: '700' }}>💾 {parsed.size}</Text>
-            </View>
-          )}
-          {parsed.seeds != null && (
-            <View style={{ paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: glass ? (isLightAppearance ? 'rgba(8,10,14,0.14)' : 'rgba(255,255,255,0.06)') : colors.cardBg, borderWidth: 1, borderColor: glass ? (isLightAppearance ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.10)') : colors.border }}>
-              <Text style={{ color: colors.mutedText, fontSize: 9, fontWeight: '700' }}>👤 {formatSeeds(parsed.seeds)}</Text>
-            </View>
-          )}
-          {isCached && stream.cachedBy.map(provider => (
-            <View key={provider} style={{ paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: isMonochromeDark ? colors.cardBg : colors.toggleOn + '22', borderWidth: isMonochromeDark ? 1 : 0, borderColor: isMonochromeDark ? colors.border : 'transparent' }}>
-              <Text style={{ color: isMonochromeDark ? colors.textPrimary : colors.toggleOn, fontSize: 9, fontWeight: '700' }}>⚡ {provider}</Text>
-            </View>
-          ))}
-          {stream.url && !isCached && (
-            <View style={{ paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: glass ? (isLightAppearance ? 'rgba(8,10,14,0.14)' : 'rgba(255,255,255,0.06)') : colors.cardBg, borderWidth: 1, borderColor: glass ? (isLightAppearance ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.10)') : colors.border }}>
-              <Text style={{ color: colors.mutedText, fontSize: 9, fontWeight: '700' }}>DIRECT</Text>
-            </View>
-          )}
-        </View>
-
         {badgePosition === 'bottom' && (
-          <FusionBadgeRow stream={stream} style={{ marginTop: 4 }} />
+          <FusionBadgeRow stream={stream} style={{ marginTop: rawText.lines.length > 0 ? 6 : 2 }} />
         )}
       </View>
 

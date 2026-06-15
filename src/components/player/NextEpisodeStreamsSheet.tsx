@@ -13,11 +13,14 @@ import { useTheme } from '../../context/ThemeContext';
 import { useAddons, AddonStream } from '../../context/AddonContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { useStreamSelectionSettings } from '../../context/StreamSelectionContext';
+import { useFusionBadges } from '../../context/FusionBadgeContext';
 import { parseStream } from '../../utils/streamParser';
 import { sortStreams } from '../../utils/streamSelection';
 import { buildAuthHeaders } from '../../utils/authHeaders';
 import { getMobileClientIdentityHeaders } from '../../utils/clientIdentity';
 import { NextEpisodeTarget } from '../../hooks/useSkipSegments';
+import { getRawStreamText } from '../../utils/rawStreamText';
+import { FusionBadgeRow } from '../FusionBadgeRow';
 
 const AUTO_PLAY_SECONDS = 5;
 
@@ -249,7 +252,7 @@ export function NextEpisodeStreamsSheet({
   const epCode = target
     ? `S${String(target.season).padStart(2, '0')}E${String(target.episodeNumber).padStart(2, '0')}`
     : '';
-  const epLine = target?.episodeName ? `${epCode} · ${target.episodeName}` : epCode;
+  const epLine = target?.episodeName ? `${epCode} - ${target.episodeName}` : epCode;
   const backdropUri = target?.episodeStill ?? target?.showBackdrop ?? target?.showPoster ?? null;
   const panelBg = isLight ? '#f0f2f8' : '#0e1117';
   const borderColor = isLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.08)';
@@ -304,7 +307,7 @@ export function NextEpisodeStreamsSheet({
             <View style={styles.emptyWrap}>
               <ActivityIndicator color={colors.accent} />
               <Text style={[styles.emptyText, { color: isLight ? '#6b7280' : '#9ca3af' }]}>
-                {t('streams_loading') ?? 'Finding streams…'}
+                {t('streams_loading') ?? 'Finding streams...'}
               </Text>
             </View>
           )}
@@ -329,7 +332,7 @@ export function NextEpisodeStreamsSheet({
             <View style={styles.pendingRow}>
               <ActivityIndicator size="small" color={colors.mutedText} />
               <Text style={[styles.pendingText, { color: isLight ? '#9ca3af' : '#6b7280' }]}>
-                {t('streams_loading') ?? 'Loading more…'}
+                {t('streams_loading') ?? 'Loading more...'}
               </Text>
             </View>
           )}
@@ -360,19 +363,9 @@ function StreamRow({
   isLight: boolean;
   onPress: () => void;
 }) {
-  const parsed = parseStream(stream);
+  const rawText = getRawStreamText(stream);
   const isCached = stream.cachedBy.length > 0;
-
-  const qualityColors: Record<string, { bg: string; text: string }> = {
-    '4K': { bg: '#FFD70022', text: '#FFD700' },
-    '1080p': { bg: '#00e67622', text: '#00e676' },
-    '720p': { bg: '#29b6f622', text: '#29b6f6' },
-    '480p': { bg: '#78909c22', text: '#78909c' },
-  };
-  const qColor = parsed.quality
-    ? (qualityColors[parsed.quality] ?? { bg: '#a89ff822', text: '#a89ff8' })
-    : { bg: isLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.08)', text: isLight ? '#6b7280' : '#9ca3af' };
-
+  const { badgePosition } = useFusionBadges();
   const rowBg = isLight ? 'rgba(255,255,255,0.72)' : 'rgba(255,255,255,0.06)';
   const rowBorder = isCached
     ? (isLight ? 'rgba(0,188,212,0.3)' : 'rgba(0,230,118,0.25)')
@@ -384,35 +377,24 @@ function StreamRow({
       activeOpacity={0.75}
       style={[styles.streamRow, { backgroundColor: rowBg, borderColor: rowBorder }]}
     >
-      <View style={[styles.qualityBadge, { backgroundColor: qColor.bg }]}>
-        <Text style={[styles.qualityText, { color: qColor.text }]}>{parsed.quality ?? '?'}</Text>
-      </View>
-
       <View style={styles.streamMeta}>
-        <Text style={[styles.streamProvider, { color: isLight ? '#111827' : '#f3f4f6' }]} numberOfLines={1}>
-          {parsed.providerLine}
+        <Text style={[styles.streamProvider, { color: isLight ? '#111827' : '#f3f4f6' }]}>
+          {rawText.headline || stream.addonName || stream.addonId}
         </Text>
-        {!!parsed.specLine && (
-          <Text style={[styles.streamSpec, { color: colors.accentSoft }]} numberOfLines={1}>
-            {parsed.specLine}
+        {badgePosition === 'top' && (
+          <FusionBadgeRow stream={stream} style={{ marginBottom: rawText.lines.length > 0 ? 6 : 2 }} />
+        )}
+        {rawText.lines.length > 0 && (
+          <Text style={[styles.streamBody, { color: isLight ? '#4b5563' : '#cbd5e1' }]}>
+            {rawText.lines.join('\n')}
           </Text>
         )}
-        <View style={styles.tags}>
-          {!!parsed.size && (
-            <Tag isLight={isLight} label={`💾 ${parsed.size}`} />
-          )}
-          {parsed.seeds != null && (
-            <Tag isLight={isLight} label={`👤 ${parsed.seeds}`} />
-          )}
-          {isCached && stream.cachedBy.map((provider) => (
-            <View key={provider} style={[styles.tag, { backgroundColor: 'rgba(0,230,118,0.15)', borderColor: 'transparent' }]}>
-              <Text style={[styles.tagText, { color: '#00e676' }]}>⚡ {provider}</Text>
-            </View>
-          ))}
-          {stream.url && !isCached && (
-            <Tag isLight={isLight} label="DIRECT" />
-          )}
-        </View>
+        {badgePosition === 'bottom' && (
+          <FusionBadgeRow stream={stream} style={{ marginTop: rawText.lines.length > 0 ? 6 : 2 }} />
+        )}
+        <Text style={[styles.streamFooter, { color: isLight ? '#6b7280' : '#94a3b8' }]} numberOfLines={1}>
+          {stream.addonName ?? stream.addonId}
+        </Text>
       </View>
 
       <Ionicons
@@ -421,22 +403,6 @@ function StreamRow({
         color={isCached ? '#00e676' : colors.accentSoft}
       />
     </TouchableOpacity>
-  );
-}
-
-function Tag({ isLight, label }: { isLight: boolean; label: string }) {
-  return (
-    <View
-      style={[
-        styles.tag,
-        {
-          backgroundColor: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)',
-          borderColor: isLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.1)',
-        },
-      ]}
-    >
-      <Text style={[styles.tagText, { color: isLight ? '#6b7280' : '#9ca3af' }]}>{label}</Text>
-    </View>
   );
 }
 
@@ -537,7 +503,7 @@ const styles = StyleSheet.create({
   },
   streamRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 10,
     padding: 12,
     borderRadius: 12,
@@ -545,43 +511,21 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     overflow: 'hidden',
   },
-  qualityBadge: {
-    paddingHorizontal: 7,
-    paddingVertical: 5,
-    borderRadius: 6,
-    minWidth: 46,
-    alignItems: 'center',
-  },
-  qualityText: {
-    fontSize: 10,
-    fontWeight: '900',
-  },
   streamMeta: {
     flex: 1,
   },
   streamProvider: {
     fontSize: 13,
     fontWeight: '700',
-    marginBottom: 2,
-  },
-  streamSpec: {
-    fontSize: 11,
-    fontWeight: '600',
     marginBottom: 4,
   },
-  tags: {
-    flexDirection: 'row',
-    gap: 4,
-    flexWrap: 'wrap',
+  streamBody: {
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 4,
   },
-  tag: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    borderWidth: 1,
-  },
-  tagText: {
-    fontSize: 9,
-    fontWeight: '700',
+  streamFooter: {
+    fontSize: 11,
+    fontWeight: '600',
   },
 });

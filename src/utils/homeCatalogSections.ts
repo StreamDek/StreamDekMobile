@@ -6,6 +6,7 @@ export type HomeCatalogSection = {
   endpoint: string;
   enabled: boolean;
   source?: 'builtin' | 'addon';
+  provider?: 'cinemeta' | 'tmdb';
   contentType?: 'movie' | 'tv' | 'sport' | 'mixed';
 };
 
@@ -71,7 +72,7 @@ export function getAddonConfigureUrl(addon: InstalledAddon): string | null {
 }
 
 export function buildDefaultHomeSections(
-  metadataProvider: 'cinemeta' | 'tmdb',
+  enabledProviders: Array<'cinemeta' | 'tmdb'>,
   currentYear: number,
   labels: {
     networks: string;
@@ -85,28 +86,44 @@ export function buildDefaultHomeSections(
     trendingMovies: string;
     trendingTv: string;
   },
+  preferredProvider?: 'cinemeta' | 'tmdb',
 ): HomeCatalogSection[] {
-  if (metadataProvider === 'cinemeta') {
-    return [
-      { id: 'networks', title: labels.networks, endpoint: '/tmdb/networks', enabled: true, source: 'builtin', contentType: 'mixed' },
-      { id: 'featured_movie', title: labels.featuredMovies, endpoint: '/cinemeta/catalog/movie/imdbRating', enabled: true, source: 'builtin', contentType: 'movie' },
-      { id: 'featured_tv', title: labels.featuredSeries, endpoint: '/cinemeta/catalog/series/imdbRating', enabled: true, source: 'builtin', contentType: 'tv' },
-      { id: 'popular_movie', title: labels.popularMovies, endpoint: '/cinemeta/catalog/movie/top', enabled: true, source: 'builtin', contentType: 'movie' },
-      { id: 'popular_tv', title: labels.popularTv, endpoint: '/cinemeta/catalog/series/top', enabled: true, source: 'builtin', contentType: 'tv' },
-      { id: 'documentaries', title: labels.documentaries, endpoint: '/cinemeta/catalog/movie/top?genre=Documentary', enabled: false, source: 'builtin', contentType: 'movie' },
-      { id: 'new_movie', title: labels.newMovies, endpoint: `/cinemeta/catalog/movie/year/${currentYear}`, enabled: false, source: 'builtin', contentType: 'movie' },
-      { id: 'new_tv', title: labels.newSeries, endpoint: `/cinemeta/catalog/series/year/${currentYear}`, enabled: false, source: 'builtin', contentType: 'tv' },
-    ];
-  }
+  const withSdPrefix = (title: string) => `SD - ${title}`;
+  const dedupedProviders = Array.from(new Set(enabledProviders));
+  const orderedProviders = preferredProvider && dedupedProviders.includes(preferredProvider)
+    ? [preferredProvider, ...dedupedProviders.filter(provider => provider !== preferredProvider)]
+    : dedupedProviders;
 
-  return [
-    { id: 'networks', title: labels.networks, endpoint: '/tmdb/networks', enabled: true, source: 'builtin', contentType: 'mixed' },
-    { id: 'trending_movie', title: labels.trendingMovies, endpoint: '/tmdb/trending/movie', enabled: true, source: 'builtin', contentType: 'movie' },
-    { id: 'trending_tv', title: labels.trendingTv, endpoint: '/tmdb/trending/tv', enabled: true, source: 'builtin', contentType: 'tv' },
-    { id: 'documentaries', title: labels.documentaries, endpoint: '/tmdb/discover?type=movie&genre_id=99&sort_by=popularity.desc', enabled: false, source: 'builtin', contentType: 'movie' },
-    { id: 'popular_movie', title: labels.popularMovies, endpoint: '/tmdb/popular/movie', enabled: false, source: 'builtin', contentType: 'movie' },
-    { id: 'popular_tv', title: labels.popularTv, endpoint: '/tmdb/popular/tv', enabled: false, source: 'builtin', contentType: 'tv' },
-  ];
+  return orderedProviders.flatMap<HomeCatalogSection>(provider => {
+    const withProvider = (id: string, section: Omit<HomeCatalogSection, 'id' | 'source' | 'provider'>): HomeCatalogSection => ({
+      ...section,
+      id: `${provider}:${id}`,
+      source: 'builtin',
+      provider,
+    });
+
+    if (provider === 'cinemeta') {
+      return [
+        withProvider('networks', { title: withSdPrefix(labels.networks), endpoint: '/tmdb/networks', enabled: true, contentType: 'mixed' }),
+        withProvider('featured_movie', { title: withSdPrefix(labels.featuredMovies), endpoint: '/cinemeta/catalog/movie/imdbRating', enabled: true, contentType: 'movie' }),
+        withProvider('featured_tv', { title: withSdPrefix(labels.featuredSeries), endpoint: '/cinemeta/catalog/series/imdbRating', enabled: true, contentType: 'tv' }),
+        withProvider('popular_movie', { title: withSdPrefix(labels.popularMovies), endpoint: '/cinemeta/catalog/movie/top', enabled: true, contentType: 'movie' }),
+        withProvider('popular_tv', { title: withSdPrefix(labels.popularTv), endpoint: '/cinemeta/catalog/series/top', enabled: true, contentType: 'tv' }),
+        withProvider('documentaries', { title: withSdPrefix(labels.documentaries), endpoint: '/cinemeta/catalog/movie/top?genre=Documentary', enabled: false, contentType: 'movie' }),
+        withProvider('new_movie', { title: withSdPrefix(labels.newMovies), endpoint: `/cinemeta/catalog/movie/year/${currentYear}`, enabled: false, contentType: 'movie' }),
+        withProvider('new_tv', { title: withSdPrefix(labels.newSeries), endpoint: `/cinemeta/catalog/series/year/${currentYear}`, enabled: false, contentType: 'tv' }),
+      ];
+    }
+
+    return [
+      withProvider('networks', { title: withSdPrefix(labels.networks), endpoint: '/tmdb/networks', enabled: true, contentType: 'mixed' }),
+      withProvider('trending_movie', { title: withSdPrefix(labels.trendingMovies), endpoint: '/tmdb/trending/movie', enabled: true, contentType: 'movie' }),
+      withProvider('trending_tv', { title: withSdPrefix(labels.trendingTv), endpoint: '/tmdb/trending/tv', enabled: true, contentType: 'tv' }),
+      withProvider('documentaries', { title: withSdPrefix(labels.documentaries), endpoint: '/tmdb/discover?type=movie&genre_id=99&sort_by=popularity.desc', enabled: false, contentType: 'movie' }),
+      withProvider('popular_movie', { title: withSdPrefix(labels.popularMovies), endpoint: '/tmdb/popular/movie', enabled: false, contentType: 'movie' }),
+      withProvider('popular_tv', { title: withSdPrefix(labels.popularTv), endpoint: '/tmdb/popular/tv', enabled: false, contentType: 'tv' }),
+    ];
+  });
 }
 
 const MAX_SECTION_TITLE_LENGTH = 30;

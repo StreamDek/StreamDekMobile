@@ -330,14 +330,22 @@ export const BrowseScreen = ({ navigation, route }: any) => {
       const streamRequestType = nativeType === 'tv' ? 'live-tv' : nativeType;
       const streams = await fetchStreams(streamRequestType, String(item.id));
       if (!streams.length) return;
+      const immediateStream = streams.find(stream => typeof stream.url === 'string' && stream.url.length > 0) ?? null;
+      const immediateUrl = immediateStream?.url;
       navigation.navigate(expoGoRuntime ? 'Player' : 'MpvPlayer', {
         movieId: String(item.id),
+        streamUrl: immediateUrl,
+        activeStream: immediateStream ?? undefined,
+        preferredSourceIndex: immediateStream ? streams.findIndex(stream => stream === immediateStream) : undefined,
+        preferredSourceIdentity: immediateStream
+          ? (immediateStream.infoHash?.toLowerCase() ?? immediateStream.url ?? `${immediateStream.addonId}:${immediateStream.behaviorHints?.filename ?? immediateStream.title ?? immediateStream.name ?? ''}`.trim())
+          : undefined,
         type: 'movie',
         title: item.title,
         synopsis: item.description ?? undefined,
         backdrop: item.backdrop ?? item.poster ?? undefined,
         poster: item.poster ?? undefined,
-        resolveOnMount: true,
+        resolveOnMount: !immediateUrl,
         sourceStreams: streams,
         resolverMovieId: String(item.id),
         isLive: true,

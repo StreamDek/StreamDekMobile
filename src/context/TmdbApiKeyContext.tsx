@@ -10,6 +10,7 @@ interface TmdbKeyConfig {
   enabled: boolean;
   apiKey: string;
   provider: MetadataProvider;
+  homeCatalogProviders?: MetadataProvider[];
 }
 
 export type MetadataProvider = 'cinemeta' | 'tmdb';
@@ -18,22 +19,41 @@ interface TmdbApiKeyContextValue {
   tmdbKeyEnabled: boolean;
   tmdbApiKey: string;
   metadataProvider: MetadataProvider;
+  homeCatalogProviders: MetadataProvider[];
+  defaultCatalogsEnabled: boolean;
   setTmdbApiKey: (key: string) => Promise<void>;
   setTmdbKeyEnabled: (enabled: boolean) => Promise<void>;
   setMetadataProvider: (provider: MetadataProvider) => Promise<void>;
+  setDefaultCatalogsEnabled: (enabled: boolean) => Promise<void>;
+  setHomeCatalogProviderEnabled: (provider: MetadataProvider, enabled: boolean) => Promise<void>;
 }
 
 const TmdbApiKeyContext = createContext<TmdbApiKeyContextValue>({
   tmdbKeyEnabled: false,
   tmdbApiKey: '',
   metadataProvider: 'cinemeta',
+  homeCatalogProviders: ['cinemeta'],
+  defaultCatalogsEnabled: true,
   setTmdbApiKey: async () => {},
   setTmdbKeyEnabled: async () => {},
   setMetadataProvider: async () => {},
+  setDefaultCatalogsEnabled: async () => {},
+  setHomeCatalogProviderEnabled: async () => {},
 });
 
 function normalizeProvider(value: unknown): MetadataProvider {
   return value === 'tmdb' ? 'tmdb' : 'cinemeta';
+}
+
+function normalizeHomeCatalogProviders(value: unknown, fallbackProvider: MetadataProvider): MetadataProvider[] {
+  if (Array.isArray(value) && value.length === 0) return [];
+  const providers = Array.isArray(value)
+    ? Array.from(new Set(value.map(normalizeProvider)))
+    : [fallbackProvider];
+  const selected = providers.includes(fallbackProvider)
+    ? fallbackProvider
+    : (providers[0] ?? fallbackProvider);
+  return [selected];
 }
 
 function readTmdbConfig(preferences: any): TmdbKeyConfig | null {
@@ -68,6 +88,13 @@ function readTmdbConfig(preferences: any): TmdbKeyConfig | null {
     enabled: Boolean(config.enabled),
     apiKey: typeof config.apiKey === 'string' ? config.apiKey : '',
     provider,
+    homeCatalogProviders: normalizeHomeCatalogProviders(
+      preferences?.integrations?.metadata?.homeCatalogProviders
+      ?? preferences?.integrations?.homeCatalogProviders
+      ?? preferences?.homeCatalogProviders
+      ?? config?.homeCatalogProviders,
+      provider,
+    ),
   };
 }
 
@@ -83,6 +110,7 @@ export function TmdbApiKeyProvider({ children }: { children: React.ReactNode }) 
   const [tmdbKeyEnabled, setEnabledState] = useState(false);
   const [tmdbApiKey, setKeyState] = useState('');
   const [metadataProvider, setMetadataProviderState] = useState<MetadataProvider>('cinemeta');
+  const [homeCatalogProviders, setHomeCatalogProvidersState] = useState<MetadataProvider[]>(['cinemeta']);
   const loadedUidRef = useRef<string | null>(null);
   const accountPreferencesRef = useRef<any | null>(null);
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -106,6 +134,7 @@ export function TmdbApiKeyProvider({ children }: { children: React.ReactNode }) 
           setEnabledState(remoteConfig.enabled);
           setKeyState(remoteConfig.apiKey);
           setMetadataProviderState(remoteConfig.provider);
+          setHomeCatalogProvidersState(remoteConfig.homeCatalogProviders ?? [remoteConfig.provider]);
           __setTmdbActiveKey(getActiveTmdbKey(remoteConfig));
           await Storage.setItem(storageKey(uid), JSON.stringify(remoteConfig));
           return;
@@ -121,6 +150,7 @@ export function TmdbApiKeyProvider({ children }: { children: React.ReactNode }) 
         setEnabledState(false);
         setKeyState('');
         setMetadataProviderState('cinemeta');
+        setHomeCatalogProvidersState(['cinemeta']);
         __setTmdbActiveKey(null);
         return;
       }
@@ -132,9 +162,11 @@ export function TmdbApiKeyProvider({ children }: { children: React.ReactNode }) 
         const provider = normalizeProvider(
           config.provider ?? ((enabled || key.trim().length > 0) ? 'tmdb' : 'cinemeta'),
         );
+        const nextHomeCatalogProviders = normalizeHomeCatalogProviders(config.homeCatalogProviders, provider);
         setEnabledState(enabled);
         setKeyState(key);
         setMetadataProviderState(provider);
+        setHomeCatalogProvidersState(nextHomeCatalogProviders);
         __setTmdbActiveKey(getActiveTmdbKey({ enabled, apiKey: key, provider }));
         if (user) {
           const currentPreferences = accountPreferencesRef.current ?? {};
@@ -145,15 +177,19 @@ export function TmdbApiKeyProvider({ children }: { children: React.ReactNode }) 
               metadata: {
                 ...(currentPreferences?.integrations?.metadata ?? {}),
                 provider,
+                homeCatalogProviders: nextHomeCatalogProviders,
               },
+              homeCatalogProviders: nextHomeCatalogProviders,
               metadataProvider: provider,
               tmdb: {
                 enabled,
                 apiKey: key,
                 provider,
+                homeCatalogProviders: nextHomeCatalogProviders,
               },
             },
             metadataProvider: provider,
+            homeCatalogProviders: nextHomeCatalogProviders,
           };
           accountPreferencesRef.current = nextPreferences;
           await patchAccountPreferences(user, nextPreferences);
@@ -162,6 +198,7 @@ export function TmdbApiKeyProvider({ children }: { children: React.ReactNode }) 
         setEnabledState(false);
         setKeyState('');
         setMetadataProviderState('cinemeta');
+        setHomeCatalogProvidersState(['cinemeta']);
         __setTmdbActiveKey(null);
       }
     })();
@@ -196,15 +233,19 @@ export function TmdbApiKeyProvider({ children }: { children: React.ReactNode }) 
             metadata: {
               ...(currentPreferences?.integrations?.metadata ?? {}),
               provider: config.provider,
+              homeCatalogProviders: config.homeCatalogProviders ?? [config.provider],
             },
+            homeCatalogProviders: config.homeCatalogProviders ?? [config.provider],
             metadataProvider: config.provider,
             tmdb: {
               enabled: config.enabled,
               apiKey: config.apiKey,
               provider: config.provider,
+              homeCatalogProviders: config.homeCatalogProviders ?? [config.provider],
             },
           },
           metadataProvider: config.provider,
+          homeCatalogProviders: config.homeCatalogProviders ?? [config.provider],
         };
 
         accountPreferencesRef.current = nextPreferences;
@@ -217,13 +258,13 @@ export function TmdbApiKeyProvider({ children }: { children: React.ReactNode }) 
 
   const setTmdbApiKey = useCallback(async (key: string) => {
     setKeyState(key);
-    persist({ enabled: tmdbKeyEnabled, apiKey: key, provider: metadataProvider });
-  }, [metadataProvider, tmdbKeyEnabled, persist]);
+    persist({ enabled: tmdbKeyEnabled, apiKey: key, provider: metadataProvider, homeCatalogProviders });
+  }, [homeCatalogProviders, metadataProvider, tmdbKeyEnabled, persist]);
 
   const setTmdbKeyEnabled = useCallback(async (enabled: boolean) => {
     setEnabledState(enabled);
-    persist({ enabled, apiKey: tmdbApiKey, provider: metadataProvider });
-  }, [metadataProvider, tmdbApiKey, persist]);
+    persist({ enabled, apiKey: tmdbApiKey, provider: metadataProvider, homeCatalogProviders });
+  }, [homeCatalogProviders, metadataProvider, tmdbApiKey, persist]);
 
   const setMetadataProvider = useCallback(async (provider: MetadataProvider) => {
     const nextEnabled = provider === 'tmdb' ? tmdbKeyEnabled : false;
@@ -231,8 +272,26 @@ export function TmdbApiKeyProvider({ children }: { children: React.ReactNode }) 
     if (provider === 'cinemeta') {
       setEnabledState(false);
     }
-    persist({ enabled: nextEnabled, apiKey: tmdbApiKey, provider });
-  }, [tmdbApiKey, tmdbKeyEnabled, persist]);
+    const nextHomeCatalogProviders = homeCatalogProviders.length > 0 ? [provider] : [];
+    setHomeCatalogProvidersState(nextHomeCatalogProviders);
+    persist({ enabled: nextEnabled, apiKey: tmdbApiKey, provider, homeCatalogProviders: nextHomeCatalogProviders });
+  }, [homeCatalogProviders, tmdbApiKey, tmdbKeyEnabled, persist]);
+
+  const setDefaultCatalogsEnabled = useCallback(async (enabled: boolean) => {
+    const nextHomeCatalogProviders: MetadataProvider[] = enabled
+      ? [homeCatalogProviders[0] ?? metadataProvider ?? 'cinemeta']
+      : [];
+    setHomeCatalogProvidersState(nextHomeCatalogProviders);
+    persist({ enabled: tmdbKeyEnabled, apiKey: tmdbApiKey, provider: metadataProvider, homeCatalogProviders: nextHomeCatalogProviders });
+  }, [homeCatalogProviders, metadataProvider, persist, tmdbApiKey, tmdbKeyEnabled]);
+
+  const setHomeCatalogProviderEnabled = useCallback(async (provider: MetadataProvider, enabled: boolean) => {
+    const nextProviders: MetadataProvider[] = enabled
+      ? [provider]
+      : [provider === 'tmdb' ? 'cinemeta' : 'tmdb'];
+    setHomeCatalogProvidersState(nextProviders);
+    persist({ enabled: tmdbKeyEnabled, apiKey: tmdbApiKey, provider: metadataProvider, homeCatalogProviders: nextProviders });
+  }, [metadataProvider, persist, tmdbApiKey, tmdbKeyEnabled]);
 
   return (
     <TmdbApiKeyContext.Provider
@@ -240,9 +299,13 @@ export function TmdbApiKeyProvider({ children }: { children: React.ReactNode }) 
         tmdbKeyEnabled,
         tmdbApiKey,
         metadataProvider,
+        homeCatalogProviders,
+        defaultCatalogsEnabled: homeCatalogProviders.length > 0,
         setTmdbApiKey,
         setTmdbKeyEnabled,
         setMetadataProvider,
+        setDefaultCatalogsEnabled,
+        setHomeCatalogProviderEnabled,
       }}
     >
       {children}

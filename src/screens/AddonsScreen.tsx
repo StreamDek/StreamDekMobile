@@ -7,6 +7,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
+import { Image } from 'expo-image';
 import { useTheme, ThemeColors } from '../context/ThemeContext';
 import { useAddons, InstalledAddon, UltraManifestMeta } from '../context/AddonContext';
 import { useDebrid, DEBRID_PROVIDERS, DebridProviderName, DebridService } from '../context/DebridContext';
@@ -14,7 +15,7 @@ import { useLanguage, TranslationKey } from '../context/LanguageContext';
 import { BOTTOM_NAV_HEIGHT } from '../components/BottomNavBar';
 import { AppleToggle } from '../components/AppleToggle';
 import { ConfirmSheet } from '../components/ConfirmSheet';
-import { getAddonConfigureUrl } from '../utils/homeCatalogSections';
+import { getAddonConfigureUrl, resolveAddonCatalogBaseUrl } from '../utils/homeCatalogSections';
 
 
 type Tab = 'addons' | 'debrid';
@@ -54,6 +55,8 @@ const makeStyles = (c: ThemeColors) => {
   addonName:    { color: c.textPrimary, fontSize: 14, fontWeight: '800', marginBottom: 2 },
   addonVersion: { color: c.mutedText, fontSize: 11, marginBottom: 4 },
   addonDesc:    { color: c.subText, fontSize: 12, lineHeight: 17 },
+  addonUrl:     { color: c.mutedText, fontSize: 11, lineHeight: 16, marginTop: 6 },
+  addonLogo:    { width: 28, height: 28, borderRadius: 7 },
   addonBottom:  { flexDirection: 'row', gap: 6, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' },
   tag: {
     paddingHorizontal: 8, paddingVertical: 3, borderRadius: 20,
@@ -780,18 +783,39 @@ function AddonCard({
   const resources = addon.manifest.resources ?? [];
   const types     = addon.manifest.types ?? [];
   const configUrl = getAddonConfigureUrl(addon);
+  const logoUrl = React.useMemo(() => {
+    const rawLogo = addon.manifest.logo?.trim();
+    if (!rawLogo) return null;
+    if (/^https?:\/\//i.test(rawLogo)) return rawLogo;
+    if (rawLogo.startsWith('//')) return `https:${rawLogo}`;
+    try {
+      const base = resolveAddonCatalogBaseUrl(addon);
+      if (!base) return null;
+      return new URL(rawLogo, `${base}/`).toString();
+    } catch {
+      return null;
+    }
+  }, [addon]);
+  const addonUrl = addon.transportUrl ?? addon.manifest.transportUrl ?? addon.manifest.manifestUrl ?? addon.manifestUrl ?? addon.baseUrl ?? addon.manifest.baseUrl ?? addon.url ?? addon.manifest.url ?? null;
 
   return (
     <View style={styles.addonCard}>
       <View style={styles.addonTop}>
         <View style={styles.addonIconWrap}>
-          <Ionicons name="extension-puzzle-outline" size={22} color={colors.accentSoft} />
+          {logoUrl ? (
+            <Image source={{ uri: logoUrl }} style={styles.addonLogo} contentFit="contain" transition={120} cachePolicy="memory-disk" />
+          ) : (
+            <Ionicons name="extension-puzzle-outline" size={22} color={colors.accentSoft} />
+          )}
         </View>
         <View style={styles.addonInfo}>
           <Text style={styles.addonName}>{addon.manifest.name}</Text>
           <Text style={styles.addonVersion}>v{addon.manifest.version}</Text>
           {addon.manifest.description ? (
             <Text style={styles.addonDesc} numberOfLines={2}>{addon.manifest.description}</Text>
+          ) : null}
+          {addonUrl ? (
+            <Text style={styles.addonUrl} numberOfLines={1}>{addonUrl}</Text>
           ) : null}
         </View>
         <View style={styles.reorderBtns}>

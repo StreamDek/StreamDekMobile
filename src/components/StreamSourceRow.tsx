@@ -6,7 +6,7 @@ import { ThemeColors } from '../context/ThemeContext';
 import { useDisplaySettings } from '../context/DisplaySettingsContext';
 import { useFusionBadges } from '../context/FusionBadgeContext';
 import { FusionBadgeRow } from './FusionBadgeRow';
-import { formatSeeds, parseStream } from '../utils/streamParser';
+import { getRawStreamText } from '../utils/rawStreamText';
 
 interface StreamSourceRowProps {
   stream: AddonStream;
@@ -20,11 +20,11 @@ interface StreamSourceRowProps {
 // Memoized: stream rows render in long lists and parseStream runs several
 // regexes — neither should repeat when unrelated state changes upstream.
 export const StreamSourceRow = React.memo(function StreamSourceRow({ stream, colors, onPress, active = false, style, sourceLabel }: StreamSourceRowProps) {
-  const parsed = React.useMemo(() => parseStream(stream), [stream]);
+  const rawText = React.useMemo(() => getRawStreamText(stream), [stream]);
   const isCached = stream.cachedBy.length > 0;
   const isLightAppearance = colors.bg === '#f4f6fb';
   const { vividAmbientEnabled } = useDisplaySettings();
-  const { badgePosition, showSizeBadges } = useFusionBadges();
+  const { badgePosition } = useFusionBadges();
 
   return (
     <TouchableOpacity
@@ -46,51 +46,22 @@ export const StreamSourceRow = React.memo(function StreamSourceRow({ stream, col
           </Text>
         )}
 
+        {!!rawText.headline && (
+          <Text style={[styles.providerLine, { color: colors.textPrimary }]}>{rawText.headline}</Text>
+        )}
+
         {badgePosition === 'top' && (
-          <FusionBadgeRow stream={stream} style={{ marginBottom: 4 }} />
+          <FusionBadgeRow stream={stream} style={{ marginBottom: rawText.lines.length > 0 ? 6 : 2 }} />
         )}
 
-        <Text style={[styles.providerLine, { color: colors.textPrimary }]} numberOfLines={1}>
-          {parsed.providerLine}
-        </Text>
-
-        {!!parsed.fileTitle && (
-          <Text style={[styles.fileTitle, { color: colors.textSecondary }]} numberOfLines={2}>
-            {parsed.fileTitle}
+        {rawText.lines.length > 0 && (
+          <Text style={[styles.fileTitle, { color: colors.textSecondary }]}>
+            {rawText.lines.join('\n')}
           </Text>
         )}
-
-        {!!parsed.specLine && (
-          <Text style={[styles.specLine, { color: colors.accentSoft }]} numberOfLines={1}>
-            {parsed.specLine}
-          </Text>
-        )}
-
-        <View style={styles.badges}>
-          {parsed.size && showSizeBadges && (
-            <View style={[styles.badge, { backgroundColor: colors.cardBg, borderColor: colors.border }]}>
-              <Text style={[styles.badgeText, { color: colors.textSecondary }]}>SIZE {parsed.size}</Text>
-            </View>
-          )}
-          {parsed.seeds != null && (
-            <View style={[styles.badge, { backgroundColor: colors.cardBg, borderColor: colors.border }]}>
-              <Text style={[styles.badgeText, { color: colors.textSecondary }]}>SEEDS {formatSeeds(parsed.seeds)}</Text>
-            </View>
-          )}
-          {isCached && stream.cachedBy.map(provider => (
-            <View key={provider} style={[styles.badge, { backgroundColor: colors.toggleOn + '22', borderColor: 'transparent' }]}>
-              <Text style={[styles.badgeText, { color: colors.toggleOn }]}>CACHED {provider}</Text>
-            </View>
-          ))}
-          {stream.url && !isCached && (
-            <View style={[styles.badge, { backgroundColor: colors.cardBg, borderColor: colors.border }]}>
-              <Text style={[styles.badgeText, { color: colors.textSecondary }]}>DIRECT</Text>
-            </View>
-          )}
-        </View>
 
         {badgePosition === 'bottom' && (
-          <FusionBadgeRow stream={stream} style={{ marginTop: 4 }} />
+          <FusionBadgeRow stream={stream} style={{ marginTop: rawText.lines.length > 0 ? 6 : 2 }} />
         )}
       </View>
 
@@ -135,35 +106,6 @@ const styles = StyleSheet.create({
   },
   fileTitle: {
     fontSize: 11,
-    marginBottom: 4,
-  },
-  specLine: {
-    fontSize: 11,
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  badges: {
-    flexDirection: 'row',
-    gap: 4,
-    flexWrap: 'wrap',
-  },
-  badge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    borderWidth: 1,
-  },
-  badgeText: {
-    fontSize: 9,
-    fontWeight: '700',
-  },
-  cachedBadge: {
-    backgroundColor: '#00e67622',
-    borderColor: 'transparent',
-  },
-  cachedText: {
-    color: '#00e676',
-    fontSize: 9,
-    fontWeight: '700',
+    lineHeight: 16,
   },
 });

@@ -9,7 +9,7 @@ import { useTheme } from '../../context/ThemeContext';
 import { AddonStream } from '../../context/AddonContext';
 import { useFusionBadges } from '../../context/FusionBadgeContext';
 import { FusionBadgeRow } from '../FusionBadgeRow';
-import { parseStream, formatSeeds } from '../../utils/streamParser';
+import { getRawStreamText } from '../../utils/rawStreamText';
 
 export interface InPlayerSourcesSheetProps {
   visible: boolean;
@@ -38,9 +38,8 @@ function SourceCard({
   isActive: boolean;
   onPress: () => void;
 }) {
-  const parsed = parseStream(stream);
-  const isCached = stream.cachedBy.length > 0;
-  const { badgePosition, showSizeBadges } = useFusionBadges();
+  const rawText = getRawStreamText(stream);
+  const { badgePosition } = useFusionBadges();
 
   return (
     <TouchableOpacity
@@ -49,15 +48,10 @@ function SourceCard({
       style={[
         styles.sourceCard,
         isActive && styles.sourceCardActive,
-        isCached && !isActive && styles.sourceCardCached,
       ]}
     >
-      {/* Top row: addon name + cache badges */}
       <View style={styles.sourceCardTop}>
         <Text style={styles.addonName} numberOfLines={1}>
-          {isCached
-            ? stream.cachedBy.map(p => `[${p}+]`).join(' ') + ' '
-            : ''}
           {stream.addonName ?? stream.addonId}
         </Text>
         {isActive && (
@@ -68,44 +62,22 @@ function SourceCard({
         )}
       </View>
 
+      {!!rawText.headline && (
+        <Text style={styles.filename}>{rawText.headline}</Text>
+      )}
+
       {badgePosition === 'top' && (
-        <FusionBadgeRow stream={stream} style={{ marginBottom: 6 }} />
+        <FusionBadgeRow stream={stream} style={{ marginBottom: rawText.lines.length > 0 ? 6 : 2 }} />
       )}
 
-      {/* Filename */}
-      {!!parsed.fileTitle && (
-        <Text style={styles.filename} numberOfLines={2}>{parsed.fileTitle}</Text>
+      {rawText.lines.length > 0 && (
+        <Text style={styles.rawBody}>{rawText.lines.join('\n')}</Text>
       )}
-
-      {/* Spec line */}
-      {!!parsed.specLine && (
-        <Text style={styles.specLine} numberOfLines={1}>{parsed.specLine}</Text>
-      )}
-
-      {/* Meta row */}
-      <View style={styles.metaRow}>
-        {parsed.seeds != null && (
-          <Text style={styles.metaItem}>👤 {formatSeeds(parsed.seeds)}</Text>
-        )}
-        {!!stream.size && showSizeBadges && (
-          <Text style={styles.metaItem}>💾 {stream.size}</Text>
-        )}
-        {!!parsed.size && !stream.size && showSizeBadges && (
-          <Text style={styles.metaItem}>💾 {parsed.size}</Text>
-        )}
-        {isCached && stream.cachedBy.map(p => (
-          <Text key={p} style={[styles.metaItem, { color: '#00e676' }]}>⚡ {p}</Text>
-        ))}
-        {stream.url && !isCached && (
-          <Text style={styles.metaItem}>🔗 Direct</Text>
-        )}
-      </View>
 
       {badgePosition === 'bottom' && (
-        <FusionBadgeRow stream={stream} style={{ marginTop: 6 }} />
+        <FusionBadgeRow stream={stream} style={{ marginTop: rawText.lines.length > 0 ? 6 : 2 }} />
       )}
 
-      {/* Footer: addon label */}
       <Text style={styles.addonFooter}>{stream.addonName ?? stream.addonId}</Text>
     </TouchableOpacity>
   );
@@ -124,7 +96,6 @@ export function InPlayerSourcesSheet({
   const insets = useSafeAreaInsets();
   const [selectedAddon, setSelectedAddon] = useState<string>('all');
 
-  // Build unique addon tabs
   const addonTabs = useMemo(() => {
     const names = Array.from(new Set(streams.map(s => s.addonName ?? s.addonId).filter(Boolean)));
     return names;
@@ -140,7 +111,6 @@ export function InPlayerSourcesSheet({
       <View style={styles.backdrop}>
         <Pressable style={StyleSheet.absoluteFillObject} onPress={onDismiss} />
         <View style={[styles.card, { paddingBottom: insets.bottom + 8 }]}>
-          {/* Header */}
           <View style={styles.header}>
             <Text style={styles.title}>Sources</Text>
             <View style={styles.headerActions}>
@@ -156,7 +126,6 @@ export function InPlayerSourcesSheet({
             </View>
           </View>
 
-          {/* Addon filter tabs */}
           {addonTabs.length > 1 && (
             <ScrollView
               horizontal
@@ -182,7 +151,6 @@ export function InPlayerSourcesSheet({
             </ScrollView>
           )}
 
-          {/* Stream list */}
           <ScrollView
             style={styles.list}
             contentContainerStyle={{ padding: 16 }}
@@ -191,7 +159,7 @@ export function InPlayerSourcesSheet({
             {loading && streams.length === 0 && (
               <View style={styles.emptyWrap}>
                 <ActivityIndicator color={theme.colors.accent} />
-                <Text style={styles.emptyText}>Loading sources…</Text>
+                <Text style={styles.emptyText}>Loading sources...</Text>
               </View>
             )}
             {!loading && filtered.length === 0 && (
@@ -202,9 +170,7 @@ export function InPlayerSourcesSheet({
             )}
             {filtered.map((stream, idx) => {
               const key = streamKey(stream) || String(idx);
-              const isActive = !!activeStreamIdentity && (
-                streamKey(stream) === activeStreamIdentity
-              );
+              const isActive = !!activeStreamIdentity && streamKey(stream) === activeStreamIdentity;
               return (
                 <SourceCard
                   key={key}
@@ -340,14 +306,11 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.05)',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
-    gap: 5,
+    gap: 6,
   },
   sourceCardActive: {
     backgroundColor: 'rgba(255,255,255,0.1)',
     borderColor: 'rgba(255,255,255,0.28)',
-  },
-  sourceCardCached: {
-    borderColor: 'rgba(0,230,118,0.22)',
   },
   sourceCardTop: {
     flexDirection: 'row',
@@ -376,25 +339,15 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   filename: {
-    color: 'rgba(255,255,255,0.65)',
+    color: 'rgba(255,255,255,0.88)',
     fontSize: 12,
-    lineHeight: 17,
+    fontWeight: '700',
+    lineHeight: 18,
   },
-  specLine: {
-    color: 'rgba(99,132,250,0.9)',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  metaRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginTop: 2,
-  },
-  metaItem: {
-    color: 'rgba(255,255,255,0.45)',
-    fontSize: 11,
-    fontWeight: '600',
+  rawBody: {
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 12,
+    lineHeight: 18,
   },
   addonFooter: {
     color: 'rgba(255,255,255,0.28)',

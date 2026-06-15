@@ -16,8 +16,6 @@ import {
   Platform,
 } from 'react-native';
 import Slider from '@react-native-community/slider';
-import DraggableFlatList, { RenderItemParams } from 'react-native-draggable-flatlist';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurTargetView } from 'expo-blur';
@@ -47,8 +45,6 @@ import { fetchAccountBootstrap } from '../utils/accountPreferences';
 import { invalidateSharedCache } from '../utils/sharedDataCache';
 import { checkSyncAllowed, getSyncOverCellular, setSyncOverCellular } from '../utils/cellularGuard';
 import { Storage } from '../utils/storage';
-import { profileScopedStorageKey } from '../utils/profileStorage';
-import { buildAddonHomeSections, buildDefaultHomeSections } from '../utils/homeCatalogSections';
 import {
   CinematicSkeleton,
   GlassSkeleton,
@@ -80,18 +76,7 @@ function getVisibleIconColor(color: string, resolvedAppearance: 'dark' | 'light'
 }
 
 type PickerKind = 'appearance' | 'theme' | 'language' | 'quality' | 'fileSize' | 'pageStyle' | 'continueStyle' | 'metadataProvider' | 'decoder' | 'surface' | 'streamingMode' | 'badgePosition' | null;
-type HomeLayoutSection = { id: string; title: string; endpoint: string; enabled: boolean };
 const CURRENT_YEAR = new Date().getFullYear();
-function getHomeSectionStorageKeys(userId: string | null | undefined, profileId: string | null | undefined): string[] {
-  const keys = [
-    profileScopedStorageKey('home_sections', userId, profileId),
-  ];
-  if (userId && profileId) {
-    keys.push(profileScopedStorageKey('home_sections', userId, null));
-  }
-  keys.push('home_sections');
-  return Array.from(new Set(keys));
-}
 function makeStyles(c: ThemeColors) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: c.bg },
@@ -161,9 +146,6 @@ function makeStyles(c: ThemeColors) {
     optionSub: { color: c.textSecondary, fontSize: 12, lineHeight: 17, marginTop: 3 },
     accentSwatch: { width: 16, height: 16, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)' },
     modalScroll: { marginTop: 14, flexGrow: 0, minHeight: 0 },
-    layoutModalScroll: { marginTop: 14 },
-    layoutModalContent: { paddingBottom: 40 },
-    layoutFooterSpacer: { height: 120 },
     layoutHint: { color: c.textSecondary, fontSize: 12, lineHeight: 17, marginTop: 2, marginBottom: 4 },
     helper: { color: c.textSecondary, fontSize: 12, lineHeight: 18, paddingHorizontal: 18, paddingBottom: 14 },
     actionButton: {
@@ -222,27 +204,6 @@ function makeStyles(c: ThemeColors) {
     sliderValueSub: {
       fontSize: 12,
       fontWeight: '600',
-    },
-    layoutRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 12,
-      paddingVertical: 14,
-      paddingHorizontal: 4,
-    },
-    layoutGrip: {
-      width: 28,
-      alignItems: 'center',
-      justifyContent: 'center',
-      paddingVertical: 4,
-    },
-    layoutInfo: { flex: 1 },
-    layoutLabel: { color: c.textPrimary, fontSize: 15, fontWeight: '700' },
-    layoutSub: { color: c.textSecondary, fontSize: 12, lineHeight: 17, marginTop: 3 },
-    layoutDivider: { height: 1, backgroundColor: c.borderSoft },
-    layoutDragActive: {
-      backgroundColor: c.cardBgElevated ?? c.cardBg,
-      borderRadius: 16,
     },
     badgeUrlCard: {
       borderWidth: 1,
@@ -472,7 +433,7 @@ export function SettingsScreen({ navigation, route }: any) {
   const title = t((SECTION_TITLE_KEYS as Record<string, any>)[detailSection] ?? 'settings_title');
   const { uiStyle, setUiStyle } = useUIStyle();
   const { showNavLabels, setShowNavLabels, continueWatchingStyle, setContinueWatchingStyle, vividAmbientEnabled, setVividAmbientEnabled, pictureInPictureEnabled, setPictureInPictureEnabled, showStreamsList, setShowStreamsList } = useDisplaySettings();
-  const { metadataProvider, tmdbKeyEnabled, tmdbApiKey, setMetadataProvider, setTmdbKeyEnabled, setTmdbApiKey } = useTmdbApiKey();
+  const { metadataProvider, homeCatalogProviders, tmdbKeyEnabled, tmdbApiKey, setMetadataProvider, setTmdbKeyEnabled, setTmdbApiKey } = useTmdbApiKey();
   const {
     preferredQuality,
     setPreferredQuality,
@@ -520,8 +481,6 @@ export function SettingsScreen({ navigation, route }: any) {
   const { colors } = theme;
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const [picker, setPicker] = useState<PickerKind>(null);
-  const [showHomeLayoutModal, setShowHomeLayoutModal] = useState(false);
-  const [homeLayoutSections, setHomeLayoutSections] = useState<HomeLayoutSection[]>([]);
   const [tmdbDraft, setTmdbDraft] = useState(tmdbApiKey);
   const [introDbDraft, setIntroDbDraft] = useState(introDbApiKey);
   const [syncRefreshing, setSyncRefreshing] = useState(false);
@@ -532,10 +491,6 @@ export function SettingsScreen({ navigation, route }: any) {
   const [badgeUrlError, setBadgeUrlError] = useState<string | null>(null);
   const [previewBadgeUrl, setPreviewBadgeUrl] = useState<string | null>(null);
   const safeIconColor = React.useCallback((color: string) => getVisibleIconColor(color, resolvedAppearance, theme.id, colors.textPrimary), [colors.textPrimary, resolvedAppearance, theme.id]);
-  const homeSectionStorageKeys = useMemo(
-    () => getHomeSectionStorageKeys(user?.uid, activeProfile?.id),
-    [activeProfile?.id, user?.uid],
-  );
   const updatesStatusSubtitle = updateErrorMessage
     ? t('settings_updates_unavailable_sub')
     : updateChecking
@@ -549,65 +504,12 @@ export function SettingsScreen({ navigation, route }: any) {
       ? t('settings_updates_latest_value')
       : t('settings_updates_current_value');
 
-  const defaultHomeSections = useMemo<HomeLayoutSection[]>(() => {
-    const base = buildDefaultHomeSections(metadataProvider, CURRENT_YEAR, {
-      networks: t('section_networks'),
-      featuredMovies: t('section_featured_movies'),
-      featuredSeries: t('section_featured_series'),
-      popularMovies: t('section_popular_movies'),
-      popularTv: t('section_popular_tv'),
-      documentaries: t('section_documentaries'),
-      newMovies: t('section_new_movies'),
-      newSeries: t('section_new_series'),
-      trendingMovies: t('section_trending_movies'),
-      trendingTv: t('section_trending_tv'),
-    });
-    return [...base, ...buildAddonHomeSections(addons, { movie: t('catalog_type_movies'), tv: t('catalog_type_series') })];
-  }, [addons, metadataProvider, t]);
-
   React.useEffect(() => { setTmdbDraft(tmdbApiKey); }, [tmdbApiKey]);
   React.useEffect(() => { setIntroDbDraft(introDbApiKey); }, [introDbApiKey]);
 
   React.useEffect(() => {
     void getSyncOverCellular().then(setSyncOverCellularState);
   }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        let saved: string | null = null;
-        for (const key of homeSectionStorageKeys) {
-          saved = await Storage.getItem(key);
-          if (saved) break;
-        }
-        if (!saved) {
-          if (!cancelled) setHomeLayoutSections(defaultHomeSections);
-          return;
-        }
-        const parsed = JSON.parse(saved);
-        if (!Array.isArray(parsed)) {
-          if (!cancelled) setHomeLayoutSections(defaultHomeSections);
-          return;
-        }
-        const savedMap = new Map(parsed.map((section: any) => [section?.id, section]));
-        const known = parsed
-          .filter((section: any) => defaultHomeSections.find(def => def.id === section?.id))
-          .map((section: any) => ({
-            ...defaultHomeSections.find(def => def.id === section.id)!,
-            enabled: Boolean(section.enabled),
-          }));
-        const newOnes = defaultHomeSections.filter(def => !savedMap.has(def.id));
-        const next = [...known, ...newOnes];
-        if (!cancelled) setHomeLayoutSections(next);
-      } catch {
-        if (!cancelled) setHomeLayoutSections(defaultHomeSections);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [defaultHomeSections, homeSectionStorageKeys]);
 
   const handleSetSyncOverCellular = React.useCallback(async (value: boolean) => {
     setSyncOverCellularState(value);
@@ -860,51 +762,6 @@ export function SettingsScreen({ navigation, route }: any) {
 
   const previewSource: FusionBadgeSource | null = previewBadgeUrl ? (fusionBadgeSources[previewBadgeUrl]?.source ?? null) : null;
 
-  const persistHomeLayoutSections = React.useCallback(async (sections: HomeLayoutSection[]) => {
-    setHomeLayoutSections(sections);
-    const payload = JSON.stringify(sections.map(section => ({
-      id: section.id,
-      enabled: section.enabled,
-    })));
-    await Promise.all(homeSectionStorageKeys.map(key => Storage.setItem(key, payload)));
-  }, [homeSectionStorageKeys]);
-
-  const toggleHomeLayoutSection = React.useCallback((id: string, enabled: boolean) => {
-    const next = homeLayoutSections.map(section => (
-      section.id === id ? { ...section, enabled } : section
-    ));
-    void persistHomeLayoutSections(next);
-  }, [homeLayoutSections, persistHomeLayoutSections]);
-
-  const handleHomeLayoutReorder = React.useCallback(({ data }: { data: HomeLayoutSection[] }) => {
-    void persistHomeLayoutSections(data);
-  }, [persistHomeLayoutSections]);
-
-  const renderHomeLayoutItem = React.useCallback(({ item, drag, isActive }: RenderItemParams<HomeLayoutSection>) => (
-    <View style={isActive ? styles.layoutDragActive : undefined}>
-      <View style={styles.layoutRow}>
-        <TouchableOpacity
-          onLongPress={drag}
-          delayLongPress={120}
-          activeOpacity={0.75}
-          style={styles.layoutGrip}
-        >
-          <Ionicons name="reorder-three-outline" size={18} color={colors.placeholder} />
-        </TouchableOpacity>
-      <View style={styles.layoutInfo}>
-        <Text style={styles.layoutLabel}>{item.title}</Text>
-        <Text style={styles.layoutSub}>{item.enabled ? t('settings_home_layout_visible') : t('settings_home_layout_hidden')}</Text>
-      </View>
-        <AppleToggle
-          value={item.enabled}
-          onValueChange={value => { toggleHomeLayoutSection(item.id, value); }}
-          onColor={colors.toggleOn}
-        />
-      </View>
-    </View>
-  ), [colors.placeholder, colors.toggleOn, styles.layoutDragActive, styles.layoutGrip, styles.layoutInfo, styles.layoutLabel, styles.layoutRow, styles.layoutSub, t, toggleHomeLayoutSection]);
-  const homeLayoutSheetMaxHeight = Math.min(720, Math.floor(windowHeight * 0.88));
-
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <BlurTargetView ref={blurTargetRef} style={{ flex: 1 }}>
@@ -1068,39 +925,16 @@ export function SettingsScreen({ navigation, route }: any) {
                 <>
                   <Text style={styles.sectionTitle}>{t('settings_detail_home_appearance')}</Text>
                   <View style={styles.card}>
-                    <SettingRow icon="film-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_catalog_metadata')} subtitle={metadataProvider === 'cinemeta' ? t('settings_catalog_metadata_cinemeta') : t('settings_catalog_metadata_tmdb')} value={metadataProvider === 'cinemeta' ? t('settings_cinemeta') : t('settings_tmdb')} onPress={() => setPicker('metadataProvider')} />
+                    <SettingRow icon="grid-outline" iconColor={safeIconColor('#38bdf8')} label={t('settings_catalog_home_layout')} subtitle={homeCatalogProviders.length > 0 ? t('settings_home_layout_sub') : t('settings_home_layout_hint')} onPress={() => navigation.navigate('HomeLayoutSettings')} />
                     <View style={styles.divider} />
-                    <SettingRow icon="grid-outline" iconColor={safeIconColor('#38bdf8')} label={t('settings_home_layout')} subtitle={t('settings_home_layout_sub')} value={t('settings_home_layout_active_count', { n: homeLayoutSections.filter(section => section.enabled).length })} onPress={() => setShowHomeLayoutModal(true)} />
+                    <SettingRow icon="albums-outline" iconColor={safeIconColor('#22d3ee')} label={t('settings_page_style')} subtitle={t('settings_page_style_sub')} value={uiStyle === 'glass' ? t('settings_glassy_hero') : uiStyle === 'centered' ? t('settings_centered') : t('settings_classic')} onPress={() => navigation.navigate('PageStyleSettings')} />
                     <View style={styles.divider} />
-                    <SettingRow icon="albums-outline" iconColor={safeIconColor('#22d3ee')} label={t('settings_page_style')} subtitle={t('settings_page_style_sub')} value={uiStyle === 'glass' ? t('settings_glassy_hero') : uiStyle === 'centered' ? t('settings_centered') : t('settings_classic')} onPress={() => setPicker('pageStyle')} />
-                    <View style={styles.divider} />
-                    <SettingRow icon="play-circle-outline" iconColor={safeIconColor('#22c55e')} label={t('settings_continue_watching_style')} subtitle={t('settings_continue_watching_style_sub')} value={continueStyleLabelMap[String(continueWatchingStyle)] ?? String(continueWatchingStyle)} onPress={() => setPicker('continueStyle')} />
+                    <SettingRow icon="play-circle-outline" iconColor={safeIconColor('#22c55e')} label={t('settings_continue_watching_style')} subtitle={t('settings_continue_watching_style_sub')} value={continueStyleLabelMap[String(continueWatchingStyle)] ?? String(continueWatchingStyle)} onPress={() => navigation.navigate('ContinueWatchingStyleSettings')} />
                     <View style={styles.divider} />
                     <SettingRow icon="reader-outline" iconColor={safeIconColor('#64748b')} label={t('settings_hero_synopsis')} subtitle={t('settings_hero_synopsis_sub')} right={<AppleToggle value={showHeroSynopsis} onValueChange={value => { void setShowHeroSynopsis(value); }} onColor={colors.toggleOn} />} />
                     <View style={styles.divider} />
                     <SettingRow icon="color-wand-outline" iconColor={safeIconColor('#a78bfa')} label={t('settings_ambient_background')} subtitle={t('settings_ambient_background_sub')} right={<AppleToggle value={vividAmbientEnabled} onValueChange={value => { void setVividAmbientEnabled(value); }} onColor={colors.toggleOn} />} />
                   </View>
-                  {metadataProvider === 'tmdb' ? (
-                    <View style={styles.card}>
-                      <View style={{ padding: 18, gap: 10 }}>
-                        <Text style={styles.rowLabel}>{t('settings_tmdb_api_key')}</Text>
-                        <Text style={styles.rowSub}>{t('settings_tmdb_api_key_sub')}</Text>
-                        <TextInput
-                          value={tmdbDraft}
-                          onChangeText={setTmdbDraft}
-                          placeholder={t('settings_tmdb_api_key_placeholder')}
-                          placeholderTextColor={colors.placeholder}
-                          autoCapitalize="none"
-                          autoCorrect={false}
-                          style={styles.textInput}
-                        />
-                        <SettingRow icon="key-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_tmdb_custom_key')} subtitle={t('settings_tmdb_custom_key_sub')} right={<AppleToggle value={tmdbKeyEnabled} onValueChange={value => { void setTmdbKeyEnabled(value); }} onColor={colors.toggleOn} />} />
-                        <TouchableOpacity style={[styles.actionButton, { backgroundColor: colors.accent, borderWidth: 1, borderColor: resolvedAppearance === 'light' ? 'rgba(17,24,39,0.12)' : 'rgba(255,255,255,0.14)' }]} onPress={() => { void setTmdbApiKey(tmdbDraft.trim()); }} activeOpacity={0.82}>
-                          <Text style={[styles.actionButtonText, { color: colors.buttonText }]}>{t('settings_tmdb_save_key')}</Text>
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  ) : null}
                 </>
               ) : null}
 
@@ -1202,33 +1036,6 @@ export function SettingsScreen({ navigation, route }: any) {
         onClose={() => setPicker(null)}
         renderPreview={picker === 'pageStyle' ? renderPageStylePreview : picker === 'continueStyle' ? renderContinueStylePreview : undefined}
       />
-      <Modal visible={showHomeLayoutModal} transparent animationType="slide" statusBarTranslucent onRequestClose={() => setShowHomeLayoutModal(false)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setShowHomeLayoutModal(false)}>
-          <GestureHandlerRootView style={{ width: '100%' }}>
-          <Pressable style={[styles.modalCard, { paddingBottom: insets.bottom + 16, maxHeight: homeLayoutSheetMaxHeight }]} onPress={() => {}}>
-            <Text style={styles.modalTitle}>{t('settings_home_layout')}</Text>
-            <Text style={styles.modalSub}>{t('settings_home_layout_modal_sub')}</Text>
-            <Text style={styles.layoutHint}>{t('settings_home_layout_modal_hint')}</Text>
-            <View style={[styles.layoutModalScroll, { height: Math.max(280, homeLayoutSheetMaxHeight - 92 - (insets.bottom + 16)) }]}>
-              <DraggableFlatList
-                style={{ flex: 1 }}
-                containerStyle={{ flex: 1 }}
-                data={homeLayoutSections}
-                keyExtractor={item => item.id}
-                renderItem={renderHomeLayoutItem}
-                onDragEnd={handleHomeLayoutReorder}
-                contentContainerStyle={styles.layoutModalContent}
-                showsVerticalScrollIndicator={false}
-                activationDistance={20}
-                autoscrollSpeed={180}
-                ItemSeparatorComponent={() => <View style={styles.layoutDivider} />}
-                ListFooterComponent={<View style={styles.layoutFooterSpacer} />}
-              />
-            </View>
-          </Pressable>
-          </GestureHandlerRootView>
-        </Pressable>
-      </Modal>
       <Modal visible={showBadgeUrlsModal} transparent animationType="slide" statusBarTranslucent onRequestClose={() => setShowBadgeUrlsModal(false)}>
         <View style={styles.modalBackdrop}>
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowBadgeUrlsModal(false)} />

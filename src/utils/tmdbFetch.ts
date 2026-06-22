@@ -142,6 +142,55 @@ function normalizeDetails(data: any, type: 'movie' | 'tv'): any {
   };
 }
 
+// ── Person normalizer ─────────────────────────────────────────────────────────
+function normalizePerson(data: any): any {
+  const seen = new Set<string>();
+  const credits = (data.combined_credits?.cast ?? [])
+    .filter((item: any) => !item.adult && item.poster_path)
+    .map((item: any) => {
+      const mediaType = item.media_type === 'tv' ? 'tv' : 'movie';
+      const key = `${mediaType}-${item.id}`;
+      if (seen.has(key)) return null;
+      seen.add(key);
+      return {
+        id:         String(item.id),
+        tmdbId:     item.id,
+        mediaType,
+        title:      item.title ?? item.name ?? '',
+        character:  item.character ?? '',
+        poster:     img(item.poster_path, 'w500'),
+        releaseDate: item.release_date ?? item.first_air_date ?? '',
+        year:       parseInt((item.release_date ?? item.first_air_date ?? '').slice(0, 4)) || undefined,
+        voteCount:  item.vote_count ?? 0,
+        popularity: item.popularity ?? 0,
+      };
+    })
+    .filter(Boolean);
+
+  const popularWorks = [...credits]
+    .sort((a: any, b: any) => b.voteCount - a.voteCount)
+    .slice(0, 20);
+
+  const latestWorks = [...credits]
+    .filter((item: any) => item.releaseDate)
+    .sort((a: any, b: any) => b.releaseDate.localeCompare(a.releaseDate))
+    .slice(0, 20);
+
+  return {
+    id:           String(data.id),
+    tmdbId:       data.id,
+    name:         data.name ?? '',
+    biography:    data.biography ?? '',
+    birthday:     data.birthday ?? null,
+    deathday:     data.deathday ?? null,
+    placeOfBirth: data.place_of_birth ?? null,
+    knownFor:     data.known_for_department ?? 'Acting',
+    photo:        img(data.profile_path, 'w500'),
+    popularWorks,
+    latestWorks,
+  };
+}
+
 // ── Season normalizer ─────────────────────────────────────────────────────────
 function normalizeSeason(data: any): any {
   return {
@@ -297,6 +346,16 @@ async function dispatchDirect(path: string, apiKey: string, signal?: AbortSignal
     return { results: (data.results ?? []).map((i: any) => normalizeListItem(i, 'tv')) };
   }
 
+  // /tmdb/person/123
+  const personM = path.match(/^\/tmdb\/person\/(\d+)$/);
+  if (personM) {
+    const [, id] = personM;
+    const data = await get(
+      `${TMDB_BASE}/person/${id}?${base}&append_to_response=combined_credits`,
+    );
+    return normalizePerson(data);
+  }
+
   // /tmdb/networks — watch providers as streaming network cards
   if (path === '/tmdb/networks') {
     const [movieProviders, tvProviders] = await Promise.all([
@@ -333,7 +392,8 @@ function isCacheable(path: string): boolean {
     path.startsWith('/tmdb/genres/') ||
     path.startsWith('/tmdb/network/') ||
     path.startsWith('/tmdb/season/') ||
-    path.startsWith('/tmdb/find/')
+    path.startsWith('/tmdb/find/') ||
+    path.startsWith('/tmdb/person/')
   );
 }
 

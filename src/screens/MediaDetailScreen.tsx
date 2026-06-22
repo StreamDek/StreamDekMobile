@@ -2756,7 +2756,11 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                     style={{ marginHorizontal: -14 }}
                     contentContainerStyle={{ paddingHorizontal: 14, paddingTop: 10, paddingBottom: 4 }}
                     renderItem={({ item }: { item: any }) => (
-                      <View style={styles.castCard}>
+                      <TouchableOpacity
+                        style={styles.castCard}
+                        activeOpacity={0.72}
+                        onPress={() => navigation.navigate('PersonDetail', { personId: item.id, name: item.name, photo: item.photo })}
+                      >
                         {item.photo ? (
                           <Image source={{ uri: item.photo }} style={styles.castPhoto} />
                         ) : (
@@ -2766,7 +2770,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                         )}
                         <Text style={styles.castName} numberOfLines={1}>{item.name}</Text>
                         <Text style={styles.castChar} numberOfLines={1}>{item.character}</Text>
-                      </View>
+                      </TouchableOpacity>
                     )}
                   />
                 </View>
@@ -2870,7 +2874,11 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                     style={{ marginHorizontal: -14 }}
                     contentContainerStyle={{ paddingHorizontal: 14, paddingTop: 10, paddingBottom: 4 }}
                     renderItem={({ item }: { item: any }) => (
-                      <View style={[styles.castCard, styles.glassCastCard]}>
+                      <TouchableOpacity
+                        style={[styles.castCard, styles.glassCastCard]}
+                        activeOpacity={0.72}
+                        onPress={() => navigation.navigate('PersonDetail', { personId: item.id, name: item.name, photo: item.photo })}
+                      >
                         {item.photo ? (
                           <Image source={{ uri: item.photo }} style={[styles.castPhoto, styles.glassCastPhoto]} />
                         ) : (
@@ -2880,7 +2888,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                         )}
                         <Text style={styles.castName} numberOfLines={1}>{item.name}</Text>
                         <Text style={styles.castChar} numberOfLines={1}>{item.character}</Text>
-                      </View>
+                      </TouchableOpacity>
                     )}
                   />
                 </View>

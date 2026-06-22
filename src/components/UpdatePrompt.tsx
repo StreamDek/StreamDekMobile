@@ -17,7 +17,7 @@ import { useAppUpdate } from '../context/AppUpdateContext';
 import { TVFocusable } from './TVFocusable';
 import { getDeviceProfile } from '../utils/deviceProfile';
 
-function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv: boolean) {
+function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv: boolean, isLightAppearance: boolean) {
   return StyleSheet.create({
     backdrop: {
       flex: 1,
@@ -145,6 +145,10 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv
     },
     primaryButton: {
       backgroundColor: colors.accent,
+      borderWidth: 1,
+      borderColor: isLightAppearance
+        ? (colors.accent === '#ffffff' ? 'rgba(16,24,40,0.18)' : `${colors.accent}70`)
+        : 'transparent',
     },
     secondaryButton: {
       backgroundColor: colors.inputBg,
@@ -154,7 +158,7 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv
     // Solid (fully opaque) disabled treatment — opacity on the button would
     // let the content behind it show through.
     disabledButton: {
-      backgroundColor: colors.inputBg,
+      backgroundColor: isLightAppearance ? colors.cardBgElevated ?? colors.cardBg : colors.inputBg,
       borderWidth: 1,
       borderColor: colors.border,
     },
@@ -188,8 +192,9 @@ function UpdateButton({
   onPress: () => void;
 }) {
   const { theme: { colors } } = useTheme();
+  const isLightAppearance = colors.bg !== '#000000';
   const isTv = getDeviceProfile().isTv;
-  const styles = useMemo(() => makeStyles(colors, isTv), [colors, isTv]);
+  const styles = useMemo(() => makeStyles(colors, isTv, isLightAppearance), [colors, isTv, isLightAppearance]);
   const handlePress = () => {
     if (!disabled) onPress();
   };
@@ -233,6 +238,7 @@ export function UpdatePrompt() {
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
   const { theme: { colors } } = useTheme();
+  const isLightAppearance = colors.bg !== '#000000';
   const { t } = useLanguage();
   const {
     availableRelease,
@@ -246,7 +252,7 @@ export function UpdatePrompt() {
     startUpdate,
   } = useAppUpdate();
   const isTv = getDeviceProfile().isTv;
-  const styles = useMemo(() => makeStyles(colors, isTv), [colors, isTv]);
+  const styles = useMemo(() => makeStyles(colors, isTv, isLightAppearance), [colors, isTv, isLightAppearance]);
 
   // Explicit numeric sizing — percentage maxHeight inside a centered flex
   // parent is unreliable on Android, which let the footer overlap the notes.

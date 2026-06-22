@@ -1689,7 +1689,7 @@ export const HomeScreen = ({ navigation }: any) => {
       styles.heroCloudMask,
       !isDarkAppearance && styles.heroCloudMaskLightBleed,
     ];
-    const showFallbackText = titleLogoState === 'error';
+    const showFallbackText = titleLogoState === 'error' || !titleLogo;
     const glassPosterUri = item.poster || centeredBackgroundUri || getHeroBackgroundUri(item);
     const badgeRow = (
       <View
@@ -1712,7 +1712,7 @@ export const HomeScreen = ({ navigation }: any) => {
       </Text>
     ) : null;
 
-    const titleSection = titleLogoState === 'error' ? (
+    const titleSection = showFallbackText ? (
       <Text
         style={[
           centered ? styles.heroTitleCentered : styles.heroTitle,
@@ -1750,25 +1750,15 @@ export const HomeScreen = ({ navigation }: any) => {
         }}
       />
     ) : (
-      showFallbackText ? (
-        <Text
-          style={[
-            centered ? styles.heroTitleCentered : styles.heroTitle,
-            styles.heroTitleFallback,
-          ]}
-          numberOfLines={2}
-        >
-          {item.title}
-        </Text>
-      ) : (
-        <View
-          style={{
-            width: SCREEN_WIDTH * 0.65,
-            height: titleLogoHeight,
-            marginBottom: 8,
-          }}
-        />
-      )
+      <Text
+        style={[
+          centered ? styles.heroTitleCentered : styles.heroTitle,
+          styles.heroTitleFallback,
+        ]}
+        numberOfLines={2}
+      >
+        {item.title}
+      </Text>
     );
     const titleSectionBlock = titleLogo ? (
       <View style={{ marginBottom: titleBottomGap }}>

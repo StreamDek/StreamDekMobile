@@ -21,7 +21,7 @@ import { getHomeSectionStorageKeys, mergeSavedHomeSections } from '../utils/home
 
 const CURRENT_YEAR = new Date().getFullYear();
 
-function makeStyles(c: ThemeColors) {
+function makeStyles(c: ThemeColors, isLightAppearance: boolean) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: c.bg },
     title: { color: c.textPrimary, fontSize: 30, fontWeight: '900', letterSpacing: -0.6 },
@@ -62,8 +62,10 @@ function makeStyles(c: ThemeColors) {
       backgroundColor: c.inputBg,
     },
     providerChoiceActive: {
-      backgroundColor: `${c.accent}10`,
-      borderColor: c.accent,
+      backgroundColor: isLightAppearance
+        ? (c.accent === '#ffffff' ? 'rgba(16,24,40,0.10)' : `${c.accent}16`)
+        : `${c.accent}10`,
+      borderColor: isLightAppearance ? (c.accent === '#ffffff' ? c.textPrimary : c.accent) : c.accent,
     },
     radioWrap: {
       width: 20,
@@ -140,7 +142,8 @@ function SettingRow({
   right: React.ReactNode;
 }) {
   const { theme: { colors } } = useTheme();
-  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const { resolvedAppearance } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, resolvedAppearance === 'light'), [colors, resolvedAppearance]);
 
   return (
     <View style={styles.row}>
@@ -161,7 +164,8 @@ export function HomeLayoutSettingsScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
   const { theme, resolvedAppearance } = useTheme();
   const { colors } = theme;
-  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const isLightAppearance = resolvedAppearance === 'light';
+  const styles = useMemo(() => makeStyles(colors, isLightAppearance), [colors, isLightAppearance]);
   const { t } = useLanguage();
   const { user } = useAuth();
   const { activeProfile } = useProfile();
@@ -317,7 +321,7 @@ export function HomeLayoutSettingsScreen({ navigation }: any) {
                       <Text style={[styles.rowLabel, { fontSize: 14 }]} numberOfLines={1}>{t('settings_cinemeta')}</Text>
                       <Text style={[styles.rowSub, { fontSize: 11, lineHeight: 15 }]} numberOfLines={2}>Built-in metadata</Text>
                     </View>
-                    <View style={[styles.radioWrap, selectedHomeCatalogProvider === 'cinemeta' && { borderColor: colors.accent }]}>
+                    <View style={[styles.radioWrap, selectedHomeCatalogProvider === 'cinemeta' && { borderColor: isLightAppearance && colors.accent === '#ffffff' ? colors.textPrimary : colors.accent }]}>
                       {selectedHomeCatalogProvider === 'cinemeta' ? <View style={styles.radioDot} /> : null}
                     </View>
                   </TouchableOpacity>
@@ -330,7 +334,7 @@ export function HomeLayoutSettingsScreen({ navigation }: any) {
                       <Text style={[styles.rowLabel, { fontSize: 14 }]} numberOfLines={1}>{t('settings_tmdb')}</Text>
                       <Text style={[styles.rowSub, { fontSize: 11, lineHeight: 15 }]} numberOfLines={2}>TMDB-powered rows</Text>
                     </View>
-                    <View style={[styles.radioWrap, selectedHomeCatalogProvider === 'tmdb' && { borderColor: colors.accent }]}>
+                    <View style={[styles.radioWrap, selectedHomeCatalogProvider === 'tmdb' && { borderColor: isLightAppearance && colors.accent === '#ffffff' ? colors.textPrimary : colors.accent }]}>
                       {selectedHomeCatalogProvider === 'tmdb' ? <View style={styles.radioDot} /> : null}
                     </View>
                   </TouchableOpacity>

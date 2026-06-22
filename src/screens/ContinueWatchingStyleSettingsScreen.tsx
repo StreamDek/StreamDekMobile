@@ -18,7 +18,7 @@ import { useTheme, ThemeColors } from '../context/ThemeContext';
 import { useLanguage } from '../context/LanguageContext';
 import { useDisplaySettings, type ContinueWatchingStyle } from '../context/DisplaySettingsContext';
 
-function makeStyles(c: ThemeColors) {
+function makeStyles(c: ThemeColors, isLightAppearance: boolean) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: c.bg },
     content: { flex: 1, paddingHorizontal: 20 },
@@ -60,8 +60,10 @@ function makeStyles(c: ThemeColors) {
       position: 'relative',
     },
     optionCardActive: {
-      borderColor: c.accent,
-      backgroundColor: `${c.accent}12`,
+      borderColor: isLightAppearance ? (c.accent === '#ffffff' ? c.textPrimary : c.accent) : c.accent,
+      backgroundColor: isLightAppearance
+        ? (c.accent === '#ffffff' ? 'rgba(16,24,40,0.10)' : `${c.accent}16`)
+        : `${c.accent}12`,
     },
     previewFrame: {
       minHeight: 84,
@@ -80,7 +82,9 @@ function makeStyles(c: ThemeColors) {
       width: 26,
       height: 26,
       borderRadius: 13,
-      backgroundColor: '#ffffff',
+      backgroundColor: isLightAppearance ? (c.accent === '#ffffff' ? c.textPrimary : c.accent) : '#ffffff',
+      borderWidth: 1,
+      borderColor: isLightAppearance ? 'rgba(255,255,255,0.65)' : 'rgba(17,17,17,0.08)',
       alignItems: 'center',
       justifyContent: 'center',
       zIndex: 5,
@@ -112,7 +116,8 @@ export function ContinueWatchingStyleSettingsScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
   const { theme, resolvedAppearance } = useTheme();
   const { colors } = theme;
-  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const isLightAppearance = resolvedAppearance === 'light';
+  const styles = useMemo(() => makeStyles(colors, isLightAppearance), [colors, isLightAppearance]);
   const { t } = useLanguage();
   const { continueWatchingStyle, setContinueWatchingStyle } = useDisplaySettings();
 
@@ -157,7 +162,7 @@ export function ContinueWatchingStyleSettingsScreen({ navigation }: any) {
                       >
                         {active ? (
                           <View style={styles.checkWrap}>
-                            <Ionicons name="checkmark" size={16} color="#111111" />
+                            <Ionicons name="checkmark" size={16} color={isLightAppearance ? '#ffffff' : '#111111'} />
                           </View>
                         ) : null}
                         <View style={styles.previewFrame}>

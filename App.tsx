@@ -51,6 +51,7 @@ import { AppLifecycleProvider } from './src/context/AppLifecycleContext';
 import { AppUpdateProvider } from './src/context/AppUpdateContext';
 import { ProfileSwitcherScreen } from './src/screens/ProfileSwitcherScreen';
 import { ManageProfilesScreen } from './src/screens/ManageProfilesScreen';
+import { PersonDetailScreen } from './src/screens/PersonDetailScreen';
 import { EditProfileScreen } from './src/screens/EditProfileScreen';
 import { useTheme } from './src/context/ThemeContext';
 import { UpdatePrompt } from './src/components/UpdatePrompt';
@@ -250,6 +251,7 @@ function AppNavigation() {
             />
             <Stack.Screen name="TraktCollection" component={TraktCollectionScreen} options={{ headerShown: false, animationDuration: 280 }} />
             <Stack.Screen name="EpisodeStreams" component={EpisodeStreamsScreen} options={{ headerShown: false, animationDuration: 280 }} />
+            <Stack.Screen name="PersonDetail" component={PersonDetailScreen} options={{ headerShown: false, animation: 'fade', animationDuration: 260 }} />
             <Stack.Screen name="ManageProfiles" component={ManageProfilesScreen} options={{ headerShown: false, animationDuration: 280 }} />
             <Stack.Screen
               name="ProfileSwitcher"

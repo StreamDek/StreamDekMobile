@@ -155,6 +155,8 @@ function makeStyles(c: ThemeColors) {
       alignItems: 'center',
       justifyContent: 'center',
       backgroundColor: c.accent,
+      borderWidth: 1,
+      borderColor: c.accent === '#ffffff' ? 'rgba(17,24,39,0.18)' : `${c.accent}66`,
     },
     actionButtonText: { color: '#ffffff', fontWeight: '800', fontSize: 14 },
     textInput: {
@@ -1120,7 +1122,10 @@ export function SettingsScreen({ navigation, route }: any) {
                           onPress={() => { void setActiveBadgeUrl(url); }}
                           style={[
                             styles.badgeUrlActivePill,
-                            selected && { borderColor: colors.accent, backgroundColor: colors.accent + '18' },
+                            selected && {
+                              borderColor: colors.accent === '#ffffff' ? colors.textPrimary : colors.accent,
+                              backgroundColor: colors.accent === '#ffffff' ? 'rgba(16,24,40,0.10)' : `${colors.accent}18`,
+                            },
                           ]}
                           activeOpacity={0.78}
                           accessibilityRole="radio"
@@ -1130,9 +1135,9 @@ export function SettingsScreen({ navigation, route }: any) {
                           <Ionicons
                             name={selected ? 'radio-button-on' : 'radio-button-off'}
                             size={16}
-                            color={selected ? colors.accent : colors.textSecondary}
+                            color={selected ? (colors.accent === '#ffffff' ? colors.textPrimary : colors.accent) : colors.textSecondary}
                           />
-                          <Text style={[styles.badgeUrlActivePillText, selected && { color: colors.accent }]}>
+                          <Text style={[styles.badgeUrlActivePillText, selected && { color: colors.accent === '#ffffff' ? colors.textPrimary : colors.accent }]}>
                             {t(selected ? 'settings_fusion_badge_active_label' : 'settings_fusion_badge_set_active')}
                           </Text>
                         </TouchableOpacity>

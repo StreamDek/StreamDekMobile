@@ -97,7 +97,7 @@ export const PersonDetailScreen = ({ route, navigation }: any) => {
     <TouchableOpacity
       style={styles.workCard}
       activeOpacity={0.75}
-      onPress={() => navigation.navigate('Detail', { movieId: item.tmdbId, type: item.mediaType })}
+      onPress={() => navigation.navigate('Detail', { movieId: item.tmdbId, type: item.mediaType, imdbId: item.imdbId ?? undefined, title: item.title, synopsis: item.description ?? undefined, backdrop: item.backdrop ?? item.poster ?? undefined, poster: item.poster ?? undefined, year: item.year, rating: item.rating })}
     >
       {item.poster ? (
         <Image
@@ -358,3 +358,4 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
 });
+

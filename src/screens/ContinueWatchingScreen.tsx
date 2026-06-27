@@ -203,7 +203,7 @@ function GridSection({
                     <ContinueCard
                       item={item}
                       width={cardW}
-                      onPress={() => navigation.navigate('Detail', { movieId: item.id, type: item.type })}
+                      onPress={() => navigation.navigate('Detail', { movieId: item.id, type: item.type, title: item.title, synopsis: item.description ?? undefined, backdrop: item.backdrop ?? item.poster ?? undefined, poster: item.poster ?? undefined, year: item.year, rating: item.rating })}
                       onLongPress={() => onLongPress(item)}
                     />
                   </View>
@@ -551,3 +551,5 @@ export const ContinueWatchingScreen = ({ navigation }: any) => {
     </View>
   );
 };
+
+

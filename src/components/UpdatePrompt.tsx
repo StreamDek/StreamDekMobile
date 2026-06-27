@@ -29,7 +29,7 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv
       alignSelf: 'center',
       width: '100%',
       maxWidth: isTv ? 760 : 460,
-      // maxHeight is applied inline as a number computed from the window size —
+      // maxHeight is applied inline as a number computed from the window size â€”
       // the body shrinks and the notes scroll, so the footer always lays out
       // below the content instead of covering it.
       borderRadius: isTv ? 30 : 26,
@@ -37,6 +37,7 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv
       borderColor: colors.border,
       backgroundColor: colors.cardBgElevated ?? colors.cardBg,
       overflow: 'hidden',
+      flexShrink: 1,
     },
     hero: {
       paddingHorizontal: isTv ? 28 : 22,
@@ -79,7 +80,9 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv
       paddingTop: 14,
       gap: 10,
       flexShrink: 1,
+      flexGrow: 1,
       minHeight: 0,
+      paddingBottom: 12,
     },
     metaRow: {
       flexDirection: 'row',
@@ -101,6 +104,7 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv
       backgroundColor: colors.inputBg,
       paddingHorizontal: 14,
       paddingVertical: 12,
+      minHeight: 0,
     },
     notesText: {
       color: colors.textPrimary,
@@ -132,9 +136,13 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv
       paddingHorizontal: isTv ? 28 : 22,
       paddingTop: 18,
       paddingBottom: 22,
+      borderTopWidth: 1,
+      borderTopColor: colors.border,
     },
     button: {
-      flex: 1,
+      flexGrow: isTv ? 1 : 0,
+      flexShrink: 0,
+      width: isTv ? undefined : '100%',
       borderRadius: 18,
       minHeight: isTv ? 58 : 52,
       paddingHorizontal: 20,
@@ -155,7 +163,7 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], isTv
       borderWidth: 1,
       borderColor: colors.border,
     },
-    // Solid (fully opaque) disabled treatment — opacity on the button would
+    // Solid (fully opaque) disabled treatment â€” opacity on the button would
     // let the content behind it show through.
     disabledButton: {
       backgroundColor: isLightAppearance ? colors.cardBgElevated ?? colors.cardBg : colors.inputBg,
@@ -254,7 +262,7 @@ export function UpdatePrompt() {
   const isTv = getDeviceProfile().isTv;
   const styles = useMemo(() => makeStyles(colors, isTv, isLightAppearance), [colors, isTv, isLightAppearance]);
 
-  // Explicit numeric sizing — percentage maxHeight inside a centered flex
+  // Explicit numeric sizing â€” percentage maxHeight inside a centered flex
   // parent is unreliable on Android, which let the footer overlap the notes.
   const cardMaxHeight = Math.max(360, windowHeight - insets.top - insets.bottom - 64);
   const notesHeight = Math.min(isTv ? 240 : 200, Math.max(110, Math.round(windowHeight * 0.2)));
@@ -315,7 +323,7 @@ export function UpdatePrompt() {
               ) : null}
             </View>
             <Text style={styles.sectionLabel}>{t('update_release_notes')}</Text>
-            <ScrollView style={[styles.notes, { height: notesHeight }]} nestedScrollEnabled showsVerticalScrollIndicator>
+            <ScrollView style={[styles.notes, { maxHeight: notesHeight }]} nestedScrollEnabled showsVerticalScrollIndicator contentContainerStyle={{ paddingBottom: 2 }}>
               <Text style={styles.notesText}>
                 {availableRelease.releaseNotes || t('update_release_notes_empty')}
               </Text>

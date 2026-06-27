@@ -10,6 +10,7 @@ import { AddonStream } from '../../context/AddonContext';
 import { useFusionBadges } from '../../context/FusionBadgeContext';
 import { FusionBadgeRow } from '../FusionBadgeRow';
 import { getRawStreamText } from '../../utils/rawStreamText';
+import { getStreamIdentityKey } from '../../utils/streamIdentity';
 
 export interface InPlayerSourcesSheetProps {
   visible: boolean;
@@ -22,11 +23,7 @@ export interface InPlayerSourcesSheetProps {
 }
 
 function streamKey(stream: AddonStream): string {
-  return (
-    stream.infoHash?.toLowerCase()
-    ?? stream.url
-    ?? `${stream.addonId}:${stream.behaviorHints?.filename ?? stream.title ?? stream.name ?? ''}`
-  ).trim();
+  return getStreamIdentityKey(stream);
 }
 
 function SourceCard({
@@ -356,3 +353,4 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 });
+

@@ -17,19 +17,22 @@ import { FadeInView, SkeletonMediaCard } from '../components/Skeleton';
 import { useTheme, ThemeColors } from '../context/ThemeContext';
 import { useLanguage } from '../context/LanguageContext';
 import { useAddons } from '../context/AddonContext';
+import { useMdbListSettings } from '../context/MdbListSettingsContext';
 import { useLongPressActions } from '../hooks/useLongPressActions';
 import { mediaListItemKey } from '../utils/watchlist';
 import { StackBottomNav, BOTTOM_NAV_HEIGHT } from '../components/StackBottomNav';
 import { isExpoGoRuntime } from '../utils/runtime';
+import { enrichItemsWithMdbListRatings } from '../utils/mdblist';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const H_PAD = 14;
 const CARD_GAP = 8;
 const cardWidth = (cols: number) => (SCREEN_WIDTH - H_PAD * 2 - CARD_GAP * (cols - 1)) / cols;
 const GRID_SKELETON = Array.from({ length: 12 }, (_, i) => ({ id: `browse-skeleton-${i}` }));
+const BROWSE_MDBLIST_ENRICH_LIMIT = 24;
 
 
-// ── Styles ────────────────────────────────────────────────────────────────────
+// â”€â”€ Styles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const makeStyles = (c: ThemeColors) => StyleSheet.create({
   container:    { flex: 1, backgroundColor: c.bg },
@@ -108,7 +111,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   },
 });
 
-// ── Screen ────────────────────────────────────────────────────────────────────
+// â”€â”€ Screen â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 interface Genre { id: number; name: string }
 type NetworkSortMode = 'year' | 'title' | 'rating';
@@ -131,7 +134,29 @@ export const BrowseScreen = ({ navigation, route }: any) => {
   const { theme: { colors }, resolvedAppearance } = useTheme();
   const { t } = useLanguage();
   const { addons, fetchStreams, fetchStreamsForAddon } = useAddons();
+  const mdbListSettings = useMdbListSettings();
   const styles     = useMemo(() => makeStyles(colors), [colors]);
+  const catalogRatingSettings = useMemo(() => ({
+    enabled: mdbListSettings.enabled,
+    apiKey: mdbListSettings.apiKey,
+    useImdb: mdbListSettings.useImdb,
+    useTmdb: mdbListSettings.useTmdb,
+    useTomatoes: mdbListSettings.useTomatoes,
+    useMetacritic: mdbListSettings.useMetacritic,
+    useTrakt: mdbListSettings.useTrakt,
+    useLetterboxd: mdbListSettings.useLetterboxd,
+    useAudience: mdbListSettings.useAudience,
+  }), [
+    mdbListSettings.apiKey,
+    mdbListSettings.enabled,
+    mdbListSettings.useAudience,
+    mdbListSettings.useImdb,
+    mdbListSettings.useLetterboxd,
+    mdbListSettings.useMetacritic,
+    mdbListSettings.useTmdb,
+    mdbListSettings.useTomatoes,
+    mdbListSettings.useTrakt,
+  ]);
   const insets     = useSafeAreaInsets();
   const blurTargetRef = useRef<View | null>(null);
   const requestAbortRef = useRef<AbortController | null>(null);
@@ -236,9 +261,13 @@ export const BrowseScreen = ({ navigation, route }: any) => {
           return res.json();
         })();
       if (!data) return false;
+      let rows = data.results || [];
+      if (!(endpoint && String(endpoint).startsWith('addon://'))) {
+        rows = await enrichItemsWithMdbListRatings(rows, catalogRatingSettings, { signal: controller.signal, maxItems: BROWSE_MDBLIST_ENRICH_LIMIT });
+      }
       setTotalPages(data.total_pages || 1);
-      if (append) setItems(prev => [...prev, ...(data.results || [])]);
-      else        setItems(data.results || []);
+      if (append) setItems(prev => [...prev, ...rows]);
+      else        setItems(rows);
       setLoadedOnce(true);
       return true;
     } catch (e) {
@@ -250,7 +279,7 @@ export const BrowseScreen = ({ navigation, route }: any) => {
         requestAbortRef.current = null;
       }
     }
-  }, [addons, buildUrl, endpoint]);
+  }, [addons, buildUrl, catalogRatingSettings, endpoint]);
 
   useEffect(() => {
     let cancelled = false;
@@ -396,11 +425,11 @@ export const BrowseScreen = ({ navigation, route }: any) => {
     }
     // Addon catalogs (e.g. UltraMax) often only provide an IMDb id, no TMDB id.
     // Resolve it to a TMDB numeric id first so the detail page, progress
-    // tracking and watchlist — all keyed on numeric TMDB ids — work normally.
+    // tracking and watchlist â€” all keyed on numeric TMDB ids â€” work normally.
     if (isImdbId) {
       const resolved = await resolveImdbToTmdbId(itemId, item.type === 'tv' ? 'tv' : 'movie');
       if (resolved) {
-        navigation.navigate('Detail', { movieId: resolved.id, type: resolved.type, imdbId: itemId });
+        navigation.navigate('Detail', { movieId: resolved.id, type: resolved.type, imdbId: itemId, title: item.title, synopsis: item.description ?? undefined, backdrop: item.backdrop ?? item.poster ?? undefined, poster: item.poster ?? undefined, year: item.year, rating: item.rating });
         return;
       }
       if (item?.addonId) {
@@ -431,7 +460,7 @@ export const BrowseScreen = ({ navigation, route }: any) => {
         return;
       }
     }
-    navigation.navigate('Detail', { movieId: item.id, type: item.type || type });
+    navigation.navigate('Detail', { movieId: item.id, type: item.type || type, imdbId: item.imdbId ?? undefined, title: item.title, synopsis: item.description ?? undefined, backdrop: item.backdrop ?? item.poster ?? undefined, poster: item.poster ?? undefined, year: item.year, rating: item.rating });
   }, [expoGoRuntime, fetchStreams, fetchStreamsForAddon, navigation, type]);
 
   return (
@@ -623,3 +652,5 @@ export const BrowseScreen = ({ navigation, route }: any) => {
     </View>
   );
 };
+
+

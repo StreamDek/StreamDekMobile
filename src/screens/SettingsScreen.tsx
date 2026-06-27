@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import type { ImageSourcePropType } from 'react-native';
 import {
   View,
   Text,
@@ -29,6 +30,7 @@ import { useLanguage, LANGUAGES } from '../context/LanguageContext';
 import { useUIStyle } from '../context/UIStyleContext';
 import { useDisplaySettings } from '../context/DisplaySettingsContext';
 import { useTmdbApiKey } from '../context/TmdbApiKeyContext';
+import { useMdbListSettings } from '../context/MdbListSettingsContext';
 import { useStreamSelectionSettings } from '../context/StreamSelectionContext';
 import { usePlaybackSettings } from '../context/PlaybackSettingsContext';
 import { useFusionBadges, MAX_FUSION_BADGE_URLS } from '../context/FusionBadgeContext';
@@ -59,6 +61,7 @@ const SECTION_TITLE_KEYS = {
   'account-services': 'settings_detail_account_services',
   'app-updates': 'settings_detail_app_updates',
   'streams': 'settings_detail_streams',
+  'mdblist-ratings': 'settings_mdblist_ratings',
 } as const;
 
 type PickerOption = {
@@ -68,6 +71,16 @@ type PickerOption = {
   accentColor?: string;
 };
 
+const ratingLogoSources: Partial<Record<'imdb' | 'tmdb' | 'tomatoes' | 'metacritic' | 'trakt' | 'letterboxd' | 'audience', ImageSourcePropType>> = {
+  imdb: require('../../assets/ratings/imdb-logo.png'),
+  tmdb: require('../../assets/ratings/tmdb-logo.png'),
+  tomatoes: require('../../assets/ratings/rotten-tomatoes-logo.png'),
+  metacritic: require('../../assets/ratings/metacritic-logo.png'),
+  trakt: require('../../assets/ratings/trakt-logo.png'),
+  letterboxd: require('../../assets/ratings/letterboxd-logo.png'),
+  audience: require('../../assets/ratings/audience-score.png'),
+};
+
 function getVisibleIconColor(color: string, resolvedAppearance: 'dark' | 'light', themeId: string, fallback: string) {
   if (resolvedAppearance === 'light' && (themeId === 'monochrome' || color === '#ffffff' || color === '#fff')) {
     return fallback;
@@ -75,7 +88,17 @@ function getVisibleIconColor(color: string, resolvedAppearance: 'dark' | 'light'
   return color;
 }
 
-type PickerKind = 'appearance' | 'theme' | 'language' | 'quality' | 'fileSize' | 'pageStyle' | 'continueStyle' | 'metadataProvider' | 'decoder' | 'surface' | 'streamingMode' | 'badgePosition' | null;
+type PickerKind = 'appearance' | 'theme' | 'language' | 'quality' | 'fileSize' | 'pageStyle' | 'continueStyle' | 'decoder' | 'surface' | 'streamingMode' | 'badgePosition' | null;
+type SettingsScreenStyles = ReturnType<typeof makeStyles>;
+
+const SettingRowThemeContext = createContext<{
+  styles: SettingsScreenStyles;
+  placeholderColor: string;
+  resolvedAppearance: 'dark' | 'light';
+  themeId: string;
+  textPrimaryColor: string;
+} | null>(null);
+
 const CURRENT_YEAR = new Date().getFullYear();
 function makeStyles(c: ThemeColors) {
   return StyleSheet.create({
@@ -93,6 +116,7 @@ function makeStyles(c: ThemeColors) {
     },
     row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, paddingVertical: 16 },
     rowIcon: { width: 34, height: 34, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
+    rowLogo: { width: 22, height: 22 },
     rowInfo: { flex: 1 },
     rowLabel: { color: c.textPrimary, fontSize: 16, fontWeight: '700' },
     rowSub: { color: c.textSecondary, fontSize: 13, lineHeight: 18, marginTop: 3 },
@@ -169,6 +193,30 @@ function makeStyles(c: ThemeColors) {
       color: c.textPrimary,
       fontSize: 13,
       fontFamily: 'monospace',
+    },
+    textInputRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: c.inputBg,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 12,
+      paddingLeft: 14,
+      paddingRight: 8,
+    },
+    textInputInline: {
+      flex: 1,
+      paddingVertical: 12,
+      color: c.textPrimary,
+      fontSize: 13,
+      fontFamily: 'monospace',
+    },
+    textInputAction: {
+      width: 38,
+      height: 38,
+      borderRadius: 19,
+      alignItems: 'center',
+      justifyContent: 'center',
     },
     segmentedControl: {
       flexDirection: 'row',
@@ -303,7 +351,7 @@ function makeStyles(c: ThemeColors) {
   });
 }
 
-function SettingRow({
+const SettingRow = React.memo(function SettingRow({
   icon,
   iconColor,
   label,
@@ -311,6 +359,7 @@ function SettingRow({
   value,
   onPress,
   right,
+  iconNode,
   disabled = false,
 }: {
   icon: React.ComponentProps<typeof Ionicons>['name'];
@@ -320,29 +369,31 @@ function SettingRow({
   value?: string;
   onPress?: () => void;
   right?: React.ReactNode;
+  iconNode?: React.ReactNode;
   disabled?: boolean;
 }) {
-  const { theme: { colors, id }, resolvedAppearance } = useTheme();
-  const styles = useMemo(() => makeStyles(colors), [colors]);
-  const visibleIconColor = getVisibleIconColor(iconColor, resolvedAppearance, id, colors.textPrimary);
+  const themeContext = useContext(SettingRowThemeContext);
+  if (!themeContext) throw new Error('SettingRowThemeContext missing');
+  const { styles, placeholderColor, resolvedAppearance, themeId, textPrimaryColor } = themeContext;
+  const visibleIconColor = getVisibleIconColor(iconColor, resolvedAppearance, themeId, textPrimaryColor);
 
   const body = (
     <View style={[styles.row, disabled ? { opacity: 0.5 } : null]}>
       <View style={[styles.rowIcon, { backgroundColor: `${visibleIconColor}22` }]}>
-        <Ionicons name={icon} size={18} color={visibleIconColor} />
+        {iconNode ?? <Ionicons name={icon} size={18} color={visibleIconColor} />}
       </View>
       <View style={styles.rowInfo}>
         <Text style={styles.rowLabel}>{label}</Text>
         <Text style={styles.rowSub}>{subtitle}</Text>
       </View>
       {right ?? (value ? <Text style={styles.rowValue}>{value}</Text> : null)}
-      {onPress && !right ? <Ionicons name="chevron-forward" size={18} color={colors.placeholder} /> : null}
+      {onPress && !right ? <Ionicons name="chevron-forward" size={18} color={placeholderColor} /> : null}
     </View>
   );
 
   if (!onPress) return body;
   return <TouchableOpacity onPress={onPress} activeOpacity={0.78} disabled={disabled}>{body}</TouchableOpacity>;
-}
+});
 
 function PickerModal({
   visible,
@@ -390,8 +441,8 @@ function PickerModal({
                   ]}
                   activeOpacity={0.82}
                   onPress={() => {
+                    onSelect(option.value);
                     onClose();
-                    requestAnimationFrame(() => onSelect(option.value));
                   }}
                 >
                   {renderPreview
@@ -435,7 +486,8 @@ export function SettingsScreen({ navigation, route }: any) {
   const title = t((SECTION_TITLE_KEYS as Record<string, any>)[detailSection] ?? 'settings_title');
   const { uiStyle, setUiStyle } = useUIStyle();
   const { showNavLabels, setShowNavLabels, continueWatchingStyle, setContinueWatchingStyle, vividAmbientEnabled, setVividAmbientEnabled, pictureInPictureEnabled, setPictureInPictureEnabled, showStreamsList, setShowStreamsList } = useDisplaySettings();
-  const { metadataProvider, homeCatalogProviders, tmdbKeyEnabled, tmdbApiKey, setMetadataProvider, setTmdbKeyEnabled, setTmdbApiKey } = useTmdbApiKey();
+  const { homeCatalogProviders, tmdbKeyEnabled, tmdbApiKey, setTmdbKeyEnabled, setTmdbApiKey } = useTmdbApiKey();
+  const { enabled: mdbListEnabled, apiKey: mdbListApiKey, hasApiKey: mdbListHasApiKey, useImdb: mdbListUseImdb, useTmdb: mdbListUseTmdb, useTomatoes: mdbListUseTomatoes, useMetacritic: mdbListUseMetacritic, useTrakt: mdbListUseTrakt, useLetterboxd: mdbListUseLetterboxd, useAudience: mdbListUseAudience, setEnabled: setMdbListEnabled, setApiKey: setMdbListApiKey, setProviderEnabled: setMdbListProviderEnabled } = useMdbListSettings();
   const {
     preferredQuality,
     setPreferredQuality,
@@ -484,6 +536,10 @@ export function SettingsScreen({ navigation, route }: any) {
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const [picker, setPicker] = useState<PickerKind>(null);
   const [tmdbDraft, setTmdbDraft] = useState(tmdbApiKey);
+  const [mdbListDraft, setMdbListDraft] = useState(mdbListApiKey);
+  const [showMdbListApiKey, setShowMdbListApiKey] = useState(false);
+  const [mdbListValidationMessage, setMdbListValidationMessage] = useState<string | null>(null);
+  const [mdbListValidationTone, setMdbListValidationTone] = useState<'error' | 'success' | 'warning' | null>(null);
   const [introDbDraft, setIntroDbDraft] = useState(introDbApiKey);
   const [syncRefreshing, setSyncRefreshing] = useState(false);
   const [syncOverCellular, setSyncOverCellularState] = useState(false);
@@ -507,6 +563,11 @@ export function SettingsScreen({ navigation, route }: any) {
       : t('settings_updates_current_value');
 
   React.useEffect(() => { setTmdbDraft(tmdbApiKey); }, [tmdbApiKey]);
+  React.useEffect(() => { setMdbListDraft(mdbListApiKey); }, [mdbListApiKey]);
+  React.useEffect(() => {
+    setMdbListValidationMessage(null);
+    setMdbListValidationTone(null);
+  }, [mdbListDraft]);
   React.useEffect(() => { setIntroDbDraft(introDbApiKey); }, [introDbApiKey]);
 
   React.useEffect(() => {
@@ -566,18 +627,15 @@ export function SettingsScreen({ navigation, route }: any) {
     mini: t('settings_continue_style_mini'),
     stacked: t('settings_continue_style_stacked'),
   };
-  const metadataOptions: PickerOption[] = [
-    { value: 'cinemeta', label: t('settings_cinemeta'), description: t('settings_metadata_cinemeta_sub') },
-    { value: 'tmdb', label: t('settings_tmdb'), description: t('settings_metadata_tmdb_sub') },
-  ];
   const decoderOptions: PickerOption[] = [
     { value: 'auto', label: t('settings_decoder_auto') },
     { value: 'hardware', label: t('settings_decoder_hardware') },
+    { value: 'hardware_plus', label: t('settings_decoder_hardware_plus') },
     { value: 'software', label: t('settings_decoder_software') },
   ];
   const surfaceOptions: PickerOption[] = [
-    { value: 'surface', label: t('settings_surface_view') },
-    { value: 'texture', label: t('settings_texture_view') },
+    { value: 'standard', label: t('settings_surface_standard') },
+    { value: 'compatibility', label: t('settings_surface_compatibility') },
   ];
   const badgePositionOptions: PickerOption[] = [
     { value: 'top', label: t('settings_badge_position_top') },
@@ -596,11 +654,12 @@ export function SettingsScreen({ navigation, route }: any) {
   const decoderValueLabelMap: Record<string, string> = {
     auto: t('settings_decoder_auto'),
     hardware: t('settings_decoder_hardware'),
+    hardware_plus: t('settings_decoder_hardware_plus'),
     software: t('settings_decoder_software'),
   };
   const surfaceValueLabelMap: Record<string, string> = {
-    surface: t('settings_surface_view'),
-    texture: t('settings_texture_view'),
+    standard: t('settings_surface_standard'),
+    compatibility: t('settings_surface_compatibility'),
   };
 
   const renderPageStylePreview = (option: PickerOption, active: boolean) => {
@@ -653,7 +712,6 @@ export function SettingsScreen({ navigation, route }: any) {
     : picker === 'streamingMode' ? streamingModeOptions
     : picker === 'pageStyle' ? pageStyleOptions
     : picker === 'continueStyle' ? continueWatchingOptions
-    : picker === 'metadataProvider' ? metadataOptions
     : picker === 'decoder' ? decoderOptions
     : picker === 'surface' ? surfaceOptions
     : picker === 'badgePosition' ? badgePositionOptions
@@ -667,7 +725,6 @@ export function SettingsScreen({ navigation, route }: any) {
     : picker === 'streamingMode' ? torrentServerConfig.streamingMode
     : picker === 'pageStyle' ? uiStyle
     : picker === 'continueStyle' ? continueWatchingStyle
-    : picker === 'metadataProvider' ? metadataProvider
     : picker === 'decoder' ? decoderMode
     : picker === 'surface' ? renderSurface
     : picker === 'badgePosition' ? badgePosition
@@ -691,7 +748,6 @@ export function SettingsScreen({ navigation, route }: any) {
         });
         break;
       case 'continueStyle': void setContinueWatchingStyle(value as any); break;
-      case 'metadataProvider': void setMetadataProvider(value as any); break;
       case 'decoder': void setDecoderMode(value as any); break;
       case 'surface': void setRenderSurface(value as any); break;
       case 'badgePosition': void setBadgePosition(value as any); break;
@@ -705,7 +761,7 @@ export function SettingsScreen({ navigation, route }: any) {
     const guard = await checkSyncAllowed();
     if (!guard.allowed) {
       if (guard.reason === 'offline') return;
-      // cellular_blocked — user has sync-over-cellular disabled; skip silently
+      // cellular_blocked ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â user has sync-over-cellular disabled; skip silently
       return;
     }
 
@@ -732,6 +788,14 @@ export function SettingsScreen({ navigation, route }: any) {
     }
   }, [checkStatus, refreshAccounts, refreshAddons, syncRefreshing, user]);
 
+  const handleSaveMdbListApiKey = React.useCallback(async () => {
+    const apiKey = mdbListDraft.trim();
+    if (!apiKey) return;
+
+    await setMdbListApiKey(apiKey);
+    setMdbListValidationTone('success');
+    setMdbListValidationMessage('MDBList API key saved.');
+  }, [mdbListDraft, setMdbListApiKey]);
   const handleAddBadgeUrl = React.useCallback(async () => {
     const url = badgeUrlDraft.trim();
     if (!url || badgeUrlSubmitting) return;
@@ -765,9 +829,10 @@ export function SettingsScreen({ navigation, route }: any) {
   const previewSource: FusionBadgeSource | null = previewBadgeUrl ? (fusionBadgeSources[previewBadgeUrl]?.source ?? null) : null;
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <BlurTargetView ref={blurTargetRef} style={{ flex: 1 }}>
-        <View style={styles.container}>
+    <SettingRowThemeContext.Provider value={{ styles, placeholderColor: colors.placeholder, resolvedAppearance, themeId: theme.id, textPrimaryColor: colors.textPrimary }}>
+      <View style={{ flex: 1, backgroundColor: colors.bg }}>
+        <BlurTargetView ref={blurTargetRef} style={{ flex: 1 }}>
+          <View style={styles.container}>
           <StatusBar barStyle={resolvedAppearance === 'light' ? 'dark-content' : 'light-content'} translucent backgroundColor="transparent" />
           <LinearGradient colors={[colors.bgHeader, 'transparent']} style={{ position: 'absolute', top: 0, left: 0, right: 0, height: insets.top + 88, zIndex: 1 }} pointerEvents="none" />
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: insets.top + 22, paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 24 }}>
@@ -937,9 +1002,79 @@ export function SettingsScreen({ navigation, route }: any) {
                     <View style={styles.divider} />
                     <SettingRow icon="color-wand-outline" iconColor={safeIconColor('#a78bfa')} label={t('settings_ambient_background')} subtitle={t('settings_ambient_background_sub')} right={<AppleToggle value={vividAmbientEnabled} onValueChange={value => { void setVividAmbientEnabled(value); }} onColor={colors.toggleOn} />} />
                   </View>
+
+                  <Text style={styles.sectionTitle}>{t('settings_mdblist_ratings')}</Text>
+                  <View style={styles.card}>
+                    <SettingRow icon="star-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_mdblist_ratings')} subtitle={t('settings_mdblist_manage_sub')} value={mdbListEnabled ? 'Enabled' : 'Disabled'} onPress={() => navigation.push('SettingsDetail', { section: 'mdblist-ratings' })} />
+                  </View>
                 </>
               ) : null}
 
+              {detailSection === 'mdblist-ratings' ? (
+                <>
+                  <Text style={styles.sectionTitle}>{t('settings_mdblist_ratings')}</Text>
+                  <View style={styles.card}>
+                    <SettingRow icon="star-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_mdblist_enable')} subtitle={t('settings_mdblist_enable_sub')} right={<AppleToggle value={mdbListEnabled} onValueChange={value => { void setMdbListEnabled(value); }} onColor={colors.toggleOn} />} />
+                  </View>
+
+                  <Text style={styles.sectionTitle}>{t('settings_mdblist_api_key_section')}</Text>
+                  <View style={styles.card}>
+                    <View style={{ padding: 18, gap: 10 }}>
+                      <Text style={styles.rowLabel}>{t('settings_mdblist_api_key')}</Text>
+                      <Text style={styles.rowSub}>{t('settings_mdblist_api_key_sub')}</Text>
+                      <View style={styles.textInputRow}>
+                        <TextInput
+                          value={mdbListDraft}
+                          onChangeText={setMdbListDraft}
+                          placeholder={t('settings_mdblist_api_key_placeholder')}
+                          placeholderTextColor={colors.placeholder}
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          style={styles.textInputInline}
+                          secureTextEntry={!showMdbListApiKey}
+                        />
+                        <TouchableOpacity
+                          style={styles.textInputAction}
+                          onPress={() => setShowMdbListApiKey(current => !current)}
+                          activeOpacity={0.75}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <Ionicons
+                            name={showMdbListApiKey ? 'eye-off-outline' : 'eye-outline'}
+                            size={20}
+                            color={colors.placeholder}
+                          />
+                        </TouchableOpacity>
+                      </View>
+                      <TouchableOpacity style={[styles.actionButton, { backgroundColor: colors.accent, borderWidth: 1, borderColor: resolvedAppearance === 'light' ? 'rgba(17,24,39,0.12)' : 'rgba(255,255,255,0.14)', opacity: mdbListDraft.trim().length > 0 ? 1 : 0.7 }]} onPress={() => { void handleSaveMdbListApiKey(); }} activeOpacity={0.82} disabled={mdbListDraft.trim().length === 0}>
+                        <Text style={[styles.actionButtonText, { color: colors.buttonText }]}>{t('common_save')}</Text>
+                      </TouchableOpacity>
+                      {mdbListValidationMessage ? (
+                        <Text style={[styles.rowSub, { marginTop: 2, color: mdbListValidationTone === 'error' ? '#ef4444' : mdbListValidationTone === 'warning' ? '#f59e0b' : '#22c55e' }]}>
+                          {mdbListValidationMessage}
+                        </Text>
+                      ) : null}
+                    </View>
+                  </View>
+
+                  <Text style={styles.sectionTitle}>{t('settings_mdblist_providers')}</Text>
+                  <View style={styles.card}>
+                    <SettingRow icon="star-half-outline" iconColor={safeIconColor('#F5C518')} iconNode={<Image source={ratingLogoSources.imdb} style={styles.rowLogo} resizeMode="contain" />} label="IMDb" subtitle={t('settings_mdblist_provider_sub')} right={<AppleToggle value={mdbListUseImdb} onValueChange={value => { void setMdbListProviderEnabled('imdb', value); }} onColor={colors.toggleOn} disabled={!mdbListHasApiKey} />} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="videocam-outline" iconColor={safeIconColor('#01B4E4')} iconNode={<Image source={ratingLogoSources.tmdb} style={styles.rowLogo} resizeMode="contain" />} label="TMDB" subtitle={t('settings_mdblist_provider_sub')} right={<AppleToggle value={mdbListUseTmdb} onValueChange={value => { void setMdbListProviderEnabled('tmdb', value); }} onColor={colors.toggleOn} disabled={!mdbListHasApiKey} />} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="nutrition-outline" iconColor={safeIconColor('#FA320A')} iconNode={<Image source={ratingLogoSources.tomatoes} style={styles.rowLogo} resizeMode="contain" />} label="Rotten Tomatoes" subtitle={t('settings_mdblist_provider_sub')} right={<AppleToggle value={mdbListUseTomatoes} onValueChange={value => { void setMdbListProviderEnabled('tomatoes', value); }} onColor={colors.toggleOn} disabled={!mdbListHasApiKey} />} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="stats-chart-outline" iconColor={safeIconColor('#FFCC33')} iconNode={<Image source={ratingLogoSources.metacritic} style={styles.rowLogo} resizeMode="contain" />} label="Metacritic" subtitle={t('settings_mdblist_provider_sub')} right={<AppleToggle value={mdbListUseMetacritic} onValueChange={value => { void setMdbListProviderEnabled('metacritic', value); }} onColor={colors.toggleOn} disabled={!mdbListHasApiKey} />} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="albums-outline" iconColor={safeIconColor('#ED1C24')} iconNode={<Image source={ratingLogoSources.trakt} style={styles.rowLogo} resizeMode="contain" />} label="Trakt" subtitle={t('settings_mdblist_provider_sub')} right={<AppleToggle value={mdbListUseTrakt} onValueChange={value => { void setMdbListProviderEnabled('trakt', value); }} onColor={colors.toggleOn} disabled={!mdbListHasApiKey} />} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="bookmark-outline" iconColor={safeIconColor('#00E054')} iconNode={<Image source={ratingLogoSources.letterboxd} style={styles.rowLogo} resizeMode="contain" />} label="Letterboxd" subtitle={t('settings_mdblist_provider_sub')} right={<AppleToggle value={mdbListUseLetterboxd} onValueChange={value => { void setMdbListProviderEnabled('letterboxd', value); }} onColor={colors.toggleOn} disabled={!mdbListHasApiKey} />} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="people-outline" iconColor={safeIconColor('#FA320A')} iconNode={<Image source={ratingLogoSources.audience} style={styles.rowLogo} resizeMode="contain" />} label={t('settings_mdblist_provider_audience')} subtitle={t('settings_mdblist_provider_sub')} right={<AppleToggle value={mdbListUseAudience} onValueChange={value => { void setMdbListProviderEnabled('audience', value); }} onColor={colors.toggleOn} disabled={!mdbListHasApiKey} />} />
+                  </View>
+                </>
+              ) : null}
               {detailSection === 'account-services' ? (
                 <>
                   <Text style={styles.sectionTitle}>{t('settings_detail_account_services')}</Text>
@@ -1030,8 +1165,7 @@ export function SettingsScreen({ navigation, route }: any) {
       </BlurTargetView>
       <PickerModal
         visible={picker !== null}
-        title={picker === 'appearance' ? t('settings_appearance') : picker === 'theme' ? t('settings_theme') : picker === 'language' ? t('settings_language') : picker === 'quality' ? t('settings_preferred_stream_quality') : picker === 'fileSize' ? t('settings_max_file_size') : picker === 'streamingMode' ? t('settings_streaming_mode') : picker === 'pageStyle' ? t('settings_page_style') : picker === 'continueStyle' ? t('settings_continue_watching_style') : picker === 'metadataProvider' ? t('settings_catalog_metadata') : picker === 'decoder' ? t('settings_decoder_mode') : picker === 'surface' ? t('settings_render_surface') : picker === 'badgePosition' ? t('settings_badge_position') : t('settings_picker_choose')}
-        subtitle={picker === 'metadataProvider' ? t('settings_catalog_metadata_sub') : undefined}
+        title={picker === 'appearance' ? t('settings_appearance') : picker === 'theme' ? t('settings_theme') : picker === 'language' ? t('settings_language') : picker === 'quality' ? t('settings_preferred_stream_quality') : picker === 'fileSize' ? t('settings_max_file_size') : picker === 'streamingMode' ? t('settings_streaming_mode') : picker === 'pageStyle' ? t('settings_page_style') : picker === 'continueStyle' ? t('settings_continue_watching_style') : picker === 'decoder' ? t('settings_decoder_mode') : picker === 'surface' ? t('settings_render_surface') : picker === 'badgePosition' ? t('settings_badge_position') : t('settings_picker_choose')}
         options={pickerOptions}
         selectedValue={pickerValue as any}
         onSelect={handlePickerSelect}
@@ -1113,7 +1247,7 @@ export function SettingsScreen({ navigation, route }: any) {
                       <Text style={styles.badgeUrlError}>{t('settings_fusion_badge_url_error')}</Text>
                     ) : source ? (
                       <Text style={styles.badgeUrlStatus}>
-                        {t('settings_fusion_badge_url_active')} · {t('settings_fusion_badge_url_status', { enabled: countEnabledFilters(source), groups: countGroupsWithFilters(source) })}
+                        {t('settings_fusion_badge_url_active')} - {t('settings_fusion_badge_url_status', { enabled: countEnabledFilters(source), groups: countGroupsWithFilters(source) })}
                       </Text>
                     ) : null}
                     <View style={styles.badgeUrlActions}>
@@ -1200,6 +1334,13 @@ export function SettingsScreen({ navigation, route }: any) {
         </View>
       </Modal>
       <StackBottomNav activeTab="Settings" blurTarget={blurTargetRef} />
-    </View>
+      </View>
+    </SettingRowThemeContext.Provider>
   );
 }
+
+
+
+
+
+

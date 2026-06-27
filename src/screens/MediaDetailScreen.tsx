@@ -30,6 +30,7 @@ import { useTrakt } from '../context/TraktContext';
 import { useAddons, AddonStream } from '../context/AddonContext';
 import { useDebrid } from '../context/DebridContext';
 import { useLanguage } from '../context/LanguageContext';
+import { useMdbListSettings } from '../context/MdbListSettingsContext';
 import { useWatched } from '../context/WatchedContext';
 import { movieProgressKey, episodeProgressKey, useWatchProgress } from '../context/WatchProgressContext';
 import { useAppLifecycle } from '../context/AppLifecycleContext';
@@ -44,13 +45,26 @@ import {
 } from '../utils/watchlist';
 import { StackBottomNav, BOTTOM_NAV_HEIGHT } from '../components/StackBottomNav';
 import { MediaDetailSkeleton } from '../components/Skeleton';
-import { RatingBadge } from '../components/RatingBadge';
 import { getProfileStorageOwnerId, progressFileStorageKey } from '../utils/profileStorage';
 import { getStreamCapableAddonsForType } from '../utils/addonCapabilities';
+import {
+  ExternalRating,
+  MDBLIST_PROVIDER_AUDIENCE,
+  MDBLIST_PROVIDER_IMDB,
+  MDBLIST_PROVIDER_LETTERBOXD,
+  MDBLIST_PROVIDER_METACRITIC,
+  MDBLIST_PROVIDER_TMDB,
+  MDBLIST_PROVIDER_TOMATOES,
+  MDBLIST_PROVIDER_TRAKT,
+  fetchMdbListRatings,
+  getEnabledMdbListProviders,
+  getMdbListErrorCode,
+  shouldFetchMdbListRatings,
+} from '../utils/mdblist';
 
 
 
-// ── Streaming provider deep links (TMDB provider ID → app scheme + website) ──
+// Ã¢â€â‚¬Ã¢â€â‚¬ Streaming provider deep links (TMDB provider ID Ã¢â€ â€™ app scheme + website) Ã¢â€â‚¬Ã¢â€â‚¬
 const PROVIDER_LINKS: Record<number, { appScheme: string; web: string }> = {
   8:    { appScheme: 'nflx://www.netflix.com/browse',          web: 'https://www.netflix.com' },
   9:    { appScheme: 'aiv://aiv/search',                       web: 'https://www.primevideo.com' },
@@ -89,7 +103,7 @@ async function openProvider(provider: { id: number; name: string }): Promise<voi
   }
 }
 
-/** Per-user individual progress file storage key — must match PlayerScreen. */
+/** Per-user individual progress file storage key Ã¢â‚¬â€ must match PlayerScreen. */
 function progressFileKey(uid: string | null, itemKey: string): string {
   return progressFileStorageKey(uid, itemKey);
 }
@@ -192,6 +206,76 @@ function isFutureDate(value?: string | null): boolean {
 }
 
 type Tab = 'about' | 'seasons' | 'streams';
+
+const externalRatingVisuals: Record<string, { label: string; color: string; format: (value: number) => string; logo?: any; logoWidth?: number }> = {
+  [MDBLIST_PROVIDER_IMDB]: { label: 'IMDb', color: '#F5C518', format: value => value.toFixed(1), logo: require('../../assets/ratings/imdb-logo.png'), logoWidth: 28 },
+  [MDBLIST_PROVIDER_TMDB]: { label: 'TMDB', color: '#01B4E4', format: value => String(Math.round(value)), logo: require('../../assets/ratings/tmdb-logo.png'), logoWidth: 28 },
+  [MDBLIST_PROVIDER_TOMATOES]: { label: 'RT', color: '#FA320A', format: value => `${Math.round(value)}%`, logo: require('../../assets/ratings/rotten-tomatoes-logo.png'), logoWidth: 22 },
+  [MDBLIST_PROVIDER_METACRITIC]: { label: 'MC', color: '#FFCC33', format: value => String(Math.round(value)), logo: require('../../assets/ratings/metacritic-logo.png'), logoWidth: 22 },
+  [MDBLIST_PROVIDER_TRAKT]: { label: 'Trakt', color: '#ED1C24', format: value => String(Math.round(value)), logo: require('../../assets/ratings/trakt-logo.png'), logoWidth: 24 },
+  [MDBLIST_PROVIDER_LETTERBOXD]: { label: 'LB', color: '#00E054', format: value => value.toFixed(1), logo: require('../../assets/ratings/letterboxd-logo.png'), logoWidth: 26 },
+  [MDBLIST_PROVIDER_AUDIENCE]: { label: 'Audience', color: '#FA320A', format: value => `${Math.round(value)}%`, logo: require('../../assets/ratings/audience-score.png'), logoWidth: 22 },
+};
+
+function ExternalRatingsRow({
+  ratings,
+  colors,
+  isLightAppearance,
+  centered = false,
+}: {
+  ratings: ExternalRating[];
+  colors: ThemeColors;
+  isLightAppearance: boolean;
+  centered?: boolean;
+}) {
+  if (ratings.length === 0) return null;
+
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 10,
+        marginTop: 12,
+        width: '100%',
+        justifyContent: centered ? 'center' : 'flex-start',
+      }}
+    >
+      {ratings.map(rating => {
+        const visuals = externalRatingVisuals[rating.source];
+        if (!visuals) return null;
+        return (
+          <View
+            key={rating.source}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 7,
+              paddingHorizontal: 10,
+              paddingVertical: 8,
+              borderRadius: 999,
+              backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.62)' : colors.inputBg,
+              borderWidth: 1,
+              borderColor: isLightAppearance ? 'rgba(17,24,39,0.12)' : colors.border,
+            }}
+          >
+            {visuals.logo ? (
+              <Image
+                source={visuals.logo}
+                style={{ width: visuals.logoWidth ?? 24, height: 14 }}
+                contentFit="contain"
+                transition={0}
+              />
+            ) : (
+              <Text style={{ color: visuals.color, fontSize: 11, fontWeight: '900' }}>{visuals.label}</Text>
+            )}
+            <Text style={{ color: colors.textPrimary, fontSize: 13, fontWeight: '800' }}>{visuals.format(rating.value)}</Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
 
 const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: boolean) => {
   const isLightMonochrome = isLightAppearance && c.accent === '#ffffff' && c.buttonText === '#111111';
@@ -409,6 +493,7 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   },
   pillText:     { color: c.buttonText, fontSize: 11, fontWeight: '700' },
   pillDarkText: { color: isMonochromeDark ? c.textPrimary : (isLightAppearance ? c.textPrimary : '#111827'), fontSize: 11, fontWeight: '800' },
+  detailStatusText: { color: isLightAppearance ? c.textSecondary : c.subText, fontSize: 12, lineHeight: 18, marginTop: 10 },
   actions: {
     flexDirection: 'row',
     paddingHorizontal: 14,
@@ -787,7 +872,7 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(10,14,24,0.18)',
   },
-  // ── Centered layout variant ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Centered layout variant Ã¢â€â‚¬Ã¢â€â‚¬
     backdropWrapperCentered: { height: 465, position: 'relative' as const },
     backdropCentered: { width: '100%' as const, height: 465 },
   centeredMeta: {
@@ -882,7 +967,7 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     color: '#ffffff',
   },
   centeredTagline: { color: isLightAppearance ? c.textSecondary : c.subText, fontSize: 12, fontStyle: 'italic', marginBottom: 10, textAlign: 'center' as const },
-  centeredPills:   { flexDirection: 'row' as const, flexWrap: 'wrap' as const, gap: 6, justifyContent: 'center' as const },
+  centeredPills:   { flexDirection: 'row' as const, flexWrap: 'wrap' as const, gap: 6, justifyContent: 'center' as const, width: '100%' as const },
   centeredActionsWrap: { paddingHorizontal: 14, gap: 10, marginBottom: 16, marginTop: 0 },
   centeredCombinedRow: {
     flexDirection: 'row' as const, justifyContent: 'center' as const,
@@ -911,7 +996,7 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   centeredPillWatchedActive: { backgroundColor: isLightAppearance ? c.cardBg : (vividAmbient ? c.inputBg + '99' : c.inputBg), borderColor: c.border },
   centeredPillText:          { color: isMonochromeDark ? c.textPrimary : (isLightAppearance ? c.textPrimary : c.subText), fontSize: 13, fontWeight: '700' as const },
   centeredPillTextActive:    { color: isMonochromeDark ? c.textPrimary : (isLightAppearance ? c.textPrimary : c.accentSoft), fontSize: 13, fontWeight: '700' as const },
-  // ── Streams tab ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Streams tab Ã¢â€â‚¬Ã¢â€â‚¬
   streamsList:     { marginTop: 4 },
   streamGroup:     { marginBottom: 20 },
   streamGroupLabel:{ color: isLightAppearance ? c.textPrimary : '#e8e8f0', fontSize: 13, fontWeight: '800', marginBottom: 8, letterSpacing: 0.2 },
@@ -944,7 +1029,7 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   streamResolvingCard:  {
     backgroundColor: c.cardBg, borderRadius: 16, padding: 24, alignItems: 'center', width: '100%',
   },
-  // ── End streams ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ End streams Ã¢â€â‚¬Ã¢â€â‚¬
   whereSection:    { marginTop: 24 },
   whereDivider:    { height: 1, backgroundColor: c.border, marginBottom: 20 },
   featuredSectionHeading: { color: isLightAppearance ? c.textPrimary : '#fff', fontSize: 24, fontWeight: '800', marginBottom: 16, letterSpacing: 0.3 },
@@ -1004,13 +1089,41 @@ interface TraktCommentItem {
   createdAt: string | null;
 }
 
+function buildRoutePreviewMedia(params: any, fallbackType: 'movie' | 'tv') {
+  if (!params) return null;
+
+  const title = typeof params.title === 'string' ? params.title : null;
+  const poster = typeof params.poster === 'string' ? params.poster : null;
+  const backdrop = typeof params.backdrop === 'string' ? params.backdrop : null;
+  const synopsis = typeof params.synopsis === 'string' ? params.synopsis : null;
+  const year = typeof params.year === 'number' || typeof params.year === 'string' ? params.year : null;
+  const imdbId = typeof params.imdbId === 'string' ? params.imdbId : null;
+  const rating = typeof params.rating === 'number' ? params.rating : null;
+
+  if (!title && !poster && !backdrop && !synopsis && !year && !imdbId && rating == null) return null;
+
+  return {
+    id: params.movieId,
+    type: params.type ?? fallbackType,
+    title: title ?? ' ',
+    poster,
+    backdrop,
+    description: synopsis,
+    year,
+    imdbId,
+    rating,
+    externalRatings: [],
+  };
+}
+
 export const MediaDetailScreen = ({ route, navigation }: any) => {
-  const { movieId, type = 'movie', startFromBeginning = false } = route.params || {};
+  const { movieId, type = 'movie', startFromBeginning = false, imdbId: routeImdbId = null } = route.params || {};
   const { user } = useAuth();
   const { activeProfile } = useProfile();
   const { theme, resolvedAppearance } = useTheme();
   const { colors } = theme;
   const { t } = useLanguage();
+  const mdbListSettings = useMdbListSettings();
   const { uiStyle } = useUIStyle();
   const { showStreamsList, vividAmbientEnabled } = useDisplaySettings();
   const { isForeground } = useAppLifecycle();
@@ -1062,9 +1175,11 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
 
   const insets = useSafeAreaInsets();
   const cacheKey = `${type}/${movieId}`;
-  const [media, setMedia] = useState<any>(() => detailCache.get(cacheKey) ?? null);
-  const [loading, setLoading] = useState(() => !detailCache.has(cacheKey));
+  const routePreviewMedia = useMemo(() => buildRoutePreviewMedia(route.params, type), [route.params, type]);
+  const [media, setMedia] = useState<any>(() => detailCache.get(cacheKey) ?? routePreviewMedia ?? null);
+  const [loading, setLoading] = useState(() => !detailCache.has(cacheKey) && !routePreviewMedia);
   const [activeTab, setActiveTab] = useState<Tab>('about');
+  const [mdbListStatusMessage, setMdbListStatusMessage] = useState<string | null>(null);
   const [showSeasonsPanel, setShowSeasonsPanel] = useState(false);
   const [selectedSeason, setSelectedSeason] = useState(1);
   const [episodes, setEpisodes] = useState<any[]>([]);
@@ -1083,7 +1198,21 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     setShowDescriptionMore(false);
   }, [cacheKey, uiStyle]);
 
-  // ── Sheet state ─────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const cached = detailCache.get(cacheKey);
+    if (cached) {
+      setMedia({ ...cached, imdbId: cached.imdbId ?? routeImdbId ?? null, externalRatings: cached.externalRatings ?? [] });
+      setVimeoKey(cached.vimeoKey ?? null);
+      setLoading(false);
+      return;
+    }
+
+    setMedia(routePreviewMedia ?? null);
+    setVimeoKey(null);
+    setLoading(!routePreviewMedia);
+  }, [cacheKey, routeImdbId, routePreviewMedia]);
+
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Sheet state Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   // Episode long-press action sheet
   const [epSheetEp, setEpSheetEp] = useState<any>(null);
   // "Mark series as watched" confirm
@@ -1136,7 +1265,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const hasStreamSources = streamCapableAddons.length > 0 || ultraActive;
   const sourceCount = streamCapableAddons.length + (ultraActive ? 1 : 0);
   const shouldPreloadStreams = isMovieDetail && !!media && !addonsLoading && hasStreamSources;
-  // Always start as false — the reset effect below will set it to true once
+  // Always start as false Ã¢â‚¬â€ the reset effect below will set it to true once
   // we know whether a preload is actually needed (after media + user are ready).
   const [streamsLoadComplete, setStreamsLoadComplete] = useState(false);
   const streamsFetchingForPlayback = isMovieDetail
@@ -1154,7 +1283,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     return release > new Date();
   }, [media?.releaseDate, media?.firstAirDate]);
 
-  // ── Local progress (read fresh from Storage on every screen focus) ──────────
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Local progress (read fresh from Storage on every screen focus) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const [localProgress, setLocalProgress] = useState<{ positionSec: number; durationSec: number } | null>(null);
   const [watchlistRemovalIds, setWatchlistRemovalIds] = useState<string[]>([]);
   const [traktComments, setTraktComments] = useState<TraktCommentItem[]>([]);
@@ -1171,7 +1300,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
       if (liveEntry && liveEntry.durationSec > 0) {
         setLocalProgress({ positionSec: liveEntry.positionSec, durationSec: liveEntry.durationSec });
       }
-      // Each movie's progress is stored per-user — read the user-scoped file
+      // Each movie's progress is stored per-user Ã¢â‚¬â€ read the user-scoped file
       Storage.getItem(progressFileStorageKey(storageOwnerId, key)).then(raw => {
         if (!raw) { setLocalProgress(null); return; }
         try {
@@ -1234,7 +1363,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   /**
    * Seconds to seek to when resuming playback.
    * Local: exact stored position.
-   * Trakt: approximate from progress% × runtime.
+   * Trakt: approximate from progress% Ãƒâ€” runtime.
    */
   const resumeFromSec: number | undefined = (() => {
     if (effectiveLocalProgress && localProgressPct != null && localProgressPct > 0 && localProgressPct < 95) {
@@ -1422,10 +1551,10 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   }, [media?.releaseDate, media?.firstAirDate, media?.runtime, media?.tagline]);
   const [playBtnLoadingDetailIndex, setPlayBtnLoadingDetailIndex] = useState(0);
   const STREAM_LOADING_PHRASES = [
-    'Finding best stream…',
-    'Checking sources…',
-    'Scanning addons…',
-    'Almost ready…',
+    'Finding best stream...',
+    'Checking sources...',
+    'Scanning addons...',
+    'Almost ready...',
   ];
   const activePlayBtnLoadingDetail = streamsTabLocked
     ? (playBtnLoadingDetails.length > 0
@@ -1474,20 +1603,101 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     setPlayBtnLoadingDetailIndex(Math.floor(Math.random() * playBtnLoadingDetails.length));
   }, [movieId, playBtnLoadingDetails]);
 
+  useEffect(() => {
+    if (!media) return;
+
+    const imdbId = media.imdbId ?? routeImdbId ?? null;
+    const enabledProviders = getEnabledMdbListProviders(mdbListSettings);
+    const hasApiKey = mdbListSettings.apiKey.trim().length > 0;
+
+    if (!mdbListSettings.enabled) {
+      setMdbListStatusMessage(null);
+      setMedia((current: any) => current ? { ...current, externalRatings: [] } : current);
+      return;
+    }
+
+    if (!hasApiKey) {
+      setMdbListStatusMessage('Add an MDBList API key in Settings to load external ratings.');
+      setMedia((current: any) => current ? { ...current, externalRatings: [] } : current);
+      return;
+    }
+
+    if (enabledProviders.length === 0) {
+      setMdbListStatusMessage('Enable at least one MDBList ratings provider in Settings.');
+      setMedia((current: any) => current ? { ...current, externalRatings: [] } : current);
+      return;
+    }
+
+    if (!shouldFetchMdbListRatings(imdbId, mdbListSettings)) {
+      setMdbListStatusMessage('External ratings are unavailable for this title because no IMDb ID was found.');
+      setMedia((current: any) => current ? { ...current, externalRatings: [] } : current);
+      return;
+    }
+
+    if (loading) return;
+
+    const controller = new AbortController();
+    const detailId = String(media.id ?? movieId);
+    const currentType = type === 'movie' ? 'movie' : 'tv';
+    setMdbListStatusMessage(null);
+
+    const idleHandle = runIdle(() => {
+      void (async () => {
+        try {
+          const ratings = await fetchMdbListRatings(imdbId, currentType, mdbListSettings, controller.signal);
+          if (controller.signal.aborted) return;
+          setMedia((current: any) => {
+            if (!current || String(current.id ?? '') !== detailId) return current;
+            return { ...current, externalRatings: ratings };
+          });
+          setMdbListStatusMessage(ratings.length === 0 ? 'No external ratings were returned by your enabled MDBList providers for this title.' : null);
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          const errorCode = getMdbListErrorCode(error);
+          setMedia((current: any) => {
+            if (!current || String(current.id ?? '') !== detailId) return current;
+            return { ...current, externalRatings: [] };
+          });
+          setMdbListStatusMessage(errorCode === 'invalid_api_key' ? 'Your MDBList API key was rejected. Verify it in Settings.' : null);
+        }
+      })();
+    }, { timeoutMs: 2500 });
+
+    return () => {
+      idleHandle.cancel();
+      controller.abort();
+    };
+  }, [
+    media?.id,
+    media?.imdbId,
+    movieId,
+    routeImdbId,
+    type,
+    mdbListSettings.enabled,
+    mdbListSettings.apiKey,
+    mdbListSettings.useImdb,
+    mdbListSettings.useTmdb,
+    mdbListSettings.useTomatoes,
+    mdbListSettings.useMetacritic,
+    mdbListSettings.useTrakt,
+    mdbListSettings.useLetterboxd,
+    mdbListSettings.useAudience,
+    loading,
+  ]);
+
 
   useEffect(() => {
     if (detailCache.has(cacheKey)) return; // already have data, skip fetch
     const controller = new AbortController();
     detailsAbortRef.current?.abort();
     detailsAbortRef.current = controller;
-    const idleHandle = runIdle(() => {
-      const fetchDetails = async () => {
+    const fetchDetails = async () => {
         try {
           const res = await tmdbFetch(`/tmdb/details/${type}/${movieId}`, { signal: controller.signal });
           const data = await res.json();
           if (controller.signal.aborted) return;
           detailCache.set(cacheKey, data);
-          setMedia(data);
+          setMedia({ ...data, imdbId: data.imdbId ?? routeImdbId ?? null, externalRatings: [] });
           setVimeoKey(data.vimeoKey ?? null);
           // Prefetch backdrop and poster for immediate crispness
           if (data.backdrop || data.poster) {
@@ -1503,14 +1713,12 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
           }
         }
       };
-      void fetchDetails();
-    });
+    void fetchDetails();
     return () => {
-      idleHandle.cancel();
       controller.abort();
       if (detailsAbortRef.current === controller) detailsAbortRef.current = null;
     };
-  }, [movieId, type, cacheKey]);
+  }, [movieId, type, cacheKey, routeImdbId]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1558,8 +1766,8 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   // Fetch streams progressively when the Streams tab becomes active.
   //
   // IMPORTANT: streamsFetchedRef is a REF, not state. If it were state, setting
-  // it true inside this effect would change a dep → React would re-run the effect
-  // → the cleanup would call controller.abort() → every fetch gets aborted before
+  // it true inside this effect would change a dep Ã¢â€ â€™ React would re-run the effect
+  // Ã¢â€ â€™ the cleanup would call controller.abort() Ã¢â€ â€™ every fetch gets aborted before
   // it can complete. The ref update is invisible to React's dep tracking.
   useEffect(() => {
     if (!shouldPreloadStreams || streamsFetchedRef.current || !media) return;
@@ -1573,12 +1781,12 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     setStreamsLoading(true);
     setStreamsLoadComplete(false);
     setStreamsFetchStarted(true);
-    streamsFetchedRef.current = true; // ref — no re-render, no accidental abort
+    streamsFetchedRef.current = true; // ref Ã¢â‚¬â€ no re-render, no accidental abort
 
     const videoId    = media.imdbId ?? String(movieId);
     const streamType = type === 'tv' ? 'series' : 'movie';
 
-    fetchStreamsProgressive(
+    void fetchStreamsProgressive(
       streamType,
       videoId,
       (newStreams, pending) => {
@@ -1589,10 +1797,15 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
         if (pending === 0) setStreamsLoadComplete(true);
       },
       controller.signal,
-    );
+    ).catch(() => {
+      if (controller.signal.aborted || streamsRequestIdRef.current !== requestId) return;
+      setStreamsPending(0);
+      setStreamsLoading(false);
+      setStreamsLoadComplete(true);
+    });
 
     return () => { controller.abort(); };
-  }, [shouldPreloadStreams, streamsFetchKey, media, movieId, type, fetchStreamsProgressive]);
+  }, [shouldPreloadStreams, streamsFetchKey, media?.id, media?.imdbId, movieId, type, fetchStreamsProgressive]);
 
   // When returning from Auth or Addons with the Streams tab active and no results,
   // reset the guard and bump the fetch key so the effect re-runs.
@@ -1754,6 +1967,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
             poster: media.poster,
             rating: media.rating,
             year: media.year,
+            addedAt: Date.now(),
           })];
       await writeWatchlistItems(storageOwnerId, next);
 
@@ -2029,7 +2243,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
         );
       })()}
 
-      {/* Mark series as watched — confirm */}
+      {/* Mark series as watched Ã¢â‚¬â€ confirm */}
       <ConfirmSheet
         visible={seriesWatchedConfirm}
         onClose={() => setSeriesWatchedConfirm(false)}
@@ -2217,11 +2431,12 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                   </View>
                 )}
                 <View style={styles.centeredPills}>
-                  {media.rating > 0 && <View style={[styles.pill, styles.pillDark]}><RatingBadge rating={media.rating} textColor={resolvedAppearance === 'light' ? '#101828' : colors.textPrimary} /></View>}
                   {!!media.year && <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{media.year}</Text></View>}
                   {(media.runtime ?? 0) > 0 && <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{formatRuntimeButton(media.runtime)}</Text></View>}
                   {(media.numberOfSeasons ?? 0) > 0 && <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{t('media_seasons_count').replace('{n}', String(media.numberOfSeasons))}</Text></View>}
                 </View>
+                <ExternalRatingsRow ratings={media.externalRatings ?? []} colors={colors} isLightAppearance={isLightAppearance} centered />
+                {mdbListStatusMessage ? <Text style={[styles.detailStatusText, { textAlign: 'center' }]}>{mdbListStatusMessage}</Text> : null}
                 {useGlassDetailLayout && (
                   <View style={styles.glassSynopsisBlock}>
                     <Text
@@ -2329,12 +2544,15 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                   )}
                   {media.tagline ? <Text style={styles.tagline}>"{media.tagline}"</Text> : null}
                   <View style={styles.pills}>
-                    {media.rating > 0 && <View style={[styles.pill, styles.pillDark]}><RatingBadge rating={media.rating} textColor={resolvedAppearance === 'light' ? '#101828' : colors.textPrimary} /></View>}
                     {!!media.year && <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{media.year}</Text></View>}
                     {(media.runtime ?? 0) > 0 && <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{formatRuntimeButton(media.runtime)}</Text></View>}
                     {(media.numberOfSeasons ?? 0) > 0 && <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{t('media_seasons_count').replace('{n}', String(media.numberOfSeasons))}</Text></View>}
                   </View>
                 </View>
+              </View>
+              <View style={{ paddingHorizontal: 14, paddingBottom: 4 }}>
+                <ExternalRatingsRow ratings={media.externalRatings ?? []} colors={colors} isLightAppearance={isLightAppearance} />
+                {mdbListStatusMessage ? <Text style={styles.detailStatusText}>{mdbListStatusMessage}</Text> : null}
               </View>
             </View>
             <View style={styles.heroActionsShell}>
@@ -2394,7 +2612,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
 
         <View style={useCompactDetailLayout ? styles.centeredCombinedRow : styles.actions}>
           {useCompactDetailLayout ? (
-            // Centered: tabs first, then icon pills — all unified pill shape
+            // Centered: tabs first, then icon pills Ã¢â‚¬â€ all unified pill shape
             <View style={styles.centeredCombinedRow}>
               {([
                 'about',
@@ -2427,7 +2645,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                     ) : null}
                   <Text style={[styles.centeredPillText, (useGlassDetailLayout && tab === 'seasons' ? showSeasonsPanel : activeTab === tab) && styles.centeredPillTextActive, tab === 'streams' && streamsTabLoadingIndicator && { opacity: 0.18 }]}>
                   {tab === 'streams'
-                      ? `⚡ ${t('media_streams')}${streams.length > 0 ? ` (${streams.length})` : ''}`
+                      ? `${t('media_streams')}${streams.length > 0 ? ` (${streams.length})` : ''}`
                       : useGlassDetailLayout && tab === 'seasons'
                         ? (showSeasonsPanel ? t('media_hide_seasons') : t('media_show_seasons'))
                         : t(`media_${tab}` as any)}
@@ -2463,7 +2681,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
             {([
               'about',
               ...(media.type === 'tv' || type === 'tv' ? ['seasons'] : []),
-              // Streams tab only for movies — TV episodes open a dedicated page
+              // Streams tab only for movies Ã¢â‚¬â€ TV episodes open a dedicated page
               ...(showStreamsTab && !useGlassDetailLayout ? ['streams'] : []),
             ] as Tab[]).map(tab => (
               <TouchableOpacity
@@ -2487,7 +2705,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                   ) : null}
                 <Text style={[styles.tabText, (useGlassDetailLayout && tab === 'seasons' ? showSeasonsPanel : activeTab === tab) && styles.activeTabText, tab === 'streams' && streamsTabLoadingIndicator && { opacity: 0.18 }]}>
                   {tab === 'streams'
-                    ? `⚡ ${t('media_streams')}${streams.length > 0 ? ` (${streams.length})` : ''}`
+                    ? `${t('media_streams')}${streams.length > 0 ? ` (${streams.length})` : ''}`
                     : useGlassDetailLayout && tab === 'seasons'
                       ? (showSeasonsPanel ? t('media_hide_seasons') : t('media_show_seasons'))
                       : t(`media_${tab}` as any)}
@@ -2498,7 +2716,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
           </View>
         )}
 
-        {/* Sticky filter bar — index 4 in stickyHeaderIndices; 0-height when not applicable */}
+        {/* Sticky filter bar Ã¢â‚¬â€ index 4 in stickyHeaderIndices; 0-height when not applicable */}
         <View>
           {activeTab === 'streams' && addonNames.length > 1 && streams.length > 0 && (
             <ScrollView
@@ -2603,7 +2821,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                   const epProgress = getEpisodeProgressPercent(selectedSeason, ep);
                   const epReleased = formatReleaseDate(ep.air_date);
                   const epRuntime = formatRuntimeButton(Number(ep.runtime ?? media?.runtime ?? 0));
-                  const epMeta = [epReleased, epRuntime].filter(Boolean).join(' · ');
+                  const epMeta = [epReleased, epRuntime].filter(Boolean).join(' - ');
                   const shouldBlurStill = !epWatched;
                   const isUnairedEpisode = isFutureDate(ep.air_date);
                   return (
@@ -2642,7 +2860,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                           </>
                         ) : (
                           <View style={[styles.episodeCardStill, styles.epStillPlaceholder]}>
-                            <Text style={{ fontSize: 20 }}>📺</Text>
+                            <Text style={{ fontSize: 20 }}>Ã°Å¸â€œÂº</Text>
                           </View>
                         )}
                       </View>
@@ -2744,7 +2962,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                 </View>
               )}
 
-              {/* Cast marquee — shown inline under the description */}
+              {/* Cast marquee Ã¢â‚¬â€ shown inline under the description */}
               {!useGlassDetailLayout && media.cast?.length > 0 && (
                 <View style={{ marginTop: 20 }}>
                   <Text style={styles.featuredSectionHeading}>{t('media_cast')}</Text>
@@ -2765,7 +2983,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                           <Image source={{ uri: item.photo }} style={styles.castPhoto} />
                         ) : (
                           <View style={[styles.castPhoto, styles.castNoPhoto]}>
-                            <Text style={{ fontSize: 24 }}>🎭</Text>
+                            <Text style={{ fontSize: 24 }}>Ã°Å¸Å½Â­</Text>
                           </View>
                         )}
                         <Text style={styles.castName} numberOfLines={1}>{item.name}</Text>
@@ -2883,7 +3101,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                           <Image source={{ uri: item.photo }} style={[styles.castPhoto, styles.glassCastPhoto]} />
                         ) : (
                           <View style={[styles.castPhoto, styles.castNoPhoto, styles.glassCastPhoto]}>
-                            <Text style={{ fontSize: 24 }}>🎭</Text>
+                            <Text style={{ fontSize: 24 }}>Ã°Å¸Å½Â­</Text>
                           </View>
                         )}
                         <Text style={styles.castName} numberOfLines={1}>{item.name}</Text>
@@ -2987,13 +3205,13 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                         key={`${item.type}-${item.id}`}
                         style={styles.relatedCard}
                         activeOpacity={0.82}
-                        onPress={() => navigation.push('Detail', { movieId: item.id, type: item.type })}
+                        onPress={() => navigation.push('Detail', { movieId: item.id, type: item.type, imdbId: item.imdbId ?? undefined, title: item.title, synopsis: item.description ?? undefined, backdrop: item.backdrop ?? item.poster ?? undefined, poster: item.poster ?? undefined, year: item.year, rating: item.rating })}
                       >
                         {item.poster ? (
                           <Image source={{ uri: item.poster }} style={styles.relatedPoster} />
                         ) : (
                           <View style={[styles.relatedPoster, styles.relatedPosterPlaceholder]}>
-                            <Text style={{ fontSize: 28 }}>🎬</Text>
+                            <Text style={{ fontSize: 28 }}>Ã°Å¸Å½Â¬</Text>
                           </View>
                         )}
                         <Text style={styles.relatedTitle} numberOfLines={2}>{item.title}</Text>
@@ -3068,7 +3286,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                     const epProgress = getEpisodeProgressPercent(selectedSeason, ep);
                     const epReleased = formatReleaseDate(ep.air_date);
                     const epRuntime = formatRuntimeButton(Number(ep.runtime ?? media?.runtime ?? 0));
-                    const epMeta = [epReleased, epRuntime].filter(Boolean).join(' \u00b7 ');
+                  const epMeta = [epReleased, epRuntime].filter(Boolean).join(' ? ');
                     const shouldBlurStill = !epWatched;
                     const isUnairedEpisode = isFutureDate(ep.air_date);
                     return (
@@ -3107,7 +3325,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                             </>
                           ) : (
                             <View style={[styles.episodeCardStill, styles.epStillPlaceholder]}>
-                              <Text style={{ fontSize: 20 }}>📺</Text>
+                              <Text style={{ fontSize: 20 }}>Ã°Å¸â€œÂº</Text>
                           </View>
                         )}
                       </View>
@@ -3180,7 +3398,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   );
 };
 
-// ── Streams Tab Component ─────────────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬ Streams Tab Component Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 const INITIAL_STREAM_RENDER_LIMIT = 30;
 const STREAM_RENDER_LIMIT_STEP = 50;
@@ -3206,7 +3424,7 @@ function StreamsTab({
   isLightAppearance: boolean;
   presentation?: 'list' | 'rail';
 }) {
-  // StreamsTab only renders for movies — count movie-capable sources.
+  // StreamsTab only renders for movies Ã¢â‚¬â€ count movie-capable sources.
   const enabledAddons = getStreamCapableAddonsForType(addons, 'movie');
   const hasStreamSources = enabledAddons.length > 0 || ultraActive;
   const streamSourceCount = enabledAddons.length + (ultraActive ? 1 : 0);
@@ -3220,7 +3438,7 @@ function StreamsTab({
     };
   }, []);
 
-  // Hooks must be called unconditionally — before any early returns
+  // Hooks must be called unconditionally Ã¢â‚¬â€ before any early returns
   const addonNames = useMemo(
     () => [...new Set(streams.map(s => s.addonName))],
     [streams],
@@ -3242,7 +3460,7 @@ function StreamsTab({
     );
   }
 
-  // ── Not logged in ──────────────────────────────────────────────────────────
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Not logged in Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   if (!user && !hasStreamSources) {
     return (
       <View style={{ alignItems: 'center', paddingHorizontal: 8, paddingTop: 32, paddingBottom: 24 }}>
@@ -3285,7 +3503,7 @@ function StreamsTab({
     );
   }
 
-  // ── Logged in but no addons installed ─────────────────────────────────────
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Logged in but no addons installed Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   if (!hasStreamSources) {
     return (
       <View style={{ alignItems: 'center', paddingHorizontal: 8, paddingTop: 32, paddingBottom: 24 }}>
@@ -3299,7 +3517,7 @@ function StreamsTab({
           No addons installed
         </Text>
         <Text style={{ color: colors.subText, fontSize: 13, textAlign: 'center', lineHeight: 20, marginBottom: 28, maxWidth: 280 }}>
-          Addons are streaming sources that find links for movies and shows. Add one to start watching — compatible with any Stremio addon URL.
+          Addons are streaming sources that find links for movies and shows. Add one to start watching - compatible with any Stremio addon URL.
         </Text>
         <TouchableOpacity
           onPress={() => navigation.navigate('Addons')}
@@ -3324,7 +3542,7 @@ function StreamsTab({
     );
   }
 
-  // ── Addons configured but no results for this title ───────────────────────
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Addons configured but no results for this title Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   if (streams.length === 0) {
     return (
       <View style={{ alignItems: 'center', paddingHorizontal: 8, paddingTop: 32, paddingBottom: 24 }}>
@@ -3349,7 +3567,7 @@ function StreamsTab({
     );
   }
 
-  // ── Streams available ─────────────────────────────────────────────────────
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Streams available Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
   // Reset filter if the previously selected addon no longer has results
   const safeAddon = addonNames.includes(selectedAddon) ? selectedAddon : 'all';
@@ -3424,7 +3642,7 @@ function StreamsTab({
         }}>
           <ActivityIndicator size="small" color={colors.accent} />
           <Text style={{ color: colors.subText, fontSize: 12, flex: 1 }}>
-            Searching {pendingCount} more addon{pendingCount !== 1 ? 's' : ''}…
+            Searching {pendingCount} more addon{pendingCount !== 1 ? 's' : ''}...
           </Text>
         </View>
       )}
@@ -3454,7 +3672,7 @@ function StreamsTab({
 
       {Object.entries(grouped).map(([addonName, addonStreams]) => (
         <View key={addonName} style={{ marginBottom: 20 }}>
-          {/* Hide the section header when filtered to a single addon — it's redundant */}
+          {/* Hide the section header when filtered to a single addon Ã¢â‚¬â€ it's redundant */}
           {safeAddon === 'all' && (
             <Text style={{ color: colors.textPrimary, fontSize: 11, fontWeight: '700', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: 8 }}>
               {getStreamSourceLabel(addonName)}
@@ -3491,3 +3709,19 @@ const StreamRow = React.memo(function StreamRow({ stream, colors, onPlay, style,
   const handlePress = React.useCallback(() => onPlay(stream), [onPlay, stream]);
   return <StreamSourceRow stream={stream} colors={colors} onPress={handlePress} style={style} sourceLabel={sourceLabel} />;
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

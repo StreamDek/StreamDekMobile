@@ -24,6 +24,7 @@ import { useLanguage } from '../context/LanguageContext';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getStreamIdentityKey } from '../utils/streamIdentity';
 import {
   MpvPlayer,
   MpvPlayerHandle,
@@ -173,15 +174,7 @@ function normalizeStreamText(value?: string | null): string {
 }
 
 function streamIdentityKey(stream: AddonStream | null | undefined): string {
-  if (!stream) return '';
-  return normalizeStreamText(
-    stream.infoHash
-    ?? stream.url
-    ?? stream.behaviorHints?.filename
-    ?? stream.title
-    ?? stream.name
-    ?? '',
-  );
+  return getStreamIdentityKey(stream);
 }
 
 function serializeRememberedStream(stream: AddonStream): RememberedStreamChoice {
@@ -3956,3 +3949,4 @@ const styles = StyleSheet.create({
   },
 
 });
+

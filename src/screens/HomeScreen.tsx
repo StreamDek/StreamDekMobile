@@ -3,7 +3,7 @@ import { useFocusEffect, useScrollToTop } from '@react-navigation/native';
 import {
   View, Text, StyleSheet, RefreshControl,
   Animated, Easing, PanResponder, StatusBar, TouchableOpacity,
-  FlatList, Dimensions, Share, BackHandler, AppState,
+  FlatList, Dimensions, Share, BackHandler, AppState, Alert,
   Image as RNImage,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -51,12 +51,14 @@ import { getProfileStorageOwnerId, profileScopedStorageKey, progressIndexStorage
 import { useTmdbApiKey } from '../context/TmdbApiKeyContext';
 import { useAddons } from '../context/AddonContext';
 import { getDeviceProfile } from '../utils/deviceProfile';
+import { useMdbListSettings } from '../context/MdbListSettingsContext';
 import { invalidateSharedCache } from '../utils/sharedDataCache';
 import { IdleTaskHandle, runIdle } from '../utils/idleTask';
 import { buildAddonHomeSections, buildDefaultHomeSections } from '../utils/homeCatalogSections';
 import { getHomeSectionStorageKeys, mergeSavedHomeSections } from '../utils/homeLayoutConfig';
 import { EntranceFade } from '../components/EntranceFade';
 import { isExpoGoRuntime } from '../utils/runtime';
+import { enrichItemsWithMdbListRatings, getEnabledMdbListProviders } from '../utils/mdblist';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const HERO_HEIGHT = 616;
@@ -65,6 +67,7 @@ const CURRENT_YEAR = new Date().getFullYear();
 const HOME_SECTION_CACHE_KEY = 'home_section_cache';
 const homeSectionMemoryCache = new Map<string, Record<string, any[]>>();
 const SECTION_UPDATE_FLUSH_MS = 80;
+const HOME_MDBLIST_ENRICH_LIMIT = 12;
 const AnimatedFlatList = Animated.createAnimatedComponent(FlatList<any>);
 
 function formatContinueTime(positionSec?: number | null): string | null {
@@ -583,6 +586,7 @@ export const HomeScreen = ({ navigation }: any) => {
   const { isForeground } = useAppLifecycle();
   const { uiStyle } = useUIStyle();
   const { continueWatchingStyle, vividAmbientEnabled } = useDisplaySettings();
+  const mdbListSettings = useMdbListSettings();
   const { setAppReady } = useAppReady();
   const { metadataProvider, homeCatalogProviders } = useTmdbApiKey();
   const { addons, fetchStreams, fetchStreamsForAddon } = useAddons();
@@ -640,15 +644,42 @@ export const HomeScreen = ({ navigation }: any) => {
     () => getHomeSectionStorageKeys(user?.uid, activeProfile?.id),
     [activeProfile?.id, user?.uid],
   );
+  const catalogRatingSettings = useMemo(() => ({
+    enabled: mdbListSettings.enabled,
+    apiKey: mdbListSettings.apiKey,
+    useImdb: mdbListSettings.useImdb,
+    useTmdb: mdbListSettings.useTmdb,
+    useTomatoes: mdbListSettings.useTomatoes,
+    useMetacritic: mdbListSettings.useMetacritic,
+    useTrakt: mdbListSettings.useTrakt,
+    useLetterboxd: mdbListSettings.useLetterboxd,
+    useAudience: mdbListSettings.useAudience,
+  }), [
+    mdbListSettings.apiKey,
+    mdbListSettings.enabled,
+    mdbListSettings.useAudience,
+    mdbListSettings.useImdb,
+    mdbListSettings.useLetterboxd,
+    mdbListSettings.useMetacritic,
+    mdbListSettings.useTmdb,
+    mdbListSettings.useTomatoes,
+    mdbListSettings.useTrakt,
+  ]);
+  const mdbListSectionKey = useMemo(() => {
+    if (!catalogRatingSettings.enabled || catalogRatingSettings.apiKey.trim().length === 0) return 'mdblist:off';
+    const enabledProviders = getEnabledMdbListProviders(catalogRatingSettings);
+    return enabledProviders.length > 0 ? `mdblist:${enabledProviders.join('+')}` : 'mdblist:none';
+  }, [catalogRatingSettings]);
   const sectionProviderKey = useMemo(
-    () => `${metadataProvider}:${homeCatalogProviders.slice().sort().join('+')}`,
-    [homeCatalogProviders, metadataProvider],
+    () => `${metadataProvider}:${homeCatalogProviders.slice().sort().join('+')}:${mdbListSectionKey}`,
+    [homeCatalogProviders, mdbListSectionKey, metadataProvider],
   );
   const sectionCacheKey = profileScopedStorageKey(`${HOME_SECTION_CACHE_KEY}:${sectionProviderKey}`, user?.uid, activeProfile?.id);
 
   const [longPressItem,          setLongPressItem]          = useState<any | null>(null);
   const [seriesWatchConfirmItem, setSeriesWatchConfirmItem] = useState<any | null>(null);
   const [heroPlayChoiceItem, setHeroPlayChoiceItem] = useState<any | null>(null);
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
 
   const [pendingWatchlistRemovals, setPendingWatchlistRemovals] = useState<Set<string>>(new Set());
 
@@ -684,7 +715,7 @@ export const HomeScreen = ({ navigation }: any) => {
   const lastAutoFetchKeyRef = useRef<string | null>(null);
   const sectionFetchRequestIdRef = useRef(0);
   // Rows animate in only during a short window after the first content
-  // arrives — rows mounted later (while scrolling) appear instantly. The
+  // arrives ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â rows mounted later (while scrolling) appear instantly. The
   // decision is cached per row key so the wrapper tree stays stable across
   // re-renders (a changing wrapper would remount the row and lose its state).
   const homeEntranceWindowUntilRef = useRef<number | null>(null);
@@ -866,10 +897,14 @@ export const HomeScreen = ({ navigation }: any) => {
             ? addons.find(candidate => s.id.startsWith(`addon:${candidate.id}:`)) ?? null
             : null;
           const data = await fetchMetadataCatalog(s.endpoint, { addon });
+          let rows = data.results || [];
+          if (s.source !== 'addon') {
+            rows = await enrichItemsWithMdbListRatings(rows, catalogRatingSettings, { maxItems: HOME_MDBLIST_ENRICH_LIMIT });
+          }
           if (sectionFetchRequestIdRef.current !== requestId) return;
           fetchedAny = true;
-          nextResults[s.id] = data.results || [];
-          queueSectionUpdate(s.id, data.results || []);
+          nextResults[s.id] = rows;
+          queueSectionUpdate(s.id, rows);
           if (!firstSettled) {
             firstSettled = true;
             setLoading(false);
@@ -919,7 +954,7 @@ export const HomeScreen = ({ navigation }: any) => {
       setLoading(false);
     }
     return fetchedAny;
-  }, [addons, deviceProfile.performanceClass, isForeground, sectionCacheKey]);
+  }, [addons, catalogRatingSettings, deviceProfile.performanceClass, isForeground, sectionCacheKey]);
 
   const fetchTraktSections = useCallback(async () => {
     if (!traktConnected || !user) return;
@@ -1000,15 +1035,15 @@ export const HomeScreen = ({ navigation }: any) => {
     void fetchCatalogSections(sections);
   }, [fetchCatalogSections, sectionProviderKey, sections]);
 
-  // Home is the root tab — exit the app when the hardware back is pressed here.
+  // Home is the root tab - confirm before exiting on hardware back.
   useFocusEffect(
     useCallback(() => {
       const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-        BackHandler.exitApp();
+        setShowExitConfirm(true);
         return true;
       });
       return () => sub.remove();
-    }, [])
+    }, []),
   );
 
   // Sync user-specific content whenever auth state changes
@@ -1451,11 +1486,11 @@ export const HomeScreen = ({ navigation }: any) => {
     }
     // Addon catalogs (e.g. UltraMax) often only provide an IMDb id, no TMDB id.
     // Resolve it to a TMDB numeric id first so the detail page, progress
-    // tracking and watchlist — all keyed on numeric TMDB ids — work normally.
+    // tracking and watchlist ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â all keyed on numeric TMDB ids ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â work normally.
     if (isImdbId) {
       const resolved = await resolveImdbToTmdbId(itemId, item.type === 'tv' ? 'tv' : 'movie');
       if (resolved) {
-        navigation.navigate('Detail', { movieId: resolved.id, type: resolved.type, imdbId: itemId });
+        navigation.navigate('Detail', { movieId: resolved.id, type: resolved.type, imdbId: itemId, title: item.title, synopsis: item.description ?? undefined, backdrop: item.backdrop ?? item.poster ?? undefined, poster: item.poster ?? undefined, year: item.year, rating: item.rating });
         return;
       }
       if (item?.addonId) {
@@ -1486,13 +1521,13 @@ export const HomeScreen = ({ navigation }: any) => {
         return;
       }
     }
-    navigation.navigate('Detail', { movieId: item.id, type: item.type || 'movie' });
+    navigation.navigate('Detail', { movieId: item.id, type: item.type || 'movie', imdbId: item.imdbId ?? undefined, title: item.title, synopsis: item.description ?? undefined, backdrop: item.backdrop ?? item.poster ?? undefined, poster: item.poster ?? undefined, year: item.year, rating: item.rating });
   }, [expoGoRuntime, fetchStreams, fetchStreamsForAddon, navigation]);
 
   const handleHeroRewatchPress = useCallback((item: any) => {
     const progressKey = movieProgressKey(Number(item.id));
     if (item.type === 'tv') {
-      navigation.navigate('Detail', { movieId: item.id, type: 'tv', startFromBeginning: true });
+      navigation.navigate('Detail', { movieId: item.id, type: 'tv', startFromBeginning: true, imdbId: item.imdbId ?? undefined, title: item.title, synopsis: item.description ?? undefined, backdrop: item.backdrop ?? item.poster ?? undefined, poster: item.poster ?? undefined, year: item.year, rating: item.rating });
       return;
     }
 
@@ -1569,6 +1604,7 @@ export const HomeScreen = ({ navigation }: any) => {
           type: item.type,
           year: item.year,
           rating: item.rating,
+          addedAt: Date.now(),
         })];
     await writeWatchlistItems(storageOwnerId, updated);
     setWatchlist(updated);
@@ -2334,6 +2370,7 @@ export const HomeScreen = ({ navigation }: any) => {
         ]}
       />
       <ConfirmSheet visible={!!seriesWatchConfirmItem} onClose={() => setSeriesWatchConfirmItem(null)} icon="checkmark-circle-outline" title={t('watched_series_title')} message={t('watched_series_msg')} confirmLabel={t('watched_series_confirm')} variant="accent" onConfirm={() => { if (seriesWatchConfirmItem) handleSeriesMarkWatched(seriesWatchConfirmItem); setSeriesWatchConfirmItem(null); }} />
+      <ConfirmSheet visible={showExitConfirm} onClose={() => setShowExitConfirm(false)} icon="exit-outline" title="Exit App" message="Do you want to exit the app" confirmLabel="Exit" cancelLabel="Cancel" variant="destructive" onConfirm={() => BackHandler.exitApp()} />
       {!!heroTrailerVisible && <TrailerModal visible trailerKey={heroTrailerVisible} onClose={() => setHeroTrailerVisible(null)} />}
     </View>
       </BlurTargetView>
@@ -2341,7 +2378,7 @@ export const HomeScreen = ({ navigation }: any) => {
         activeTab="Home"
         blurTarget={blurTargetRef}
         onTabPress={(tabName) => {
-          // Already on Home — tapping the Home icon scrolls back to the top.
+          // Already on Home ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â tapping the Home icon scrolls back to the top.
           if (tabName === 'Home') {
             homeListRef.current?.scrollToOffset({ offset: 0, animated: true });
             return;
@@ -2352,4 +2389,5 @@ export const HomeScreen = ({ navigation }: any) => {
     </View>
   );
 };
+
 

@@ -171,6 +171,17 @@ const en = {
   settings_tmdb_custom_key: 'Use Custom TMDB Key',
   settings_tmdb_custom_key_sub: 'Turn TMDB enrichment on or off.',
   settings_tmdb_save_key:  'Save TMDB API Key',
+  settings_mdblist_ratings: 'MDBList Ratings',
+  settings_mdblist_enable: 'Enable MDBList Ratings',
+  settings_mdblist_enable_sub: 'Fetch ratings from MDBList providers across supported detail and catalog views.',
+  settings_mdblist_api_key: 'MDBList API Key',
+  settings_mdblist_api_key_sub: 'Get a key from mdblist.com/preferences. This is required before external provider ratings can be shown.',
+  settings_mdblist_api_key_placeholder: 'Paste your MDBList API key here',
+  settings_mdblist_provider_sub: 'Allow this provider to be used when MDBList ratings are enabled.',
+  settings_mdblist_provider_audience: 'Audience Score',
+  settings_mdblist_manage_sub: 'Configure the API key, enable ratings, and choose external providers.',
+  settings_mdblist_api_key_section: 'API Key',
+  settings_mdblist_providers: 'External Ratings Providers',
   settings_account_signed_in_generic: 'Signed in and ready to sync across your devices',
   settings_account_signed_out_sub: 'Create an account to sync your setup, link your TV, and connect Trakt.',
   settings_shell_subheading: 'Manage playback, appearance, connected services, and app preferences.',
@@ -281,7 +292,10 @@ const en = {
   settings_unlimited:      'Unlimited',
   settings_decoder_auto:   'Automatic',
   settings_decoder_hardware: 'Hardware',
+  settings_decoder_hardware_plus: 'HW+',
   settings_decoder_software: 'Software',
+  settings_surface_standard: 'Standard',
+  settings_surface_compatibility: 'Compatibility',
   settings_surface_view:   'Surface View',
   settings_texture_view:   'Texture View',
   settings_default:         'Default',
@@ -3542,7 +3556,4 @@ export const TRANSLATIONS: Record<LanguageCode, Record<TranslationKey, string>> 
   ko: withEnglishFallback({ ...ko, ...koExtraAll }),
   vi: withEnglishFallback({ ...vi, ...viExtraAll }),
 };
-
-
-
 

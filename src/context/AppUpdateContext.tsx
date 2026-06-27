@@ -103,7 +103,7 @@ export function AppUpdateProvider({ children }: { children: React.ReactNode }) {
   // Re-entry guard: tapping "Update Now" while a download/install is already
   // in flight must not start a second download.
   const updateInFlightRef = useRef(false);
-  // The validated APK from a previous attempt — reused when the installer was
+  // The validated APK from a previous attempt â€” reused when the installer was
   // cancelled or the user retries, instead of downloading the file again.
   const downloadedApkRef = useRef<{ versionCode: number; filePath: string } | null>(null);
 
@@ -195,7 +195,7 @@ export function AppUpdateProvider({ children }: { children: React.ReactNode }) {
 
   const setAutoCheckEnabled = useCallback(async (value: boolean) => {
     setAutoCheckEnabledState(value);
-    await Storage.setItem(AUTO_UPDATE_CHECKS_KEY, value ? 'true' : 'false');
+    void Storage.setItem(AUTO_UPDATE_CHECKS_KEY, value ? 'true' : 'false').catch(() => {});
   }, []);
 
   const dismissPrompt = useCallback(() => {
@@ -224,7 +224,7 @@ export function AppUpdateProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      // Reuse the APK from a previous attempt when it's still valid — the user
+      // Reuse the APK from a previous attempt when it's still valid â€” the user
       // shouldn't download the same release twice just because the installer
       // was dismissed.
       let apkFilePath: string | null = null;

@@ -9,6 +9,7 @@ export type WatchlistItem = {
   poster?: string | null;
   backdrop?: string | null;
   rating?: number | null;
+  addedAt?: string | number | null;
   fromTrakt?: boolean;
   [key: string]: any;
 };
@@ -34,18 +35,35 @@ export function normalizeWatchlistItem(item: WatchlistItem, fromTrakt = false): 
     ...item,
     id,
     tmdbId: Number.isFinite(tmdbId) ? tmdbId : null,
+    addedAt: item.addedAt ?? null,
     fromTrakt: fromTrakt || item.fromTrakt === true,
   };
 }
 
 export function mergeWatchlistItems(traktItems: WatchlistItem[], localItems: WatchlistItem[]): WatchlistItem[] {
   const normalizedTrakt = traktItems.map(item => normalizeWatchlistItem(item, true));
-  const traktIds = new Set(normalizedTrakt.map(item => watchlistItemId(item)));
+  const localById = new Map(
+    localItems
+      .map(item => normalizeWatchlistItem(item, false))
+      .map(item => [watchlistItemId(item), item] as const),
+  );
+  const mergedTrakt = normalizedTrakt.map(item => {
+    const localMatch = localById.get(watchlistItemId(item));
+    return localMatch?.addedAt != null
+      ? { ...item, addedAt: localMatch.addedAt }
+      : item;
+  });
+  const traktIds = new Set(mergedTrakt.map(item => watchlistItemId(item)));
   const normalizedLocal = localItems
     .map(item => normalizeWatchlistItem(item, false))
     .filter(item => !traktIds.has(watchlistItemId(item)));
 
-  return [...normalizedTrakt, ...normalizedLocal];
+  return [...mergedTrakt, ...normalizedLocal].sort((a, b) => {
+    const aAddedAt = Number(a.addedAt ?? 0);
+    const bAddedAt = Number(b.addedAt ?? 0);
+    if (aAddedAt !== bAddedAt) return bAddedAt - aAddedAt;
+    return 0;
+  });
 }
 
 export function watchlistItemMatchesId(item: WatchlistItem, id: string | number): boolean {

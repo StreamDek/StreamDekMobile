@@ -264,16 +264,24 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
   const uninstallAddon = useCallback(async (id: string) => {
     const previousAddons = addons;
     setAddons(prev => prev.filter(addon => addon.id !== id));
-    await fetch(`${API_BASE}/addons/uninstall`, {
-      method: 'DELETE',
-      headers: await buildAddonHeaders(),
-      body: JSON.stringify({ id }),
-    }).catch(() => {
+
+    try {
+      const response = await fetch(`${API_BASE}/addons/uninstall`, {
+        method: 'DELETE',
+        headers: await buildAddonHeaders(),
+        body: JSON.stringify({ id }),
+      });
+
+      if (!response.ok) {
+        setAddons(previousAddons);
+        return;
+      }
+
+      invalidateSharedCache('addons:manifests:');
+    } catch {
       setAddons(previousAddons);
-    });
-    invalidateSharedCache('addons:manifests:');
-    void refreshAddons();
-  }, [addons, buildAddonHeaders, refreshAddons]);
+    }
+  }, [addons, buildAddonHeaders]);
 
   const toggleAddon = useCallback(async (id: string, enabled: boolean) => {
     streamCache.current.clear();
@@ -465,3 +473,4 @@ export const AddonProvider = ({ children }: { children: React.ReactNode }) => {
 };
 
 export const useAddons = () => useContext(AddonContext);
+

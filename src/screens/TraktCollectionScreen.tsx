@@ -326,7 +326,7 @@ export const TraktCollectionScreen = ({ route, navigation }: any) => {
                   item={item}
                   width={CARD_WIDTH}
                   compactGrid
-                  onPress={() => navigation.navigate('Detail', { movieId: item.tmdbId ?? item.id, type: item.type })}
+                  onPress={() => navigation.navigate('Detail', { movieId: item.tmdbId ?? item.id, type: item.type, title: item.title, synopsis: item.description ?? undefined, backdrop: item.backdrop ?? item.poster ?? undefined, poster: item.poster ?? undefined, year: item.year, rating: item.rating })}
                   onLongPress={() => handleLongPress(item)}
                 />
               </View>
@@ -348,3 +348,5 @@ export const TraktCollectionScreen = ({ route, navigation }: any) => {
     </View>
   );
 };
+
+

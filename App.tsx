@@ -46,6 +46,7 @@ import { SubtitleProvider } from './src/context/SubtitleContext';
 import { UIStyleProvider } from './src/context/UIStyleContext';
 import { DisplaySettingsProvider } from './src/context/DisplaySettingsContext';
 import { TmdbApiKeyProvider } from './src/context/TmdbApiKeyContext';
+import { MdbListSettingsProvider } from './src/context/MdbListSettingsContext';
 import { ProfileProvider, useProfile } from './src/context/ProfileContext';
 import { AppLifecycleProvider } from './src/context/AppLifecycleContext';
 import { AppUpdateProvider } from './src/context/AppUpdateContext';
@@ -82,7 +83,6 @@ function AppNavigation() {
   const { activeProfile, profilesReady, profileSwitching } = useProfile();
   const showProfileSwitcher = !authLoading && !!user && profilesReady && !activeProfile;
   const shouldBlockInitialAppReveal = authLoading || (!!user && !profilesReady);
-  const appearanceFade = React.useRef(new Animated.Value(1)).current;
   const profileOverlayOpacity = React.useRef(new Animated.Value(showProfileSwitcher || profileSwitching ? 1 : 0)).current;
   const profileContentFade = React.useRef(new Animated.Value(showProfileSwitcher || profileSwitching ? 0 : 1)).current;
   const [profileOverlayMounted, setProfileOverlayMounted] = React.useState(showProfileSwitcher || profileSwitching);
@@ -127,16 +127,6 @@ function AppNavigation() {
     }),
     [resolvedAppearance, theme.colors],
   );
-
-  React.useEffect(() => {
-    appearanceFade.setValue(0.92);
-    Animated.timing(appearanceFade, {
-      toValue: 1,
-      duration: 280,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start();
-  }, [appearanceFade, resolvedAppearance, theme.id]);
 
   React.useEffect(() => {
     launchCoverOpacity.stopAnimation();
@@ -201,7 +191,7 @@ function AppNavigation() {
     <NavigationContainer theme={navTheme} linking={linking}>
       <StatusBar style={resolvedAppearance === 'light' ? 'dark' : 'light'} />
       <BlurTargetView ref={appBlurTargetRef} style={{ flex: 1 }}>
-        <Animated.View style={{ flex: 1, opacity: Animated.multiply(appearanceFade, profileContentFade) }}>
+        <Animated.View style={{ flex: 1, opacity: profileContentFade }}>
           <Stack.Navigator
             screenOptions={{
               headerStyle: { backgroundColor: theme.colors.bgHeaderSolid },
@@ -321,11 +311,13 @@ export default function App() {
                               <DebridProvider>
                                 <AddonProvider>
                                   <TmdbApiKeyProvider>
-                                    <AppUpdateProvider>
-                                      <AppNavigation />
-                                      <UpdatePrompt />
-                                      <AnimatedSplash />
-                                    </AppUpdateProvider>
+                                    <MdbListSettingsProvider>
+                                      <AppUpdateProvider>
+                                        <AppNavigation />
+                                        <UpdatePrompt />
+                                        <AnimatedSplash />
+                                      </AppUpdateProvider>
+                                    </MdbListSettingsProvider>
                                   </TmdbApiKeyProvider>
                                 </AddonProvider>
                               </DebridProvider>
@@ -349,3 +341,4 @@ export default function App() {
     </GestureHandlerRootView>
   );
 }
+

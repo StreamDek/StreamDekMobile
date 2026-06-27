@@ -508,7 +508,7 @@ export const SearchScreen = ({ navigation }: any) => {
 
   const onRecentTap = useCallback((term: string) => { setQuery(term); doSearch(term); saveRecent(term); }, [doSearch]);
   const clearRecent = useCallback(async () => { setRecent([]); await Storage.removeItem(RECENT_KEY); }, []);
-  const navToDetail = useCallback((item: any) => navigation.navigate('Detail', { movieId: item.id, type: item.type || 'movie' }), [navigation]);
+  const navToDetail = useCallback((item: any) => navigation.navigate('Detail', { movieId: item.id, type: item.type || 'movie', imdbId: item.imdbId ?? undefined, title: item.title, synopsis: item.description ?? undefined, backdrop: item.backdrop ?? item.poster ?? undefined, poster: item.poster ?? undefined, year: item.year, rating: item.rating }), [navigation]);
 
   const showSearch = query.length > 0;
   const renderFilterOption = useCallback((
@@ -887,3 +887,5 @@ export const SearchScreen = ({ navigation }: any) => {
     </View>
   );
 };
+
+

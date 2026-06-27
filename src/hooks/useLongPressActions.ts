@@ -95,7 +95,7 @@ export function useLongPressActions({ navigation, watchlistOverride, onWatchlist
       ? current.filter((i: any) => !watchlistItemMatchesId(i, itemId))
       : [...current, normalizeWatchlistItem({
           id: itemId, tmdbId: Number(item.id), title: item.title, poster: item.poster,
-          type: item.type, year: item.year, rating: item.rating,
+          type: item.type, year: item.year, rating: item.rating, addedAt: Date.now(),
         })];
     await writeWatchlistItems(storageOwnerId, updated);
     setLocalWatchlist(updated);

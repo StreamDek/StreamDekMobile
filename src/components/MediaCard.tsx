@@ -43,7 +43,11 @@ export const MediaCard = memo<MediaCardProps>(({ item, onPress, onLongPress, wid
     Animated.spring(scale, { toValue: 1, friction: 4, useNativeDriver: true }).start();
   };
 
-  const ratingTextColor = (item.rating ?? 0) >= 7 ? '#00e676' : (item.rating ?? 0) >= 5 ? '#ffd740' : '#c97070';
+  const displayedRating = typeof item.displayRating === 'number' && Number.isFinite(item.displayRating) ? item.displayRating : item.rating;
+  const ratingTextColor = (displayedRating ?? 0) >= 7 ? '#00e676' : (displayedRating ?? 0) >= 5 ? '#ffd740' : '#c97070';
+  const ratingLabel = typeof item.displayRatingLabel === 'string' && item.displayRatingLabel.length > 0 ? item.displayRatingLabel : 'IMDb';
+  const ratingLabelBackgroundColor = typeof item.displayRatingLabelBackgroundColor === 'string' && item.displayRatingLabelBackgroundColor.length > 0 ? item.displayRatingLabelBackgroundColor : '#F5C518';
+  const ratingLabelTextColor = typeof item.displayRatingLabelTextColor === 'string' && item.displayRatingLabelTextColor.length > 0 ? item.displayRatingLabelTextColor : '#000000';
   const titleColor = resolvedAppearance === 'light' ? colors.textPrimary : '#e8e8f0';
   const titleHorizontalColor = resolvedAppearance === 'light' ? colors.textPrimary : '#f3f3fb';
   const metaColor = resolvedAppearance === 'light' ? colors.textSecondary : '#7070a0';
@@ -93,9 +97,16 @@ export const MediaCard = memo<MediaCardProps>(({ item, onPress, onLongPress, wid
                 </View>
               )}
 
-              {item.rating > 0 && (
+              {displayedRating > 0 && (
                 <View style={styles.ratingBadgeHorizontal}>
-                  <RatingBadge rating={item.rating} size={9} textColor={ratingTextColor} />
+                  <RatingBadge
+                    rating={displayedRating}
+                    size={9}
+                    textColor={ratingTextColor}
+                    label={ratingLabel}
+                    labelBackgroundColor={ratingLabelBackgroundColor}
+                    labelTextColor={ratingLabelTextColor}
+                  />
                 </View>
               )}
 
@@ -155,9 +166,16 @@ export const MediaCard = memo<MediaCardProps>(({ item, onPress, onLongPress, wid
             </View>
           )}
 
-          {item.rating > 0 && (
+          {displayedRating > 0 && (
             <View style={variant === 'landscape' ? styles.ratingBadgeLandscape : styles.ratingBadgePortrait}>
-              <RatingBadge rating={item.rating} size={9} textColor={ratingTextColor} />
+              <RatingBadge
+                rating={displayedRating}
+                size={9}
+                textColor={ratingTextColor}
+                label={ratingLabel}
+                labelBackgroundColor={ratingLabelBackgroundColor}
+                labelTextColor={ratingLabelTextColor}
+              />
             </View>
           )}
 
@@ -223,3 +241,5 @@ const styles = StyleSheet.create({
   duration:        { fontSize: 10 },
   durationRemaining: { color: '#00e676', fontWeight: '600' },
 });
+
+

@@ -67,6 +67,7 @@ import {
     progressIndexStorageKey,
 } from '../utils/profileStorage';
 import { useDisplaySettings } from '../context/DisplaySettingsContext';
+import { getStreamIdentityKey } from '../utils/streamIdentity';
 import { pickBestAudioTrack } from '../utils/streamSelection';
 import { Storage } from '../utils/storage';
 import { createLocalProxyUrl } from '../utils/torrentServerClient';
@@ -3254,7 +3255,7 @@ export const PlayerScreen = ({ route, navigation }: any) => {
             <InPlayerSourcesSheet
                 visible={showSources}
                 streams={allStreams}
-                activeStreamIdentity={activeStream ? (activeStream.infoHash?.toLowerCase() ?? activeStream.url ?? `${activeStream.addonId}:${activeStream.behaviorHints?.filename ?? activeStream.title ?? activeStream.name ?? ''}`.trim()) : undefined}
+                activeStreamIdentity={activeStream ? getStreamIdentityKey(activeStream) : undefined}
                 onSelectStream={stream => {
                     if (isSameStream(activeStream, stream)) { setShowSources(false); return; }
                     setShowSources(false);
@@ -4364,3 +4365,4 @@ const styles = StyleSheet.create({
         marginTop: 4,
     },
 });
+

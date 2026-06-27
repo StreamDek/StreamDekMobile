@@ -446,7 +446,7 @@ export const WatchlistScreen = ({ navigation }: any) => {
                     <WatchCard
                       item={item}
                       width={CARD_WIDTH}
-                      onPress={() => navigation.navigate('Detail', { movieId: item.id, type: item.type })}
+                      onPress={() => navigation.navigate('Detail', { movieId: item.id, type: item.type, imdbId: item.imdbId ?? undefined, title: item.title, synopsis: item.description ?? undefined, backdrop: item.backdrop ?? item.poster ?? undefined, poster: item.poster ?? undefined, year: item.year, rating: item.rating })}
                       onLongPress={() => handleLongPress(item)}
                     />
                   </View>
@@ -540,3 +540,4 @@ export const WatchlistScreen = ({ navigation }: any) => {
     </View>
   );
 };
+

@@ -217,6 +217,22 @@ const externalRatingVisuals: Record<string, { label: string; color: string; form
   [MDBLIST_PROVIDER_AUDIENCE]: { label: 'Audience', color: '#FA320A', format: value => `${Math.round(value)}%`, logo: require('../../assets/ratings/audience-score.png'), logoWidth: 22 },
 };
 
+const INLINE_FALLBACK_RATING_SOURCE = '__inline_fallback_rating__';
+
+function buildFallbackExternalRatings(value: unknown): ExternalRating[] {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return [];
+  return [{ source: INLINE_FALLBACK_RATING_SOURCE as any, value: Math.round(value * 10) / 10 }];
+}
+
+function formatInlineFallbackRating(rating: ExternalRating | null | undefined): string | null {
+  if (!rating) return null;
+  if (String(rating.source) === INLINE_FALLBACK_RATING_SOURCE) return rating.value.toFixed(1);
+  const visuals = externalRatingVisuals[rating.source];
+  const label = visuals ? visuals.label : 'IMDb';
+  const formatted = visuals ? visuals.format(rating.value) : rating.value.toFixed(1);
+  return label + ' ' + formatted;
+}
+
 function ExternalRatingsRow({
   ratings,
   colors,
@@ -234,9 +250,10 @@ function ExternalRatingsRow({
     <View
       style={{
         flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: 10,
-        marginTop: 12,
+        flexWrap: 'nowrap',
+        alignItems: 'center',
+        alignSelf: 'center',
+        gap: 8,
         width: '100%',
         justifyContent: centered ? 'center' : 'flex-start',
       }}
@@ -250,26 +267,22 @@ function ExternalRatingsRow({
             style={{
               flexDirection: 'row',
               alignItems: 'center',
-              gap: 7,
-              paddingHorizontal: 10,
-              paddingVertical: 8,
-              borderRadius: 999,
-              backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.62)' : colors.inputBg,
-              borderWidth: 1,
-              borderColor: isLightAppearance ? 'rgba(17,24,39,0.12)' : colors.border,
+              justifyContent: 'center',
+              gap: 3,
+              minWidth: 0,
             }}
           >
             {visuals.logo ? (
               <Image
                 source={visuals.logo}
-                style={{ width: visuals.logoWidth ?? 24, height: 14 }}
+                style={{ width: visuals.logoWidth ?? 24, height: 12 }}
                 contentFit="contain"
                 transition={0}
               />
             ) : (
-              <Text style={{ color: visuals.color, fontSize: 11, fontWeight: '900' }}>{visuals.label}</Text>
+              <Text style={{ color: visuals.color, fontSize: 10, fontWeight: '900' }}>{visuals.label}</Text>
             )}
-            <Text style={{ color: colors.textPrimary, fontSize: 13, fontWeight: '800' }}>{visuals.format(rating.value)}</Text>
+            <Text style={{ color: visuals.color, fontSize: 12, fontWeight: '800' }}>{visuals.format(rating.value)}</Text>
           </View>
         );
       })}
@@ -493,6 +506,8 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   },
   pillText:     { color: c.buttonText, fontSize: 11, fontWeight: '700' },
   pillDarkText: { color: isMonochromeDark ? c.textPrimary : (isLightAppearance ? c.textPrimary : '#111827'), fontSize: 11, fontWeight: '800' },
+  externalRatingsSection: { paddingHorizontal: 14, paddingTop: 8, paddingBottom: 12, marginTop: 4, marginBottom: 10, alignItems: 'center' },
+  ratingsLoadingText: { fontSize: 12, fontWeight: '600' },
   detailStatusText: { color: isLightAppearance ? c.textSecondary : c.subText, fontSize: 12, lineHeight: 18, marginTop: 10 },
   actions: {
     flexDirection: 'row',
@@ -1099,6 +1114,7 @@ function buildRoutePreviewMedia(params: any, fallbackType: 'movie' | 'tv') {
   const year = typeof params.year === 'number' || typeof params.year === 'string' ? params.year : null;
   const imdbId = typeof params.imdbId === 'string' ? params.imdbId : null;
   const rating = typeof params.rating === 'number' ? params.rating : null;
+  const fallbackRatings = buildFallbackExternalRatings(rating);
 
   if (!title && !poster && !backdrop && !synopsis && !year && !imdbId && rating == null) return null;
 
@@ -1112,7 +1128,8 @@ function buildRoutePreviewMedia(params: any, fallbackType: 'movie' | 'tv') {
     year,
     imdbId,
     rating,
-    externalRatings: [],
+    externalRatings: fallbackRatings,
+    externalRatingsMode: fallbackRatings.length > 0 ? 'fallback' : 'none',
   };
 }
 
@@ -1135,6 +1152,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const glassOverlayHeight = 150;
   const glassOverlayOffset = Math.max(0, heroBackdropHeight - glassOverlayHeight);
   const detailScrollY = useRef(new Animated.Value(0)).current;
+  const ratingsRowAnimation = useRef(new Animated.Value(0)).current;
   const detailHeroScale = detailScrollY.interpolate({
     inputRange: [-100, 0, heroBackdropHeight * 0.5],
     outputRange: [1.10, 1.0, 1.22],
@@ -1144,6 +1162,10 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     inputRange: [-100, 0, heroBackdropHeight],
     outputRange: [-8, 0, -90],
     extrapolate: 'clamp',
+  });
+  const ratingsRowTranslateY = ratingsRowAnimation.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-12, 0],
   });
   const styles = useMemo(() => makeStyles(colors, isLightAppearance, vividAmbientEnabled), [colors, isLightAppearance, vividAmbientEnabled]);
   const detailPrimaryText = isLightAppearance ? colors.textPrimary : '#111827';
@@ -1176,10 +1198,14 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const insets = useSafeAreaInsets();
   const cacheKey = `${type}/${movieId}`;
   const routePreviewMedia = useMemo(() => buildRoutePreviewMedia(route.params, type), [route.params, type]);
-  const [media, setMedia] = useState<any>(() => detailCache.get(cacheKey) ?? routePreviewMedia ?? null);
+  const [media, setMedia] = useState<any>(() => {
+    const initial = detailCache.get(cacheKey) ?? routePreviewMedia ?? null;
+    return initial ? { ...initial, externalRatingsMode: initial.externalRatingsMode ?? 'none' } : null;
+  });
   const [loading, setLoading] = useState(() => !detailCache.has(cacheKey) && !routePreviewMedia);
   const [activeTab, setActiveTab] = useState<Tab>('about');
   const [mdbListStatusMessage, setMdbListStatusMessage] = useState<string | null>(null);
+  const [mdbListLoading, setMdbListLoading] = useState(false);
   const [showSeasonsPanel, setShowSeasonsPanel] = useState(false);
   const [selectedSeason, setSelectedSeason] = useState(1);
   const [episodes, setEpisodes] = useState<any[]>([]);
@@ -1201,15 +1227,20 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   useEffect(() => {
     const cached = detailCache.get(cacheKey);
     if (cached) {
-      setMedia({ ...cached, imdbId: cached.imdbId ?? routeImdbId ?? null, externalRatings: cached.externalRatings ?? [] });
+      const cachedFallbackRatings = Array.isArray(cached.externalRatings) && cached.externalRatings.length > 0
+        ? cached.externalRatings
+        : buildFallbackExternalRatings(cached.rating);
+      setMedia({ ...cached, imdbId: cached.imdbId ?? routeImdbId ?? null, externalRatings: cached.externalRatings ?? cachedFallbackRatings, externalRatingsMode: cached.externalRatingsMode ?? (cachedFallbackRatings.length > 0 ? 'fallback' : 'none') });
       setVimeoKey(cached.vimeoKey ?? null);
       setLoading(false);
+      setMdbListLoading(false);
       return;
     }
 
     setMedia(routePreviewMedia ?? null);
     setVimeoKey(null);
     setLoading(!routePreviewMedia);
+    setMdbListLoading(false);
   }, [cacheKey, routeImdbId, routePreviewMedia]);
 
   // Ã¢â€â‚¬Ã¢â€â‚¬ Sheet state Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
@@ -1604,37 +1635,62 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   }, [movieId, playBtnLoadingDetails]);
 
   useEffect(() => {
+    const hasMdblistRatings = media?.externalRatingsMode === 'mdblist' && (media?.externalRatings?.length ?? 0) > 0;
+    if (!hasMdblistRatings || mdbListLoading) {
+      ratingsRowAnimation.setValue(0);
+      return;
+    }
+    Animated.timing(ratingsRowAnimation, {
+      toValue: 1,
+      duration: 240,
+      useNativeDriver: true,
+    }).start();
+  }, [media?.id, media?.externalRatingsMode, media?.externalRatings?.length, mdbListLoading, ratingsRowAnimation]);
+
+  useEffect(() => {
     if (!media) return;
 
-    const imdbId = media.imdbId ?? routeImdbId ?? null;
+    const imdbId = [
+      media.imdbId,
+      routeImdbId,
+      typeof media.id === 'string' ? media.id : null,
+      typeof movieId === 'string' ? movieId : null,
+    ].map(value => typeof value === 'string' ? value.match(/tt\d+/i)?.[0] ?? null : null).find(Boolean) ?? null;
     const enabledProviders = getEnabledMdbListProviders(mdbListSettings);
     const hasApiKey = mdbListSettings.apiKey.trim().length > 0;
+    const fallbackRatings = buildFallbackExternalRatings(media.rating);
 
     if (!mdbListSettings.enabled) {
+      setMdbListLoading(false);
       setMdbListStatusMessage(null);
       setMedia((current: any) => current ? { ...current, externalRatings: [] } : current);
       return;
     }
 
     if (!hasApiKey) {
-      setMdbListStatusMessage('Add an MDBList API key in Settings to load external ratings.');
-      setMedia((current: any) => current ? { ...current, externalRatings: [] } : current);
+      setMdbListLoading(false);
+      setMdbListStatusMessage(null);
+      setMedia((current: any) => current ? { ...current, externalRatings: fallbackRatings, externalRatingsMode: fallbackRatings.length > 0 ? 'fallback' : 'none' } : current);
       return;
     }
 
     if (enabledProviders.length === 0) {
-      setMdbListStatusMessage('Enable at least one MDBList ratings provider in Settings.');
-      setMedia((current: any) => current ? { ...current, externalRatings: [] } : current);
+      setMdbListLoading(false);
+      setMdbListStatusMessage(null);
+      setMedia((current: any) => current ? { ...current, externalRatings: fallbackRatings, externalRatingsMode: fallbackRatings.length > 0 ? 'fallback' : 'none' } : current);
       return;
     }
 
     if (!shouldFetchMdbListRatings(imdbId, mdbListSettings)) {
-      setMdbListStatusMessage('External ratings are unavailable for this title because no IMDb ID was found.');
-      setMedia((current: any) => current ? { ...current, externalRatings: [] } : current);
+      setMdbListLoading(false);
+      setMdbListStatusMessage(null);
+      setMedia((current: any) => current ? { ...current, externalRatings: fallbackRatings, externalRatingsMode: fallbackRatings.length > 0 ? 'fallback' : 'none' } : current);
       return;
     }
 
     if (loading) return;
+
+    setMdbListLoading(true);
 
     const controller = new AbortController();
     const detailId = String(media.id ?? movieId);
@@ -1648,24 +1704,39 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
           if (controller.signal.aborted) return;
           setMedia((current: any) => {
             if (!current || String(current.id ?? '') !== detailId) return current;
-            return { ...current, externalRatings: ratings };
+            const next = { ...current, imdbId: current.imdbId ?? imdbId, externalRatings: ratings, externalRatingsMode: ratings.length > 0 ? 'mdblist' : (fallbackRatings.length > 0 ? 'fallback' : 'none') };
+            detailCache.set(cacheKey, next);
+            return next;
           });
-          setMdbListStatusMessage(ratings.length === 0 ? 'No external ratings were returned by your enabled MDBList providers for this title.' : null);
+          setMdbListLoading(false);
+          setMdbListStatusMessage(null);
+          if (ratings.length === 0 && fallbackRatings.length > 0) {
+            setMedia((current: any) => {
+              if (!current || String(current.id ?? '') !== detailId) return current;
+              const next = { ...current, externalRatings: fallbackRatings, externalRatingsMode: fallbackRatings.length > 0 ? 'fallback' : 'none' };
+              detailCache.set(cacheKey, next);
+              return next;
+            });
+          }
         } catch (error) {
           if (controller.signal.aborted) return;
           const errorCode = getMdbListErrorCode(error);
           setMedia((current: any) => {
             if (!current || String(current.id ?? '') !== detailId) return current;
-            return { ...current, externalRatings: [] };
+            const next = { ...current, externalRatings: fallbackRatings, externalRatingsMode: fallbackRatings.length > 0 ? 'fallback' : 'none' };
+            detailCache.set(cacheKey, next);
+            return next;
           });
-          setMdbListStatusMessage(errorCode === 'invalid_api_key' ? 'Your MDBList API key was rejected. Verify it in Settings.' : null);
+          setMdbListLoading(false);
+          setMdbListStatusMessage(null);
         }
       })();
-    }, { timeoutMs: 2500 });
+    }, { timeoutMs: 250 });
 
     return () => {
       idleHandle.cancel();
       controller.abort();
+      setMdbListLoading(false);
     };
   }, [
     media?.id,
@@ -1697,7 +1768,13 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
           const data = await res.json();
           if (controller.signal.aborted) return;
           detailCache.set(cacheKey, data);
-          setMedia({ ...data, imdbId: data.imdbId ?? routeImdbId ?? null, externalRatings: [] });
+          const fallbackRatings = buildFallbackExternalRatings(data.rating);
+          setMedia({
+            ...data,
+            imdbId: data.imdbId ?? routeImdbId ?? null,
+            externalRatings: fallbackRatings,
+            externalRatingsMode: fallbackRatings.length > 0 ? 'fallback' : 'none',
+          });
           setVimeoKey(data.vimeoKey ?? null);
           // Prefetch backdrop and poster for immediate crispness
           if (data.backdrop || data.poster) {
@@ -2434,8 +2511,13 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                   {!!media.year && <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{media.year}</Text></View>}
                   {(media.runtime ?? 0) > 0 && <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{formatRuntimeButton(media.runtime)}</Text></View>}
                   {(media.numberOfSeasons ?? 0) > 0 && <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{t('media_seasons_count').replace('{n}', String(media.numberOfSeasons))}</Text></View>}
+                  {media.externalRatingsMode === 'fallback' && media.externalRatings?.[0] ? <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{formatInlineFallbackRating(media.externalRatings[0])}</Text></View> : null}
                 </View>
-                <ExternalRatingsRow ratings={media.externalRatings ?? []} colors={colors} isLightAppearance={isLightAppearance} centered />
+                {media.externalRatingsMode === 'mdblist' ? (
+                  <Animated.View style={[styles.externalRatingsSection, { opacity: ratingsRowAnimation, transform: [{ translateY: ratingsRowTranslateY }] }]}>
+                    <ExternalRatingsRow ratings={media.externalRatings ?? []} colors={colors} isLightAppearance={isLightAppearance} centered />
+                  </Animated.View>
+                ) : null}
                 {mdbListStatusMessage ? <Text style={[styles.detailStatusText, { textAlign: 'center' }]}>{mdbListStatusMessage}</Text> : null}
                 {useGlassDetailLayout && (
                   <View style={styles.glassSynopsisBlock}>
@@ -2547,13 +2629,16 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                     {!!media.year && <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{media.year}</Text></View>}
                     {(media.runtime ?? 0) > 0 && <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{formatRuntimeButton(media.runtime)}</Text></View>}
                     {(media.numberOfSeasons ?? 0) > 0 && <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{t('media_seasons_count').replace('{n}', String(media.numberOfSeasons))}</Text></View>}
+                    {media.externalRatingsMode === 'fallback' && media.externalRatings?.[0] ? <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{formatInlineFallbackRating(media.externalRatings[0])}</Text></View> : null}
                   </View>
                 </View>
               </View>
-              <View style={{ paddingHorizontal: 14, paddingBottom: 4 }}>
-                <ExternalRatingsRow ratings={media.externalRatings ?? []} colors={colors} isLightAppearance={isLightAppearance} />
-                {mdbListStatusMessage ? <Text style={styles.detailStatusText}>{mdbListStatusMessage}</Text> : null}
-              </View>
+              {media.externalRatingsMode === 'mdblist' ? (
+                <Animated.View style={[styles.externalRatingsSection, { opacity: ratingsRowAnimation, transform: [{ translateY: ratingsRowTranslateY }] }]}>
+                  <ExternalRatingsRow ratings={media.externalRatings ?? []} colors={colors} isLightAppearance={isLightAppearance} centered />
+                  {mdbListStatusMessage ? <Text style={styles.detailStatusText}>{mdbListStatusMessage}</Text> : null}
+                </Animated.View>
+              ) : null}
             </View>
             <View style={styles.heroActionsShell}>
               <View style={styles.classicActionRow}>
@@ -2611,7 +2696,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
         )}
 
         <View style={useCompactDetailLayout ? styles.centeredCombinedRow : styles.actions}>
-          {useCompactDetailLayout ? (
+          {useCompactDetailLayout && (
             // Centered: tabs first, then icon pills Ã¢â‚¬â€ all unified pill shape
             <View style={styles.centeredCombinedRow}>
               {([
@@ -2673,8 +2758,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                 <Ionicons name={watched ? 'checkmark-circle' : 'checkmark-circle-outline'} size={17} color={watched ? '#00e676' : detailMutedIcon} />
               </TouchableOpacity>
             </View>
-          ) : null}
-        </View>
+          )}
 
         {!useCompactDetailLayout && (
           <View style={styles.tabs}>
@@ -2702,7 +2786,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                     <View pointerEvents="none" style={styles.tabLoadingOverlay}>
                       <ActivityIndicator size="small" color={colors.accentSoft} style={styles.tabInlineSpinner} />
                     </View>
-                  ) : null}
+                    ) : null}
                 <Text style={[styles.tabText, (useGlassDetailLayout && tab === 'seasons' ? showSeasonsPanel : activeTab === tab) && styles.activeTabText, tab === 'streams' && streamsTabLoadingIndicator && { opacity: 0.18 }]}>
                   {tab === 'streams'
                     ? `${t('media_streams')}${streams.length > 0 ? ` (${streams.length})` : ''}`
@@ -2715,6 +2799,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
             ))}
           </View>
         )}
+        </View>
 
         {/* Sticky filter bar Ã¢â‚¬â€ index 4 in stickyHeaderIndices; 0-height when not applicable */}
         <View>
@@ -3709,6 +3794,12 @@ const StreamRow = React.memo(function StreamRow({ stream, colors, onPlay, style,
   const handlePress = React.useCallback(() => onPlay(stream), [onPlay, stream]);
   return <StreamSourceRow stream={stream} colors={colors} onPress={handlePress} style={style} sourceLabel={sourceLabel} />;
 });
+
+
+
+
+
+
 
 
 

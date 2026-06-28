@@ -17,7 +17,7 @@ export const MDBLIST_PROVIDER_PRIORITY_ORDER = [
 ] as const;
 
 export type MdbListProviderId = typeof MDBLIST_PROVIDER_PRIORITY_ORDER[number];
-export type MdbListErrorCode = 'invalid_api_key' | 'request_failed';
+export type MdbListErrorCode = 'invalid_api_key' | 'request_failed' | 'rate_limited';
 
 export type ExternalRating = {
   source: MdbListProviderId;
@@ -66,11 +66,19 @@ const ratingsCache = new Map<string, ExternalRating[]>();
 const imdbRegex = /tt\d+/i;
 const MDBLIST_VALIDATION_IMDB_ID = 'tt0111161';
 
+type RatingPayloadItem = {
+  source?: unknown;
+  provider?: unknown;
+  name?: unknown;
+  slug?: unknown;
+  id?: unknown;
+  rating?: number | string | null;
+  score?: number | string | null;
+  value?: number | string | null;
+};
+
 type RatingResponse = {
-  ratings?: Array<{
-    rating?: number | string | null;
-    score?: number | string | null;
-  }>;
+  ratings?: RatingPayloadItem[];
 };
 
 type MdbListEnrichableItem = {
@@ -131,6 +139,106 @@ async function readJsonResponse(response: Response): Promise<unknown> {
 function extractImdbId(value: string | null | undefined): string | null {
   if (!value) return null;
   return value.match(imdbRegex)?.[0] ?? null;
+}
+
+function normalizeProviderId(value: unknown): MdbListProviderId | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase().replace(/[^a-z]/g, '');
+  switch (normalized) {
+    case 'imdb': return MDBLIST_PROVIDER_IMDB;
+    case 'tmdb': return MDBLIST_PROVIDER_TMDB;
+    case 'rt':
+    case 'tomatoes':
+    case 'rottentomatoes':
+    case 'rottentomato':
+    case 'rtomatoes':
+      return MDBLIST_PROVIDER_TOMATOES;
+    case 'mc':
+    case 'metacritic':
+    case 'metascore':
+      return MDBLIST_PROVIDER_METACRITIC;
+    case 'trakt': return MDBLIST_PROVIDER_TRAKT;
+    case 'lb':
+    case 'letterbox':
+    case 'letterboxd':
+      return MDBLIST_PROVIDER_LETTERBOXD;
+    case 'aud':
+    case 'audience':
+    case 'audiencescore':
+    case 'rtaudience':
+    case 'popcornmeter':
+      return MDBLIST_PROVIDER_AUDIENCE;
+    default: return null;
+  }
+}
+
+function parseExternalRatingsFromPayload(
+  payload: unknown,
+  enabledProviders: readonly MdbListProviderId[],
+): ExternalRating[] {
+  const ratings = Array.isArray(payload)
+    ? payload
+    : Array.isArray((payload as RatingResponse | null | undefined)?.ratings)
+      ? (payload as RatingResponse).ratings ?? []
+      : [];
+
+  const seen = new Set<MdbListProviderId>();
+  const parsed: ExternalRating[] = [];
+
+  for (const item of ratings) {
+    const providerId = normalizeProviderId(
+      (item as RatingPayloadItem)?.source
+      ?? (item as RatingPayloadItem)?.provider
+      ?? (item as RatingPayloadItem)?.name
+      ?? (item as RatingPayloadItem)?.slug
+      ?? (item as RatingPayloadItem)?.id,
+    );
+    if (!providerId || !enabledProviders.includes(providerId) || seen.has(providerId)) continue;
+
+    const rating = parseNumericRating((item as RatingPayloadItem)?.rating)
+      ?? parseNumericRating((item as RatingPayloadItem)?.score)
+      ?? parseNumericRating((item as RatingPayloadItem)?.value);
+    if (rating == null) continue;
+
+    seen.add(providerId);
+    parsed.push({ source: providerId, value: rating });
+  }
+
+  return parsed;
+}
+
+async function fetchTitleLookupPayload(
+  imdbId: string,
+  mediaType: 'movie' | 'show',
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<unknown | null> {
+  const url =
+    'https://api.mdblist.com/imdb/' + mediaType + '/' + encodeURIComponent(imdbId) + '/?apikey=' + encodeURIComponent(apiKey);
+  const response = await fetch(url, {
+    headers: {
+      Accept: 'application/json',
+    },
+    signal,
+  });
+
+  const payload = await readJsonResponse(response);
+
+  if (!response.ok) {
+    console.warn('[MDBList] Title lookup request failed', { mediaType, status: response.status, imdbId, payload });
+    if (response.status === 401 || response.status === 403) {
+      throw createMdbListError('invalid_api_key', 'MDBList API key rejected', response.status);
+    }
+    if (response.status === 429) {
+      throw createMdbListError('rate_limited', 'MDBList daily API limit exceeded', response.status);
+    }
+    if (response.status === 404 || response.status === 422) {
+      return null;
+    }
+    throw createMdbListError('request_failed', 'MDBList title lookup failed with ' + response.status, response.status);
+  }
+
+  return payload;
 }
 
 export function getEnabledMdbListProviders(settings: MdbListSettings): MdbListProviderId[] {
@@ -203,7 +311,7 @@ export function clearMdbListRatingsCache() {
 export function getMdbListErrorCode(error: unknown): MdbListErrorCode | null {
   if (error && typeof error === 'object' && 'code' in error) {
     const code = (error as { code?: unknown }).code;
-    if (code === 'invalid_api_key' || code === 'request_failed') return code;
+    if (code === 'invalid_api_key' || code === 'request_failed' || code === 'rate_limited') return code;
   }
   return null;
 }
@@ -267,6 +375,9 @@ export async function validateMdbListApiKey(
     if (code === 'invalid_api_key') {
       return { valid: false, code, message: 'MDBList rejected this API key.' };
     }
+    if (code === 'rate_limited') {
+      return { valid: false, code, message: 'MDBList daily API limit has been reached for this key.' };
+    }
     if (code === 'request_failed') {
       return { valid: false, code, message: 'MDBList could not be reached right now.' };
     }
@@ -292,36 +403,37 @@ export async function fetchMdbListRatings(
   const cached = ratingsCache.get(cacheKey);
   if (cached) return cached;
 
-  const settled = await Promise.allSettled(
-    providers.map(providerId => fetchProviderRating(normalizedImdbId, mediaType, providerId, apiKey, signal)),
-  );
+  const ratings: ExternalRating[] = [];
+  let requestFailureCount = 0;
 
-  const ratings = settled.flatMap(result => {
-    if (result.status !== 'fulfilled' || !result.value) return [];
-    return [result.value];
-  });
-
-  if (ratings.length === 0) {
-    const invalidKeyFailure = settled.find(result => result.status === 'rejected' && getMdbListErrorCode(result.reason) === 'invalid_api_key');
-    if (invalidKeyFailure && invalidKeyFailure.status === 'rejected') {
-      throw invalidKeyFailure.reason;
+  for (const providerId of providers) {
+    try {
+      const rating = await fetchProviderRating(normalizedImdbId, mediaType, providerId, apiKey, signal);
+      if (rating) ratings.push(rating);
+    } catch (error) {
+      const code = getMdbListErrorCode(error);
+      if (code === 'invalid_api_key' || code === 'rate_limited') {
+        throw error;
+      }
+      if (code === 'request_failed') {
+        requestFailureCount += 1;
+        continue;
+      }
+      throw error;
     }
+  }
 
-    const fulfilledCount = settled.filter(result => result.status === 'fulfilled').length;
-    const requestFailures = settled.filter(result => result.status === 'rejected' && getMdbListErrorCode(result.reason) === 'request_failed');
+  if (ratings.length === 0 && requestFailureCount === providers.length && providers.length > 0) {
+    throw createMdbListError('request_failed', 'MDBList providers could not be reached', 0);
+  }
 
-    if (fulfilledCount === 0 && requestFailures.length === settled.length && requestFailures[0]?.status === 'rejected') {
-      throw requestFailures[0].reason;
-    }
-
-    if (requestFailures.length > 0) {
-      console.warn('[MDBList] Some providers failed without returning ratings', {
-        imdbId: normalizedImdbId,
-        mediaType,
-        providers,
-        requestFailureCount: requestFailures.length,
-      });
-    }
+  if (ratings.length === 0 && requestFailureCount > 0) {
+    console.warn('[MDBList] Some providers failed without returning ratings', {
+      imdbId: normalizedImdbId,
+      mediaType,
+      providers,
+      requestFailureCount,
+    });
   }
 
   ratingsCache.set(cacheKey, ratings);

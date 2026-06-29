@@ -207,14 +207,14 @@ function isFutureDate(value?: string | null): boolean {
 
 type Tab = 'about' | 'seasons' | 'streams';
 
-const externalRatingVisuals: Record<string, { label: string; color: string; format: (value: number) => string; logo?: any; logoWidth?: number }> = {
-  [MDBLIST_PROVIDER_IMDB]: { label: 'IMDb', color: '#F5C518', format: value => value.toFixed(1), logo: require('../../assets/ratings/imdb-logo.png'), logoWidth: 28 },
-  [MDBLIST_PROVIDER_TMDB]: { label: 'TMDB', color: '#01B4E4', format: value => String(Math.round(value)), logo: require('../../assets/ratings/tmdb-logo.png'), logoWidth: 28 },
-  [MDBLIST_PROVIDER_TOMATOES]: { label: 'RT', color: '#FA320A', format: value => `${Math.round(value)}%`, logo: require('../../assets/ratings/rotten-tomatoes-logo.png'), logoWidth: 22 },
-  [MDBLIST_PROVIDER_METACRITIC]: { label: 'MC', color: '#FFCC33', format: value => String(Math.round(value)), logo: require('../../assets/ratings/metacritic-logo.png'), logoWidth: 22 },
-  [MDBLIST_PROVIDER_TRAKT]: { label: 'Trakt', color: '#ED1C24', format: value => String(Math.round(value)), logo: require('../../assets/ratings/trakt-logo.png'), logoWidth: 24 },
-  [MDBLIST_PROVIDER_LETTERBOXD]: { label: 'LB', color: '#00E054', format: value => value.toFixed(1), logo: require('../../assets/ratings/letterboxd-logo.png'), logoWidth: 26 },
-  [MDBLIST_PROVIDER_AUDIENCE]: { label: 'Audience', color: '#FA320A', format: value => `${Math.round(value)}%`, logo: require('../../assets/ratings/audience-score.png'), logoWidth: 22 },
+const externalRatingVisuals: Record<string, { label: string; color: string; format: (value: number) => string; logo?: any; logoWidth?: number; logoMarginRight?: number }> = {
+  [MDBLIST_PROVIDER_IMDB]: { label: 'IMDb', color: '#F5C518', format: value => value.toFixed(1), logo: require('../../assets/ratings/imdb-logo.png'), logoWidth: 28, logoMarginRight: 0 },
+  [MDBLIST_PROVIDER_TMDB]: { label: 'TMDB', color: '#01B4E4', format: value => String(Math.round(value)), logo: require('../../assets/ratings/tmdb-logo.png'), logoWidth: 28, logoMarginRight: -5 },
+  [MDBLIST_PROVIDER_TOMATOES]: { label: 'RT', color: '#FA320A', format: value => `${Math.round(value)}%`, logo: require('../../assets/ratings/rotten-tomatoes-logo.png'), logoWidth: 22, logoMarginRight: -4 },
+  [MDBLIST_PROVIDER_METACRITIC]: { label: 'MC', color: '#FFCC33', format: value => String(Math.round(value)), logo: require('../../assets/ratings/metacritic-logo.png'), logoWidth: 22, logoMarginRight: -4 },
+  [MDBLIST_PROVIDER_TRAKT]: { label: 'Trakt', color: '#ED1C24', format: value => String(Math.round(value)), logo: require('../../assets/ratings/trakt-logo.png'), logoWidth: 24, logoMarginRight: -4 },
+  [MDBLIST_PROVIDER_LETTERBOXD]: { label: 'LB', color: '#00E054', format: value => value.toFixed(1), logo: require('../../assets/ratings/letterboxd-logo.png'), logoWidth: 26, logoMarginRight: -5 },
+  [MDBLIST_PROVIDER_AUDIENCE]: { label: 'Audience', color: '#FA320A', format: value => `${Math.round(value)}%`, logo: require('../../assets/ratings/audience-score.png'), logoWidth: 22, logoMarginRight: -4 },
 };
 
 const INLINE_FALLBACK_RATING_SOURCE = '__inline_fallback_rating__';
@@ -252,9 +252,10 @@ function ExternalRatingsRow({
         flexDirection: 'row',
         flexWrap: 'nowrap',
         alignItems: 'center',
-        alignSelf: 'center',
+        alignSelf: centered ? 'center' : 'stretch',
         gap: 8,
-        width: '100%',
+        width: centered ? 'auto' : '100%',
+        maxWidth: '100%',
         justifyContent: centered ? 'center' : 'flex-start',
       }}
     >
@@ -268,14 +269,14 @@ function ExternalRatingsRow({
               flexDirection: 'row',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: 3,
+              gap: 1,
               minWidth: 0,
             }}
           >
             {visuals.logo ? (
               <Image
                 source={visuals.logo}
-                style={{ width: visuals.logoWidth ?? 24, height: 12 }}
+                style={{ width: visuals.logoWidth ?? 24, height: 12, marginRight: visuals.logoMarginRight ?? 0 }}
                 contentFit="contain"
                 transition={0}
               />
@@ -507,6 +508,7 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   pillText:     { color: c.buttonText, fontSize: 11, fontWeight: '700' },
   pillDarkText: { color: isMonochromeDark ? c.textPrimary : (isLightAppearance ? c.textPrimary : '#111827'), fontSize: 11, fontWeight: '800' },
   externalRatingsSection: { paddingHorizontal: 14, paddingTop: 8, paddingBottom: 12, marginTop: 4, marginBottom: 10, alignItems: 'center' },
+  glassExternalRatingsSection: { paddingBottom: 0, marginBottom: 0 },
   ratingsLoadingText: { fontSize: 12, fontWeight: '600' },
   detailStatusText: { color: isLightAppearance ? c.textSecondary : c.subText, fontSize: 12, lineHeight: 18, marginTop: 10 },
   actions: {
@@ -567,10 +569,10 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     width: 22, height: 22, borderRadius: 11,
     backgroundColor: '#00e676', justifyContent: 'center', alignItems: 'center',
   },
-  tabs: { flexDirection: 'row', paddingHorizontal: 14, gap: 8, marginBottom: 20 },
+  tabs: { flexDirection: 'row', paddingLeft: 14, paddingRight: 0, gap: 8, marginBottom: 14, alignSelf: 'flex-start' },
   tab: {
-    paddingHorizontal: 18,
-    paddingVertical: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
     borderRadius: 20,
     backgroundColor: isLightAppearance ? 'rgba(255,255,255,0.52)' : (vividAmbient ? c.inputBg + '99' : c.inputBg),
     borderWidth: 1,
@@ -589,7 +591,7 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     transform: [{ scale: 0.68 }],
   },
   tabLabelWrap: {
-    minWidth: 64,
+    minWidth: 0,
     alignItems: 'center' as const,
     justifyContent: 'center' as const,
   },
@@ -901,8 +903,8 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   glassSynopsisBlock: {
     width: '100%',
     paddingHorizontal: 20,
-    paddingTop: 16,
-    marginTop: 12,
+    paddingTop: 12,
+    marginTop: 0,
   },
   glassSynopsisText: {
     color: isLightAppearance ? c.textSecondary : '#f3f4f6',
@@ -984,6 +986,7 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   centeredTagline: { color: isLightAppearance ? c.textSecondary : c.subText, fontSize: 12, fontStyle: 'italic', marginBottom: 10, textAlign: 'center' as const },
   centeredPills:   { flexDirection: 'row' as const, flexWrap: 'wrap' as const, gap: 6, justifyContent: 'center' as const, width: '100%' as const },
   centeredActionsWrap: { paddingHorizontal: 14, gap: 10, marginBottom: 16, marginTop: 0 },
+  centeredCombinedRowSection: { marginBottom: 14 },
   centeredCombinedRow: {
     flexDirection: 'row' as const, justifyContent: 'center' as const,
     gap: 8, flexWrap: 'nowrap' as const, alignItems: 'center' as const,
@@ -1692,7 +1695,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
 
     setMdbListLoading(true);
 
-    const controller = new AbortController();
+    let isActive = true;
     const detailId = String(media.id ?? movieId);
     const currentType = type === 'movie' ? 'movie' : 'tv';
     setMdbListStatusMessage(null);
@@ -1700,32 +1703,44 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     const idleHandle = runIdle(() => {
       void (async () => {
         try {
-          const ratings = await fetchMdbListRatings(imdbId, currentType, mdbListSettings, controller.signal);
-          if (controller.signal.aborted) return;
+          const ratings = await fetchMdbListRatings(imdbId, currentType, mdbListSettings);
+          const resolvedRatings = ratings.length > 0 ? ratings : fallbackRatings;
+          const nextRatingsMode = ratings.length > 0 ? 'mdblist' : (fallbackRatings.length > 0 ? 'fallback' : 'none');
+          const cachedCurrent = detailCache.get(cacheKey);
+          if (cachedCurrent) {
+            detailCache.set(cacheKey, {
+              ...cachedCurrent,
+              imdbId: cachedCurrent.imdbId ?? imdbId,
+              externalRatings: resolvedRatings,
+              externalRatingsMode: nextRatingsMode,
+            });
+          }
+          if (!isActive) return;
           setMedia((current: any) => {
             if (!current || String(current.id ?? '') !== detailId) return current;
-            const next = { ...current, imdbId: current.imdbId ?? imdbId, externalRatings: ratings, externalRatingsMode: ratings.length > 0 ? 'mdblist' : (fallbackRatings.length > 0 ? 'fallback' : 'none') };
-            detailCache.set(cacheKey, next);
-            return next;
+            return {
+              ...current,
+              imdbId: current.imdbId ?? imdbId,
+              externalRatings: resolvedRatings,
+              externalRatingsMode: nextRatingsMode,
+            };
           });
           setMdbListLoading(false);
           setMdbListStatusMessage(null);
-          if (ratings.length === 0 && fallbackRatings.length > 0) {
-            setMedia((current: any) => {
-              if (!current || String(current.id ?? '') !== detailId) return current;
-              const next = { ...current, externalRatings: fallbackRatings, externalRatingsMode: fallbackRatings.length > 0 ? 'fallback' : 'none' };
-              detailCache.set(cacheKey, next);
-              return next;
+        } catch (error) {
+          const nextRatingsMode = fallbackRatings.length > 0 ? 'fallback' : 'none';
+          const cachedCurrent = detailCache.get(cacheKey);
+          if (cachedCurrent) {
+            detailCache.set(cacheKey, {
+              ...cachedCurrent,
+              externalRatings: fallbackRatings,
+              externalRatingsMode: nextRatingsMode,
             });
           }
-        } catch (error) {
-          if (controller.signal.aborted) return;
-          const errorCode = getMdbListErrorCode(error);
+          if (!isActive) return;
           setMedia((current: any) => {
             if (!current || String(current.id ?? '') !== detailId) return current;
-            const next = { ...current, externalRatings: fallbackRatings, externalRatingsMode: fallbackRatings.length > 0 ? 'fallback' : 'none' };
-            detailCache.set(cacheKey, next);
-            return next;
+            return { ...current, externalRatings: fallbackRatings, externalRatingsMode: nextRatingsMode };
           });
           setMdbListLoading(false);
           setMdbListStatusMessage(null);
@@ -1734,8 +1749,8 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     }, { timeoutMs: 250 });
 
     return () => {
+      isActive = false;
       idleHandle.cancel();
-      controller.abort();
       setMdbListLoading(false);
     };
   }, [
@@ -2514,7 +2529,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                   {media.externalRatingsMode === 'fallback' && media.externalRatings?.[0] ? <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{formatInlineFallbackRating(media.externalRatings[0])}</Text></View> : null}
                 </View>
                 {media.externalRatingsMode === 'mdblist' ? (
-                  <Animated.View style={[styles.externalRatingsSection, { opacity: ratingsRowAnimation, transform: [{ translateY: ratingsRowTranslateY }] }]}>
+                  <Animated.View style={[styles.externalRatingsSection, useGlassDetailLayout && styles.glassExternalRatingsSection, { opacity: ratingsRowAnimation, transform: [{ translateY: ratingsRowTranslateY }] }]}>
                     <ExternalRatingsRow ratings={media.externalRatings ?? []} colors={colors} isLightAppearance={isLightAppearance} centered />
                   </Animated.View>
                 ) : null}
@@ -2695,7 +2710,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
           </>
         )}
 
-        <View style={useCompactDetailLayout ? styles.centeredCombinedRow : styles.actions}>
+        <View style={useCompactDetailLayout ? styles.centeredCombinedRowSection : styles.actions}>
           {useCompactDetailLayout && (
             // Centered: tabs first, then icon pills Ã¢â‚¬â€ all unified pill shape
             <View style={styles.centeredCombinedRow}>
@@ -3757,12 +3772,6 @@ function StreamsTab({
 
       {Object.entries(grouped).map(([addonName, addonStreams]) => (
         <View key={addonName} style={{ marginBottom: 20 }}>
-          {/* Hide the section header when filtered to a single addon Ã¢â‚¬â€ it's redundant */}
-          {safeAddon === 'all' && (
-            <Text style={{ color: colors.textPrimary, fontSize: 11, fontWeight: '700', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: 8 }}>
-              {getStreamSourceLabel(addonName)}
-            </Text>
-          )}
           {addonStreams.map((stream, idx) => (
             <StreamRow key={`${addonName}-${idx}`} stream={stream} colors={colors} onPlay={onPlay} />
           ))}
@@ -3794,6 +3803,13 @@ const StreamRow = React.memo(function StreamRow({ stream, colors, onPlay, style,
   const handlePress = React.useCallback(() => onPlay(stream), [onPlay, stream]);
   return <StreamSourceRow stream={stream} colors={colors} onPress={handlePress} style={style} sourceLabel={sourceLabel} />;
 });
+
+
+
+
+
+
+
 
 
 

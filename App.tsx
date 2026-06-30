@@ -4,6 +4,7 @@ import { BlurTargetView } from 'expo-blur';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer, DarkTheme, DefaultTheme } from '@react-navigation/native';
+import type { NavigationState, PartialState } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { StatusBar } from 'expo-status-bar';
@@ -80,8 +81,41 @@ function MainTabs({ blurTargetRef }: { blurTargetRef: React.RefObject<View | nul
   );
 }
 
+const UPDATE_PROMPT_DELAY_MS = 3000;
+const ELIGIBLE_UPDATE_ROUTES = new Set([
+  'Home',
+  'Search',
+  'ContinueWatching',
+  'Watchlist',
+  'Settings',
+  'Detail',
+  'Browse',
+  'Addons',
+  'SettingsDetail',
+  'HomeLayoutSettings',
+  'ContinueWatchingStyleSettings',
+  'PageStyleSettings',
+  'TraktSettings',
+  'TraktCollection',
+  'Collections',
+  'CollectionDetail',
+  'CollectionFolder',
+  'EpisodeStreams',
+  'PersonDetail',
+]);
+
+function getActiveRouteName(state: NavigationState | PartialState<NavigationState> | undefined): string | null {
+  if (!state || !Array.isArray(state.routes) || state.routes.length === 0) return null;
+  const index = typeof state.index === 'number' ? state.index : 0;
+  const route = state.routes[index] as any;
+  if (!route) return null;
+  const childState = route.state as NavigationState | PartialState<NavigationState> | undefined;
+  return getActiveRouteName(childState) ?? route.name ?? null;
+}
+
 function AppNavigation() {
   const appBlurTargetRef = React.useRef<View | null>(null);
+  const navigationRef = React.useRef<any>(null);
   const { theme, resolvedAppearance } = useTheme();
   const { user, authLoading } = useAuth();
   const { activeProfile, profilesReady, profileSwitching } = useProfile();
@@ -93,6 +127,9 @@ function AppNavigation() {
   const showProfileLoaderOverlay = profileSwitching || (profileOverlayMounted && !showProfileSwitcher);
   const previousOverlayActiveRef = React.useRef(showProfileSwitcher || profileSwitching);
   const launchCoverOpacity = React.useRef(new Animated.Value(shouldBlockInitialAppReveal ? 1 : 0)).current;
+  const [updatePromptGateOpen, setUpdatePromptGateOpen] = React.useState(false);
+  const updatePromptTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeRouteNameRef = React.useRef<string | null>(null);
   const linking = React.useMemo(() => ({
     prefixes: ['streamdek://'],
     config: {
@@ -131,6 +168,34 @@ function AppNavigation() {
     }),
     [resolvedAppearance, theme.colors],
   );
+  const clearUpdatePromptTimer = React.useCallback(() => {
+    if (!updatePromptTimerRef.current) return;
+    clearTimeout(updatePromptTimerRef.current);
+    updatePromptTimerRef.current = null;
+  }, []);
+
+  const scheduleUpdatePromptGate = React.useCallback((routeName: string | null, overlayActive: boolean) => {
+    const eligible = !shouldBlockInitialAppReveal && !overlayActive && !!routeName && ELIGIBLE_UPDATE_ROUTES.has(routeName);
+    clearUpdatePromptTimer();
+    if (!eligible) {
+      setUpdatePromptGateOpen(false);
+      return;
+    }
+    setUpdatePromptGateOpen(false);
+    updatePromptTimerRef.current = setTimeout(() => {
+      setUpdatePromptGateOpen(true);
+      updatePromptTimerRef.current = null;
+    }, UPDATE_PROMPT_DELAY_MS);
+  }, [clearUpdatePromptTimer, shouldBlockInitialAppReveal]);
+
+  React.useEffect(() => {
+    scheduleUpdatePromptGate(activeRouteNameRef.current, showProfileSwitcher || profileSwitching);
+  }, [profileSwitching, scheduleUpdatePromptGate, showProfileSwitcher]);
+
+  React.useEffect(() => () => {
+    clearUpdatePromptTimer();
+  }, [clearUpdatePromptTimer]);
+
 
   React.useEffect(() => {
     launchCoverOpacity.stopAnimation();
@@ -192,7 +257,22 @@ function AppNavigation() {
   ]);
 
   return (
-    <NavigationContainer theme={navTheme} linking={linking}>
+    <NavigationContainer
+      ref={navigationRef}
+      theme={navTheme}
+      linking={linking}
+      onReady={() => {
+        const routeName = getActiveRouteName(navigationRef.current?.getRootState()) ?? 'Home';
+        activeRouteNameRef.current = routeName;
+        scheduleUpdatePromptGate(routeName, showProfileSwitcher || profileSwitching);
+      }}
+      onStateChange={(state) => {
+        const routeName = getActiveRouteName(state);
+        if (activeRouteNameRef.current === routeName) return;
+        activeRouteNameRef.current = routeName;
+        scheduleUpdatePromptGate(routeName, showProfileSwitcher || profileSwitching);
+      }}
+    >
       <StatusBar style={resolvedAppearance === 'light' ? 'dark' : 'light'} />
       <BlurTargetView ref={appBlurTargetRef} style={{ flex: 1 }}>
         <Animated.View style={{ flex: 1, opacity: profileContentFade }}>
@@ -274,6 +354,7 @@ function AppNavigation() {
           )}
         </Animated.View>
       )}
+      <UpdatePrompt enabled={updatePromptGateOpen} />
       <Animated.View
         pointerEvents="none"
         style={[
@@ -322,7 +403,6 @@ export default function App() {
                                       <MdbListSettingsProvider>
                                         <AppUpdateProvider>
                                           <AppNavigation />
-                                          <UpdatePrompt />
                                           <AnimatedSplash />
                                         </AppUpdateProvider>
                                       </MdbListSettingsProvider>

@@ -1320,7 +1320,8 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const ultraActive = ultraEntitled && ultraBoostEnabled;
   const hasStreamSources = streamCapableAddons.length > 0 || ultraActive;
   const sourceCount = streamCapableAddons.length + (ultraActive ? 1 : 0);
-  const shouldPreloadStreams = isMovieDetail && !!media && !addonsLoading && hasStreamSources;
+  const streamVideoId = media?.imdbId ?? routeImdbId ?? String(movieId);
+  const shouldPreloadStreams = isMovieDetail && !!media && !loading && !addonsLoading && hasStreamSources && streamVideoId.length > 0;
   // Always start as false ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the reset effect below will set it to true once
   // we know whether a preload is actually needed (after media + user are ready).
   const [streamsLoadComplete, setStreamsLoadComplete] = useState(false);
@@ -1910,12 +1911,11 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     setStreamsFetchStarted(true);
     streamsFetchedRef.current = true; // ref ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â no re-render, no accidental abort
 
-    const videoId    = media.imdbId ?? String(movieId);
     const streamType = type === 'tv' ? 'series' : 'movie';
 
     void fetchStreamsProgressive(
       streamType,
-      videoId,
+      streamVideoId,
       (newStreams, pending) => {
         if (controller.signal.aborted || streamsRequestIdRef.current !== requestId) return;
         setStreams(newStreams);
@@ -1932,7 +1932,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     });
 
     return () => { controller.abort(); };
-  }, [shouldPreloadStreams, streamsFetchKey, media?.id, media?.imdbId, movieId, type, fetchStreamsProgressive]);
+  }, [shouldPreloadStreams, streamsFetchKey, streamVideoId, type, fetchStreamsProgressive]);
 
   // When returning from Auth or Addons with the Streams tab active and no results,
   // reset the guard and bump the fetch key so the effect re-runs.
@@ -2010,7 +2010,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
       return;
     }
 
-    if (addonsLoading) {
+    if (loading || addonsLoading) {
       setStreamsLoadComplete(false);
       setStreamsLoading(true);
       return;
@@ -2025,7 +2025,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     setStreamsLoadComplete(false);
     setStreamsLoading(true);
     setStreamsFetchKey(k => k + 1);
-  }, [movieId, media?.id, isMovieDetail, addonsLoading, hasStreamSources]);
+  }, [movieId, media?.id, streamVideoId, isMovieDetail, loading, addonsLoading, hasStreamSources]);
 
   useEffect(() => {
     if (useGlassDetailLayout && activeTab === 'streams') {

@@ -50,10 +50,13 @@ import { MdbListSettingsProvider } from './src/context/MdbListSettingsContext';
 import { ProfileProvider, useProfile } from './src/context/ProfileContext';
 import { AppLifecycleProvider } from './src/context/AppLifecycleContext';
 import { AppUpdateProvider } from './src/context/AppUpdateContext';
+import { CollectionsProvider } from './src/context/CollectionsContext';
 import { ProfileSwitcherScreen } from './src/screens/ProfileSwitcherScreen';
 import { ManageProfilesScreen } from './src/screens/ManageProfilesScreen';
 import { PersonDetailScreen } from './src/screens/PersonDetailScreen';
 import { EditProfileScreen } from './src/screens/EditProfileScreen';
+import { CollectionsScreen } from './src/screens/CollectionsScreen';
+import { CollectionFolderScreen } from './src/screens/CollectionFolderScreen';
 import { useTheme } from './src/context/ThemeContext';
 import { UpdatePrompt } from './src/components/UpdatePrompt';
 
@@ -240,6 +243,8 @@ function AppNavigation() {
               options={{ headerShown: false, presentation: 'modal', animation: 'slide_from_bottom', animationDuration: 300 }}
             />
             <Stack.Screen name="TraktCollection" component={TraktCollectionScreen} options={{ headerShown: false, animationDuration: 280 }} />
+            <Stack.Screen name="Collections" component={CollectionsScreen} options={{ headerShown: false, animationDuration: 280 }} />
+            <Stack.Screen name="CollectionFolder" component={CollectionFolderScreen} options={{ headerShown: false, animationDuration: 280 }} />
             <Stack.Screen name="EpisodeStreams" component={EpisodeStreamsScreen} options={{ headerShown: false, animationDuration: 280 }} />
             <Stack.Screen name="PersonDetail" component={PersonDetailScreen} options={{ headerShown: false, animation: 'fade', animationDuration: 260 }} />
             <Stack.Screen name="ManageProfiles" component={ManageProfilesScreen} options={{ headerShown: false, animationDuration: 280 }} />
@@ -311,13 +316,15 @@ export default function App() {
                               <DebridProvider>
                                 <AddonProvider>
                                   <TmdbApiKeyProvider>
-                                    <MdbListSettingsProvider>
-                                      <AppUpdateProvider>
-                                        <AppNavigation />
-                                        <UpdatePrompt />
-                                        <AnimatedSplash />
-                                      </AppUpdateProvider>
-                                    </MdbListSettingsProvider>
+                                    <CollectionsProvider>
+                                      <MdbListSettingsProvider>
+                                        <AppUpdateProvider>
+                                          <AppNavigation />
+                                          <UpdatePrompt />
+                                          <AnimatedSplash />
+                                        </AppUpdateProvider>
+                                      </MdbListSettingsProvider>
+                                    </CollectionsProvider>
                                   </TmdbApiKeyProvider>
                                 </AddonProvider>
                               </DebridProvider>
@@ -341,4 +348,8 @@ export default function App() {
     </GestureHandlerRootView>
   );
 }
+
+
+
+
 

@@ -15,8 +15,10 @@ import { useAuth } from '../context/AuthContext';
 import { useProfile } from '../context/ProfileContext';
 import { useAddons } from '../context/AddonContext';
 import { useTmdbApiKey } from '../context/TmdbApiKeyContext';
+import { useCollections } from '../context/CollectionsContext';
 import { Storage } from '../utils/storage';
 import { buildAddonHomeSections, buildDefaultHomeSections, type HomeCatalogSection } from '../utils/homeCatalogSections';
+import { buildCollectionHomeSections } from '../utils/collections';
 import { getHomeSectionStorageKeys, mergeSavedHomeSections } from '../utils/homeLayoutConfig';
 
 const CURRENT_YEAR = new Date().getFullYear();
@@ -177,6 +179,7 @@ export function HomeLayoutSettingsScreen({ navigation }: any) {
     setDefaultCatalogsEnabled,
     setHomeCatalogProviderEnabled,
   } = useTmdbApiKey();
+  const { collections } = useCollections();
   const [sections, setSections] = useState<HomeCatalogSection[]>([]);
   const selectedHomeCatalogProvider = homeCatalogProviders[0] ?? metadataProvider;
   const navClearance = BOTTOM_NAV_HEIGHT + insets.bottom + 24;
@@ -199,8 +202,12 @@ export function HomeLayoutSettingsScreen({ navigation }: any) {
       },
       metadataProvider,
     );
-    return [...builtin, ...buildAddonHomeSections(addons, { movie: t('catalog_type_movies'), tv: t('catalog_type_series') })];
-  }, [addons, homeCatalogProviders, metadataProvider, t]);
+    return [
+      ...builtin,
+      ...buildCollectionHomeSections(collections),
+      ...buildAddonHomeSections(addons, { movie: t('catalog_type_movies'), tv: t('catalog_type_series') }),
+    ];
+  }, [addons, collections, homeCatalogProviders, metadataProvider, t]);
 
   const storageKeys = useMemo(
     () => getHomeSectionStorageKeys(user?.uid, activeProfile?.id),
@@ -381,3 +388,7 @@ export function HomeLayoutSettingsScreen({ navigation }: any) {
     </View>
   );
 }
+
+
+
+

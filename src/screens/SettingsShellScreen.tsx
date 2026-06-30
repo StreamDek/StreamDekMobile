@@ -203,6 +203,14 @@ export function SettingsShellScreen({ navigation }: any) {
                 />
                 <View style={styles.divider} />
                 <NavRow
+                  icon="film-outline"
+                  iconColor="#22c55e"
+                  label="Detail screen"
+                  subtitle="Hero trailer autoplay and MDBList ratings."
+                  onPress={() => navigation.navigate('SettingsDetail', { section: 'detail-screen' })}
+                />
+                <View style={styles.divider} />
+                <NavRow
                   icon="pricetags-outline"
                   iconColor="#ec4899"
                   label={t('settings_streams_nav_label')}
@@ -290,3 +298,4 @@ export function SettingsShellScreen({ navigation }: any) {
     </View>
   );
 }
+

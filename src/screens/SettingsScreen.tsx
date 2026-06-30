@@ -31,6 +31,7 @@ import { useUIStyle } from '../context/UIStyleContext';
 import { useDisplaySettings } from '../context/DisplaySettingsContext';
 import { useTmdbApiKey } from '../context/TmdbApiKeyContext';
 import { useMdbListSettings } from '../context/MdbListSettingsContext';
+import { useCollections } from '../context/CollectionsContext';
 import { useStreamSelectionSettings } from '../context/StreamSelectionContext';
 import { usePlaybackSettings } from '../context/PlaybackSettingsContext';
 import { useFusionBadges, MAX_FUSION_BADGE_URLS } from '../context/FusionBadgeContext';
@@ -61,6 +62,7 @@ const SECTION_TITLE_KEYS = {
   'account-services': 'settings_detail_account_services',
   'app-updates': 'settings_detail_app_updates',
   'streams': 'settings_detail_streams',
+  'detail-screen': 'settings_title',
   'mdblist-ratings': 'settings_mdblist_ratings',
 } as const;
 
@@ -485,7 +487,8 @@ export function SettingsScreen({ navigation, route }: any) {
   const { language, setLanguage, t } = useLanguage();
   const title = t((SECTION_TITLE_KEYS as Record<string, any>)[detailSection] ?? 'settings_title');
   const { uiStyle, setUiStyle } = useUIStyle();
-  const { showNavLabels, setShowNavLabels, continueWatchingStyle, setContinueWatchingStyle, vividAmbientEnabled, setVividAmbientEnabled, pictureInPictureEnabled, setPictureInPictureEnabled, showStreamsList, setShowStreamsList } = useDisplaySettings();
+  const { showNavLabels, setShowNavLabels, continueWatchingStyle, setContinueWatchingStyle, vividAmbientEnabled, setVividAmbientEnabled, heroTrailerAutoplayEnabled, setHeroTrailerAutoplayEnabled, pictureInPictureEnabled, setPictureInPictureEnabled, showStreamsList, setShowStreamsList } = useDisplaySettings();
+  const { collections } = useCollections();
   const { homeCatalogProviders, tmdbKeyEnabled, tmdbApiKey, setTmdbKeyEnabled, setTmdbApiKey } = useTmdbApiKey();
   const { enabled: mdbListEnabled, apiKey: mdbListApiKey, hasApiKey: mdbListHasApiKey, useImdb: mdbListUseImdb, useTmdb: mdbListUseTmdb, useTomatoes: mdbListUseTomatoes, useMetacritic: mdbListUseMetacritic, useTrakt: mdbListUseTrakt, useLetterboxd: mdbListUseLetterboxd, useAudience: mdbListUseAudience, setEnabled: setMdbListEnabled, setApiKey: setMdbListApiKey, setProviderEnabled: setMdbListProviderEnabled } = useMdbListSettings();
   const {
@@ -761,7 +764,7 @@ export function SettingsScreen({ navigation, route }: any) {
     const guard = await checkSyncAllowed();
     if (!guard.allowed) {
       if (guard.reason === 'offline') return;
-      // cellular_blocked ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â user has sync-over-cellular disabled; skip silently
+      // cellular_blocked ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â user has sync-over-cellular disabled; skip silently
       return;
     }
 
@@ -988,6 +991,17 @@ export function SettingsScreen({ navigation, route }: any) {
                 </>
               ) : null}
 
+              {detailSection === 'detail-screen' ? (
+                <>
+                  <Text style={styles.sectionTitle}>Detail Screen</Text>
+                  <View style={styles.card}>
+                    <SettingRow icon="play-circle-outline" iconColor={safeIconColor('#22c55e')} label="Hero trailer autoplay" subtitle="Autoplay the best YouTube trailer in the detail-page hero when available." right={<AppleToggle value={heroTrailerAutoplayEnabled} onValueChange={value => { void setHeroTrailerAutoplayEnabled(value); }} onColor={colors.toggleOn} />} />
+                    <View style={styles.divider} />
+                    <SettingRow icon="star-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_mdblist_ratings')} subtitle={t('settings_mdblist_manage_sub')} value={mdbListEnabled ? 'Enabled' : 'Disabled'} onPress={() => navigation.push('SettingsDetail', { section: 'mdblist-ratings' })} />
+                  </View>
+                </>
+              ) : null}
+
               {detailSection === 'home-appearance' ? (
                 <>
                   <Text style={styles.sectionTitle}>{t('settings_detail_home_appearance')}</Text>
@@ -1003,9 +1017,9 @@ export function SettingsScreen({ navigation, route }: any) {
                     <SettingRow icon="color-wand-outline" iconColor={safeIconColor('#a78bfa')} label={t('settings_ambient_background')} subtitle={t('settings_ambient_background_sub')} right={<AppleToggle value={vividAmbientEnabled} onValueChange={value => { void setVividAmbientEnabled(value); }} onColor={colors.toggleOn} />} />
                   </View>
 
-                  <Text style={styles.sectionTitle}>{t('settings_mdblist_ratings')}</Text>
+                  <Text style={styles.sectionTitle}>Collections</Text>
                   <View style={styles.card}>
-                    <SettingRow icon="star-outline" iconColor={safeIconColor('#f59e0b')} label={t('settings_mdblist_ratings')} subtitle={t('settings_mdblist_manage_sub')} value={mdbListEnabled ? 'Enabled' : 'Disabled'} onPress={() => navigation.push('SettingsDetail', { section: 'mdblist-ratings' })} />
+                    <SettingRow icon="folder-open-outline" iconColor={safeIconColor('#8b5cf6')} label="Collections" subtitle="Manage imported collection folders and expose them in Home Layout." value={`${collections.length}`} onPress={() => navigation.navigate('Collections')} />
                   </View>
                 </>
               ) : null}
@@ -1338,7 +1352,6 @@ export function SettingsScreen({ navigation, route }: any) {
     </SettingRowThemeContext.Provider>
   );
 }
-
 
 
 

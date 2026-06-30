@@ -19,6 +19,8 @@ type DisplaySettingsValue = {
   setShowStreamsList: (value: boolean) => Promise<void>;
   vividAmbientEnabled: boolean;
   setVividAmbientEnabled: (value: boolean) => Promise<void>;
+  heroTrailerAutoplayEnabled: boolean;
+  setHeroTrailerAutoplayEnabled: (value: boolean) => Promise<void>;
   isReady: boolean;
 };
 
@@ -33,6 +35,8 @@ const DisplaySettingsContext = createContext<DisplaySettingsValue>({
   setShowStreamsList: async () => {},
   vividAmbientEnabled: true,
   setVividAmbientEnabled: async () => {},
+  heroTrailerAutoplayEnabled: false,
+  setHeroTrailerAutoplayEnabled: async () => {},
   isReady: false,
 });
 
@@ -44,6 +48,7 @@ export const DisplaySettingsProvider = ({ children }: { children: React.ReactNod
   const [continueWatchingStyle, setContinueWatchingStyleState] = useState<ContinueWatchingStyle>('glass');
   const [showStreamsList, setShowStreamsListState] = useState(true);
   const [vividAmbientEnabled, setVividAmbientEnabledState] = useState(true);
+  const [heroTrailerAutoplayEnabled, setHeroTrailerAutoplayEnabledState] = useState(false);
   const [isReady, setIsReady] = useState(false);
   const settingsKey = profileScopedStorageKey(DISPLAY_SETTINGS_KEY, user?.uid, activeProfile?.id);
   const settingsRef = useRef({
@@ -52,6 +57,7 @@ export const DisplaySettingsProvider = ({ children }: { children: React.ReactNod
     continueWatchingStyle: 'glass' as ContinueWatchingStyle,
     showStreamsList: true,
     vividAmbientEnabled: true,
+    heroTrailerAutoplayEnabled: false,
   });
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -86,6 +92,10 @@ export const DisplaySettingsProvider = ({ children }: { children: React.ReactNod
         if (typeof parsed?.vividAmbientEnabled === 'boolean') {
           next.vividAmbientEnabled = parsed.vividAmbientEnabled;
           setVividAmbientEnabledState(parsed.vividAmbientEnabled);
+        }
+        if (typeof parsed?.heroTrailerAutoplayEnabled === 'boolean') {
+          next.heroTrailerAutoplayEnabled = parsed.heroTrailerAutoplayEnabled;
+          setHeroTrailerAutoplayEnabledState(parsed.heroTrailerAutoplayEnabled);
         }
         settingsRef.current = next;
       } catch { /* ignore */ }
@@ -130,15 +140,21 @@ export const DisplaySettingsProvider = ({ children }: { children: React.ReactNod
     persist({ ...settingsRef.current, vividAmbientEnabled: v });
   }, [persist]);
 
+  const setHeroTrailerAutoplayEnabled = useCallback(async (v: boolean) => {
+    setHeroTrailerAutoplayEnabledState(v);
+    persist({ ...settingsRef.current, heroTrailerAutoplayEnabled: v });
+  }, [persist]);
+
   const value = useMemo(() => ({
     pictureInPictureEnabled, setPictureInPictureEnabled,
     showNavLabels, setShowNavLabels,
     continueWatchingStyle, setContinueWatchingStyle,
     showStreamsList, setShowStreamsList,
     vividAmbientEnabled, setVividAmbientEnabled,
+    heroTrailerAutoplayEnabled, setHeroTrailerAutoplayEnabled,
     isReady,
-  }), [pictureInPictureEnabled, showNavLabels, continueWatchingStyle, showStreamsList, vividAmbientEnabled, isReady,
-       setPictureInPictureEnabled, setShowNavLabels, setContinueWatchingStyle, setShowStreamsList, setVividAmbientEnabled]);
+  }), [pictureInPictureEnabled, showNavLabels, continueWatchingStyle, showStreamsList, vividAmbientEnabled, heroTrailerAutoplayEnabled, isReady,
+       setPictureInPictureEnabled, setShowNavLabels, setContinueWatchingStyle, setShowStreamsList, setVividAmbientEnabled, setHeroTrailerAutoplayEnabled]);
 
   return (
     <DisplaySettingsContext.Provider value={value}>
@@ -148,3 +164,4 @@ export const DisplaySettingsProvider = ({ children }: { children: React.ReactNod
 };
 
 export const useDisplaySettings = () => useContext(DisplaySettingsContext);
+

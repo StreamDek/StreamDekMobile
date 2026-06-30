@@ -21,6 +21,7 @@ import { ActionSheet } from '../components/ActionSheet';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import { StreamSourceRow } from '../components/StreamSourceRow';
 import { GlassBackButton } from '../components/GlassBackButton';
+import { HeroTrailerBackground } from '../components/HeroTrailerBackground';
 import { useAuth } from '../context/AuthContext';
 import { useProfile } from '../context/ProfileContext';
 import { useTheme, ThemeColors } from '../context/ThemeContext';
@@ -64,7 +65,7 @@ import {
 
 
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Streaming provider deep links (TMDB provider ID Ã¢â€ â€™ app scheme + website) Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Streaming provider deep links (TMDB provider ID ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ app scheme + website) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 const PROVIDER_LINKS: Record<number, { appScheme: string; web: string }> = {
   8:    { appScheme: 'nflx://www.netflix.com/browse',          web: 'https://www.netflix.com' },
   9:    { appScheme: 'aiv://aiv/search',                       web: 'https://www.primevideo.com' },
@@ -103,7 +104,7 @@ async function openProvider(provider: { id: number; name: string }): Promise<voi
   }
 }
 
-/** Per-user individual progress file storage key Ã¢â‚¬â€ must match PlayerScreen. */
+/** Per-user individual progress file storage key ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â must match PlayerScreen. */
 function progressFileKey(uid: string | null, itemKey: string): string {
   return progressFileStorageKey(uid, itemKey);
 }
@@ -261,7 +262,9 @@ function ExternalRatingsRow({
     >
       {ratings.map(rating => {
         const visuals = externalRatingVisuals[rating.source];
-        if (!visuals) return null;
+        const isInlineFallback = String(rating.source) === INLINE_FALLBACK_RATING_SOURCE;
+        if (!visuals && !isInlineFallback) return null;
+        const ratingColor = visuals?.color ?? (isLightAppearance ? '#0f172a' : '#f8fafc');
         return (
           <View
             key={rating.source}
@@ -273,7 +276,9 @@ function ExternalRatingsRow({
               minWidth: 0,
             }}
           >
-            {visuals.logo ? (
+            {isInlineFallback ? (
+              <Text style={{ color: ratingColor, fontSize: 11, fontWeight: '900', letterSpacing: 0.2 }}>Rating</Text>
+            ) : visuals?.logo ? (
               <Image
                 source={visuals.logo}
                 style={{ width: visuals.logoWidth ?? 24, height: 12, marginRight: visuals.logoMarginRight ?? 0 }}
@@ -281,9 +286,9 @@ function ExternalRatingsRow({
                 transition={0}
               />
             ) : (
-              <Text style={{ color: visuals.color, fontSize: 10, fontWeight: '900' }}>{visuals.label}</Text>
+              <Text style={{ color: ratingColor, fontSize: 10, fontWeight: '900' }}>{visuals?.label}</Text>
             )}
-            <Text style={{ color: visuals.color, fontSize: 12, fontWeight: '800' }}>{visuals.format(rating.value)}</Text>
+            <Text style={{ color: ratingColor, fontSize: 12, fontWeight: '800' }}>{isInlineFallback ? rating.value.toFixed(1) : visuals?.format(rating.value)}</Text>
           </View>
         );
       })}
@@ -341,8 +346,8 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     opacity: 0.72,
   } as any,
   loader: { flex: 1, backgroundColor: c.bg, justifyContent: 'center', alignItems: 'center' },
-  backdropWrapper: { height: 345, position: 'relative' },
-  backdrop: { width: '100%', height: 345 },
+  backdropWrapper: { height: 465, position: 'relative' },
+  backdrop: { width: '100%', height: 465 },
   glassHeroSection: {
     paddingHorizontal: 20,
     paddingBottom: 22,
@@ -423,6 +428,7 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   },
   heroInfoShellCentered: {
     width: '100%',
+    marginBottom: -18,
   },
   heroInfoShellGlass: {
     width: '100%',
@@ -436,10 +442,10 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     marginTop: -16,
   },
   classicTitleBlock: {
-    height: 52,
+    height: 60,
     justifyContent: 'center',
     overflow: 'hidden',
-    marginBottom: 6,
+    marginBottom: 18,
   },
   classicTitleLogo: {
     width: '100%',
@@ -475,10 +481,10 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   metaInfo: { flex: 1, paddingTop: 60 },
   title:   { color: isLightAppearance ? c.textPrimary : '#fff', fontSize: 20, fontWeight: '800', lineHeight: 26, marginBottom: 4 },
   titleTextBlock: {
-    height: 52,
+    height: 60,
     justifyContent: 'center',
     overflow: 'hidden',
-    marginBottom: 6,
+    marginBottom: 18,
   },
   titleText: {
     color: isLightAppearance ? c.textPrimary : '#fff',
@@ -507,10 +513,10 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   },
   pillText:     { color: c.buttonText, fontSize: 11, fontWeight: '700' },
   pillDarkText: { color: isMonochromeDark ? c.textPrimary : (isLightAppearance ? c.textPrimary : '#111827'), fontSize: 11, fontWeight: '800' },
-  externalRatingsSection: { paddingHorizontal: 14, paddingTop: 8, paddingBottom: 12, marginTop: 4, marginBottom: 10, alignItems: 'center' },
+  externalRatingsSection: { paddingHorizontal: 14, paddingTop: 0, paddingBottom: 8, marginTop: -2, marginBottom: 4, alignItems: 'center' },
   glassExternalRatingsSection: { paddingBottom: 0, marginBottom: 0 },
   ratingsLoadingText: { fontSize: 12, fontWeight: '600' },
-  detailStatusText: { color: isLightAppearance ? c.textSecondary : c.subText, fontSize: 12, lineHeight: 18, marginTop: 10 },
+  detailStatusText: { color: isLightAppearance ? c.textSecondary : c.subText, fontSize: 12, lineHeight: 18, marginTop: 4 },
   actions: {
     flexDirection: 'row',
     paddingHorizontal: 14,
@@ -525,7 +531,7 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     gap: 10,
     paddingHorizontal: 14,
     marginBottom: 12,
-    marginTop: 8,
+    marginTop: 14,
   },
   classicActionRowLeft: {
     flex: 1,
@@ -761,9 +767,9 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   castName: { color: isLightAppearance ? c.textPrimary : '#e8e8f0', fontSize: 11, fontWeight: '700', textAlign: 'center' },
   castChar: { color: isLightAppearance ? c.textSecondary : c.subText, fontSize: 10, textAlign: 'center' },
   metaSection: { marginTop: 18 },
-  metaGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 10 },
+  metaGrid: { flexDirection: 'row', flexWrap: 'nowrap', gap: 10, marginTop: 10, paddingRight: 8 },
   metaCard: {
-    minWidth: 132, flexGrow: 1, padding: 12, borderRadius: 12,
+    minWidth: 0, flex: 1, padding: 12, borderRadius: 12,
     backgroundColor: c.inputBg, borderWidth: 1, borderColor: c.border,
   },
   metaCardLabel: { color: c.mutedText, fontSize: 10, fontWeight: '700', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: 5 },
@@ -889,9 +895,9 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(10,14,24,0.18)',
   },
-  // Ã¢â€â‚¬Ã¢â€â‚¬ Centered layout variant Ã¢â€â‚¬Ã¢â€â‚¬
-    backdropWrapperCentered: { height: 465, position: 'relative' as const },
-    backdropCentered: { width: '100%' as const, height: 465 },
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Centered layout variant ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+    backdropWrapperCentered: { height: 585, position: 'relative' as const },
+    backdropCentered: { width: '100%' as const, height: 585 },
   centeredMeta: {
     paddingHorizontal: 14, paddingTop: 8, paddingBottom: 8,
     alignItems: 'center' as const, marginTop: isLightAppearance ? -143 : -150,
@@ -942,8 +948,8 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   },
   centeredTitleLogoWrap: {
     width: '72%' as const,
-    height: 68,
-    marginBottom: 6,
+    height: 80,
+    marginBottom: 8,
     alignItems: 'center' as const,
     justifyContent: 'center' as const,
     overflow: 'hidden',
@@ -963,8 +969,8 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   },
   centeredTitleBlock: {
     width: '72%' as const,
-    height: 68,
-    marginBottom: 6,
+    height: 80,
+    marginBottom: 8,
     alignItems: 'center' as const,
     justifyContent: 'center' as const,
     overflow: 'hidden',
@@ -985,7 +991,7 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   },
   centeredTagline: { color: isLightAppearance ? c.textSecondary : c.subText, fontSize: 12, fontStyle: 'italic', marginBottom: 10, textAlign: 'center' as const },
   centeredPills:   { flexDirection: 'row' as const, flexWrap: 'wrap' as const, gap: 6, justifyContent: 'center' as const, width: '100%' as const },
-  centeredActionsWrap: { paddingHorizontal: 14, gap: 10, marginBottom: 16, marginTop: 0 },
+  centeredActionsWrap: { paddingHorizontal: 14, gap: 10, marginBottom: 16, marginTop: 10 },
   centeredCombinedRowSection: { marginBottom: 14 },
   centeredCombinedRow: {
     flexDirection: 'row' as const, justifyContent: 'center' as const,
@@ -1014,7 +1020,7 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   centeredPillWatchedActive: { backgroundColor: isLightAppearance ? c.cardBg : (vividAmbient ? c.inputBg + '99' : c.inputBg), borderColor: c.border },
   centeredPillText:          { color: isMonochromeDark ? c.textPrimary : (isLightAppearance ? c.textPrimary : c.subText), fontSize: 13, fontWeight: '700' as const },
   centeredPillTextActive:    { color: isMonochromeDark ? c.textPrimary : (isLightAppearance ? c.textPrimary : c.accentSoft), fontSize: 13, fontWeight: '700' as const },
-  // Ã¢â€â‚¬Ã¢â€â‚¬ Streams tab Ã¢â€â‚¬Ã¢â€â‚¬
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Streams tab ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   streamsList:     { marginTop: 4 },
   streamGroup:     { marginBottom: 20 },
   streamGroupLabel:{ color: isLightAppearance ? c.textPrimary : '#e8e8f0', fontSize: 13, fontWeight: '800', marginBottom: 8, letterSpacing: 0.2 },
@@ -1047,7 +1053,18 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   streamResolvingCard:  {
     backgroundColor: c.cardBg, borderRadius: 16, padding: 24, alignItems: 'center', width: '100%',
   },
-  // Ã¢â€â‚¬Ã¢â€â‚¬ End streams Ã¢â€â‚¬Ã¢â€â‚¬
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ End streams ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+  detailContentBody: {
+    flex: 1,
+    position: 'relative',
+    overflow: 'visible',
+    backgroundColor: 'transparent',
+    zIndex: 1,
+  },
+  detailContentBodyGlass: {
+    backgroundColor: 'transparent',
+  },
+  detailContentTopTint: { position: 'absolute', left: 0, right: 0, zIndex: 0 },
   whereSection:    { marginTop: 24 },
   whereDivider:    { height: 1, backgroundColor: c.border, marginBottom: 20 },
   featuredSectionHeading: { color: isLightAppearance ? c.textPrimary : '#fff', fontSize: 24, fontWeight: '800', marginBottom: 16, letterSpacing: 0.3 },
@@ -1145,25 +1162,33 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const { t } = useLanguage();
   const mdbListSettings = useMdbListSettings();
   const { uiStyle } = useUIStyle();
-  const { showStreamsList, vividAmbientEnabled } = useDisplaySettings();
+  const { showStreamsList, vividAmbientEnabled, heroTrailerAutoplayEnabled } = useDisplaySettings();
   const { isForeground } = useAppLifecycle();
   const isLightAppearance = resolvedAppearance === 'light';
   const isLightMonochrome = isLightAppearance && theme.id === 'monochrome';
   const isMonochromeDark = !isLightAppearance && theme.id === 'monochrome';
   const detailBodyBg = isLightAppearance && uiStyle === 'centered' ? 'transparent' : (isLightAppearance ? colors.bgMid : colors.bg);
-  const [heroBackdropHeight, setHeroBackdropHeight] = useState(uiStyle === 'centered' ? 465 : 345);
+  const detailContentTint = isLightAppearance ? 'rgba(255,255,255,0.9)' : 'rgba(5,6,10,0.96)';
+  const [heroBackdropHeight, setHeroBackdropHeight] = useState(uiStyle === 'centered' ? 585 : 465);
   const glassOverlayHeight = 150;
   const glassOverlayOffset = Math.max(0, heroBackdropHeight - glassOverlayHeight);
   const detailScrollY = useRef(new Animated.Value(0)).current;
   const ratingsRowAnimation = useRef(new Animated.Value(0)).current;
+  const detailHeroLiftDelay = 56;
   const detailHeroScale = detailScrollY.interpolate({
-    inputRange: [-100, 0, heroBackdropHeight * 0.5],
-    outputRange: [1.10, 1.0, 1.22],
+    inputRange: [-100, 0, detailHeroLiftDelay, detailHeroLiftDelay + heroBackdropHeight * 0.6],
+    outputRange: [1.04, 1.0, 1.0, 1.08],
     extrapolate: 'clamp',
   });
   const detailHeroTranslateY = detailScrollY.interpolate({
-    inputRange: [-100, 0, heroBackdropHeight],
-    outputRange: [-8, 0, -90],
+    inputRange: [-100, 0, detailHeroLiftDelay, detailHeroLiftDelay + heroBackdropHeight],
+    outputRange: [-6, 0, 0, 26],
+    extrapolate: 'clamp',
+  });
+  const detailHeroLiftDistance = heroBackdropHeight + 180;
+  const detailHeroLiftTranslateY = detailScrollY.interpolate({
+    inputRange: [0, detailHeroLiftDelay, detailHeroLiftDelay + detailHeroLiftDistance],
+    outputRange: [0, 0, -detailHeroLiftDistance],
     extrapolate: 'clamp',
   });
   const ratingsRowTranslateY = ratingsRowAnimation.interpolate({
@@ -1214,6 +1239,9 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const [episodes, setEpisodes] = useState<any[]>([]);
   const [episodesLoading, setEpisodesLoading] = useState(false);
   const [trailerVisible, setTrailerVisible] = useState(false);
+  const [heroTrailerReady, setHeroTrailerReady] = useState(false);
+  const [heroTrailerFinished, setHeroTrailerFinished] = useState(false);
+  const [heroTrailerMuted, setHeroTrailerMuted] = useState(true);
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
   const [showDescriptionMore, setShowDescriptionMore] = useState(false);
   const [inWatchlist, setInWatchlist] = useState(false);
@@ -1246,7 +1274,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     setMdbListLoading(false);
   }, [cacheKey, routeImdbId, routePreviewMedia]);
 
-  // Ã¢â€â‚¬Ã¢â€â‚¬ Sheet state Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Sheet state ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   // Episode long-press action sheet
   const [epSheetEp, setEpSheetEp] = useState<any>(null);
   // "Mark series as watched" confirm
@@ -1287,10 +1315,23 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   }, [media?.id]);  // keyed on id so it's stable for the same item but re-rolls on navigation
 
   const ambientBackdropUri = detailHeroUri ?? media?.backdrop ?? media?.poster ?? null;
+  const heroTrailerKey = typeof media?.trailerKey === 'string' && media.trailerKey.length > 0 ? media.trailerKey : null;
   const isPosterOnlyHero = !media?.backdrop && !!media?.poster;
   const isMovieDetail = type !== 'tv';
   const useCompactDetailLayout = uiStyle === 'centered' || uiStyle === 'glass';
   const useGlassDetailLayout = uiStyle === 'glass';
+  const canAutoplayHeroTrailer = Boolean(heroTrailerAutoplayEnabled && heroTrailerKey && !heroTrailerFinished && !trailerVisible && !isPosterOnlyHero && !useGlassDetailLayout);
+  const shouldParallaxHero = true;
+  const detailContentOverlap = useCompactDetailLayout ? 56 : 40;
+  const detailContentStartOffset = 55;
+  const detailPageContentTop = useGlassDetailLayout ? 0 : Math.max(0, heroBackdropHeight + detailContentStartOffset - detailContentOverlap);
+
+  useEffect(() => {
+    setHeroTrailerReady(false);
+    setHeroTrailerFinished(false);
+    setHeroTrailerMuted(true);
+  }, [cacheKey, heroTrailerKey]);
+
   const streamCapableAddons = useMemo(
     () => getStreamCapableAddonsForType(addons, type === 'tv' ? 'series' : 'movie'),
     [addons, type],
@@ -1299,7 +1340,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const hasStreamSources = streamCapableAddons.length > 0 || ultraActive;
   const sourceCount = streamCapableAddons.length + (ultraActive ? 1 : 0);
   const shouldPreloadStreams = isMovieDetail && !!media && !addonsLoading && hasStreamSources;
-  // Always start as false Ã¢â‚¬â€ the reset effect below will set it to true once
+  // Always start as false ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the reset effect below will set it to true once
   // we know whether a preload is actually needed (after media + user are ready).
   const [streamsLoadComplete, setStreamsLoadComplete] = useState(false);
   const streamsFetchingForPlayback = isMovieDetail
@@ -1317,7 +1358,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     return release > new Date();
   }, [media?.releaseDate, media?.firstAirDate]);
 
-  // Ã¢â€â‚¬Ã¢â€â‚¬ Local progress (read fresh from Storage on every screen focus) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Local progress (read fresh from Storage on every screen focus) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   const [localProgress, setLocalProgress] = useState<{ positionSec: number; durationSec: number } | null>(null);
   const [watchlistRemovalIds, setWatchlistRemovalIds] = useState<string[]>([]);
   const [traktComments, setTraktComments] = useState<TraktCommentItem[]>([]);
@@ -1334,7 +1375,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
       if (liveEntry && liveEntry.durationSec > 0) {
         setLocalProgress({ positionSec: liveEntry.positionSec, durationSec: liveEntry.durationSec });
       }
-      // Each movie's progress is stored per-user Ã¢â‚¬â€ read the user-scoped file
+      // Each movie's progress is stored per-user ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â read the user-scoped file
       Storage.getItem(progressFileStorageKey(storageOwnerId, key)).then(raw => {
         if (!raw) { setLocalProgress(null); return; }
         try {
@@ -1397,7 +1438,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   /**
    * Seconds to seek to when resuming playback.
    * Local: exact stored position.
-   * Trakt: approximate from progress% Ãƒâ€” runtime.
+   * Trakt: approximate from progress% ÃƒÆ’Ã¢â‚¬â€ runtime.
    */
   const resumeFromSec: number | undefined = (() => {
     if (effectiveLocalProgress && localProgressPct != null && localProgressPct > 0 && localProgressPct < 95) {
@@ -1728,19 +1769,28 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
           setMdbListLoading(false);
           setMdbListStatusMessage(null);
         } catch (error) {
-          const nextRatingsMode = fallbackRatings.length > 0 ? 'fallback' : 'none';
           const cachedCurrent = detailCache.get(cacheKey);
+          const cachedRatings = Array.isArray(cachedCurrent?.externalRatings) && cachedCurrent.externalRatings.length > 0
+            ? cachedCurrent.externalRatings
+            : Array.isArray(media.externalRatings) && media.externalRatings.length > 0
+              ? media.externalRatings
+              : fallbackRatings;
+          const nextRatingsMode = Array.isArray(cachedCurrent?.externalRatings) && cachedCurrent.externalRatings.length > 0
+            ? (cachedCurrent.externalRatingsMode ?? 'mdblist')
+            : cachedRatings.length > 0
+              ? (cachedRatings === fallbackRatings ? 'fallback' : (media.externalRatingsMode ?? 'mdblist'))
+              : 'none';
           if (cachedCurrent) {
             detailCache.set(cacheKey, {
               ...cachedCurrent,
-              externalRatings: fallbackRatings,
+              externalRatings: cachedRatings,
               externalRatingsMode: nextRatingsMode,
             });
           }
           if (!isActive) return;
           setMedia((current: any) => {
             if (!current || String(current.id ?? '') !== detailId) return current;
-            return { ...current, externalRatings: fallbackRatings, externalRatingsMode: nextRatingsMode };
+            return { ...current, externalRatings: cachedRatings, externalRatingsMode: nextRatingsMode };
           });
           setMdbListLoading(false);
           setMdbListStatusMessage(null);
@@ -1858,8 +1908,8 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   // Fetch streams progressively when the Streams tab becomes active.
   //
   // IMPORTANT: streamsFetchedRef is a REF, not state. If it were state, setting
-  // it true inside this effect would change a dep Ã¢â€ â€™ React would re-run the effect
-  // Ã¢â€ â€™ the cleanup would call controller.abort() Ã¢â€ â€™ every fetch gets aborted before
+  // it true inside this effect would change a dep ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ React would re-run the effect
+  // ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ the cleanup would call controller.abort() ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ every fetch gets aborted before
   // it can complete. The ref update is invisible to React's dep tracking.
   useEffect(() => {
     if (!shouldPreloadStreams || streamsFetchedRef.current || !media) return;
@@ -1873,7 +1923,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     setStreamsLoading(true);
     setStreamsLoadComplete(false);
     setStreamsFetchStarted(true);
-    streamsFetchedRef.current = true; // ref Ã¢â‚¬â€ no re-render, no accidental abort
+    streamsFetchedRef.current = true; // ref ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â no re-render, no accidental abort
 
     const videoId    = media.imdbId ?? String(movieId);
     const streamType = type === 'tv' ? 'series' : 'movie';
@@ -2286,9 +2336,96 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
               iconColor={isLightAppearance ? colors.textPrimary : '#fff'}
             />
           ) : null}
+          {!useGlassDetailLayout ? (
+            <Animated.View
+              style={[
+                uiStyle === 'centered' ? styles.backdropWrapperCentered : styles.backdropWrapper,
+                { position: 'absolute', top: 0, left: 0, right: 0, transform: [{ translateY: detailHeroLiftTranslateY }] },
+              ]}
+              pointerEvents="box-none"
+              onLayout={event => {
+                const nextHeight = Math.round(event.nativeEvent.layout.height);
+                if (nextHeight > 0 && nextHeight !== heroBackdropHeight) {
+                  setHeroBackdropHeight(nextHeight);
+                }
+              }}
+            >
+              {detailHeroUri ? (
+                <Animated.View style={[StyleSheet.absoluteFillObject, shouldParallaxHero ? { transform: [{ translateY: detailHeroTranslateY }, { scale: detailHeroScale }] } : null]}>
+                  <Image source={{ uri: detailHeroUri }} style={uiStyle === 'centered' ? styles.backdropCentered : styles.backdrop} cachePolicy="memory-disk" priority="high" transition={0} />
+                </Animated.View>
+              ) : null}
+              {canAutoplayHeroTrailer && heroTrailerKey ? (
+                <Animated.View style={[StyleSheet.absoluteFillObject, shouldParallaxHero ? { transform: [{ translateY: detailHeroTranslateY }, { scale: detailHeroScale }] } : null]}>
+                  <HeroTrailerBackground
+                    videoId={heroTrailerKey}
+                    play={canAutoplayHeroTrailer && isForeground}
+                    muted={heroTrailerMuted}
+                    ready={heroTrailerReady}
+                    badgeTop={insets.top + 10}
+                    onReady={() => setHeroTrailerReady(true)}
+                    onEnded={() => setHeroTrailerFinished(true)}
+                    onError={() => setHeroTrailerFinished(true)}
+                    onToggleMute={() => setHeroTrailerMuted(current => !current)}
+                  />
+                </Animated.View>
+              ) : null}
+              {isLightAppearance && uiStyle === 'centered' && detailHeroUri ? (
+                <Animated.View pointerEvents="none" style={[styles.backdropGlassOverlay, shouldParallaxHero ? { transform: [{ translateY: detailHeroTranslateY }, { scale: detailHeroScale }] } : null]}>
+                  <Image
+                    source={{ uri: detailHeroUri }}
+                    blurRadius={4}
+                    contentFit="cover"
+                    cachePolicy="memory-disk"
+                    priority="high"
+                    transition={0}
+                    style={[
+                      StyleSheet.absoluteFillObject,
+                      {
+                        top: -glassOverlayOffset,
+                        height: heroBackdropHeight,
+                      },
+                    ]}
+                  />
+                  <LinearGradient
+                    colors={['rgba(8,10,14,0.00)', 'rgba(8,10,14,0.00)', 'rgba(8,10,14,0.008)']}
+                    locations={[0, 0.66, 1]}
+                    pointerEvents="none"
+                    style={StyleSheet.absoluteFillObject}
+                  />
+                  <LinearGradient
+                    colors={['rgba(8,10,14,0.00)', 'rgba(8,10,14,0.004)', 'rgba(8,10,14,0.00)']}
+                    locations={[0, 0.5, 1]}
+                    pointerEvents="none"
+                    style={styles.backdropGlassTopFade}
+                  />
+                  <LinearGradient
+                    colors={['rgba(8,10,14,0.02)', 'rgba(8,10,14,0.00)']}
+                    locations={[0, 1]}
+                    pointerEvents="none"
+                    style={[styles.backdropGlassSideFeather, { left: 0 }]}
+                  />
+                  <LinearGradient
+                    colors={['rgba(8,10,14,0.02)', 'rgba(8,10,14,0.00)']}
+                    locations={[0, 1]}
+                    pointerEvents="none"
+                    style={[styles.backdropGlassSideFeather, { right: 0 }]}
+                  />
+                </Animated.View>
+              ) : null}
+              {isPosterOnlyHero ? (
+                <>
+                  <View style={styles.backdropPosterTint} />
+                  <View style={styles.backdropPosterFrame}>
+                    <Image source={{ uri: media.poster }} style={styles.backdropPosterImage} contentFit="contain" transition={200} />
+                  </View>
+                </>
+              ) : null}
+            </Animated.View>
+          ) : null}
           <PageWrapper
             style={useGlassDetailLayout ? styles.glassContainer : styles.container}
-            contentContainerStyle={{ flexGrow: 1 }}
+            contentContainerStyle={{ flexGrow: 1, paddingTop: detailPageContentTop }}
             onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: detailScrollY } } }], { useNativeDriver: true })}
             scrollEventThrottle={16}
             showsVerticalScrollIndicator={false}
@@ -2302,99 +2439,17 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
           vimeoKey={vimeoKey}
           onClose={() => setTrailerVisible(false)}
         />
-
-      {/* Episode long-press action sheet */}
-      {epSheetEp && (() => {
-        const epWatched = isEpisodeWatched(Number(movieId), selectedSeason, epSheetEp.episode_number);
-        const epCode = `S${String(selectedSeason).padStart(2,'0')}E${String(epSheetEp.episode_number).padStart(2,'0')}`;
-        return (
-          <ActionSheet
-            visible={!!epSheetEp}
-            onClose={() => setEpSheetEp(null)}
-            title={epSheetEp.name || epCode}
-            subtitle={epCode}
-            actions={[
-              {
-                label:   epWatched ? t('watched_unwatch') : t('watched_mark'),
-                icon:    epWatched ? 'checkmark-circle' : 'checkmark-circle-outline',
-                variant: epWatched ? 'destructive' : 'accent',
-                onPress: () => toggleEpisodeWatched(
-                  Number(movieId), media.imdbId ?? undefined,
-                  media.title, selectedSeason, epSheetEp.episode_number,
-                ),
-              },
-              {
-                label:   t('watched_series_title'),
-                icon:    'checkmark-done-circle-outline',
-                variant: 'default',
-                onPress: () => setSeriesWatchedConfirm(true),
-              },
-              { label: t('common_cancel'), variant: 'cancel', onPress: () => {} },
-            ]}
+      <View style={[styles.detailContentBody, useGlassDetailLayout && styles.detailContentBodyGlass]}>
+                {!useGlassDetailLayout ? (
+          <LinearGradient
+            colors={isLightAppearance
+              ? ['rgba(255,255,255,0.00)', 'rgba(255,255,255,0.24)', detailContentTint, detailContentTint]
+              : ['rgba(5,6,10,0.00)', 'rgba(5,6,10,0.38)', detailContentTint, detailContentTint]}
+            locations={[0, 0.05, 0.12, 1]}
+            style={[styles.detailContentTopTint, { top: -280, bottom: 0 }]}
+            pointerEvents="none"
           />
-        );
-      })()}
-
-      {/* Mark series as watched Ã¢â‚¬â€ confirm */}
-      <ConfirmSheet
-        visible={seriesWatchedConfirm}
-        onClose={() => setSeriesWatchedConfirm(false)}
-        icon="checkmark-done-circle-outline"
-        title={t('watched_series_title')}
-        message={t('watched_series_msg')}
-        confirmLabel={t('watched_series_confirm')}
-        cancelLabel={t('common_cancel')}
-        onConfirm={() => markAllEpisodesWatched(
-          Number(movieId), media.imdbId ?? undefined,
-          media.title, media.seasons || [],
-        )}
-      />
-
-      <ActionSheet
-        visible={debridSheet}
-        onClose={() => setDebridSheet(false)}
-        title={t('streams_debrid_req')}
-        subtitle={t('streams_debrid_msg')}
-        actions={[
-          {
-                label: t('media_find_direct_sources'),
-            icon: 'extension-puzzle-outline',
-            variant: 'accent',
-            onPress: () => navigation.navigate('Addons', { initialTab: 'addons' }),
-          },
-          {
-            label: t('streams_setup_debrid'),
-            icon: 'flash-outline',
-            variant: 'default',
-            onPress: () => navigation.navigate('Addons', { initialTab: 'debrid' }),
-          },
-          { label: t('common_cancel'), icon: 'close-outline', variant: 'cancel', onPress: () => {} },
-        ]}
-      />
-
-      <ActionSheet
-        visible={playChoiceVisible}
-        onClose={() => setPlayChoiceVisible(false)}
-        title={media.title}
-        subtitle={watched ? t('media_rewatch') : undefined}
-        actions={[
-          {
-            label: primaryPlayProgress != null && primaryPlayProgress > 0 ? t('media_continue') : t('media_play'),
-            icon: 'play-circle-outline',
-            variant: 'accent',
-            onPress: handleContinuePlay,
-          },
-          {
-            label: t('media_rewatch'),
-            icon: 'refresh-circle-outline',
-            variant: 'default',
-            onPress: handleRewatchPlay,
-          },
-          { label: t('common_cancel'), icon: 'close-outline', variant: 'cancel', onPress: () => {} },
-        ]}
-      />
-
-      <View style={{ flex: 1 }}>
+        ) : null}
         {useGlassDetailLayout ? (
           <View style={[styles.glassHeroSection, { paddingTop: insets.top + 24 }]}>
             <Text numberOfLines={2} style={styles.glassHeroTitle}>{media.title}</Text>
@@ -2410,97 +2465,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
               />
             </View>
           </View>
-        ) : (
-        <View
-          style={uiStyle === 'centered' ? styles.backdropWrapperCentered : styles.backdropWrapper}
-          onLayout={event => {
-            const nextHeight = Math.round(event.nativeEvent.layout.height);
-            if (nextHeight > 0 && nextHeight !== heroBackdropHeight) {
-              setHeroBackdropHeight(nextHeight);
-            }
-          }}
-        >
-          {detailHeroUri ? (
-            <Animated.View style={[StyleSheet.absoluteFillObject, { transform: [{ translateY: detailHeroTranslateY }, { scale: detailHeroScale }] }]}>
-              <Image source={{ uri: detailHeroUri }} style={uiStyle === 'centered' ? styles.backdropCentered : styles.backdrop} cachePolicy="memory-disk" priority="high" transition={0} />
-              {!isLightAppearance && (
-                <LinearGradient
-                  colors={['transparent', colors.bg]}
-                  locations={[0, 1]}
-                  style={styles.backdropGradient}
-                  pointerEvents="none"
-                />
-              )}
-            </Animated.View>
-          ) : null}
-          {isLightAppearance && uiStyle === 'centered' && detailHeroUri ? (
-            <Animated.View pointerEvents="none" style={[styles.backdropGlassOverlay, { transform: [{ translateY: detailHeroTranslateY }, { scale: detailHeroScale }] }]}>
-              <Image
-                source={{ uri: detailHeroUri }}
-                blurRadius={4}
-                contentFit="cover"
-                cachePolicy="memory-disk"
-                priority="high"
-                transition={0}
-                style={[
-                  StyleSheet.absoluteFillObject,
-                  {
-                    top: -glassOverlayOffset,
-                    height: heroBackdropHeight,
-                  },
-                ]}
-              />
-              <LinearGradient
-                colors={['rgba(8,10,14,0.00)', 'rgba(8,10,14,0.00)', 'rgba(8,10,14,0.008)']}
-                locations={[0, 0.66, 1]}
-                pointerEvents="none"
-                style={StyleSheet.absoluteFillObject}
-              />
-              <LinearGradient
-                colors={['rgba(8,10,14,0.00)', 'rgba(8,10,14,0.004)', 'rgba(8,10,14,0.00)']}
-                locations={[0, 0.5, 1]}
-                pointerEvents="none"
-                style={styles.backdropGlassTopFade}
-              />
-              <LinearGradient
-                colors={['rgba(8,10,14,0.02)', 'rgba(8,10,14,0.00)']}
-                locations={[0, 1]}
-                pointerEvents="none"
-                style={[styles.backdropGlassSideFeather, { left: 0 }]}
-              />
-              <LinearGradient
-                colors={['rgba(8,10,14,0.02)', 'rgba(8,10,14,0.00)']}
-                locations={[0, 1]}
-                pointerEvents="none"
-                style={[styles.backdropGlassSideFeather, { right: 0 }]}
-              />
-            </Animated.View>
-          ) : null}
-          {isPosterOnlyHero ? (
-            <>
-              <View style={styles.backdropPosterTint} />
-              <View style={styles.backdropPosterFrame}>
-                <Image source={{ uri: media.poster }} style={styles.backdropPosterImage} contentFit="contain" transition={200} />
-              </View>
-            </>
-          ) : null}
-          {!isLightAppearance && (
-            <>
-              <LinearGradient
-                colors={['transparent', colors.bg] as const}
-                style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 95 }}
-                pointerEvents="none"
-              />
-              <LinearGradient
-                colors={[colors.bg, 'transparent'] as const}
-                style={{ position: 'absolute', bottom: -100, left: 0, right: 0, height: 100 }}
-                pointerEvents="none"
-              />
-            </>
-          )}
-        </View>
-        )}
-
+        ) : null}
         {useCompactDetailLayout ? (
           <>
             <View style={useGlassDetailLayout ? styles.heroInfoShellGlass : styles.heroInfoShellCentered}>
@@ -2522,18 +2487,11 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                     </Text>
                   </View>
                 )}
-                <View style={styles.centeredPills}>
-                  {!!media.year && <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{media.year}</Text></View>}
-                  {(media.runtime ?? 0) > 0 && <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{formatRuntimeButton(media.runtime)}</Text></View>}
-                  {(media.numberOfSeasons ?? 0) > 0 && <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{t('media_seasons_count').replace('{n}', String(media.numberOfSeasons))}</Text></View>}
-                  {media.externalRatingsMode === 'fallback' && media.externalRatings?.[0] ? <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{formatInlineFallbackRating(media.externalRatings[0])}</Text></View> : null}
-                </View>
-                {media.externalRatingsMode === 'mdblist' ? (
+                {(media.externalRatings?.length ?? 0) > 0 ? (
                   <Animated.View style={[styles.externalRatingsSection, useGlassDetailLayout && styles.glassExternalRatingsSection, { opacity: ratingsRowAnimation, transform: [{ translateY: ratingsRowTranslateY }] }]}>
                     <ExternalRatingsRow ratings={media.externalRatings ?? []} colors={colors} isLightAppearance={isLightAppearance} centered />
                   </Animated.View>
                 ) : null}
-                {mdbListStatusMessage ? <Text style={[styles.detailStatusText, { textAlign: 'center' }]}>{mdbListStatusMessage}</Text> : null}
                 {useGlassDetailLayout && (
                   <View style={styles.glassSynopsisBlock}>
                     <Text
@@ -2640,18 +2598,11 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                     </View>
                   )}
                   {media.tagline ? <Text style={styles.tagline}>"{media.tagline}"</Text> : null}
-                  <View style={styles.pills}>
-                    {!!media.year && <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{media.year}</Text></View>}
-                    {(media.runtime ?? 0) > 0 && <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{formatRuntimeButton(media.runtime)}</Text></View>}
-                    {(media.numberOfSeasons ?? 0) > 0 && <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{t('media_seasons_count').replace('{n}', String(media.numberOfSeasons))}</Text></View>}
-                    {media.externalRatingsMode === 'fallback' && media.externalRatings?.[0] ? <View style={[styles.pill, styles.pillDark]}><Text style={styles.pillDarkText}>{formatInlineFallbackRating(media.externalRatings[0])}</Text></View> : null}
-                  </View>
                 </View>
               </View>
-              {media.externalRatingsMode === 'mdblist' ? (
+              {(media.externalRatings?.length ?? 0) > 0 ? (
                 <Animated.View style={[styles.externalRatingsSection, { opacity: ratingsRowAnimation, transform: [{ translateY: ratingsRowTranslateY }] }]}>
                   <ExternalRatingsRow ratings={media.externalRatings ?? []} colors={colors} isLightAppearance={isLightAppearance} centered />
-                  {mdbListStatusMessage ? <Text style={styles.detailStatusText}>{mdbListStatusMessage}</Text> : null}
                 </Animated.View>
               ) : null}
             </View>
@@ -2677,22 +2628,22 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                   />
                 </View>
                 <View style={styles.classicActionRowRight}>
-                  {media.trailerKey && (
+                  {media.trailerKey && !heroTrailerAutoplayEnabled && (
                     <TouchableOpacity style={styles.trailerBtn} activeOpacity={0.85} onPress={() => setTrailerVisible(true)}>
                       <Text style={styles.trailerBtnText}>{t('media_show_trailer')}</Text>
                     </TouchableOpacity>
                   )}
-                    <TouchableOpacity
-                      style={[styles.watchlistBtn, inWatchlist && styles.watchlistBtnActive]}
-                      activeOpacity={0.85}
-                      onPress={toggleSave}
-                    >
-                      <Ionicons
-                        name={inWatchlist ? 'bookmark' : 'bookmark-outline'}
-                        size={18}
-                        color={inWatchlist ? (isLightAppearance ? colors.textPrimary : colors.accentSoft) : detailMutedIcon}
-                      />
-                    </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.watchlistBtn, inWatchlist && styles.watchlistBtnActive]}
+                    activeOpacity={0.85}
+                    onPress={toggleSave}
+                  >
+                    <Ionicons
+                      name={inWatchlist ? 'bookmark' : 'bookmark-outline'}
+                      size={18}
+                      color={inWatchlist ? (isLightAppearance ? colors.textPrimary : colors.accentSoft) : detailMutedIcon}
+                    />
+                  </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.watchedBtn, watched && styles.watchedBtnActive]}
                     activeOpacity={0.85}
@@ -2712,7 +2663,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
 
         <View style={useCompactDetailLayout ? styles.centeredCombinedRowSection : styles.actions}>
           {useCompactDetailLayout && (
-            // Centered: tabs first, then icon pills Ã¢â‚¬â€ all unified pill shape
+            // Centered: tabs first, then icon pills ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â all unified pill shape
             <View style={styles.centeredCombinedRow}>
               {([
                 'about',
@@ -2753,7 +2704,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                   </View>
                 </TouchableOpacity>
               ))}
-              {media.trailerKey && (
+              {media.trailerKey && !heroTrailerAutoplayEnabled && (
                 <TouchableOpacity style={styles.centeredPill} activeOpacity={0.85} onPress={() => setTrailerVisible(true)}>
                   <Ionicons name="film-outline" size={17} color={colors.accentSoft} />
                 </TouchableOpacity>
@@ -2780,7 +2731,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
             {([
               'about',
               ...(media.type === 'tv' || type === 'tv' ? ['seasons'] : []),
-              // Streams tab only for movies Ã¢â‚¬â€ TV episodes open a dedicated page
+              // Streams tab only for movies ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â TV episodes open a dedicated page
               ...(showStreamsTab && !useGlassDetailLayout ? ['streams'] : []),
             ] as Tab[]).map(tab => (
               <TouchableOpacity
@@ -2816,7 +2767,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
         )}
         </View>
 
-        {/* Sticky filter bar Ã¢â‚¬â€ index 4 in stickyHeaderIndices; 0-height when not applicable */}
+        {/* Sticky filter bar ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â index 4 in stickyHeaderIndices; 0-height when not applicable */}
         <View>
           {activeTab === 'streams' && addonNames.length > 1 && streams.length > 0 && (
             <ScrollView
@@ -2960,7 +2911,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                           </>
                         ) : (
                           <View style={[styles.episodeCardStill, styles.epStillPlaceholder]}>
-                            <Text style={{ fontSize: 20 }}>Ã°Å¸â€œÂº</Text>
+                            <Text style={{ fontSize: 20 }}>ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã‚Âº</Text>
                           </View>
                         )}
                       </View>
@@ -3058,11 +3009,17 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                         <Text style={styles.metaCardValue}>{media.status}</Text>
                       </View>
                     ) : null}
+                    {(media.runtime ?? 0) > 0 ? (
+                      <View style={styles.metaCard}>
+                        <Text style={styles.metaCardLabel}>Duration</Text>
+                        <Text style={styles.metaCardValue}>{formatRuntimeButton(media.runtime)}</Text>
+                      </View>
+                    ) : null}
                   </View>
                 </View>
               )}
 
-              {/* Cast marquee Ã¢â‚¬â€ shown inline under the description */}
+              {/* Cast marquee ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â shown inline under the description */}
               {!useGlassDetailLayout && media.cast?.length > 0 && (
                 <View style={{ marginTop: 20 }}>
                   <Text style={styles.featuredSectionHeading}>{t('media_cast')}</Text>
@@ -3083,7 +3040,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                           <Image source={{ uri: item.photo }} style={styles.castPhoto} />
                         ) : (
                           <View style={[styles.castPhoto, styles.castNoPhoto]}>
-                            <Text style={{ fontSize: 24 }}>Ã°Å¸Å½Â­</Text>
+                            <Text style={{ fontSize: 24 }}>ÃƒÂ°Ã…Â¸Ã…Â½Ã‚Â­</Text>
                           </View>
                         )}
                         <Text style={styles.castName} numberOfLines={1}>{item.name}</Text>
@@ -3201,7 +3158,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                           <Image source={{ uri: item.photo }} style={[styles.castPhoto, styles.glassCastPhoto]} />
                         ) : (
                           <View style={[styles.castPhoto, styles.castNoPhoto, styles.glassCastPhoto]}>
-                            <Text style={{ fontSize: 24 }}>Ã°Å¸Å½Â­</Text>
+                            <Text style={{ fontSize: 24 }}>ÃƒÂ°Ã…Â¸Ã…Â½Ã‚Â­</Text>
                           </View>
                         )}
                         <Text style={styles.castName} numberOfLines={1}>{item.name}</Text>
@@ -3311,7 +3268,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                           <Image source={{ uri: item.poster }} style={styles.relatedPoster} />
                         ) : (
                           <View style={[styles.relatedPoster, styles.relatedPosterPlaceholder]}>
-                            <Text style={{ fontSize: 28 }}>Ã°Å¸Å½Â¬</Text>
+                            <Text style={{ fontSize: 28 }}>ÃƒÂ°Ã…Â¸Ã…Â½Ã‚Â¬</Text>
                           </View>
                         )}
                         <Text style={styles.relatedTitle} numberOfLines={2}>{item.title}</Text>
@@ -3425,7 +3382,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                             </>
                           ) : (
                             <View style={[styles.episodeCardStill, styles.epStillPlaceholder]}>
-                              <Text style={{ fontSize: 20 }}>Ã°Å¸â€œÂº</Text>
+                              <Text style={{ fontSize: 20 }}>ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã‚Âº</Text>
                           </View>
                         )}
                       </View>
@@ -3498,7 +3455,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   );
 };
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Streams Tab Component Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Streams Tab Component ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
 const INITIAL_STREAM_RENDER_LIMIT = 30;
 const STREAM_RENDER_LIMIT_STEP = 50;
@@ -3524,7 +3481,7 @@ function StreamsTab({
   isLightAppearance: boolean;
   presentation?: 'list' | 'rail';
 }) {
-  // StreamsTab only renders for movies Ã¢â‚¬â€ count movie-capable sources.
+  // StreamsTab only renders for movies ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â count movie-capable sources.
   const enabledAddons = getStreamCapableAddonsForType(addons, 'movie');
   const hasStreamSources = enabledAddons.length > 0 || ultraActive;
   const streamSourceCount = enabledAddons.length + (ultraActive ? 1 : 0);
@@ -3538,7 +3495,7 @@ function StreamsTab({
     };
   }, []);
 
-  // Hooks must be called unconditionally Ã¢â‚¬â€ before any early returns
+  // Hooks must be called unconditionally ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â before any early returns
   const addonNames = useMemo(
     () => [...new Set(streams.map(s => s.addonName))],
     [streams],
@@ -3560,7 +3517,7 @@ function StreamsTab({
     );
   }
 
-  // Ã¢â€â‚¬Ã¢â€â‚¬ Not logged in Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Not logged in ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (!user && !hasStreamSources) {
     return (
       <View style={{ alignItems: 'center', paddingHorizontal: 8, paddingTop: 32, paddingBottom: 24 }}>
@@ -3603,7 +3560,7 @@ function StreamsTab({
     );
   }
 
-  // Ã¢â€â‚¬Ã¢â€â‚¬ Logged in but no addons installed Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Logged in but no addons installed ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (!hasStreamSources) {
     return (
       <View style={{ alignItems: 'center', paddingHorizontal: 8, paddingTop: 32, paddingBottom: 24 }}>
@@ -3642,7 +3599,7 @@ function StreamsTab({
     );
   }
 
-  // Ã¢â€â‚¬Ã¢â€â‚¬ Addons configured but no results for this title Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Addons configured but no results for this title ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (streams.length === 0) {
     return (
       <View style={{ alignItems: 'center', paddingHorizontal: 8, paddingTop: 32, paddingBottom: 24 }}>
@@ -3667,7 +3624,7 @@ function StreamsTab({
     );
   }
 
-  // Ã¢â€â‚¬Ã¢â€â‚¬ Streams available Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Streams available ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
   // Reset filter if the previously selected addon no longer has results
   const safeAddon = addonNames.includes(selectedAddon) ? selectedAddon : 'all';
@@ -3803,6 +3760,35 @@ const StreamRow = React.memo(function StreamRow({ stream, colors, onPlay, style,
   const handlePress = React.useCallback(() => onPlay(stream), [onPlay, stream]);
   return <StreamSourceRow stream={stream} colors={colors} onPress={handlePress} style={style} sourceLabel={sourceLabel} />;
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

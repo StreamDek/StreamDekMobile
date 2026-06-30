@@ -242,7 +242,7 @@ function UpdateButton({
   );
 }
 
-export function UpdatePrompt() {
+export function UpdatePrompt({ enabled = true }: { enabled?: boolean }) {
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
   const { theme: { colors } } = useTheme();
@@ -277,7 +277,7 @@ export function UpdatePrompt() {
 
   return (
     <Modal
-      visible={promptVisible}
+      visible={promptVisible && enabled}
       transparent
       animationType="fade"
       statusBarTranslucent

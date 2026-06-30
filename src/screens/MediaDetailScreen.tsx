@@ -239,11 +239,13 @@ function ExternalRatingsRow({
   colors,
   isLightAppearance,
   centered = false,
+  fallbackGenre = null,
 }: {
   ratings: ExternalRating[];
   colors: ThemeColors;
   isLightAppearance: boolean;
   centered?: boolean;
+  fallbackGenre?: string | null;
 }) {
   if (ratings.length === 0) return null;
 
@@ -263,8 +265,10 @@ function ExternalRatingsRow({
       {ratings.map(rating => {
         const visuals = externalRatingVisuals[rating.source];
         const isInlineFallback = String(rating.source) === INLINE_FALLBACK_RATING_SOURCE;
-        if (!visuals && !isInlineFallback) return null;
-        const ratingColor = visuals?.color ?? (isLightAppearance ? '#0f172a' : '#f8fafc');
+        const fallbackVisuals = externalRatingVisuals[MDBLIST_PROVIDER_IMDB];
+        const effectiveVisuals = isInlineFallback ? fallbackVisuals : visuals;
+        if (!effectiveVisuals && !isInlineFallback) return null;
+        const ratingColor = effectiveVisuals?.color ?? (isLightAppearance ? '#0f172a' : '#f8fafc');
         return (
           <View
             key={rating.source}
@@ -276,19 +280,20 @@ function ExternalRatingsRow({
               minWidth: 0,
             }}
           >
-            {isInlineFallback ? (
-              <Text style={{ color: ratingColor, fontSize: 11, fontWeight: '900', letterSpacing: 0.2 }}>Rating</Text>
-            ) : visuals?.logo ? (
+            {effectiveVisuals?.logo ? (
               <Image
-                source={visuals.logo}
-                style={{ width: visuals.logoWidth ?? 24, height: 12, marginRight: visuals.logoMarginRight ?? 0 }}
+                source={effectiveVisuals.logo}
+                style={{ width: effectiveVisuals.logoWidth ?? 24, height: 12, marginRight: effectiveVisuals.logoMarginRight ?? 0 }}
                 contentFit="contain"
                 transition={0}
               />
             ) : (
-              <Text style={{ color: ratingColor, fontSize: 10, fontWeight: '900' }}>{visuals?.label}</Text>
+              <Text style={{ color: ratingColor, fontSize: 10, fontWeight: '900' }}>{effectiveVisuals?.label ?? 'IMDb'}</Text>
             )}
-            <Text style={{ color: ratingColor, fontSize: 12, fontWeight: '800' }}>{isInlineFallback ? rating.value.toFixed(1) : visuals?.format(rating.value)}</Text>
+            <Text style={{ color: ratingColor, fontSize: 12, fontWeight: '800' }}>{isInlineFallback ? rating.value.toFixed(1) : effectiveVisuals?.format(rating.value)}</Text>
+            {isInlineFallback && fallbackGenre ? (
+              <Text style={{ color: isLightAppearance ? colors.textSecondary : colors.subText, fontSize: 12, fontWeight: '700', marginLeft: 4 }}>{String.fromCharCode(183)} {fallbackGenre}</Text>
+            ) : null}
           </View>
         );
       })}
@@ -1065,6 +1070,7 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     backgroundColor: 'transparent',
   },
   detailContentTopTint: { position: 'absolute', left: 0, right: 0, zIndex: 0 },
+  detailContentBottomTint: { position: 'absolute', left: 0, right: 0, zIndex: 0 },
   whereSection:    { marginTop: 24 },
   whereDivider:    { height: 1, backgroundColor: c.border, marginBottom: 20 },
   featuredSectionHeading: { color: isLightAppearance ? c.textPrimary : '#fff', fontSize: 24, fontWeight: '800', marginBottom: 16, letterSpacing: 0.3 },
@@ -1315,6 +1321,16 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   }, [media?.id]);  // keyed on id so it's stable for the same item but re-rolls on navigation
 
   const ambientBackdropUri = detailHeroUri ?? media?.backdrop ?? media?.poster ?? null;
+  const displayedExternalRatings = useMemo(() => {
+    if (Array.isArray(media?.externalRatings) && media.externalRatings.length > 0) return media.externalRatings;
+    return buildFallbackExternalRatings(media?.rating);
+  }, [media?.externalRatings, media?.rating]);
+  const displayedExternalRatingsMode = (displayedExternalRatings.length > 0 && media?.externalRatingsMode === 'none') ? 'fallback' : (media?.externalRatingsMode ?? (displayedExternalRatings.length > 0 ? 'fallback' : 'none'));
+  const shouldShowExternalRatings = displayedExternalRatings.length > 0;
+  const fallbackGenreLabel = useMemo(() => {
+    const firstGenre = Array.isArray(media?.genreNames) ? media.genreNames.find((value: unknown) => typeof value === 'string' && value.trim().length > 0) : null;
+    return typeof firstGenre === 'string' ? firstGenre.trim() : null;
+  }, [media?.genreNames]);
   const heroTrailerKey = typeof media?.trailerKey === 'string' && media.trailerKey.length > 0 ? media.trailerKey : null;
   const isPosterOnlyHero = !media?.backdrop && !!media?.poster;
   const isMovieDetail = type !== 'tv';
@@ -1679,9 +1695,13 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   }, [movieId, playBtnLoadingDetails]);
 
   useEffect(() => {
-    const hasMdblistRatings = media?.externalRatingsMode === 'mdblist' && (media?.externalRatings?.length ?? 0) > 0;
-    if (!hasMdblistRatings || mdbListLoading) {
+    const hasMdblistRatings = displayedExternalRatingsMode === 'mdblist' && displayedExternalRatings.length > 0;
+    if (!shouldShowExternalRatings) {
       ratingsRowAnimation.setValue(0);
+      return;
+    }
+    if (!hasMdblistRatings || mdbListLoading) {
+      ratingsRowAnimation.setValue(1);
       return;
     }
     Animated.timing(ratingsRowAnimation, {
@@ -1689,7 +1709,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
       duration: 240,
       useNativeDriver: true,
     }).start();
-  }, [media?.id, media?.externalRatingsMode, media?.externalRatings?.length, mdbListLoading, ratingsRowAnimation]);
+  }, [displayedExternalRatings.length, displayedExternalRatingsMode, media?.id, mdbListLoading, ratingsRowAnimation, shouldShowExternalRatings]);
 
   useEffect(() => {
     if (!media) return;
@@ -1707,7 +1727,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
     if (!mdbListSettings.enabled) {
       setMdbListLoading(false);
       setMdbListStatusMessage(null);
-      setMedia((current: any) => current ? { ...current, externalRatings: [] } : current);
+      setMedia((current: any) => current ? { ...current, externalRatings: fallbackRatings, externalRatingsMode: fallbackRatings.length > 0 ? 'fallback' : 'none' } : current);
       return;
     }
 
@@ -2441,14 +2461,24 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
         />
       <View style={[styles.detailContentBody, useGlassDetailLayout && styles.detailContentBodyGlass]}>
                 {!useGlassDetailLayout ? (
-          <LinearGradient
-            colors={isLightAppearance
-              ? ['rgba(255,255,255,0.00)', 'rgba(255,255,255,0.24)', detailContentTint, detailContentTint]
-              : ['rgba(5,6,10,0.00)', 'rgba(5,6,10,0.38)', detailContentTint, detailContentTint]}
-            locations={[0, 0.05, 0.12, 1]}
-            style={[styles.detailContentTopTint, { top: -280, bottom: 0 }]}
-            pointerEvents="none"
-          />
+          <>
+            <LinearGradient
+              colors={isLightAppearance
+                ? [detailContentTint, 'rgba(255,255,255,0.78)', 'rgba(255,255,255,0.34)', 'rgba(255,255,255,0.00)']
+                : [detailContentTint, 'rgba(5,6,10,0.82)', 'rgba(5,6,10,0.34)', 'rgba(5,6,10,0.00)']}
+              locations={[0, 0.22, 0.58, 1]}
+              style={[styles.detailContentTopTint, { top: -199, height: 189, transform: [{ scaleY: -1 }] }]}
+              pointerEvents="none"
+            />
+            <LinearGradient
+              colors={isLightAppearance
+                ? [detailContentTint, detailContentTint, 'rgba(255,255,255,0.00)']
+                : [detailContentTint, detailContentTint, 'rgba(5,6,10,0.00)']}
+              locations={[0, 0.42, 1]}
+              style={[styles.detailContentBottomTint, { top: -10, height: 270 }]}
+              pointerEvents="none"
+            />
+          </>
         ) : null}
         {useGlassDetailLayout ? (
           <View style={[styles.glassHeroSection, { paddingTop: insets.top + 24 }]}>
@@ -2487,9 +2517,9 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                     </Text>
                   </View>
                 )}
-                {(media.externalRatings?.length ?? 0) > 0 ? (
+                {shouldShowExternalRatings ? (
                   <Animated.View style={[styles.externalRatingsSection, useGlassDetailLayout && styles.glassExternalRatingsSection, { opacity: ratingsRowAnimation, transform: [{ translateY: ratingsRowTranslateY }] }]}>
-                    <ExternalRatingsRow ratings={media.externalRatings ?? []} colors={colors} isLightAppearance={isLightAppearance} centered />
+                    <ExternalRatingsRow ratings={displayedExternalRatings} colors={colors} isLightAppearance={isLightAppearance} centered fallbackGenre={fallbackGenreLabel} />
                   </Animated.View>
                 ) : null}
                 {useGlassDetailLayout && (
@@ -2600,9 +2630,9 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                   {media.tagline ? <Text style={styles.tagline}>"{media.tagline}"</Text> : null}
                 </View>
               </View>
-              {(media.externalRatings?.length ?? 0) > 0 ? (
+              {shouldShowExternalRatings ? (
                 <Animated.View style={[styles.externalRatingsSection, { opacity: ratingsRowAnimation, transform: [{ translateY: ratingsRowTranslateY }] }]}>
-                  <ExternalRatingsRow ratings={media.externalRatings ?? []} colors={colors} isLightAppearance={isLightAppearance} centered />
+                  <ExternalRatingsRow ratings={displayedExternalRatings} colors={colors} isLightAppearance={isLightAppearance} centered fallbackGenre={fallbackGenreLabel} />
                 </Animated.View>
               ) : null}
             </View>
@@ -3760,6 +3790,16 @@ const StreamRow = React.memo(function StreamRow({ stream, colors, onPlay, style,
   const handlePress = React.useCallback(() => onPlay(stream), [onPlay, stream]);
   return <StreamSourceRow stream={stream} colors={colors} onPress={handlePress} style={style} sourceLabel={sourceLabel} />;
 });
+
+
+
+
+
+
+
+
+
+
 
 
 

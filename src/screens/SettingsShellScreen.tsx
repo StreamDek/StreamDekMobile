@@ -121,7 +121,7 @@ export function SettingsShellScreen({ navigation }: any) {
   const { theme, resolvedAppearance } = useTheme();
   const { colors } = theme;
   const { user } = useAuth();
-  const { profiles, activeProfile } = useProfile();
+  const { activeProfile } = useProfile();
   const { addons, ultraEntitled, ultraBoostEnabled } = useAddons();
   const { accounts } = useDebrid();
   const { isConnected: traktConnected } = useTrakt();
@@ -171,14 +171,6 @@ export function SettingsShellScreen({ navigation }: any) {
                   label={t('settings_switch_profile')}
                   subtitle={activeProfile ? t('settings_switch_profile_current', { name: activeProfile.name }) : t('settings_switch_profile_sub')}
                   onPress={() => navigation.navigate('ProfileSwitcher')}
-                />
-                <View style={styles.divider} />
-                <NavRow
-                  icon="people-outline"
-                  iconColor="#2563eb"
-                  label={t('settings_manage_profiles')}
-                  subtitle={t('settings_manage_profiles_count', { n: profiles.length, suffix: profiles.length !== 1 ? 's' : '' })}
-                  onPress={() => navigation.navigate('ManageProfiles')}
                 />
               </View>
               </EntranceFade>

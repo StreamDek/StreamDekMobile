@@ -114,7 +114,7 @@ export function CollectionsScreen({ navigation }: any) {
         <Text style={styles.backText}>Back</Text>
       </TouchableOpacity>
       <Text style={styles.title}>Collections</Text>
-      <Text style={styles.subtitle}>Import Nuvio-style collection JSON from a file or paste it directly, then expose the folders you want on the home layout.</Text>
+      <Text style={styles.subtitle}>Import Nuvio-style collection JSON from a file or paste it directly, then manage each collection's folders/categories and expose the ones you want on the home screen.</Text>
 
       <View style={[styles.card, { padding: 18 }]}> 
         <Text style={styles.summary}>{collections.length} collection{collections.length === 1 ? '' : 's'} - {collections.reduce((sum, collection) => sum + collection.folders.length, 0)} folder{collections.reduce((sum, collection) => sum + collection.folders.length, 0) === 1 ? '' : 's'}</Text>
@@ -147,11 +147,11 @@ export function CollectionsScreen({ navigation }: any) {
           </TouchableOpacity>
           <View style={styles.rowBody}>
             <Text style={styles.rowTitle}>{item.title}</Text>
-            <Text style={styles.rowSub}>{item.folders.length} folder{item.folders.length === 1 ? '' : 's'}{item.pinToTop ? ' - pinned' : ''}</Text>
+            <Text style={styles.rowSub}>{item.folders.length} folder{item.folders.length === 1 ? '' : 's'}{item.pinToTop ? ' - pinned' : ''} - open to manage categories</Text>
           </View>
           <TouchableOpacity
-            onPress={() => navigation.navigate('CollectionFolder', { collectionId: item.id, folderId: item.folders[0]?.id })}
-            disabled={!item.folders[0]?.id}
+            onPress={() => navigation.navigate('CollectionDetail', { collectionId: item.id })}
+            disabled={!item.id}
             style={{ padding: 6 }}
           >
             <Ionicons name="open-outline" size={18} color={colors.accentSoft} />
@@ -177,7 +177,7 @@ export function CollectionsScreen({ navigation }: any) {
                 <View style={[styles.card, { padding: 28, alignItems: 'center' }]}>
                   <Ionicons name="folder-open-outline" size={34} color={colors.placeholder} />
                   <Text style={styles.emptyTitle}>No collections imported</Text>
-                  <Text style={styles.emptySub}>Choose a collections JSON file from your phone or paste a Nuvio export to add custom folders, then enable the folders you want from Home Layout settings.</Text>
+                  <Text style={styles.emptySub}>Choose a collections JSON file from your phone or paste a Nuvio export to add custom folders/categories, then enable the folders you want from Home Layout or directly inside each collection.</Text>
                 </View>
               </ScrollView>
             ) : (

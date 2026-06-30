@@ -129,8 +129,8 @@ export const TrailerModal: React.FC<TrailerModalProps> = ({
     if (activeYtKey) Linking.openURL(`https://www.youtube.com/watch?v=${activeYtKey}`);
   };
 
-  // Prefer Vimeo — no sign-in wall, reliable embedding
-  const useVimeo = !!(vimeoKey || trailerSite === 'Vimeo');
+  // Reuse the hero trailer source when a YouTube key has already been selected there.
+  const useVimeo = !activeYtKey && !!(vimeoKey || trailerSite === 'Vimeo');
   const vimeoUri = useVimeo && (vimeoKey || trailerKey)
     ? `https://player.vimeo.com/video/${vimeoKey || trailerKey}?autoplay=1&playsinline=1&color=6c63ff&title=0&byline=0`
     : null;

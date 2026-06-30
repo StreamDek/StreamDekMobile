@@ -199,6 +199,7 @@ export function HomeLayoutSettingsScreen({ navigation }: any) {
         newSeries: t('section_new_series'),
         trendingMovies: t('section_trending_movies'),
         trendingTv: t('section_trending_tv'),
+        recommended: t('section_recommended'),
       },
       metadataProvider,
     );
@@ -268,6 +269,14 @@ export function HomeLayoutSettingsScreen({ navigation }: any) {
   const renderItem = useCallback(({ item, drag, isActive, getIndex }: RenderItemParams<HomeCatalogSection>) => {
     const index = getIndex?.() ?? 0;
     const isLast = index === sections.length - 1;
+    const sourceLabel = item.source === 'collection'
+      ? 'Collection - ' + (item.collectionTitle ?? item.title)
+      : item.source === 'addon'
+        ? 'Addon - ' + (item.addonName ?? item.title)
+        : item.provider === 'tmdb'
+          ? 'Built-in - TMDB'
+          : 'Built-in - Cinemeta';
+    const visibilityLabel = item.enabled ? t('settings_home_layout_visible') : t('settings_home_layout_hidden');
 
     return (
       <View style={[styles.catalogItemShell, isLast && styles.catalogItemShellLast]}>
@@ -278,7 +287,7 @@ export function HomeLayoutSettingsScreen({ navigation }: any) {
             </TouchableOpacity>
             <View style={styles.layoutInfo}>
               <Text style={styles.layoutLabel}>{item.title}</Text>
-              <Text style={styles.layoutSub}>{item.enabled ? t('settings_home_layout_visible') : t('settings_home_layout_hidden')}</Text>
+              <Text style={styles.layoutSub}>{sourceLabel + ' - ' + visibilityLabel}</Text>
             </View>
             <AppleToggle
               value={item.enabled}
@@ -301,7 +310,7 @@ export function HomeLayoutSettingsScreen({ navigation }: any) {
           </TouchableOpacity>
           <Text style={styles.title}>{t('settings_catalog_home_layout')}</Text>
           <Text style={styles.subtitle}>{t('settings_home_layout_modal_sub')}</Text>
-          <Text style={styles.sectionTitle}>Catalog</Text>
+          <Text style={styles.sectionTitle}>Home Rows</Text>
         </View>
       </EntranceFade>
 
@@ -351,7 +360,7 @@ export function HomeLayoutSettingsScreen({ navigation }: any) {
           </View>
           <View style={styles.catalogHeaderCard}>
             <View style={styles.catalogHeader}>
-              <Text style={styles.catalogTitle}>Catalog</Text>
+              <Text style={styles.catalogTitle}>Home Rows</Text>
               <Text style={styles.catalogHint}>{t('settings_home_layout_modal_hint')}</Text>
             </View>
           </View>

@@ -49,12 +49,14 @@ import { ContinueWatchingCard } from '../components/ContinueWatchingCard';
 import { useDisplaySettings } from '../context/DisplaySettingsContext';
 import { getProfileStorageOwnerId, profileScopedStorageKey, progressIndexStorageKey } from '../utils/profileStorage';
 import { useTmdbApiKey } from '../context/TmdbApiKeyContext';
+import { useCollections } from '../context/CollectionsContext';
 import { useAddons } from '../context/AddonContext';
 import { getDeviceProfile } from '../utils/deviceProfile';
 import { useMdbListSettings } from '../context/MdbListSettingsContext';
 import { invalidateSharedCache } from '../utils/sharedDataCache';
 import { IdleTaskHandle, runIdle } from '../utils/idleTask';
 import { buildAddonHomeSections, buildDefaultHomeSections } from '../utils/homeCatalogSections';
+import { buildCollectionHomeSections, fetchCollectionFolderItems, parseCollectionEndpoint } from '../utils/collections';
 import { getHomeSectionStorageKeys, mergeSavedHomeSections } from '../utils/homeLayoutConfig';
 import { EntranceFade } from '../components/EntranceFade';
 import { isExpoGoRuntime } from '../utils/runtime';
@@ -589,6 +591,7 @@ export const HomeScreen = ({ navigation }: any) => {
   const mdbListSettings = useMdbListSettings();
   const { setAppReady } = useAppReady();
   const { metadataProvider, homeCatalogProviders } = useTmdbApiKey();
+  const { collections } = useCollections();
   const { addons, fetchStreams, fetchStreamsForAddon } = useAddons();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const isDarkAppearance = resolvedAppearance === 'dark';
@@ -609,8 +612,12 @@ export const HomeScreen = ({ navigation }: any) => {
       trendingMovies: t('section_trending_movies'),
       trendingTv: t('section_trending_tv'),
     }, metadataProvider);
-    return [...base, ...buildAddonHomeSections(addons, { movie: t('catalog_type_movies'), tv: t('catalog_type_series') })];
-  }, [addons, homeCatalogProviders, metadataProvider, t]);
+    return [
+      ...base,
+      ...buildCollectionHomeSections(collections),
+      ...buildAddonHomeSections(addons, { movie: t('catalog_type_movies'), tv: t('catalog_type_series') }),
+    ];
+  }, [addons, collections, homeCatalogProviders, metadataProvider, t]);
 
   const {
     isConnected: traktConnected,
@@ -893,11 +900,19 @@ export const HomeScreen = ({ navigation }: any) => {
 
     const fetchSection = async (s: typeof enabledSections[number]) => {
         try {
+          const collectionDescriptor = parseCollectionEndpoint(s.endpoint);
           const addon = s.id.startsWith('addon:')
             ? addons.find(candidate => s.id.startsWith(`addon:${candidate.id}:`)) ?? null
             : null;
-          const data = await fetchMetadataCatalog(s.endpoint, { addon });
-          let rows = data.results || [];
+          let rows: any[] = [];
+          if (collectionDescriptor) {
+            const resolvedCollection = collections.find(candidate => candidate.id === collectionDescriptor.collectionId);
+            const resolvedFolder = resolvedCollection?.folders.find(candidate => candidate.id === collectionDescriptor.folderId) ?? null;
+            rows = resolvedFolder ? await fetchCollectionFolderItems(resolvedFolder, addons) : [];
+          } else {
+            const data = await fetchMetadataCatalog(s.endpoint, { addon });
+            rows = data.results || [];
+          }
           if (s.source !== 'addon') {
             rows = await enrichItemsWithMdbListRatings(rows, catalogRatingSettings, { maxItems: HOME_MDBLIST_ENRICH_LIMIT });
           }
@@ -954,7 +969,7 @@ export const HomeScreen = ({ navigation }: any) => {
       setLoading(false);
     }
     return fetchedAny;
-  }, [addons, catalogRatingSettings, deviceProfile.performanceClass, isForeground, sectionCacheKey]);
+  }, [addons, catalogRatingSettings, collections, deviceProfile.performanceClass, isForeground, sectionCacheKey]);
 
   const fetchTraktSections = useCallback(async () => {
     if (!traktConnected || !user) return;
@@ -1577,6 +1592,11 @@ export const HomeScreen = ({ navigation }: any) => {
 
   const handleViewAll = useCallback((sectionId: string, title: string) => {
     const section = sections.find(candidate => candidate.id === sectionId);
+    const collectionDescriptor = section?.endpoint ? parseCollectionEndpoint(section.endpoint) : null;
+    if (collectionDescriptor) {
+      navigation.navigate('CollectionFolder', collectionDescriptor);
+      return;
+    }
     if (section?.endpoint) {
       navigation.navigate('Browse', { title, endpoint: section.endpoint });
       return;
@@ -2389,5 +2409,10 @@ export const HomeScreen = ({ navigation }: any) => {
     </View>
   );
 };
+
+
+
+
+
 
 

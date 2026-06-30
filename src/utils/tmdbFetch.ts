@@ -36,6 +36,53 @@ function normalizeListItem(item: any, type: 'movie' | 'tv'): any {
 }
 
 // ── Full detail normalizer ────────────────────────────────────────────────────
+function normalizeTrailer(trailer: any): any {
+  return {
+    id: String(trailer.id ?? trailer.key ?? `${trailer.site ?? ''}:${trailer.name ?? ''}`),
+    key: String(trailer.key ?? ''),
+    name: String(trailer.name ?? ''),
+    displayName: String(trailer.name ?? ''),
+    site: String(trailer.site ?? ''),
+    type: String(trailer.type ?? ''),
+    official: trailer.official === true,
+    publishedAt: trailer.published_at ?? null,
+    size: typeof trailer.size === 'number' ? trailer.size : null,
+    seasonNumber: typeof trailer.season_number === 'number' ? trailer.season_number : null,
+  };
+}
+
+function isPlayableYouTubeTrailerCandidate(trailer: any): boolean {
+  return Boolean(trailer?.key) && String(trailer.site ?? '').toLowerCase() === 'youtube';
+}
+
+function heroTrailerPriority(trailer: any): number {
+  const isSeriesTrailer = trailer?.seasonNumber != null;
+  const isTrailerType = String(trailer?.type ?? '').toLowerCase() === 'trailer';
+  const isOfficial = trailer?.official === true;
+  if (!isSeriesTrailer && isTrailerType && isOfficial) return 70;
+  if (!isSeriesTrailer && isTrailerType) return 60;
+  if (!isSeriesTrailer && isOfficial) return 50;
+  if (!isSeriesTrailer) return 40;
+  if (isTrailerType && isOfficial) return 30;
+  if (isTrailerType) return 20;
+  if (isOfficial) return 10;
+  return 0;
+}
+
+function selectHeroTrailer(trailers: any[]): any | null {
+  return trailers
+    .filter(isPlayableYouTubeTrailerCandidate)
+    .sort((a, b) => {
+      const priorityDiff = heroTrailerPriority(b) - heroTrailerPriority(a);
+      if (priorityDiff !== 0) return priorityDiff;
+      const publishedDiff = String(b.publishedAt ?? '').localeCompare(String(a.publishedAt ?? ''));
+      if (publishedDiff !== 0) return publishedDiff;
+      const sizeDiff = Number(b.size ?? 0) - Number(a.size ?? 0);
+      if (sizeDiff !== 0) return sizeDiff;
+      return String(a.name ?? '').localeCompare(String(b.name ?? ''));
+    })[0] ?? null;
+}
+
 function normalizeDetails(data: any, type: 'movie' | 'tv'): any {
   const backdrops = (data.images?.backdrops ?? [])
     .slice(0, 10)
@@ -45,10 +92,13 @@ function normalizeDetails(data: any, type: 'movie' | 'tv'): any {
   const logos: any[] = data.images?.logos ?? [];
   const titleLogoObj = logos.find((l: any) => l.iso_639_1 === 'en') ?? logos[0];
 
-  const trailerKey =
-    (data.videos?.results ?? []).find((v: any) => v.type === 'Trailer' && v.site === 'YouTube')?.key ??
-    (data.videos?.results ?? []).find((v: any) => v.site === 'YouTube')?.key ??
-    null;
+  const trailers = (data.videos?.results ?? []).map((trailer: any) => normalizeTrailer(trailer));
+  const heroTrailer = selectHeroTrailer(trailers);
+  const trailerKey = heroTrailer?.key ?? null;
+  const trailerKeys = trailers
+    .filter((trailer: any) => String(trailer.site ?? '').toLowerCase() === 'youtube' && trailer.key)
+    .map((trailer: any) => trailer.key)
+    .filter((key: string, index: number, list: string[]) => list.indexOf(key) === index);
 
   const cast = (data.credits?.cast ?? []).slice(0, 20).map((p: any) => ({
     id:        p.id,
@@ -127,6 +177,9 @@ function normalizeDetails(data: any, type: 'movie' | 'tv'): any {
     backdrops:            backdrops.length > 0 ? backdrops : (backdropUri ? [backdropUri] : []),
     titleLogo:            titleLogoObj ? img(titleLogoObj.file_path) : null,
     trailerKey,
+    trailerKeys,
+    trailerSite: heroTrailer?.site ?? null,
+    trailers,
     cast,
     crew,
     providers,
@@ -346,6 +399,55 @@ async function dispatchDirect(path: string, apiKey: string, signal?: AbortSignal
     return { results: (data.results ?? []).map((i: any) => normalizeListItem(i, 'tv')) };
   }
 
+  // /tmdb/collection/123
+  const collectionM = path.match(/^\/tmdb\/collection\/(\d+)$/);
+  if (collectionM) {
+    const data = await get(`${TMDB_BASE}/collection/${collectionM[1]}?${base}`);
+    return { results: (data.parts ?? []).map((i: any) => normalizeListItem(i, 'movie')) };
+  }
+
+  // /tmdb/list/123?type=movie|tv
+  const listM = path.match(/^\/tmdb\/list\/(\d+)$/);
+  if (listM) {
+    const qs = path.includes('?') ? path.slice(path.indexOf('?') + 1) : '';
+    const params = new URLSearchParams(qs);
+    const type = (params.get('type') ?? 'movie') as 'movie' | 'tv';
+    const data = await get(`${TMDB_BASE}/list/${listM[1]}?${base}`);
+    return { results: (data.items ?? [])
+      .filter((item: any) => !item.media_type || item.media_type === type)
+      .map((i: any) => normalizeListItem(i, type)) };
+  }
+
+  // /tmdb/company/123?type=movie|tv
+  const companyM = path.match(/^\/tmdb\/company\/(\d+)$/);
+  if (companyM) {
+    const qs = path.includes('?') ? path.slice(path.indexOf('?') + 1) : '';
+    const params = new URLSearchParams(qs);
+    const type = (params.get('type') ?? 'movie') as 'movie' | 'tv';
+    const data = await get(`${TMDB_BASE}/discover/${type}?${base}&with_companies=${companyM[1]}&sort_by=popularity.desc`);
+    return { results: (data.results ?? []).map((i: any) => normalizeListItem(i, type)) };
+  }
+
+  // /tmdb/director/123?type=movie|tv
+  const directorM = path.match(/^\/tmdb\/director\/(\d+)$/);
+  if (directorM) {
+    const qs = path.includes('?') ? path.slice(path.indexOf('?') + 1) : '';
+    const params = new URLSearchParams(qs);
+    const type = (params.get('type') ?? 'movie') as 'movie' | 'tv';
+    const data = await get(`${TMDB_BASE}/discover/${type}?${base}&with_crew=${directorM[1]}&sort_by=popularity.desc`);
+    return { results: (data.results ?? []).map((i: any) => normalizeListItem(i, type)) };
+  }
+
+  // /tmdb/person/123/credits?type=movie|tv
+  const personCreditsM = path.match(/^\/tmdb\/person\/(\d+)\/credits$/);
+  if (personCreditsM) {
+    const qs = path.includes('?') ? path.slice(path.indexOf('?') + 1) : '';
+    const params = new URLSearchParams(qs);
+    const type = (params.get('type') ?? 'movie') as 'movie' | 'tv';
+    const data = await get(`${TMDB_BASE}/discover/${type}?${base}&with_people=${personCreditsM[1]}&sort_by=popularity.desc`);
+    return { results: (data.results ?? []).map((i: any) => normalizeListItem(i, type)) };
+  }
+
   // /tmdb/person/123
   const personM = path.match(/^\/tmdb\/person\/(\d+)$/);
   if (personM) {
@@ -393,7 +495,11 @@ function isCacheable(path: string): boolean {
     path.startsWith('/tmdb/network/') ||
     path.startsWith('/tmdb/season/') ||
     path.startsWith('/tmdb/find/') ||
-    path.startsWith('/tmdb/person/')
+    path.startsWith('/tmdb/person/') ||
+    path.startsWith('/tmdb/collection/') ||
+    path.startsWith('/tmdb/list/') ||
+    path.startsWith('/tmdb/company/') ||
+    path.startsWith('/tmdb/director/')
   );
 }
 
@@ -442,3 +548,10 @@ export async function resolveImdbToTmdbId(imdbId: string, hintType?: 'movie' | '
   if (!data?.id) return null;
   return { id: String(data.id), type: data.type === 'tv' ? 'tv' : 'movie' };
 }
+
+
+
+
+
+
+

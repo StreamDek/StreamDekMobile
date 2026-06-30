@@ -55,7 +55,12 @@ import { getDeviceProfile } from '../utils/deviceProfile';
 import { useMdbListSettings } from '../context/MdbListSettingsContext';
 import { invalidateSharedCache } from '../utils/sharedDataCache';
 import { IdleTaskHandle, runIdle } from '../utils/idleTask';
-import { buildAddonHomeSections, buildDefaultHomeSections } from '../utils/homeCatalogSections';
+import {
+  buildAddonHomeSections,
+  buildDefaultHomeSections,
+  isTraktRecommendationsSection,
+  TRAKT_RECOMMENDED_SECTION_ID,
+} from '../utils/homeCatalogSections';
 import { buildCollectionHomeSections, fetchCollectionFolderItems, parseCollectionEndpoint } from '../utils/collections';
 import { getHomeSectionStorageKeys, mergeSavedHomeSections } from '../utils/homeLayoutConfig';
 import { EntranceFade } from '../components/EntranceFade';
@@ -549,6 +554,25 @@ const mergeMediaEntries = (primary: any, secondary: any) => ({
   marqueeImageUri: getMarqueeImageUri(primary) ?? getMarqueeImageUri(secondary) ?? null,
 });
 
+const getContinueWatchingTimestamp = (item: any): number => {
+  const candidates = [
+    item?.updatedAt,
+    item?.paused_at,
+    item?.pausedAt,
+    item?.last_watched_at,
+    item?.lastWatchedAt,
+    item?.watchedAt,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || candidate.length === 0) continue;
+    const timestamp = Date.parse(candidate);
+    if (Number.isFinite(timestamp)) return timestamp;
+  }
+
+  return 0;
+};
+
 const AnimatedDot = React.memo(function AnimatedDot({ active, activeColor, inactiveColor, onPress }: { active: boolean; activeColor: string; inactiveColor: string; onPress: () => void }) {
   const anim = React.useRef(new Animated.Value(active ? 1 : 0)).current;
   
@@ -611,6 +635,7 @@ export const HomeScreen = ({ navigation }: any) => {
       newSeries: t('section_new_series'),
       trendingMovies: t('section_trending_movies'),
       trendingTv: t('section_trending_tv'),
+      recommended: t('section_recommended'),
     }, metadataProvider);
     return [
       ...base,
@@ -636,6 +661,10 @@ export const HomeScreen = ({ navigation }: any) => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [watchlist, setWatchlist] = useState<any[]>([]);
+  const visibleSections = useMemo(
+    () => sections.filter(section => !isTraktRecommendationsSection(section) || traktConnected),
+    [sections, traktConnected],
+  );
   const [watchlistRemovalIds, setWatchlistRemovalIds] = useState<string[]>([]);
   const [localContinueWatching, setLocalContinueWatching] = useState<any[]>([]);
   const storageOwnerId = getProfileStorageOwnerId(user?.uid, activeProfile?.id);
@@ -760,7 +789,8 @@ export const HomeScreen = ({ navigation }: any) => {
       const current = byId.get(key);
       byId.set(key, current ? mergeMediaEntries(item, current) : mergeMediaEntries(item, {}));
     }
-    return Array.from(byId.values());
+    return Array.from(byId.values())
+      .sort((a, b) => getContinueWatchingTimestamp(b) - getContinueWatchingTimestamp(a));
   }, [continueWatching, localContinueWatching]);
   const scrollY = useRef(new Animated.Value(0)).current;
   const headerOpacity = scrollY.interpolate({ inputRange: [0, 80], outputRange: [1, 0.92], extrapolate: 'clamp' });
@@ -834,12 +864,21 @@ export const HomeScreen = ({ navigation }: any) => {
           progress: e.progressPct,
           positionSec: Number(e.positionSec ?? 0) || undefined,
           durationSec: Number(e.durationSec ?? 0) || undefined,
+          updatedAt: typeof e.updatedAt === 'string' ? e.updatedAt : undefined,
         }));
       setLocalContinueWatching(items);
     } catch {
       setLocalContinueWatching([]);
     }
   }, [storageOwnerId]);
+
+  useEffect(() => {
+    if (!sections.some(section => isTraktRecommendationsSection(section))) return;
+    setSectionData(prev => ({
+      ...prev,
+      [TRAKT_RECOMMENDED_SECTION_ID]: traktConnected ? traktRecommendations : [],
+    }));
+  }, [sections, traktConnected, traktRecommendations]);
 
   const loadCachedSectionData = useCallback(async () => {
     const memoryCached = homeSectionMemoryCache.get(sectionCacheKey);
@@ -857,7 +896,7 @@ export const HomeScreen = ({ navigation }: any) => {
   }, [sectionCacheKey]);
 
   const fetchCatalogSections = useCallback(async (activeSections: typeof sections) => {
-    const enabledSections = activeSections.filter(s => s.enabled);
+    const enabledSections = activeSections.filter(s => s.enabled && !isTraktRecommendationsSection(s));
     const priorityWindow = deviceProfile.performanceClass === 'low' ? 2 : 3;
     const prioritySections = enabledSections.slice(0, priorityWindow);
     const backgroundSections = enabledSections.slice(priorityWindow);
@@ -1020,11 +1059,33 @@ export const HomeScreen = ({ navigation }: any) => {
     return () => { active = false; };
   }, [loadCachedSectionData, loadLocalProgress, loadSectionConfig, loadWatchlist, loadWatchlistRemovals, setAppReady, user?.uid, activeProfile?.id]);
 
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      const resolvedSections = await loadSectionConfig();
+      if (!active) return;
+      setSections(resolvedSections);
+      setSectionData(prev => {
+        const next: Record<string, any[]> = {};
+        for (const section of resolvedSections) {
+          if (Object.prototype.hasOwnProperty.call(prev, section.id)) {
+            next[section.id] = prev[section.id];
+          }
+        }
+        return next;
+      });
+      setLoading(resolvedSections.some(section => section.enabled && (!isTraktRecommendationsSection(section) || traktConnected)));
+    })();
+    return () => {
+      active = false;
+    };
+  }, [collections, loadSectionConfig, traktConnected]);
+
   useFocusEffect(
     useCallback(() => {
       const timer = setTimeout(() => {
         if (hasCompletedInitialHomeLoadRef.current) {
-          void fetchCatalogSections(sections);
+          void fetchCatalogSections(visibleSections);
         } else {
           hasCompletedInitialHomeLoadRef.current = true;
         }
@@ -1039,16 +1100,16 @@ export const HomeScreen = ({ navigation }: any) => {
       return () => {
         clearTimeout(timer);
       };
-  }, [user, activeProfile?.id, traktConnected, fetchTraktSections, refreshContinueWatching, refreshWatchlist, loadWatchlist, loadLocalProgress, fetchCatalogSections, sections])
+  }, [user, activeProfile?.id, traktConnected, fetchTraktSections, refreshContinueWatching, refreshWatchlist, loadWatchlist, loadLocalProgress, fetchCatalogSections, visibleSections])
   );
 
   useEffect(() => {
-    if (sections.length === 0) return;
-    const fetchKey = `${sectionProviderKey}:${sections.map(section => `${section.id}:${section.enabled ? 1 : 0}:${section.endpoint}`).join('|')}`;
+    if (visibleSections.length === 0) return;
+    const fetchKey = `${sectionProviderKey}:${visibleSections.map(section => `${section.id}:${section.enabled ? 1 : 0}:${section.endpoint}`).join('|')}`;
     if (lastAutoFetchKeyRef.current === fetchKey) return;
     lastAutoFetchKeyRef.current = fetchKey;
-    void fetchCatalogSections(sections);
-  }, [fetchCatalogSections, sectionProviderKey, sections]);
+    void fetchCatalogSections(visibleSections);
+  }, [fetchCatalogSections, sectionProviderKey, visibleSections]);
 
   // Home is the root tab - confirm before exiting on hardware back.
   useFocusEffect(
@@ -2120,14 +2181,20 @@ export const HomeScreen = ({ navigation }: any) => {
       rows.push({ key: 'continue', kind: 'continue' });
     }
 
-    for (const section of sections.filter(s => s.enabled)) {
+    for (const section of visibleSections.filter(s => s.enabled)) {
       const sData = sectionData[section.id];
-      const isLoading = loading || sData === undefined;
+      const isLoading = isTraktRecommendationsSection(section)
+        ? traktConnected && sData === undefined
+        : loading || sData === undefined;
       if (!isLoading && (!sData || sData.length === 0)) continue;
       const title = section.title;
       rows.push({
         key: `section:${section.id}`,
-        kind: section.id === 'networks' || section.id.endsWith(':networks') ? 'networks' : 'section',
+        kind: isTraktRecommendationsSection(section)
+          ? 'traktRecommended'
+          : section.id === 'networks' || section.id.endsWith(':networks')
+            ? 'networks'
+            : 'section',
         sectionId: section.id,
         title,
         cardVariant: section.contentType === 'sport' ? 'landscape' : 'portrait',
@@ -2136,28 +2203,15 @@ export const HomeScreen = ({ navigation }: any) => {
       });
     }
 
-    if (traktConnected && traktRecommendations.length > 0) {
-      rows.push({ key: 'trakt:recommended', kind: 'traktRecommended' });
-    }
-    if (user && traktConnected && traktTrending.length > 0) {
-      rows.push({ key: 'trakt:trending', kind: 'traktTrending' });
-    }
-    if (combinedWatchlist.length > 0) {
-      rows.push({ key: 'watchlist', kind: 'watchlist' });
-    }
-
     return rows;
   }, [
     allContinueWatching,
-    combinedWatchlist,
-    defaultSections,
     loading,
     sectionData,
     sections,
     traktConnected,
-    traktRecommendations,
-    traktTrending,
     user,
+    visibleSections,
   ]);
 
   const renderHomeRow = useCallback(({ item, index }: { item: any; index: number }) => {
@@ -2214,9 +2268,9 @@ export const HomeScreen = ({ navigation }: any) => {
       case 'traktRecommended':
         return (
           <SectionStrip
-            title={t('section_recommended')}
-            data={traktRecommendations}
-            loading={false}
+            title={item.title}
+            data={item.data}
+            loading={item.loading}
             onViewAll={() => navigation.navigate('TraktCollection', { mode: 'recommended' })}
             onItemPress={handleItemPress}
             onItemLongPress={handleLongPress}

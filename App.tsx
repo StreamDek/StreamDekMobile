@@ -57,6 +57,7 @@ import { PersonDetailScreen } from './src/screens/PersonDetailScreen';
 import { EditProfileScreen } from './src/screens/EditProfileScreen';
 import { CollectionsScreen } from './src/screens/CollectionsScreen';
 import { CollectionFolderScreen } from './src/screens/CollectionFolderScreen';
+import { CollectionDetailScreen } from './src/screens/CollectionDetailScreen';
 import { useTheme } from './src/context/ThemeContext';
 import { UpdatePrompt } from './src/components/UpdatePrompt';
 
@@ -244,6 +245,7 @@ function AppNavigation() {
             />
             <Stack.Screen name="TraktCollection" component={TraktCollectionScreen} options={{ headerShown: false, animationDuration: 280 }} />
             <Stack.Screen name="Collections" component={CollectionsScreen} options={{ headerShown: false, animationDuration: 280 }} />
+            <Stack.Screen name="CollectionDetail" component={CollectionDetailScreen} options={{ headerShown: false, animationDuration: 280 }} />
             <Stack.Screen name="CollectionFolder" component={CollectionFolderScreen} options={{ headerShown: false, animationDuration: 280 }} />
             <Stack.Screen name="EpisodeStreams" component={EpisodeStreamsScreen} options={{ headerShown: false, animationDuration: 280 }} />
             <Stack.Screen name="PersonDetail" component={PersonDetailScreen} options={{ headerShown: false, animation: 'fade', animationDuration: 260 }} />

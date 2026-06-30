@@ -244,11 +244,12 @@ export function buildCollectionHomeSections(collections: Collection[]): HomeCata
   return collections.flatMap(collection =>
     (collection.folders ?? []).map<HomeCatalogSection>(folder => ({
       id: `collection:${collection.id}:${folder.id}`,
-      title: collection.title === folder.title ? folder.title : `${collection.title} - ${folder.title}`,
+      title: folder.title || collection.title,
       endpoint: `collection://${encodeURIComponent(collection.id)}/${encodeURIComponent(folder.id)}`,
       enabled: true,
-      source: 'builtin',
-      provider: 'tmdb',
+      source: 'collection',
+      collectionTitle: collection.title,
+      folderTitle: folder.title,
       contentType: inferFolderContentType(folder),
     })),
   );

@@ -391,43 +391,6 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
   glassHeroImageScrim: {
     ...StyleSheet.absoluteFillObject,
   } as any,
-  backdropGlassOverlay: {
-    position: 'absolute',
-    left: 8,
-    right: 8,
-    bottom: 0,
-    height: 150,
-    borderTopLeftRadius: 220,
-    borderTopRightRadius: 220,
-    zIndex: 0,
-    overflow: 'hidden',
-  },
-  backdropGlassScrim: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 0,
-    bottom: 0,
-    backgroundColor: 'transparent',
-    zIndex: 2,
-  },
-  backdropGlassTopFade: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 0,
-    height: 72,
-    borderTopLeftRadius: 220,
-    borderTopRightRadius: 220,
-    zIndex: 3,
-  },
-  backdropGlassSideFeather: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    width: 48,
-    zIndex: 4,
-  },
   heroInfoShell: {
     width: '100%',
   },
@@ -958,19 +921,10 @@ const makeStyles = (c: ThemeColors, isLightAppearance: boolean, vividAmbient: bo
     alignItems: 'center' as const,
     justifyContent: 'center' as const,
     overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOpacity: isLightAppearance ? 0.34 : 0.20,
-    shadowRadius: 5,
-    shadowOffset: { width: 0, height: 0 },
-    elevation: isLightAppearance ? 3 : 0,
   },
   centeredTitleLogo: {
     width: '100%' as const,
     height: '100%' as const,
-    shadowColor: '#000',
-    shadowOpacity: isLightAppearance ? 0.28 : 0.16,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 0 },
   },
   centeredTitleBlock: {
     width: '72%' as const,
@@ -1171,13 +1125,12 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const { showStreamsList, vividAmbientEnabled, heroTrailerAutoplayEnabled } = useDisplaySettings();
   const { isForeground } = useAppLifecycle();
   const isLightAppearance = resolvedAppearance === 'light';
+  const showLightModeDetailGradients = !isLightAppearance;
   const isLightMonochrome = isLightAppearance && theme.id === 'monochrome';
   const isMonochromeDark = !isLightAppearance && theme.id === 'monochrome';
   const detailBodyBg = isLightAppearance && uiStyle === 'centered' ? 'transparent' : (isLightAppearance ? colors.bgMid : colors.bg);
   const detailContentTint = isLightAppearance ? 'rgba(255,255,255,0.9)' : 'rgba(5,6,10,0.96)';
   const [heroBackdropHeight, setHeroBackdropHeight] = useState(uiStyle === 'centered' ? 585 : 465);
-  const glassOverlayHeight = 150;
-  const glassOverlayOffset = Math.max(0, heroBackdropHeight - glassOverlayHeight);
   const detailScrollY = useRef(new Animated.Value(0)).current;
   const ratingsRowAnimation = useRef(new Animated.Value(0)).current;
   const detailHeroLiftDelay = 56;
@@ -1231,12 +1184,13 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
 
   const insets = useSafeAreaInsets();
   const cacheKey = `${type}/${movieId}`;
+  const detailContentFade = useRef(new Animated.Value(detailCache.has(cacheKey) ? 1 : 0)).current;
   const routePreviewMedia = useMemo(() => buildRoutePreviewMedia(route.params, type), [route.params, type]);
   const [media, setMedia] = useState<any>(() => {
     const initial = detailCache.get(cacheKey) ?? routePreviewMedia ?? null;
     return initial ? { ...initial, externalRatingsMode: initial.externalRatingsMode ?? 'none' } : null;
   });
-  const [loading, setLoading] = useState(() => !detailCache.has(cacheKey) && !routePreviewMedia);
+  const [loading, setLoading] = useState(() => !detailCache.has(cacheKey));
   const [activeTab, setActiveTab] = useState<Tab>('about');
   const [mdbListStatusMessage, setMdbListStatusMessage] = useState<string | null>(null);
   const [mdbListLoading, setMdbListLoading] = useState(false);
@@ -1262,6 +1216,8 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   }, [cacheKey, uiStyle]);
 
   useEffect(() => {
+    detailContentFade.stopAnimation();
+    if (!detailCache.has(cacheKey)) detailContentFade.setValue(0);
     const cached = detailCache.get(cacheKey);
     if (cached) {
       const cachedFallbackRatings = Array.isArray(cached.externalRatings) && cached.externalRatings.length > 0
@@ -1276,7 +1232,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
 
     setMedia(routePreviewMedia ?? null);
     setVimeoKey(null);
-    setLoading(!routePreviewMedia);
+    setLoading(true);
     setMdbListLoading(false);
   }, [cacheKey, routeImdbId, routePreviewMedia]);
 
@@ -1341,6 +1297,15 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const detailContentOverlap = useCompactDetailLayout ? 56 : 40;
   const detailContentStartOffset = 55;
   const detailPageContentTop = useGlassDetailLayout ? 0 : Math.max(0, heroBackdropHeight + detailContentStartOffset - detailContentOverlap);
+
+  useEffect(() => {
+    if (loading || !media) return;
+    Animated.timing(detailContentFade, {
+      toValue: 1,
+      duration: 220,
+      useNativeDriver: true,
+    }).start();
+  }, [detailContentFade, loading, media]);
 
   useEffect(() => {
     setHeroTrailerReady(false);
@@ -2324,7 +2289,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
   const PageWrapper: any = Animated.ScrollView;
 
   return (
-      <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      <Animated.View style={{ flex: 1, backgroundColor: colors.bg, opacity: detailContentFade }}><View style={{ flex: 1, backgroundColor: colors.bg }}>
         <BlurTargetView ref={blurTargetRef} style={{ flex: 1 }}>
           {(vividAmbientEnabled || useGlassDetailLayout) && ambientBackdropUri ? (
             <View pointerEvents="none" style={useGlassDetailLayout ? styles.glassAmbientBackdrop : styles.ambientBackdrop}>
@@ -2390,49 +2355,6 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
                   />
                 </Animated.View>
               ) : null}
-              {isLightAppearance && uiStyle === 'centered' && detailHeroUri ? (
-                <Animated.View pointerEvents="none" style={[styles.backdropGlassOverlay, shouldParallaxHero ? { transform: [{ translateY: detailHeroTranslateY }, { scale: detailHeroScale }] } : null]}>
-                  <Image
-                    source={{ uri: detailHeroUri }}
-                    blurRadius={4}
-                    contentFit="cover"
-                    cachePolicy="memory-disk"
-                    priority="high"
-                    transition={0}
-                    style={[
-                      StyleSheet.absoluteFillObject,
-                      {
-                        top: -glassOverlayOffset,
-                        height: heroBackdropHeight,
-                      },
-                    ]}
-                  />
-                  <LinearGradient
-                    colors={['rgba(8,10,14,0.00)', 'rgba(8,10,14,0.00)', 'rgba(8,10,14,0.008)']}
-                    locations={[0, 0.66, 1]}
-                    pointerEvents="none"
-                    style={StyleSheet.absoluteFillObject}
-                  />
-                  <LinearGradient
-                    colors={['rgba(8,10,14,0.00)', 'rgba(8,10,14,0.004)', 'rgba(8,10,14,0.00)']}
-                    locations={[0, 0.5, 1]}
-                    pointerEvents="none"
-                    style={styles.backdropGlassTopFade}
-                  />
-                  <LinearGradient
-                    colors={['rgba(8,10,14,0.02)', 'rgba(8,10,14,0.00)']}
-                    locations={[0, 1]}
-                    pointerEvents="none"
-                    style={[styles.backdropGlassSideFeather, { left: 0 }]}
-                  />
-                  <LinearGradient
-                    colors={['rgba(8,10,14,0.02)', 'rgba(8,10,14,0.00)']}
-                    locations={[0, 1]}
-                    pointerEvents="none"
-                    style={[styles.backdropGlassSideFeather, { right: 0 }]}
-                  />
-                </Animated.View>
-              ) : null}
               {isPosterOnlyHero ? (
                 <>
                   <View style={styles.backdropPosterTint} />
@@ -2460,7 +2382,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
           onClose={() => setTrailerVisible(false)}
         />
       <View style={[styles.detailContentBody, useGlassDetailLayout && styles.detailContentBodyGlass]}>
-                {!useGlassDetailLayout ? (
+                {!useGlassDetailLayout && showLightModeDetailGradients ? (
           <>
             <LinearGradient
               colors={isLightAppearance
@@ -3481,7 +3403,7 @@ export const MediaDetailScreen = ({ route, navigation }: any) => {
         ) : null}
       </BlurTargetView>
       <StackBottomNav blurTarget={blurTargetRef} />
-    </View>
+    </View></Animated.View>
   );
 };
 

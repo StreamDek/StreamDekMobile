@@ -1,11 +1,16 @@
 import type { InstalledAddon } from '../context/AddonContext';
 
+export const TRAKT_RECOMMENDED_SECTION_ID = 'trakt_recommended';
+
 export type HomeCatalogSection = {
   id: string;
   title: string;
   endpoint: string;
   enabled: boolean;
-  source?: 'builtin' | 'addon';
+  source?: 'builtin' | 'addon' | 'collection';
+  addonName?: string;
+  collectionTitle?: string;
+  folderTitle?: string;
   provider?: 'cinemeta' | 'tmdb';
   contentType?: 'movie' | 'tv' | 'sport' | 'mixed';
 };
@@ -85,16 +90,16 @@ export function buildDefaultHomeSections(
     newSeries: string;
     trendingMovies: string;
     trendingTv: string;
+    recommended: string;
   },
   preferredProvider?: 'cinemeta' | 'tmdb',
 ): HomeCatalogSection[] {
-  const withSdPrefix = (title: string) => `SD - ${title}`;
   const dedupedProviders = Array.from(new Set(enabledProviders));
   const orderedProviders = preferredProvider && dedupedProviders.includes(preferredProvider)
     ? [preferredProvider, ...dedupedProviders.filter(provider => provider !== preferredProvider)]
     : dedupedProviders;
 
-  return orderedProviders.flatMap<HomeCatalogSection>(provider => {
+  const providerSections = orderedProviders.flatMap<HomeCatalogSection>(provider => {
     const withProvider = (id: string, section: Omit<HomeCatalogSection, 'id' | 'source' | 'provider'>): HomeCatalogSection => ({
       ...section,
       id: `${provider}:${id}`,
@@ -104,26 +109,45 @@ export function buildDefaultHomeSections(
 
     if (provider === 'cinemeta') {
       return [
-        withProvider('networks', { title: withSdPrefix(labels.networks), endpoint: '/tmdb/networks', enabled: true, contentType: 'mixed' }),
-        withProvider('featured_movie', { title: withSdPrefix(labels.featuredMovies), endpoint: '/cinemeta/catalog/movie/imdbRating', enabled: true, contentType: 'movie' }),
-        withProvider('featured_tv', { title: withSdPrefix(labels.featuredSeries), endpoint: '/cinemeta/catalog/series/imdbRating', enabled: true, contentType: 'tv' }),
-        withProvider('popular_movie', { title: withSdPrefix(labels.popularMovies), endpoint: '/cinemeta/catalog/movie/top', enabled: true, contentType: 'movie' }),
-        withProvider('popular_tv', { title: withSdPrefix(labels.popularTv), endpoint: '/cinemeta/catalog/series/top', enabled: true, contentType: 'tv' }),
-        withProvider('documentaries', { title: withSdPrefix(labels.documentaries), endpoint: '/cinemeta/catalog/movie/top?genre=Documentary', enabled: false, contentType: 'movie' }),
-        withProvider('new_movie', { title: withSdPrefix(labels.newMovies), endpoint: `/cinemeta/catalog/movie/year/${currentYear}`, enabled: false, contentType: 'movie' }),
-        withProvider('new_tv', { title: withSdPrefix(labels.newSeries), endpoint: `/cinemeta/catalog/series/year/${currentYear}`, enabled: false, contentType: 'tv' }),
+        withProvider('networks', { title: labels.networks, endpoint: '/tmdb/networks', enabled: true, contentType: 'mixed' }),
+        withProvider('featured_movie', { title: labels.featuredMovies, endpoint: '/cinemeta/catalog/movie/imdbRating', enabled: true, contentType: 'movie' }),
+        withProvider('featured_tv', { title: labels.featuredSeries, endpoint: '/cinemeta/catalog/series/imdbRating', enabled: true, contentType: 'tv' }),
+        withProvider('popular_movie', { title: labels.popularMovies, endpoint: '/cinemeta/catalog/movie/top', enabled: true, contentType: 'movie' }),
+        withProvider('popular_tv', { title: labels.popularTv, endpoint: '/cinemeta/catalog/series/top', enabled: true, contentType: 'tv' }),
+        withProvider('documentaries', { title: labels.documentaries, endpoint: '/cinemeta/catalog/movie/top?genre=Documentary', enabled: false, contentType: 'movie' }),
+        withProvider('new_movie', { title: labels.newMovies, endpoint: `/cinemeta/catalog/movie/year/${currentYear}`, enabled: false, contentType: 'movie' }),
+        withProvider('new_tv', { title: labels.newSeries, endpoint: `/cinemeta/catalog/series/year/${currentYear}`, enabled: false, contentType: 'tv' }),
       ];
     }
 
     return [
-      withProvider('networks', { title: withSdPrefix(labels.networks), endpoint: '/tmdb/networks', enabled: true, contentType: 'mixed' }),
-      withProvider('trending_movie', { title: withSdPrefix(labels.trendingMovies), endpoint: '/tmdb/trending/movie', enabled: true, contentType: 'movie' }),
-      withProvider('trending_tv', { title: withSdPrefix(labels.trendingTv), endpoint: '/tmdb/trending/tv', enabled: true, contentType: 'tv' }),
-      withProvider('documentaries', { title: withSdPrefix(labels.documentaries), endpoint: '/tmdb/discover?type=movie&genre_id=99&sort_by=popularity.desc', enabled: false, contentType: 'movie' }),
-      withProvider('popular_movie', { title: withSdPrefix(labels.popularMovies), endpoint: '/tmdb/popular/movie', enabled: false, contentType: 'movie' }),
-      withProvider('popular_tv', { title: withSdPrefix(labels.popularTv), endpoint: '/tmdb/popular/tv', enabled: false, contentType: 'tv' }),
+      withProvider('networks', { title: labels.networks, endpoint: '/tmdb/networks', enabled: true, contentType: 'mixed' }),
+      withProvider('trending_movie', { title: labels.trendingMovies, endpoint: '/tmdb/trending/movie', enabled: true, contentType: 'movie' }),
+      withProvider('trending_tv', { title: labels.trendingTv, endpoint: '/tmdb/trending/tv', enabled: true, contentType: 'tv' }),
+      withProvider('documentaries', { title: labels.documentaries, endpoint: '/tmdb/discover?type=movie&genre_id=99&sort_by=popularity.desc', enabled: false, contentType: 'movie' }),
+      withProvider('popular_movie', { title: labels.popularMovies, endpoint: '/tmdb/popular/movie', enabled: false, contentType: 'movie' }),
+      withProvider('popular_tv', { title: labels.popularTv, endpoint: '/tmdb/popular/tv', enabled: false, contentType: 'tv' }),
     ];
   });
+
+  if (orderedProviders.length === 0) return providerSections;
+
+  return [
+    ...providerSections,
+    {
+      id: TRAKT_RECOMMENDED_SECTION_ID,
+      title: labels.recommended,
+      endpoint: 'trakt://recommendations',
+      enabled: true,
+      source: 'builtin',
+      contentType: 'movie',
+    },
+  ];
+}
+
+export function isTraktRecommendationsSection(section: Pick<HomeCatalogSection, 'id' | 'endpoint'> | string): boolean {
+  if (typeof section === 'string') return section === TRAKT_RECOMMENDED_SECTION_ID || section === 'trakt://recommendations';
+  return section.id === TRAKT_RECOMMENDED_SECTION_ID || section.endpoint === 'trakt://recommendations';
 }
 
 const MAX_SECTION_TITLE_LENGTH = 30;
@@ -213,6 +237,7 @@ export function buildAddonHomeSections(
           enabled: true,
           source: 'addon',
           contentType: type,
+          addonName: addon.manifest.name,
         }];
       });
     });

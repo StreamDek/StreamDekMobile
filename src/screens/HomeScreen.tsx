@@ -176,6 +176,21 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     textShadowRadius: 6,
     textShadowOffset: { width: 0, height: 1 },
   },
+  heroTitleFallbackOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    zIndex: 0,
+  },
+  heroTitleFallbackHidden: {
+    opacity: 0,
+  },
+  heroTitleStack: {
+    width: SCREEN_WIDTH * 0.65,
+    minHeight: 42,
+    justifyContent: 'center',
+  },
   heroTitleLogo: {
     width: SCREEN_WIDTH * 0.65, height: 90, marginBottom: 8,
     shadowColor: 'rgba(0,0,0,0.95)',
@@ -183,6 +198,9 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     shadowRadius: 4,
     shadowOffset: { width: 0, height: 1 },
     elevation: 3,
+  },
+  heroTitleLogoPending: {
+    opacity: 0,
   },
   heroDesc: { color: c.textSecondary, fontSize: 13, lineHeight: 20, marginBottom: 0 },
   heroDescFallback: {
@@ -395,6 +413,12 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     shadowRadius: 4,
     shadowOffset: { width: 0, height: 1 },
     elevation: 3,
+  },
+  heroTitleStackCentered: {
+    width: SCREEN_WIDTH * 0.65,
+    minHeight: 42,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   heroDescCentered: { color: c.textSecondary, fontSize: 13, lineHeight: 20, marginBottom: 0, textAlign: 'center' as const },
   heroDescCenteredCompact: { marginBottom: 0 },
@@ -1806,7 +1830,7 @@ export const HomeScreen = ({ navigation }: any) => {
       styles.heroCloudMask,
       !isDarkAppearance && styles.heroCloudMaskLightBleed,
     ];
-    const showFallbackText = titleLogoState === 'error' || !titleLogo;
+    const showFallbackText = titleLogoState !== 'loaded' || !titleLogo;
     const glassPosterUri = item.poster || centeredBackgroundUri || getHeroBackgroundUri(item);
     const badgeRow = (
       <View
@@ -1829,43 +1853,52 @@ export const HomeScreen = ({ navigation }: any) => {
       </Text>
     ) : null;
 
-    const titleSection = showFallbackText ? (
-      <Text
-        style={[
-          centered ? styles.heroTitleCentered : styles.heroTitle,
-          styles.heroTitleFallback,
-        ]}
-        numberOfLines={2}
-      >
-        {item.title}
-      </Text>
-    ) : titleLogo ? (
-      <Image
-        source={{ uri: titleLogo }}
-        style={[
-          centered ? styles.heroTitleLogoCentered : styles.heroTitleLogo,
-          { height: titleLogoHeight },
-        ]}
-        contentFit="contain"
-        contentPosition={centered ? 'center' : 'left'}
-        cachePolicy="memory-disk"
-        priority="high"
-        transition={0}
-        onLoad={e => {
-          const width = e.source?.width ?? 0;
-          const height = e.source?.height ?? 0;
-          if (!width || !height) return;
-          const baseWidth = SCREEN_WIDTH * 0.65;
-          const fittedHeight = Math.min(84, Math.max(42, Math.round(baseWidth * (height / width))));
-          const key = `${item.type}_${item.id}`;
-          setHeroLogoStates(prev => (prev[key] === 'loaded' ? prev : { ...prev, [key]: 'loaded' }));
-          setHeroLogoHeights(prev => (prev[key] === fittedHeight ? prev : { ...prev, [key]: fittedHeight }));
-        }}
-        onError={() => {
-          const key = `${item.type}_${item.id}`;
-          setHeroLogoStates(prev => (prev[key] === 'error' ? prev : { ...prev, [key]: 'error' }));
-        }}
-      />
+    const titleSection = titleLogo ? (
+      <View style={centered ? styles.heroTitleStackCentered : styles.heroTitleStack}>
+        <Text
+          style={[
+            centered ? styles.heroTitleCentered : styles.heroTitle,
+            styles.heroTitleFallback,
+            styles.heroTitleFallbackOverlay,
+            titleLogoState === 'loaded' && styles.heroTitleFallbackHidden,
+          ]}
+          numberOfLines={2}
+        >
+          {item.title}
+        </Text>
+        <Image
+          source={{ uri: titleLogo }}
+          style={[
+            centered ? styles.heroTitleLogoCentered : styles.heroTitleLogo,
+            { height: titleLogoHeight },
+            titleLogoState !== 'loaded' && styles.heroTitleLogoPending,
+          ]}
+          contentFit="contain"
+          contentPosition={centered ? 'center' : 'left'}
+          cachePolicy="memory-disk"
+          priority="high"
+          transition={0}
+          onLoad={e => {
+            const width = e.source?.width ?? 0;
+            const height = e.source?.height ?? 0;
+            const key = `${item.type}_${item.id}`;
+            if (width > 0 && height > 0) {
+              const baseWidth = SCREEN_WIDTH * 0.65;
+              const fittedHeight = Math.min(84, Math.max(42, Math.round(baseWidth * (height / width))));
+              setHeroLogoHeights(prev => (prev[key] === fittedHeight ? prev : { ...prev, [key]: fittedHeight }));
+            }
+            setHeroLogoStates(prev => (prev[key] === 'loaded' ? prev : { ...prev, [key]: 'loaded' }));
+          }}
+          onLoadEnd={() => {
+            const key = `${item.type}_${item.id}`;
+            setHeroLogoStates(prev => (prev[key] === 'loading' ? { ...prev, [key]: 'loaded' } : prev));
+          }}
+          onError={() => {
+            const key = `${item.type}_${item.id}`;
+            setHeroLogoStates(prev => (prev[key] === 'error' ? prev : { ...prev, [key]: 'error' }));
+          }}
+        />
+      </View>
     ) : (
       <Text
         style={[

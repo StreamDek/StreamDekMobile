@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef } from 'react';
-import { Animated, Easing, StyleProp, StyleSheet, TouchableOpacity, View, ViewStyle } from 'react-native';
+import { Animated, Easing, ScrollView, StyleProp, StyleSheet, TouchableOpacity, View, ViewStyle } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
@@ -24,6 +24,10 @@ interface FadeInViewProps {
 }
 
 const AnimatedGradient = Animated.createAnimatedComponent(LinearGradient);
+const CLASSIC_HERO_HEIGHT = 465;
+const CENTERED_HERO_HEIGHT = 585;
+const CLASSIC_CONTENT_TOP = CLASSIC_HERO_HEIGHT - 40;
+const CENTERED_CONTENT_TOP = CENTERED_HERO_HEIGHT - 56;
 
 function parseColor(color: string) {
   const rgba = color.match(/rgba?\(([^)]+)\)/i);
@@ -172,6 +176,29 @@ interface MediaDetailSkeletonProps {
   glass?: boolean;
 }
 
+function SkeletonTabRail() {
+  return (
+    <View style={{ flexDirection: 'row', gap: 8 }}>
+      <SkeletonBlock style={{ height: 34, width: 68, borderRadius: 20 }} />
+      <SkeletonBlock style={{ height: 34, width: 72, borderRadius: 20 }} />
+      <SkeletonBlock style={{ height: 34, width: 76, borderRadius: 20 }} />
+    </View>
+  );
+}
+
+function SkeletonBodyCopy() {
+  return (
+    <View style={{ gap: 10 }}>
+      <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '100%' }} />
+      <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '94%' }} />
+      <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '88%' }} />
+      <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '72%' }} />
+      <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '90%', marginTop: 8 }} />
+      <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '60%' }} />
+    </View>
+  );
+}
+
 export function MediaDetailSkeleton({ onBack, insetTop = 0, centered = false, glass = false }: MediaDetailSkeletonProps) {
   const { theme: { colors } } = useTheme();
 
@@ -202,25 +229,48 @@ export function MediaDetailSkeleton({ onBack, insetTop = 0, centered = false, gl
             <Ionicons name="chevron-back" size={22} color="#fff" />
           </TouchableOpacity>
         )}
-        <View style={{ paddingTop: insetTop + 72, paddingHorizontal: 20 }}>
-          <SkeletonBlock style={{ width: '100%', aspectRatio: 16 / 10, borderRadius: 26, borderColor: 'rgba(255,255,255,0.18)' }} />
-          <View style={{ paddingTop: 18, gap: 12 }}>
-            <SkeletonBlock style={{ width: '72%', height: 22, borderRadius: 8 }} />
-            <SkeletonBlock style={{ width: 74, height: 14, borderRadius: 999 }} />
-            <SkeletonBlock style={{ width: '92%', height: 13, borderRadius: 999 }} />
-            <SkeletonBlock style={{ width: '68%', height: 13, borderRadius: 999 }} />
-            <SkeletonBlock style={{ width: '100%', height: 50, borderRadius: 25, marginTop: 8 }} />
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ flexGrow: 1, paddingBottom: 44 }}
+        >
+          <View style={{ paddingTop: insetTop + 24, paddingHorizontal: 20, paddingBottom: 18, alignItems: 'center' }}>
+            <SkeletonBlock style={{ width: '62%', height: 28, borderRadius: 9, marginBottom: 18 }} />
+            <SkeletonBlock style={{ width: '100%', aspectRatio: 16 / 10, borderRadius: 26, borderColor: 'rgba(255,255,255,0.18)' }} />
           </View>
-          <View style={{ marginTop: 30, gap: 10 }}>
-            <SkeletonBlock style={{ width: 136, height: 18, borderRadius: 8 }} />
-            {[0, 1, 2].map(index => (
-              <SkeletonBlock
-                key={`glass-stream-${index}`}
-                style={{ width: '100%', height: 72, borderRadius: 16, borderColor: 'rgba(255,255,255,0.14)' }}
-              />
-            ))}
+
+          <View style={{ paddingHorizontal: 14, paddingBottom: 12, alignItems: 'center' }}>
+            <SkeletonBlock style={{ width: '58%', height: 78, borderRadius: 16, marginBottom: 10 }} />
+            <View style={{ flexDirection: 'row', gap: 8, justifyContent: 'center', width: '100%', marginBottom: 16 }}>
+              <SkeletonBlock style={{ height: 24, width: 56, borderRadius: 20 }} />
+              <SkeletonBlock style={{ height: 24, width: 44, borderRadius: 20 }} />
+              <SkeletonBlock style={{ height: 24, width: 52, borderRadius: 20 }} />
+            </View>
+            <View style={{ width: '100%', paddingHorizontal: 20, gap: 10, marginBottom: 16 }}>
+              <SkeletonBlock style={{ height: 14, borderRadius: 999, width: '100%' }} />
+              <SkeletonBlock style={{ height: 14, borderRadius: 999, width: '92%' }} />
+              <SkeletonBlock style={{ height: 14, borderRadius: 999, width: '74%' }} />
+            </View>
+            <View style={{ width: '100%', paddingHorizontal: 18, marginBottom: 8 }}>
+              <SkeletonBlock style={{ width: '100%', height: 52, borderRadius: 25 }} />
+            </View>
           </View>
-        </View>
+
+          <View style={{ paddingHorizontal: 14 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 8, marginBottom: 16 }}>
+              <SkeletonBlock style={{ height: 36, width: 74, borderRadius: 20 }} />
+              <SkeletonBlock style={{ height: 36, width: 74, borderRadius: 20 }} />
+            </View>
+            <View style={{ borderRadius: 24, padding: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', backgroundColor: withAlpha(colors.inputBg, 0.36) }}>
+              <SkeletonBlock style={{ width: 148, height: 18, borderRadius: 8, marginBottom: 12 }} />
+              {[0, 1, 2].map(index => (
+                <SkeletonBlock
+                  key={`glass-stream-${index}`}
+                  style={{ width: '100%', height: 72, borderRadius: 16, borderColor: 'rgba(255,255,255,0.14)', marginBottom: index === 2 ? 0 : 10 }}
+                />
+              ))}
+            </View>
+          </View>
+        </ScrollView>
       </View>
     );
   }
@@ -228,9 +278,8 @@ export function MediaDetailSkeleton({ onBack, insetTop = 0, centered = false, gl
   if (centered) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
-        {/* Full-width backdrop */}
-        <View style={{ height: 420, position: 'relative' }}>
-          <SkeletonBlock style={{ width: '100%', height: 420, borderRadius: 0, borderWidth: 0 }} />
+        <View style={{ position: 'absolute', top: 0, left: 0, right: 0, height: CENTERED_HERO_HEIGHT }}>
+          <SkeletonBlock style={{ width: '100%', height: CENTERED_HERO_HEIGHT, borderRadius: 0, borderWidth: 0 }} />
           <LinearGradient
             colors={['transparent', colors.bg]}
             locations={[0.35, 1]}
@@ -251,55 +300,47 @@ export function MediaDetailSkeleton({ onBack, insetTop = 0, centered = false, gl
               <Ionicons name="chevron-back" size={22} color="#fff" />
             </TouchableOpacity>
           )}
-          {/* Centered content overlaid on backdrop */}
-          <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, alignItems: 'center', paddingHorizontal: 32, paddingBottom: 24, gap: 14 }}>
-            {/* Title */}
-            <SkeletonBlock style={{ height: 20, borderRadius: 6, width: '70%' }} />
-            {/* Pills row */}
-            <View style={{ flexDirection: 'row', gap: 8, justifyContent: 'center' }}>
-              <SkeletonBlock style={{ height: 26, width: 56, borderRadius: 20 }} />
-              <SkeletonBlock style={{ height: 26, width: 44, borderRadius: 20 }} />
-              <SkeletonBlock style={{ height: 26, width: 50, borderRadius: 20 }} />
+        </View>
+
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ flexGrow: 1, paddingTop: CENTERED_CONTENT_TOP, paddingBottom: 44 }}
+        >
+          <View style={{ paddingHorizontal: 14 }}>
+            <View style={{ alignItems: 'center', marginTop: -150, paddingTop: 8, paddingBottom: 8 }}>
+              <SkeletonBlock style={{ width: '72%', height: 80, borderRadius: 18, marginBottom: 8 }} />
+              <View style={{ flexDirection: 'row', gap: 8, justifyContent: 'center', marginBottom: 14 }}>
+                <SkeletonBlock style={{ height: 24, width: 56, borderRadius: 20 }} />
+                <SkeletonBlock style={{ height: 24, width: 44, borderRadius: 20 }} />
+                <SkeletonBlock style={{ height: 24, width: 50, borderRadius: 20 }} />
+              </View>
+              <View style={{ width: '100%', paddingHorizontal: 14, gap: 10, marginBottom: 16 }}>
+                <SkeletonBlock style={{ width: '100%', height: 52, borderRadius: 25 }} />
+                <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 8 }}>
+                  <SkeletonBlock style={{ height: 34, width: 72, borderRadius: 20 }} />
+                  <SkeletonBlock style={{ height: 34, width: 72, borderRadius: 20 }} />
+                  <SkeletonBlock style={{ height: 34, width: 72, borderRadius: 20 }} />
+                </View>
+              </View>
+              <View style={{ marginBottom: 14 }}>
+                <SkeletonTabRail />
+              </View>
             </View>
-            {/* Full-width play button */}
-            <SkeletonBlock style={{ height: 46, borderRadius: 24, width: '100%' }} />
-            {/* Icon row */}
-            <View style={{ flexDirection: 'row', gap: 10, justifyContent: 'center' }}>
-              <SkeletonBlock style={{ height: 38, width: 70, borderRadius: 20 }} />
-              <SkeletonBlock style={{ height: 38, width: 44, borderRadius: 20 }} />
-              <SkeletonBlock style={{ height: 38, width: 44, borderRadius: 20 }} />
-            </View>
+
+            <SkeletonBodyCopy />
           </View>
-        </View>
-
-        {/* Tabs */}
-        <View style={{ flexDirection: 'row', paddingHorizontal: 20, gap: 8, marginBottom: 20, marginTop: 8 }}>
-          <SkeletonBlock style={{ height: 34, width: 64, borderRadius: 20 }} />
-          <SkeletonBlock style={{ height: 34, width: 64, borderRadius: 20 }} />
-          <SkeletonBlock style={{ height: 34, width: 64, borderRadius: 20 }} />
-        </View>
-
-        {/* Content lines */}
-        <View style={{ paddingHorizontal: 20, gap: 10 }}>
-          <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '100%' }} />
-          <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '94%' }} />
-          <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '88%' }} />
-          <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '72%' }} />
-          <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '90%', marginTop: 8 }} />
-          <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '60%' }} />
-        </View>
+        </ScrollView>
       </View>
     );
   }
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      {/* Backdrop */}
-      <View style={{ height: 260, position: 'relative' }}>
-        <SkeletonBlock style={{ width: '100%', height: 260, borderRadius: 0, borderWidth: 0 }} />
+      <View style={{ position: 'absolute', top: 0, left: 0, right: 0, height: CLASSIC_HERO_HEIGHT }}>
+        <SkeletonBlock style={{ width: '100%', height: CLASSIC_HERO_HEIGHT, borderRadius: 0, borderWidth: 0 }} />
         <LinearGradient
           colors={['transparent', colors.bg]}
-          locations={[0.2, 1]}
+          locations={[0.35, 1]}
           style={StyleSheet.absoluteFillObject}
           pointerEvents="none"
         />
@@ -319,49 +360,37 @@ export function MediaDetailSkeleton({ onBack, insetTop = 0, centered = false, gl
         )}
       </View>
 
-      {/* Poster + meta row */}
-      <View style={{ flexDirection: 'row', padding: 20, paddingTop: 12, marginTop: -50, gap: 16 }}>
-        <SkeletonBlock style={{ width: 100, height: 150, borderRadius: 12 }} />
-        <View style={{ flex: 1, paddingTop: 60, gap: 10 }}>
-          {/* Title */}
-          <SkeletonBlock style={{ height: 22, borderRadius: 6, width: '80%' }} />
-          {/* Tagline */}
-          <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '60%' }} />
-          {/* Pills */}
-          <View style={{ flexDirection: 'row', gap: 8, marginTop: 2 }}>
-            <SkeletonBlock style={{ height: 24, width: 52, borderRadius: 20 }} />
-            <SkeletonBlock style={{ height: 24, width: 44, borderRadius: 20 }} />
-            <SkeletonBlock style={{ height: 24, width: 44, borderRadius: 20 }} />
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ flexGrow: 1, paddingTop: CLASSIC_CONTENT_TOP, paddingBottom: 44 }}
+      >
+        <View style={{ paddingHorizontal: 20 }}>
+          <View style={{ flexDirection: 'row', paddingTop: 12, marginTop: -50, gap: 16 }}>
+            <SkeletonBlock style={{ width: 100, height: 150, borderRadius: 12 }} />
+            <View style={{ flex: 1, paddingTop: 60, gap: 10 }}>
+              <SkeletonBlock style={{ height: 58, borderRadius: 14, width: '82%' }} />
+              <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '60%' }} />
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 2 }}>
+                <SkeletonBlock style={{ height: 24, width: 52, borderRadius: 20 }} />
+                <SkeletonBlock style={{ height: 24, width: 44, borderRadius: 20 }} />
+                <SkeletonBlock style={{ height: 24, width: 44, borderRadius: 20 }} />
+              </View>
+            </View>
           </View>
+
+          <View style={{ flexDirection: 'row', gap: 10, marginBottom: 24, marginTop: 18 }}>
+            <SkeletonBlock style={{ flex: 1, height: 52, borderRadius: 14 }} />
+            <SkeletonBlock style={{ width: 52, height: 52, borderRadius: 14 }} />
+            <SkeletonBlock style={{ width: 52, height: 52, borderRadius: 14 }} />
+          </View>
+
+          <View style={{ marginBottom: 20 }}>
+            <SkeletonTabRail />
+          </View>
+
+          <SkeletonBodyCopy />
         </View>
-      </View>
-
-      {/* Action buttons */}
-      <View style={{ flexDirection: 'row', paddingHorizontal: 20, gap: 10, marginBottom: 24 }}>
-        <SkeletonBlock style={{ flex: 1, height: 52, borderRadius: 14 }} />
-        <SkeletonBlock style={{ width: 52, height: 52, borderRadius: 14 }} />
-        <SkeletonBlock style={{ width: 52, height: 52, borderRadius: 14 }} />
-      </View>
-
-      {/* Tabs */}
-      <View style={{ flexDirection: 'row', paddingHorizontal: 20, gap: 8, marginBottom: 20 }}>
-        <SkeletonBlock style={{ height: 34, width: 64, borderRadius: 20 }} />
-        <SkeletonBlock style={{ height: 34, width: 64, borderRadius: 20 }} />
-        <SkeletonBlock style={{ height: 34, width: 64, borderRadius: 20 }} />
-      </View>
-
-      {/* Content lines */}
-      <View style={{ paddingHorizontal: 20, gap: 10 }}>
-        <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '100%' }} />
-        <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '94%' }} />
-        <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '88%' }} />
-        <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '72%' }} />
-        <View style={{ marginTop: 8 }}>
-          <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '100%' }} />
-        </View>
-        <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '90%' }} />
-        <SkeletonBlock style={{ height: 13, borderRadius: 6, width: '60%' }} />
-      </View>
+      </ScrollView>
     </View>
   );
 }

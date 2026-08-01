@@ -30,38 +30,22 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Validate release version
+      - name: Validate release tag
         id: version
         shell: bash
-        env:
-          ANDROID_PACKAGE_JSON: ${{ vars.ANDROID_PACKAGE_JSON }}
         run: |
           set -Eeuo pipefail
 
           tag_name="${GITHUB_REF_NAME}"
           version_name="${tag_name#v}"
-          package_json="${ANDROID_PACKAGE_JSON:-package.json}"
-
-          if [ ! -f "$package_json" ]; then
-            echo "Package version file not found: $package_json"
+          if [ -z "$version_name" ] || [ "$version_name" = "$tag_name" ]; then
+            echo "Release tag must use the vX.Y.Z format."
             exit 1
           fi
-
-          package_version="$(node -e "const pkg=require('./${package_json}'); if (!pkg.version) process.exit(1); process.stdout.write(pkg.version);")"
-
-          if [ "$package_version" != "$version_name" ]; then
-            echo "Release tag $tag_name does not match $package_json version $package_version."
-            echo "Update package.json to $version_name or push a matching tag."
+          if [[ ! "$version_name" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must use a semantic version like v1.2.3."
             exit 1
           fi
-
-          package_dir="$(dirname "$package_json")"
-          node "$package_dir/scripts/validate-version.js" "$version_name"
 
           echo "version_name=$version_name" >> "$GITHUB_OUTPUT"
 
@@ -97,27 +81,16 @@ jobs:
         env:
           STREAMDEK_API_URL_VAR: ${{ vars.STREAMDEK_API_URL }}
           STREAMDEK_API_URL_SECRET: ${{ secrets.STREAMDEK_API_URL }}
-          EXPO_PUBLIC_API_BASE_URL_VAR: ${{ vars.EXPO_PUBLIC_API_BASE_URL }}
-          EXPO_PUBLIC_API_BASE_URL_SECRET: ${{ secrets.EXPO_PUBLIC_API_BASE_URL }}
-          EXPO_PUBLIC_APP_ENV: production
         run: |
           set -Eeuo pipefail
 
-          api_url="${STREAMDEK_API_URL_VAR:-${STREAMDEK_API_URL_SECRET:-${EXPO_PUBLIC_API_BASE_URL_VAR:-${EXPO_PUBLIC_API_BASE_URL_SECRET:-}}}}"
 
           if [ -z "$api_url" ]; then
             echo "STREAMDEK_API_URL repository variable or secret is required."
             exit 1
           fi
 
-          {
-            printf 'STREAMDEK_API_URL=%s\n' "$api_url"
-            printf 'EXPO_PUBLIC_API_BASE_URL=%s\n' "$api_url"
-            printf 'EXPO_PUBLIC_APP_ENV=%s\n' "$EXPO_PUBLIC_APP_ENV"
-          } > .env
-
-      - name: Install JavaScript dependencies
-        run: npm install
+          printf 'STREAMDEK_API_URL=%s\n' "$api_url" > .env
 
       - name: Decode Android keystore
         shell: bash
@@ -204,72 +177,3 @@ jobs:
           files: ${{ steps.apk.outputs.apk_path }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-
-      - name: Read generated release notes
-        id: release_meta
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -Eeuo pipefail
-          gh release view "$GITHUB_REF_NAME" --json body --jq '.body // ""' > dist/release-notes.txt
-          published_at="$(gh release view "$GITHUB_REF_NAME" --json publishedAt --jq '.publishedAt // ""')"
-          echo "notes_path=dist/release-notes.txt" >> "$GITHUB_OUTPUT"
-          echo "published_at=$published_at" >> "$GITHUB_OUTPUT"
-
-      - name: Generate update manifest asset
-        id: manifest
-        shell: bash
-        env:
-          UPDATE_PLATFORM: android-mobile
-          UPDATE_PACKAGE_NAME: com.anonymous.streamdekmobile
-          UPDATE_VERSION_CODE: ${{ github.run_number }}
-          UPDATE_VERSION_NAME: ${{ steps.version.outputs.version_name }}
-          UPDATE_ASSET_NAME: streamdek-${{ github.ref_name }}.apk
-          UPDATE_APK_PATH: ${{ steps.apk.outputs.apk_path }}
-          UPDATE_APK_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/streamdek-${{ github.ref_name }}.apk
-          UPDATE_MANIFEST_OUTPUT_PATH: dist/latest.json
-          UPDATE_REQUIRED: "false"
-          UPDATE_RELEASE_NOTES_FILE: ${{ steps.release_meta.outputs.notes_path }}
-          UPDATE_PUBLISHED_AT: ${{ steps.release_meta.outputs.published_at }}
-        run: |
-          set -Eeuo pipefail
-          node ./scripts/generate-update-manifest.js
-          echo "manifest_path=dist/latest.json" >> "$GITHUB_OUTPUT"
-
-      - name: Upload update manifest artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: streamdek-${{ github.ref_name }}-update-manifest
-          path: ${{ steps.manifest.outputs.manifest_path }}
-          if-no-files-found: error
-
-      - name: Prepare remote manifest directory
-        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262
-        env:
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT || 22 }}
-          envs: DEPLOY_PATH
-          script_stop: true
-          script: |
-            set -Eeuo pipefail
-            if [ -z "${DEPLOY_PATH:-}" ]; then
-              echo "DEPLOY_PATH secret is required."
-              exit 1
-            fi
-            mkdir -p "$DEPLOY_PATH/release-manifests/android-mobile"
-
-      - name: Upload update manifest to VPS
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT || 22 }}
-          source: ${{ steps.manifest.outputs.manifest_path }}
-          target: ${{ secrets.DEPLOY_PATH }}/release-manifests/android-mobile
-          strip_components: 1

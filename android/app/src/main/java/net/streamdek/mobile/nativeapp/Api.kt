@@ -1,0 +1,2258 @@
+package net.streamdek.mobile.nativeapp
+
+import android.content.Context
+import android.content.SharedPreferences
+import net.streamdek.mobile.BuildConfig
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
+import java.net.URI
+import java.security.MessageDigest
+import java.net.URLEncoder
+import java.time.Instant
+import java.util.UUID
+import java.util.concurrent.TimeUnit
+
+private const val SESSION_PREFS = "streamdek_native_session"
+private const val SESSION_TOKEN_KEY = "token"
+private const val SESSION_USER_JSON_KEY = "user_json"
+private const val PROFILE_PREFS = "streamdek_native_profiles"
+private const val GUEST_PROFILE_PREFS = "streamdek_native_guest_profiles"
+private const val WATCHLIST_PREFS = "streamdek_native_watchlist"
+private const val CLIENT_IDENTITY_PREFS = "streamdek_native_client_identity"
+private const val CLIENT_DEVICE_ID_KEY = "device_id"
+
+private data class ClientIdentity(
+  val deviceId: String,
+  val sessionId: String = UUID.randomUUID().toString(),
+)
+
+private class ClientIdentityStore(context: Context) {
+  private val prefs = context.getSharedPreferences(CLIENT_IDENTITY_PREFS, Context.MODE_PRIVATE)
+
+  fun load(): ClientIdentity {
+    val existing = prefs.getString(CLIENT_DEVICE_ID_KEY, null)?.takeIf(String::isNotBlank)
+    val deviceId = existing ?: UUID.randomUUID().toString().also {
+      prefs.edit().putString(CLIENT_DEVICE_ID_KEY, it).apply()
+    }
+    return ClientIdentity(deviceId)
+  }
+}
+
+class SessionStore(context: Context) {
+  private val prefs: SharedPreferences =
+    context.getSharedPreferences(SESSION_PREFS, Context.MODE_PRIVATE)
+
+  fun load(): AuthSession? {
+    val token = prefs.getString(SESSION_TOKEN_KEY, null) ?: return null
+    val userJson = prefs.getString(SESSION_USER_JSON_KEY, null) ?: return null
+    return runCatching {
+      AuthSession(token = token, user = parseSessionUser(JSONObject(userJson), token))
+    }.getOrNull()
+  }
+
+  fun save(session: AuthSession) {
+    prefs.edit()
+      .putString(SESSION_TOKEN_KEY, session.token)
+      .putString(SESSION_USER_JSON_KEY, serializeSessionUser(session.user).toString())
+      .apply()
+  }
+
+  fun clear() {
+    prefs.edit().clear().apply()
+  }
+}
+
+class ProfileSelectionStore(context: Context) {
+  private val prefs = context.getSharedPreferences(PROFILE_PREFS, Context.MODE_PRIVATE)
+
+  fun save(userId: String, profileId: String?) {
+    if (profileId.isNullOrBlank()) {
+      prefs.edit().remove(key(userId)).apply()
+    } else {
+      prefs.edit().putString(key(userId), profileId).apply()
+    }
+  }
+
+  fun load(userId: String): String? = prefs.getString(key(userId), null)
+
+  private fun key(userId: String): String = "streamdek_active_profile_$userId"
+}
+
+class GuestProfileStore(context: Context) {
+  private val prefs = context.getSharedPreferences(GUEST_PROFILE_PREFS, Context.MODE_PRIVATE)
+
+  fun load(): List<StreamProfile> {
+    val raw = prefs.getString("profiles", null) ?: return emptyList()
+    return runCatching {
+      val source = JSONArray(raw)
+      buildList {
+        for (index in 0 until source.length()) {
+          val profile = source.optJSONObject(index) ?: continue
+          val id = profile.optString("id")
+          val name = profile.optString("name")
+          if (id.isBlank() || name.isBlank()) continue
+          add(StreamProfile(id, "guest", name, profile.optInt("avatarIndex").coerceIn(0, 11), false, profile.optBoolean("isDefault"), null, null))
+        }
+      }
+    }.getOrDefault(emptyList())
+  }
+
+  fun save(profiles: List<StreamProfile>) {
+    val array = JSONArray()
+    profiles.forEach { profile ->
+      array.put(JSONObject().put("id", profile.id).put("name", profile.name).put("avatarIndex", profile.avatarIndex).put("isDefault", profile.isDefault))
+    }
+    prefs.edit().putString("profiles", array.toString()).apply()
+  }
+}
+
+class WatchlistStore(context: Context) {
+  private val prefs = context.getSharedPreferences(WATCHLIST_PREFS, Context.MODE_PRIVATE)
+
+  fun load(ownerKey: String): List<MediaItem> {
+    val raw = prefs.getString(ownerKey, null) ?: return emptyList()
+    return runCatching {
+      val source = JSONArray(raw)
+      buildList {
+        for (index in 0 until source.length()) {
+          val item = source.optJSONObject(index) ?: continue
+          add(parseMediaItem(item))
+        }
+      }
+    }.getOrDefault(emptyList())
+  }
+
+  fun save(ownerKey: String, items: List<MediaItem>) {
+    val array = JSONArray()
+    items.forEach { item ->
+      array.put(
+        JSONObject()
+          .put("id", item.id)
+          .put("tmdbId", item.id.toIntOrNull())
+          .put("type", item.type)
+          .put("title", item.title)
+          .put("year", item.year)
+          .put("poster", item.poster)
+          .put("backdrop", item.backdrop)
+          .put("rating", item.rating)
+          .put("description", item.description)
+          .put("genres", JSONArray(item.genres))
+          .put("addedAt", item.addedAt)
+          .put("updatedAt", item.updatedAt),
+      )
+    }
+    prefs.edit().putString(ownerKey, array.toString()).apply()
+  }
+
+  fun clear(ownerKey: String) {
+    prefs.edit().remove(ownerKey).apply()
+  }
+}
+
+data class TraktScrobblePayload(
+  val mediaId: String,
+  val mediaType: String,
+  val title: String,
+  val year: Int?,
+  val progress: Double,
+  val seasonNumber: Int? = null,
+  val episodeNumber: Int? = null,
+  val episodeTitle: String? = null,
+)
+
+data class DiscoverGenre(
+  val id: Int,
+  val name: String,
+)
+
+data class DiscoverPage(
+  val items: List<MediaItem>,
+  val page: Int,
+  val totalPages: Int,
+)
+
+class StreamDekApiClient(context: Context? = null) {
+  private val clientIdentity = context?.applicationContext?.let { ClientIdentityStore(it).load() }
+  private val client = OkHttpClient()
+  private val directStreamClient = client.newBuilder()
+    .connectTimeout(15, TimeUnit.SECONDS)
+    .readTimeout(120, TimeUnit.SECONDS)
+    .callTimeout(150, TimeUnit.SECONDS)
+    .build()
+  private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+  val apiBaseUrl: String = BuildConfig.API_BASE_URL.trimEnd('/')
+
+  suspend fun restoreSession(sessionStore: SessionStore): AuthSession? {
+    val existing = sessionStore.load() ?: return null
+    val response = execute(
+      Request.Builder()
+        .url("$apiBaseUrl/auth/me")
+        .headers(authHeaders(existing, includeContentType = true))
+        .build(),
+    )
+    if (!response.ok) {
+      sessionStore.clear()
+      return null
+    }
+    val user = parseSessionUser(response.json.optJSONObject("user") ?: JSONObject(), existing.token)
+    return AuthSession(existing.token, user).also(sessionStore::save)
+  }
+
+  suspend fun login(email: String, password: String): Result<AuthSession> =
+    authPost("/auth/login", JSONObject().put("email", email).put("password", password))
+
+  suspend fun register(email: String, password: String): Result<AuthSession> =
+    authPost("/auth/register", JSONObject().put("email", email).put("password", password))
+
+  suspend fun requestPasswordReset(email: String): Result<String?> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = executeJson(
+        "/auth/password-reset/request",
+        JSONObject().put("email", email),
+      )
+      ensureOk(response, "Could not request password reset")
+      response.json.optString("devResetCode").ifBlank { null }
+    }
+  }
+
+  suspend fun confirmPasswordReset(email: String, token: String, newPassword: String): Result<Unit> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = executeJson(
+          "/auth/password-reset/confirm",
+          JSONObject()
+            .put("email", email)
+            .put("token", token)
+            .put("newPassword", newPassword),
+        )
+        ensureOk(response, "Could not reset password")
+      }
+    }
+
+  suspend fun fetchHomeSections(session: AuthSession?, addons: List<InstalledAddon> = emptyList()): Result<List<MediaSection>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val builtInRequests = listOf(
+        Triple("new_movies", "New Movies", "/tmdb/discover?type=movie&sort_by=primary_release_date.desc"),
+        Triple("new_series", "New Series", "/tmdb/discover?type=tv&sort_by=first_air_date.desc"),
+        Triple("streaming_networks", "Streaming Networks", "/tmdb/networks"),
+        Triple("trending_movies", "Trending Movies", "/tmdb/trending/movie"),
+        Triple("trending_series", "Trending Series", "/tmdb/trending/tv"),
+      )
+      val sections = supervisorScope {
+        builtInRequests.map { (id, title, path) -> async { MediaSection(id, title, fetchMediaList(path)) } }.awaitAll().toMutableList()
+      }
+      sections += fetchAddonHomeSections(session, addons)
+      sections
+    }
+  }
+
+  suspend fun search(query: String, page: Int = 1): Result<SearchPage> = withContext(Dispatchers.IO) {
+    runCatching {
+      if (query.isBlank()) {
+        SearchPage(items = emptyList(), page = 1, totalPages = 1)
+      } else {
+        val encoded = encodeQuery(query)
+        val pageParam = encodeQuery(page.toString())
+        val candidates = listOf("/tmdb/search?q=$encoded&page=$pageParam", "/tmdb/search?query=$encoded&page=$pageParam")
+        var lastError: Throwable? = null
+        for (path in candidates) {
+          val result = runCatching {
+            val response = execute(Request.Builder().url("$apiBaseUrl$path").build())
+            ensureOk(response, "Failed to search titles")
+            SearchPage(
+              items = (response.json.optJSONArray("results") ?: JSONArray()).toMediaItems(),
+              page = response.json.optInt("page").takeIf { it > 0 } ?: page,
+              totalPages = response.json.optInt("total_pages").takeIf { it > 0 } ?: 1,
+            )
+          }
+          result.onSuccess {
+            if (it.items.isNotEmpty() || it.page > 1 || it.totalPages > 1) return@runCatching it
+          }
+          result.onFailure { lastError = it }
+        }
+        lastError?.let { throw it }
+        SearchPage(items = emptyList(), page = page, totalPages = 1)
+      }
+    }
+  }
+
+  suspend fun fetchNetworkCatalog(
+    networkId: String,
+    page: Int,
+    type: String,
+    genreId: Int?,
+    year: String?,
+    sort: String,
+    query: String,
+  ): Result<DiscoverPage> = withContext(Dispatchers.IO) {
+    runCatching {
+      val params = mutableListOf("page=" + encodeQuery(page.toString()), "sort=" + encodeQuery(sort))
+      if (type != "all") params += "type=" + encodeQuery(type)
+      genreId?.let { params += "genre_id=" + encodeQuery(it.toString()) }
+      if (!year.isNullOrBlank()) params += "year=" + encodeQuery(year)
+      if (query.isNotBlank()) params += "search=" + encodeQuery(query)
+      val response = execute(Request.Builder().url(apiBaseUrl + "/tmdb/network/" + encodeQuery(networkId) + "?" + params.joinToString("&")).build())
+      ensureOk(response, "Failed to load network catalog")
+      DiscoverPage(
+        items = (response.json.optJSONArray("results") ?: JSONArray()).toMediaItems(),
+        page = response.json.optInt("page").takeIf { it > 0 } ?: page,
+        totalPages = response.json.optInt("total_pages").takeIf { it > 0 } ?: 1,
+      )
+    }
+  }
+  suspend fun fetchDiscoverGenres(type: String): Result<List<DiscoverGenre>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val normalizedType = normalizeMediaType(type)
+      val response = execute(Request.Builder().url("$apiBaseUrl/tmdb/genres/${encodeQuery(normalizedType)}").build())
+      ensureOk(response, "Failed to load genres")
+      val genres = response.json.optJSONArray("genres") ?: JSONArray()
+      buildList {
+        for (index in 0 until genres.length()) {
+          val item = genres.optJSONObject(index) ?: continue
+          val id = item.optInt("id")
+          val name = item.optString("name").trim()
+          if (id > 0 && name.isNotBlank()) add(DiscoverGenre(id = id, name = name))
+        }
+      }
+    }
+  }
+
+  suspend fun fetchDiscover(type: String, page: Int, genreId: Int?, year: String?): Result<DiscoverPage> = withContext(Dispatchers.IO) {
+    runCatching {
+      val requestedType = type.trim().lowercase()
+      val isDocumentary = requestedType == "documentary"
+      val effectiveType = if (isDocumentary) "movie" else normalizeMediaType(requestedType)
+      val params = mutableListOf(
+        "type=${encodeQuery(effectiveType)}",
+        "page=${encodeQuery(page.toString())}"
+      )
+      if (isDocumentary) {
+        params += "genre_id=99"
+      } else if (genreId != null) {
+        params += "genre_id=${encodeQuery(genreId.toString())}"
+      }
+      if (!year.isNullOrBlank()) {
+        if (year.startsWith("before:")) {
+          val beforeYear = year.removePrefix("before:").trim()
+          if (beforeYear.isNotBlank()) {
+            val cutoff = encodeQuery("${beforeYear}-12-31")
+            if (effectiveType == "tv") {
+              params += "first_air_date.lte=$cutoff"
+            } else {
+              params += "primary_release_date.lte=$cutoff"
+            }
+          }
+        } else {
+          params += "year=${encodeQuery(year)}"
+        }
+      }
+      val response = execute(Request.Builder().url("$apiBaseUrl/tmdb/discover?${params.joinToString("&")}").build())
+      ensureOk(response, "Failed to load discover titles")
+      DiscoverPage(
+        items = (response.json.optJSONArray("results") ?: JSONArray()).toMediaItems(),
+        page = response.json.optInt("page").takeIf { it > 0 } ?: page,
+        totalPages = response.json.optInt("total_pages").takeIf { it > 0 } ?: 1,
+      )
+    }
+  }
+  suspend fun resolvePluginMediaId(type: String, id: String): String = withContext(Dispatchers.IO) {
+    val candidate = id.substringBefore(":").trim()
+    if (!candidate.startsWith("tt", ignoreCase = true)) return@withContext candidate
+    resolveImdbToTmdb(candidate, normalizeMediaType(type))?.id ?: candidate
+  }
+  suspend fun fetchDetails(type: String, id: String, fallbackTitle: String? = null, fallbackYear: String? = null): Result<MediaDetail> = withContext(Dispatchers.IO) {
+    runCatching {
+      val normalizedType = normalizeMediaType(type)
+      val idCandidates = buildDetailIdCandidates(id)
+      fetchDetailsByCandidates(normalizedType, idCandidates)?.let { return@runCatching it }
+
+      idCandidates.firstNotNullOfOrNull { candidate -> resolveImdbToTmdb(candidate, normalizedType) }?.let { resolved ->
+        fetchDetailsByCandidates(resolved.type, listOf(resolved.id))?.let { return@runCatching it }
+      }
+
+      val title = fallbackTitle?.trim().orEmpty()
+      if (title.isNotBlank()) {
+        val queries = listOf(title, cleanSearchTitle(title)).filter { it.isNotBlank() }.distinctBy { it.lowercase() }
+        for (query in queries) {
+          val searchItems = fetchMediaList("/tmdb/search?query=${encodeQuery(query)}")
+          val resolved = searchItems
+            .filter { normalizeMediaType(it.type) == normalizedType }
+            .sortedWith(
+              compareByDescending<MediaItem> { it.year != null && fallbackYear != null && it.year.take(4) == fallbackYear.take(4) }
+                .thenByDescending { normalizeTitle(it.title) == normalizeTitle(title) }
+                .thenByDescending { it.title.equals(title, ignoreCase = true) }
+                .thenByDescending { it.rating ?: 0.0 },
+            )
+            .firstOrNull()
+          if (resolved != null) {
+            fetchDetailsByCandidates(resolved.type, buildDetailIdCandidates(resolved.id))?.let { return@runCatching it }
+          }
+        }
+      }
+
+      throw IllegalStateException("Failed to load details")
+    }
+  }
+
+  private fun buildDetailIdCandidates(id: String): List<String> = buildList {
+    val trimmed = id.trim()
+    if (trimmed.isBlank()) return@buildList
+    add(trimmed)
+    add(trimmed.substringAfter("tmdb:", trimmed))
+    add(trimmed.substringAfterLast(":", trimmed))
+    Regex("tt\\d+", RegexOption.IGNORE_CASE).find(trimmed)?.value?.let(::add)
+  }.filter { it.isNotBlank() }.distinct()
+
+  private fun normalizeMediaType(type: String): String = when (type.trim().lowercase()) {
+    "series", "show" -> "tv"
+    else -> type.trim().lowercase().ifBlank { "movie" }
+  }
+
+  private data class ResolvedTmdbId(val id: String, val type: String)
+
+  private fun resolveImdbToTmdb(candidate: String, hintType: String): ResolvedTmdbId? {
+    val imdbId = Regex("tt\\d+", RegexOption.IGNORE_CASE).find(candidate)?.value ?: return null
+    val hint = normalizeMediaType(hintType)
+    val typeCandidates = listOf(hint, if (hint == "tv") "series" else hint, "tv", "movie").distinct()
+    for (type in typeCandidates) {
+      val response = execute(Request.Builder().url("$apiBaseUrl/tmdb/find/imdb/${encodeQuery(imdbId)}?type=${encodeQuery(normalizeMediaType(type))}").build())
+      if (!response.ok) continue
+      val id = response.json.opt("id")?.toString().orEmpty()
+      if (id.isBlank()) continue
+      return ResolvedTmdbId(id = id, type = normalizeMediaType(response.json.optString("type").ifBlank { type }))
+    }
+    return null
+  }
+
+  private fun cleanSearchTitle(title: String): String = title
+    .replace(Regex("\\bS\\d{1,2}\\b.*$", RegexOption.IGNORE_CASE), "")
+    .replace(Regex("\\s*\\([^)]*\\)"), "")
+    .replace(Regex("\\s*\\|.*$"), "")
+    .trim()
+
+  private fun normalizeTitle(title: String): String = cleanSearchTitle(title)
+    .lowercase()
+    .replace(Regex("[^a-z0-9]+"), " ")
+    .trim()
+
+  private fun fetchDetailsByCandidates(type: String, idCandidates: List<String>): MediaDetail? {
+    val normalizedType = normalizeMediaType(type)
+    val typeCandidates = listOf(normalizedType, if (normalizedType == "tv") "series" else normalizedType).distinct()
+    for (candidateType in typeCandidates) {
+      for (candidateId in idCandidates) {
+        val response = execute(Request.Builder().url("$apiBaseUrl/tmdb/details/$candidateType/${encodeQuery(candidateId)}").build())
+        if (response.ok) return parseMediaDetail(response.json)
+      }
+    }
+    return null
+  }
+
+  suspend fun fetchFusionBadgeSource(url: String): Result<JSONObject> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(Request.Builder().url(url).build())
+      ensureOk(response, "Failed to load Fusion badge source")
+      response.json
+    }
+  }
+
+  suspend fun fetchMdblistRatings(type: String, tmdbId: String, imdbId: String?, apiKey: String, providers: List<String> = listOf("imdb", "tmdb", "tomatoes", "metacritic", "trakt", "letterboxd", "audience")): Result<List<ExternalRating>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val mediaType = if (type == "tv" || type == "series") "show" else "movie"
+      val normalizedImdbId = imdbId?.let { Regex("tt\\d+", RegexOption.IGNORE_CASE).find(it)?.value }
+      val mergedRatings = linkedMapOf<String, ExternalRating>()
+      if (!normalizedImdbId.isNullOrBlank()) {
+        val selectedProviders = providers.map { it.trim().lowercase() }.filter { it.isNotBlank() }.distinct()
+        selectedProviders.mapNotNull { provider ->
+          val payload = JSONObject().put("ids", JSONArray().put(normalizedImdbId)).put("provider", "imdb")
+          val response = execute(
+            Request.Builder()
+              .url("https://api.mdblist.com/rating/$mediaType/$provider?apikey=${encodeQuery(apiKey)}")
+              .post(payload.toString().toRequestBody(jsonMediaType))
+              .addHeader("Accept", "application/json")
+              .build(),
+          )
+          if (!response.ok) return@mapNotNull null
+          val rating = parseMdblistProviderRating(response.json, allowPercent = providerAllowsPercent(provider)) ?: return@mapNotNull null
+          ExternalRating(provider = normalizeMdblistProviderId(provider), rating = rating)
+        }.forEach { rating ->
+          mergedRatings.putIfAbsent(rating.provider.lowercase(), rating)
+        }
+      }
+
+      val candidates = buildList {
+        if (tmdbId.isNotBlank()) add("https://api.mdblist.com/tmdb/$mediaType/${encodeQuery(tmdbId)}?apikey=${encodeQuery(apiKey)}")
+        if (!imdbId.isNullOrBlank()) add("https://api.mdblist.com/imdb/$mediaType/${encodeQuery(imdbId)}?apikey=${encodeQuery(apiKey)}")
+      }
+      for (url in candidates) {
+        val response = execute(Request.Builder().url(url).build())
+        if (response.ok) {
+          val ratings = parseExternalRatings(response.json)
+          ratings.forEach { rating ->
+            mergedRatings.putIfAbsent(normalizeMdblistProviderId(rating.provider).lowercase(), rating)
+          }
+        }
+      }
+      mergedRatings.values.toList()
+    }
+  }
+
+  suspend fun fetchTraktComments(session: AuthSession?, type: String, tmdbId: String, imdbId: String?): Result<List<TraktComment>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val mediaType = if (type == "tv" || type == "series") "shows" else "movies"
+      val id = imdbId?.takeIf { it.isNotBlank() } ?: tmdbId
+      val candidates = listOf(
+        "$apiBaseUrl/trakt/$mediaType/${encodeQuery(id)}/comments",
+        "$apiBaseUrl/trakt/comments/$type/${encodeQuery(tmdbId)}",
+        "$apiBaseUrl/trakt/comments?type=${encodeQuery(type)}&tmdbId=${encodeQuery(tmdbId)}",
+      )
+      for (url in candidates) {
+        val response = execute(Request.Builder().url(url).headers(authHeaders(session, includeContentType = false)).build())
+        if (response.ok) {
+          val comments = parseTraktComments(response.json)
+          if (comments.isNotEmpty()) return@runCatching comments
+        }
+      }
+      emptyList()
+    }
+  }
+
+  suspend fun fetchPerson(personId: String): Result<PersonDetail> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(Request.Builder().url("$apiBaseUrl/tmdb/person/$personId").build())
+      ensureOk(response, "Failed to load cast details")
+      parsePersonDetail(response.json)
+    }
+  }
+  suspend fun fetchSeason(tvId: String, seasonNumber: Int): Result<List<EpisodeItem>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(Request.Builder().url("$apiBaseUrl/tmdb/season/$tvId/$seasonNumber").build())
+      ensureOk(response, "Failed to load season")
+      val episodes = response.json.optJSONArray("episodes") ?: JSONArray()
+      buildList {
+        for (index in 0 until episodes.length()) {
+          add(parseEpisode(episodes.optJSONObject(index) ?: JSONObject(), fallbackSeasonNumber = seasonNumber))
+        }
+      }
+    }
+  }
+
+  suspend fun fetchProfiles(session: AuthSession): Result<List<StreamProfile>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(
+        Request.Builder()
+          .url("$apiBaseUrl/profiles/")
+          .headers(authHeaders(session))
+          .build(),
+      )
+      ensureOk(response, "Failed to load profiles")
+      val profiles = response.json.optJSONArray("profiles") ?: JSONArray()
+      buildList {
+        for (index in 0 until profiles.length()) {
+          add(parseProfile(profiles.optJSONObject(index) ?: JSONObject()))
+        }
+      }
+    }
+  }
+
+  suspend fun createProfile(session: AuthSession, name: String, avatarIndex: Int = 0): Result<StreamProfile> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = executeJson(
+          "/profiles/",
+          JSONObject().put("name", name).put("avatarIndex", avatarIndex),
+          session = session,
+        )
+        ensureOk(response, "Failed to create profile")
+        parseProfile(response.json.optJSONObject("profile") ?: JSONObject())
+      }
+    }
+
+  suspend fun updateProfile(session: AuthSession, profileId: String, name: String, avatarIndex: Int): Result<StreamProfile> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val request = Request.Builder()
+          .url("$apiBaseUrl/profiles/$profileId")
+          .patch(JSONObject().put("name", name).put("avatarIndex", avatarIndex).toString().toRequestBody(jsonMediaType))
+          .headers(authHeaders(session))
+          .build()
+        val response = execute(request)
+        ensureOk(response, "Failed to update profile")
+        parseProfile(response.json.optJSONObject("profile") ?: response.json)
+      }
+    }
+
+  suspend fun deleteProfile(session: AuthSession, profileId: String): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(
+        Request.Builder()
+          .url("$apiBaseUrl/profiles/$profileId")
+          .delete()
+          .headers(authHeaders(session))
+          .build(),
+      )
+      ensureOk(response, "Failed to delete profile")
+    }
+  }
+
+  suspend fun setDefaultProfile(session: AuthSession, profileId: String): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val request = Request.Builder()
+        .url("$apiBaseUrl/profiles/$profileId/set-default")
+        .post("{}".toRequestBody(jsonMediaType))
+        .headers(authHeaders(session))
+        .build()
+      val response = execute(request)
+      ensureOk(response, "Failed to set default profile")
+    }
+  }
+
+  suspend fun setProfilePin(session: AuthSession, profileId: String, pin: String?): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = executeJson(
+        "/profiles/$profileId/pin",
+        JSONObject().put("pin", pin),
+        session = session,
+      )
+      ensureOk(response, "Failed to update profile PIN")
+    }
+  }
+
+  suspend fun verifyProfilePin(session: AuthSession, profileId: String, pin: String): Result<Boolean> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = executeJson(
+        "/profiles/$profileId/verify-pin",
+        JSONObject().put("pin", pin),
+        session = session,
+      )
+      response.ok && response.json.optBoolean("valid")
+    }
+  }
+
+  suspend fun fetchAddons(session: AuthSession?): Result<List<InstalledAddon>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val request = Request.Builder()
+        .url("$apiBaseUrl/addons/manifests")
+        .headers(authHeaders(session, includeContentType = false))
+        .build()
+      val response = execute(request)
+      ensureOk(response, "Failed to load add-ons")
+      val addons = response.json.optJSONArray("__array")
+        ?: response.json.optJSONArray("data")
+        ?: response.json.optJSONArray("addons")
+        ?: JSONArray()
+      buildList {
+        for (index in 0 until addons.length()) {
+          val item = addons.optJSONObject(index) ?: continue
+          add(parseAddon(item))
+        }
+      }
+    }
+  }
+
+  suspend fun installAddon(session: AuthSession?, url: String): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = executeJson(
+        "/addons/install",
+        JSONObject().put("url", url),
+        session = session,
+      )
+      ensureOk(response, "Failed to install add-on")
+    }
+  }
+
+  suspend fun toggleAddon(session: AuthSession?, addonId: String, enabled: Boolean): Result<Unit> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = executeJson(
+          "/addons/toggle",
+          JSONObject().put("id", addonId).put("enabled", enabled),
+          session = session,
+        )
+        ensureOk(response, "Failed to update add-on")
+      }
+    }
+
+  suspend fun uninstallAddon(session: AuthSession?, addonId: String): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val request = Request.Builder()
+        .url("$apiBaseUrl/addons/uninstall")
+        .delete(JSONObject().put("id", addonId).toString().toRequestBody(jsonMediaType))
+        .headers(authHeaders(session))
+        .build()
+      val response = execute(request)
+      ensureOk(response, "Failed to uninstall add-on")
+    }
+  }
+
+  suspend fun reorderAddons(session: AuthSession?, orderedIds: List<String>): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = executeJson(
+        "/addons/reorder",
+        JSONObject().put("order", JSONArray(orderedIds)),
+        session = session,
+      )
+      ensureOk(response, "Failed to reorder add-ons")
+    }
+  }
+
+
+  private suspend fun fetchAddonHomeSections(session: AuthSession?, addons: List<InstalledAddon>): List<MediaSection> {
+    val enabledAddons = addons.filter { it.enabled }.sortedBy { it.position }
+    if (enabledAddons.isEmpty()) return emptyList()
+
+    val sections = mutableListOf<MediaSection>()
+    val duplicateCatalogNames = enabledAddons
+      .flatMap { addon -> addon.manifest.catalogs.map { catalog -> catalog.name.trim().lowercase() to mapHomeCatalogType(catalog.type) } }
+      .filter { (_, type) -> type != null }
+      .groupBy({ it.first }, { it.second!! })
+      .mapValues { (_, values) -> values.toSet().size > 1 }
+
+    val catalogGate = Semaphore(6)
+    val catalogResults = supervisorScope {
+      enabledAddons.flatMap { addon ->
+        addon.manifest.catalogs.mapIndexedNotNull { index, catalog ->
+          val mappedType = mapHomeCatalogType(catalog.type) ?: return@mapIndexedNotNull null
+          async {
+            val items = catalogGate.withPermit { runCatching { fetchAddonCatalog(addon.id, addon.manifest.name, catalog.type, catalog.id, catalog.name, session) }.getOrDefault(emptyList()) }
+            Triple(addon to catalog, index, mappedType to items)
+          }
+        }
+      }.awaitAll()
+    }
+    for ((addonAndCatalog, index, mappedAndItems) in catalogResults) {
+      val (addon, catalog) = addonAndCatalog
+      val (mappedType, items) = mappedAndItems
+      if (items.isEmpty()) continue
+        val title = buildAddonSectionTitle(
+          addon.manifest.name,
+          catalog.name,
+          if (duplicateCatalogNames[catalog.name.trim().lowercase()] == true) {
+            if (mappedType == "movie") "Movies" else "Series"
+          } else {
+            null
+          },
+        )
+        sections += MediaSection(
+          id = "addon:${addon.id}:${catalog.type.trim().lowercase()}:${catalog.id}:$index",
+          title = title,
+          items = items,
+        )
+    }
+    return sections
+  }
+
+  private suspend fun fetchAddonCatalog(addonId: String, addonName: String, rawType: String, catalogId: String, catalogName: String, session: AuthSession?): List<MediaItem> {
+    val request = Request.Builder()
+      .url("$apiBaseUrl/addons/${encodeQuery(addonId)}/catalog/${encodeQuery(rawType)}/${encodeQuery(catalogId)}")
+      .headers(authHeaders(session, includeContentType = false))
+      .build()
+    val response = execute(request)
+    ensureOk(response, "Failed to load add-on catalog")
+    val body = response.json
+    val items = body.optJSONArray("metas")
+      ?: body.optJSONArray("results")
+      ?: body.optJSONArray("items")
+      ?: body.optJSONArray("data")
+      ?: body.optJSONArray("__array")
+      ?: JSONArray()
+    return buildList {
+      for (index in 0 until items.length()) {
+        val item = items.optJSONObject(index) ?: continue
+        val normalizedCatalogType = rawType.trim().lowercase()
+        val mediaItem = parseMediaItem(item).copy(
+          type = when (normalizedCatalogType) {
+            "series", "show" -> "tv"
+            else -> normalizedCatalogType
+          },
+          sourceAddonId = addonId,
+          sourceAddonName = addonName,
+          sourceCatalogType = normalizedCatalogType,
+          sourceCatalogId = catalogId,
+          sourceCatalogName = catalogName,
+          directStreamUrl = parseDirectMediaUrl(item),
+          requestHeaders = parseStringMap(item.optJSONObject("headers")) + parseStringMap(item.optJSONObject("behaviorHints")?.optJSONObject("proxyHeaders")?.optJSONObject("request")),
+        )
+        if (mediaItem.id.isNotBlank()) add(mediaItem)
+      }
+    }
+  }
+
+  private fun parseDirectMediaUrl(item: JSONObject): String? {
+    val behaviorHints = item.optJSONObject("behaviorHints")
+    return sequenceOf(item.opt("url"), item.opt("externalUrl"), behaviorHints?.opt("url"), behaviorHints?.opt("externalUrl"))
+      .mapNotNull { value ->
+        when (value) {
+          is JSONObject -> value.optString("url").ifBlank { value.optString("href") }.ifBlank { null }
+          else -> value?.toString()?.takeIf { it.isNotBlank() && it != "null" }
+        }
+      }
+      .firstOrNull()
+  }
+  suspend fun fetchProfilePlugins(session: AuthSession, profileId: String): Result<String> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(Request.Builder().url("$apiBaseUrl/profiles/${encodeQuery(profileId)}/plugins").headers(authHeaders(session, includeContentType = false, profileId = profileId)).build())
+      ensureOk(response, "Failed to restore profile plugins")
+      (response.json.optJSONObject("plugins") ?: JSONObject()).toString()
+    }
+  }
+
+  suspend fun putProfilePlugins(session: AuthSession, profileId: String, pluginsJson: String): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val plugins = runCatching { JSONObject(pluginsJson) }.getOrElse { JSONObject() }
+      val request = Request.Builder()
+        .url("$apiBaseUrl/profiles/${encodeQuery(profileId)}/plugins")
+        .put(JSONObject().put("plugins", plugins).toString().toRequestBody(jsonMediaType))
+        .headers(authHeaders(session, profileId = profileId))
+        .build()
+      ensureOk(execute(request), "Failed to sync profile plugins")
+    }
+  }
+  suspend fun patchCloudPreferences(
+    session: AuthSession,
+    preferences: CloudPlaybackPreferences,
+  ): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val app = JSONObject()
+        .put("appAppearance", preferences.appAppearance)
+        .put("themePreset", preferences.themePreset)
+        .put("headerStyle", preferences.headerStyle)
+        .put("showNavLabels", preferences.showNavLabels)
+        .put("collapsibleNavigationEnabled", preferences.collapsibleNavigationEnabled)
+        .put("navigationAutoCollapseSeconds", preferences.navigationAutoCollapseSeconds)
+        .put("syncOverCellular", preferences.syncOnCellular)
+      val home = JSONObject()
+        .put("detailPageStyle", preferences.detailPageStyle)
+        .put("continueWatchingStyle", preferences.continueWatchingStyle)
+        .put("includeLiveInContinueWatching", preferences.includeLiveInContinueWatching)
+        .put("liveLandscapeCards", preferences.liveLandscapeCards)
+        .put("showHeroSynopsis", preferences.showHeroSynopsis)
+        .put("vividAmbient", preferences.vividAmbient)
+        .put("ambientTintPercent", preferences.ambientTintPercent)
+        .put("defaultAppCatalogsEnabled", preferences.defaultAppCatalogsEnabled)
+      val detail = JSONObject()
+        .put("seasonTabStyle", preferences.seasonTabStyle)
+        .put("heroTrailerAutoplay", preferences.heroTrailerAutoplay)
+        .put("heroTrailerResolution", preferences.heroTrailerResolution)
+        .put("ratingsEnabled", preferences.ratingsEnabled)
+        .put("externalRatingsEnabled", preferences.externalRatingsEnabled)
+        .put("enabledRatingProviders", preferences.enabledRatingProviders?.let(::JSONArray))
+        .put("mdblistApiKey", preferences.mdblistApiKey)
+      val playback = JSONObject()
+        .put("pictureInPictureEnabled", preferences.pictureInPictureEnabled)
+        .put("decoderMode", preferences.decoderMode)
+        .put("renderSurface", preferences.renderSurface)
+        .put("preferredQuality", preferences.preferredQuality)
+        .put("maxFileSizeGB", preferences.maxFileSizeGb)
+        .put("skipSegmentsEnabled", preferences.skipIntroEnabled == true || preferences.skipRecapEnabled == true || preferences.skipEndingEnabled == true)
+        .put("skipIntroEnabled", preferences.skipIntroEnabled)
+        .put("skipRecapEnabled", preferences.skipRecapEnabled)
+        .put("skipEndingEnabled", preferences.skipEndingEnabled)
+        .put("autoPlayNextEpisodeEnabled", preferences.autoPlayNextEpisode)
+        .put("autoplayNextEpisode", preferences.autoPlayNextEpisode)
+        .put("preferBingeGroupNextEpisode", preferences.preferBingeGroup)
+        .put("autoLoadSubtitles", preferences.autoLoadSubtitles)
+        .put("nextEpisodeThresholdMode", preferences.nextEpisodeThresholdMode)
+        .put("nextEpisodeThresholdPercent", preferences.nextEpisodeThresholdPercent)
+        .put("nextEpisodeThresholdMinutes", preferences.nextEpisodeThresholdMinutes)
+      val streams = JSONObject()
+        .put("showStreamsList", preferences.showStreamsList)
+        .put("rememberLastSource", preferences.rememberLastSource)
+        .put("blurUnwatchedEpisodes", preferences.blurUnwatchedEpisodes)
+        .put("fusionBadgesEnabled", preferences.fusionBadgesEnabled)
+        .put("showSizeBadges", preferences.showSizeBadges)
+        .put("badgePosition", preferences.badgePosition)
+        .put("fusionBadgeUrls", preferences.fusionBadgeUrls?.let(::JSONArray))
+        .put("activeFusionBadgeUrl", preferences.activeFusionBadgeUrl)
+      val updates = JSONObject().put("autoUpdateChecksEnabled", preferences.autoUpdateChecksEnabled)
+      val payload = JSONObject()
+        .put("app", app)
+        .put("home", home)
+        .put("detail", detail)
+        .put("playback", playback)
+        .put("streams", streams)
+        .put("updates", updates)
+      val request = Request.Builder()
+        .url("$apiBaseUrl/account/preferences")
+        .patch(JSONObject().put("preferences", payload).toString().toRequestBody(jsonMediaType))
+        .headers(authHeaders(session))
+        .build()
+      ensureOk(execute(request), "Failed to sync app preferences")
+    }
+  }
+
+  suspend fun fetchCloudPlaybackPreferences(session: AuthSession): Result<CloudPlaybackPreferences> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(Request.Builder().url("$apiBaseUrl/account/bootstrap").headers(authHeaders(session, includeContentType = false)).build())
+      ensureOk(response, "Failed to refresh cloud settings")
+      val preferences = response.json.optJSONObject("preferences") ?: JSONObject()
+      val app = preferences.optJSONObject("app") ?: JSONObject()
+      val home = preferences.optJSONObject("home") ?: JSONObject()
+      val detail = preferences.optJSONObject("detail") ?: JSONObject()
+      val playback = preferences.optJSONObject("playback") ?: JSONObject()
+      val streams = preferences.optJSONObject("streams") ?: JSONObject()
+      val updates = preferences.optJSONObject("updates") ?: JSONObject()
+      fun optionalBoolean(source: JSONObject, key: String): Boolean? = if (source.has(key) && !source.isNull(key)) source.optBoolean(key) else null
+      fun optionalInt(source: JSONObject, key: String): Int? = if (source.has(key) && !source.isNull(key)) source.optInt(key) else null
+      fun optionalString(source: JSONObject, key: String): String? = if (source.has(key) && !source.isNull(key)) source.optString(key).takeIf(String::isNotBlank) else null
+      fun optionalStringAllowEmpty(source: JSONObject, key: String): String? = if (source.has(key) && !source.isNull(key)) source.optString(key) else null
+      fun optionalStringList(source: JSONObject, key: String): List<String>? {
+        if (!source.has(key) || source.isNull(key)) return null
+        val values = source.optJSONArray(key) ?: return null
+        return List(values.length()) { index -> values.optString(index) }.filter(String::isNotBlank)
+      }
+      CloudPlaybackPreferences(
+        appAppearance = optionalString(app, "appAppearance"),
+        themePreset = optionalString(app, "themePreset"),
+        headerStyle = optionalString(app, "headerStyle"),
+        showNavLabels = optionalBoolean(app, "showNavLabels"),
+        collapsibleNavigationEnabled = optionalBoolean(app, "collapsibleNavigationEnabled"),
+        navigationAutoCollapseSeconds = optionalInt(app, "navigationAutoCollapseSeconds"),
+        syncOnCellular = optionalBoolean(app, "syncOverCellular"),
+        detailPageStyle = optionalString(home, "detailPageStyle"),
+        continueWatchingStyle = optionalString(home, "continueWatchingStyle"),
+        includeLiveInContinueWatching = optionalBoolean(home, "includeLiveInContinueWatching"),
+        liveLandscapeCards = optionalBoolean(home, "liveLandscapeCards"),
+        showHeroSynopsis = optionalBoolean(home, "showHeroSynopsis"),
+        vividAmbient = optionalBoolean(home, "vividAmbient"),
+        ambientTintPercent = optionalInt(home, "ambientTintPercent"),
+        defaultAppCatalogsEnabled = optionalBoolean(home, "defaultAppCatalogsEnabled"),
+        seasonTabStyle = optionalString(detail, "seasonTabStyle"),
+        heroTrailerAutoplay = optionalBoolean(detail, "heroTrailerAutoplay"),
+        heroTrailerResolution = optionalInt(detail, "heroTrailerResolution"),
+        ratingsEnabled = optionalBoolean(detail, "ratingsEnabled"),
+        externalRatingsEnabled = optionalBoolean(detail, "externalRatingsEnabled"),
+        enabledRatingProviders = optionalStringList(detail, "enabledRatingProviders"),
+        mdblistApiKey = optionalStringAllowEmpty(detail, "mdblistApiKey"),
+        pictureInPictureEnabled = optionalBoolean(playback, "pictureInPictureEnabled"),
+        decoderMode = optionalString(playback, "decoderMode"),
+        renderSurface = optionalString(playback, "renderSurface"),
+        skipIntroEnabled = optionalBoolean(playback, "skipIntroEnabled"),
+        skipRecapEnabled = optionalBoolean(playback, "skipRecapEnabled"),
+        skipEndingEnabled = optionalBoolean(playback, "skipEndingEnabled"),
+        autoPlayNextEpisode = optionalBoolean(playback, "autoPlayNextEpisodeEnabled") ?: optionalBoolean(playback, "autoplayNextEpisode"),
+        preferBingeGroup = optionalBoolean(playback, "preferBingeGroupNextEpisode"),
+        autoLoadSubtitles = optionalBoolean(playback, "autoLoadSubtitles"),
+        nextEpisodeThresholdMode = optionalString(playback, "nextEpisodeThresholdMode"),
+        nextEpisodeThresholdPercent = optionalInt(playback, "nextEpisodeThresholdPercent"),
+        nextEpisodeThresholdMinutes = optionalInt(playback, "nextEpisodeThresholdMinutes"),
+        showStreamsList = optionalBoolean(streams, "showStreamsList"),
+        rememberLastSource = optionalBoolean(streams, "rememberLastSource"),
+        blurUnwatchedEpisodes = optionalBoolean(streams, "blurUnwatchedEpisodes"),
+        fusionBadgesEnabled = optionalBoolean(streams, "fusionBadgesEnabled"),
+        showSizeBadges = optionalBoolean(streams, "showSizeBadges"),
+        preferredQuality = optionalString(playback, "preferredQuality") ?: optionalString(streams, "preferredQuality"),
+        maxFileSizeGb = optionalInt(playback, "maxFileSizeGB") ?: optionalInt(streams, "maxFileSizeGB"),
+        badgePosition = optionalString(streams, "badgePosition"),
+        fusionBadgeUrls = optionalStringList(streams, "fusionBadgeUrls"),
+        activeFusionBadgeUrl = optionalString(streams, "activeFusionBadgeUrl"),
+        autoUpdateChecksEnabled = optionalBoolean(updates, "autoUpdateChecksEnabled"),
+      )
+    }
+  }
+
+  suspend fun fetchLatestMobileUpdate(): Result<UpdateManifest> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(Request.Builder().url("$apiBaseUrl/public/updates/android-mobile/latest").header("Accept", "application/json").build())
+      ensureOk(response, "Unable to check for updates right now")
+      val json = response.json
+      val versionCode = json.optInt("versionCode")
+      val versionName = json.optString("versionName")
+      val packageName = json.optString("packageName")
+      require(json.optString("platform") == "android-mobile") { "The update service returned the wrong platform" }
+      require(versionCode > 0 && versionName.isNotBlank() && packageName == BuildConfig.APPLICATION_ID) { "The update service returned invalid app metadata" }
+      UpdateManifest(
+        versionCode = versionCode,
+        versionName = versionName,
+        apkUrl = trustedUpdateUrl(json.optString("apkUrl")),
+        releaseNotes = json.optString("releaseNotes"),
+        required = json.optBoolean("required"),
+        minSupportedVersionCode = json.optInt("minSupportedVersionCode").takeIf { json.has("minSupportedVersionCode") && it > 0 },
+        requiredReason = json.optString("requiredReason").takeIf(String::isNotBlank),
+        packageName = packageName,
+        assetName = json.optString("assetName").takeIf(String::isNotBlank),
+        fileSizeBytes = json.optLong("fileSizeBytes").takeIf { json.has("fileSizeBytes") && it > 0L },
+        checksumSha256 = json.optString("checksumSha256").trim().lowercase().takeIf(String::isNotBlank),
+      )
+    }
+  }
+
+  suspend fun downloadUpdate(release: UpdateManifest, destination: File, onProgress: (Long, Long?) -> Unit): Result<File> = withContext(Dispatchers.IO) {
+    runCatching {
+      destination.parentFile?.mkdirs()
+      client.newCall(Request.Builder().url(trustedUpdateUrl(release.apkUrl)).build()).execute().use { response ->
+        if (!response.isSuccessful) error("Update download failed with HTTP ${response.code}")
+        val body = response.body ?: error("The update download was empty")
+        val total = body.contentLength().takeIf { it > 0L } ?: release.fileSizeBytes
+        body.byteStream().use { input ->
+          FileOutputStream(destination).use { output ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            var downloaded = 0L
+            while (true) {
+              val count = input.read(buffer)
+              if (count < 0) break
+              output.write(buffer, 0, count)
+              downloaded += count
+              onProgress(downloaded, total)
+            }
+          }
+        }
+      }
+      release.checksumSha256?.let { expected ->
+        val digest = MessageDigest.getInstance("SHA-256")
+        destination.inputStream().use { input ->
+          val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+          while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            digest.update(buffer, 0, count)
+          }
+        }
+        val actual = digest.digest().joinToString("") { "%02x".format(it) }
+        require(actual.equals(expected, ignoreCase = true)) { "The downloaded update failed its integrity check" }
+      }
+      destination
+    }.onFailure { destination.delete() }
+  }
+
+  private fun trustedUpdateUrl(rawUrl: String): String {
+    require(rawUrl.isNotBlank()) { "The update service did not provide a download URL" }
+    val parsed = URI(rawUrl)
+    val allowedHosts = setOf(URI(apiBaseUrl).host.orEmpty(), "github.com", "objects.githubusercontent.com", "github-releases.githubusercontent.com")
+    require(parsed.scheme == "https" && parsed.host in allowedHosts) { "The update download URL is not trusted" }
+    return parsed.toString()
+  }
+
+  suspend fun fetchStreams(session: AuthSession?, type: String, videoId: String): Result<List<AddonStream>> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = execute(
+          Request.Builder()
+            .url("$apiBaseUrl/addons/streams/$type/${encodeQuery(videoId)}")
+            .headers(authHeaders(session, includeContentType = false))
+            .build(),
+        )
+        ensureOk(response, "Failed to load streams")
+        parseStreamsResponse(response.json)
+      }
+    }
+
+  suspend fun fetchStreamsFromAddon(session: AuthSession?, addonId: String, type: String, videoId: String): Result<List<AddonStream>> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = execute(
+          Request.Builder()
+            .url("$apiBaseUrl/addons/streams/single/${encodeQuery(addonId)}/${encodeQuery(type)}/${encodeQuery(videoId)}")
+            .headers(authHeaders(session, includeContentType = false))
+            .build(),
+        )
+        ensureOk(response, "Failed to load streams")
+        parseStreamsResponse(response.json)
+      }
+    }
+
+  suspend fun fetchFreshStreamsFromAddon(addon: InstalledAddon, type: String, videoId: String): Result<List<AddonStream>> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val manifestUrl = addon.transportUrl ?: addon.manifestUrl ?: addon.url
+          ?: throw IllegalArgumentException("Addon transport URL is unavailable")
+        val baseUrl = manifestUrl.substringBeforeLast("/manifest.json", missingDelimiterValue = manifestUrl.trimEnd('/'))
+        val streamType = type.trim().lowercase()
+        val request = Request.Builder()
+          .url("$baseUrl/stream/${encodeQuery(streamType)}/${encodeQuery(videoId)}.json?_sd=${System.currentTimeMillis()}")
+          .header("User-Agent", "Stremio/4.4.168")
+          .header("Cache-Control", "no-cache")
+          .build()
+        val response = execute(request, directStreamClient)
+        ensureOk(response, "Failed to refresh addon stream")
+        parseStreamsResponse(response.json).map { stream ->
+          stream.copy(
+            addonId = stream.addonId.ifBlank { addon.id },
+            addonName = stream.addonName.ifBlank { addon.manifest.name },
+          )
+        }
+      }
+    }
+
+  suspend fun fetchDebridAccounts(session: AuthSession): Result<List<DebridAccount>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(
+        Request.Builder()
+          .url("$apiBaseUrl/debrid/accounts")
+          .headers(authHeaders(session))
+          .build(),
+      )
+      ensureOk(response, "Failed to load debrid accounts")
+      val accounts = response.json.optJSONArray("accounts") ?: JSONArray()
+      buildList {
+        for (index in 0 until accounts.length()) {
+          add(parseDebridAccount(accounts.optJSONObject(index) ?: JSONObject()))
+        }
+      }
+    }
+  }
+
+  suspend fun addDebridAccount(session: AuthSession, provider: String, apiKey: String): Result<String?> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = executeJson(
+          "/debrid/accounts",
+          JSONObject().put("provider", provider).put("apiKey", apiKey),
+          session = session,
+        )
+        ensureOk(response, "Failed to add debrid account")
+        response.json.optString("username").ifBlank { null }
+      }
+    }
+
+  suspend fun removeDebridAccount(session: AuthSession, provider: String): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(
+        Request.Builder()
+          .url("$apiBaseUrl/debrid/accounts/$provider")
+          .delete()
+          .headers(authHeaders(session, includeContentType = false))
+          .build(),
+      )
+      ensureOk(response, "Failed to remove debrid account")
+    }
+  }
+
+  suspend fun reorderDebridAccounts(session: AuthSession, orderedProviders: List<String>): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = executeJson(
+        "/debrid/accounts/reorder",
+        JSONObject().put("order", JSONArray(orderedProviders)),
+        session = session,
+      )
+      ensureOk(response, "Failed to reorder debrid accounts")
+    }
+  }
+
+  suspend fun resolveStream(
+    session: AuthSession,
+    stream: AddonStream,
+    maxSizeBytes: Long? = null,
+  ): Result<DebridResolvedStream?> = withContext(Dispatchers.IO) {
+    runCatching {
+      if (stream.infoHash.isNullOrBlank()) return@runCatching null
+      val magnet = buildMagnet(stream.infoHash, stream.filename)
+      val payload = JSONObject()
+        .put("infoHash", stream.infoHash)
+        .put("magnetLink", magnet)
+      stream.filename?.let { payload.put("filename", it) }
+      stream.cachedBy.firstOrNull()?.let { payload.put("providerHint", it) }
+      maxSizeBytes?.let { payload.put("maxSize", it) }
+      val response = executeJson("/debrid/resolve", payload, session = session)
+      ensureOk(response, "Could not resolve stream")
+      val json = response.json
+      if (json.optString("url").isBlank()) return@runCatching null
+      DebridResolvedStream(
+        provider = json.optString("provider"),
+        url = json.optString("url"),
+        filename = json.optString("filename"),
+        filesize = json.optLong("filesize"),
+      )
+    }
+  }
+
+  suspend fun streamTorrent(stream: AddonStream): Result<String?> = withContext(Dispatchers.IO) {
+    runCatching {
+      if (stream.infoHash.isNullOrBlank()) return@runCatching null
+      val payload = JSONObject()
+        .put("infoHash", stream.infoHash)
+        .put("magnetLink", buildMagnet(stream.infoHash, stream.filename))
+      stream.filename?.let { payload.put("filename", it) }
+      val response = executeJson("/stream/torrent/add", payload)
+      ensureOk(response, "Could not start torrent stream")
+      response.json.optString("streamUrl").ifBlank { null }
+    }
+  }
+
+  suspend fun fetchTraktStatus(session: AuthSession, profileId: String): Result<TraktStatus> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(
+        Request.Builder()
+          .url("$apiBaseUrl/trakt/auth/status")
+          .headers(authHeaders(session, profileId = profileId))
+          .build(),
+      )
+      ensureOk(response, "Failed to load Trakt status")
+      TraktStatus(
+        connected = response.json.optBoolean("connected"),
+        username = response.json.optString("username").ifBlank { null },
+      )
+    }
+  }
+
+  suspend fun fetchTraktContinueWatching(session: AuthSession, profileId: String): Result<List<TraktItem>> =
+    traktList(session, profileId, "/trakt/sync/playback")
+
+  suspend fun fetchTraktWatchlist(session: AuthSession, profileId: String): Result<List<TraktItem>> =
+    traktList(session, profileId, "/trakt/sync/watchlist/enriched")
+
+  suspend fun fetchTraktRecommendations(session: AuthSession, profileId: String): Result<List<TraktItem>> =
+    traktList(session, profileId, "/trakt/recommendations/movies")
+
+  suspend fun fetchTraktTrending(): Result<List<TraktItem>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(Request.Builder().url("$apiBaseUrl/trakt/trending/movies").build())
+      ensureOk(response, "Failed to load trending titles")
+      val results = response.json.optJSONArray("results") ?: JSONArray()
+      buildList {
+        for (index in 0 until results.length()) {
+          add(parseTraktItem(results.optJSONObject(index) ?: JSONObject()))
+        }
+      }
+    }
+  }
+
+  suspend fun requestTraktDeviceCode(): Result<DeviceCodeInfo> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = executeJson("/trakt/auth/device/code", JSONObject())
+      ensureOk(response, "Failed to start Trakt authentication")
+      DeviceCodeInfo(
+        deviceCode = response.json.optString("device_code"),
+        userCode = response.json.optString("user_code"),
+        verificationUrl = response.json.optString("verification_url"),
+        expiresIn = response.json.optInt("expires_in"),
+        interval = response.json.optInt("interval"),
+      )
+    }
+  }
+
+  suspend fun pollTraktDeviceCode(
+    session: AuthSession,
+    profileId: String,
+    deviceCode: String,
+  ): Result<String> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = executeJson(
+        "/trakt/auth/device/poll",
+        JSONObject().put("device_code", deviceCode),
+        session = session,
+        profileId = profileId,
+      )
+      response.json.optString("status").ifBlank { "error" }
+    }
+  }
+
+  suspend fun disconnectTrakt(session: AuthSession, profileId: String): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(
+        Request.Builder()
+          .url("$apiBaseUrl/trakt/auth/disconnect")
+          .delete("{}".toRequestBody(jsonMediaType))
+          .headers(authHeaders(session, profileId = profileId))
+          .build(),
+      )
+      ensureOk(response, "Failed to disconnect Trakt")
+    }
+  }
+
+  suspend fun scrobbleTrakt(
+    session: AuthSession,
+    profileId: String,
+    action: String,
+    payload: TraktScrobblePayload,
+  ): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = executeJson(
+        "/trakt/scrobble/$action",
+        buildScrobbleJson(payload),
+        session = session,
+        profileId = profileId,
+      )
+      ensureOk(response, "Failed to update Trakt scrobble")
+    }
+  }
+
+  suspend fun syncWatchedMovie(session: AuthSession, profileId: String, detail: MediaDetail, watchedAt: String = Instant.now().toString()): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val entry = JSONObject()
+        .put("title", detail.title)
+        .put("ids", JSONObject().put("tmdb", detail.id.toIntOrNull()))
+        .put("watched_at", watchedAt)
+      detail.year?.toIntOrNull()?.let { entry.put("year", it) }
+      val payload = JSONObject().put("movies", JSONArray().put(entry)).put("shows", JSONArray())
+      val response = executeJson("/trakt/sync/watched", payload, session = session, profileId = profileId)
+      ensureOk(response, "Failed to mark movie as watched")
+    }
+  }
+
+  suspend fun syncWatchlist(
+    session: AuthSession,
+    profileId: String,
+    item: MediaItem,
+    remove: Boolean,
+  ): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val entry = JSONObject()
+        .put("title", item.title)
+      item.year?.toIntOrNull()?.let { entry.put("year", it) }
+      entry.put("ids", JSONObject().put("tmdb", item.id.toIntOrNull()))
+      val payload = if (item.type == "tv") {
+        JSONObject().put("movies", JSONArray()).put("shows", JSONArray().put(entry))
+      } else {
+        JSONObject().put("movies", JSONArray().put(entry)).put("shows", JSONArray())
+      }
+      val endpoint = if (remove) "/trakt/sync/watchlist/remove" else "/trakt/sync/watchlist/add"
+      val response = executeJson(endpoint, payload, session = session, profileId = profileId)
+      ensureOk(response, "Failed to update watchlist")
+    }
+  }
+
+  private suspend fun traktList(session: AuthSession, profileId: String, path: String): Result<List<TraktItem>> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = execute(
+          Request.Builder()
+            .url("$apiBaseUrl$path")
+            .headers(authHeaders(session, profileId = profileId))
+            .build(),
+        )
+        ensureOk(response, "Failed to load Trakt data")
+        val results = response.json.optJSONArray("results") ?: JSONArray()
+        buildList {
+          for (index in 0 until results.length()) {
+            add(parseTraktItem(results.optJSONObject(index) ?: JSONObject()))
+          }
+        }
+      }
+    }
+  suspend fun fetchLinkedTvDevices(
+    session: AuthSession,
+    profileId: String?,
+  ): Result<List<LinkedTvDevice>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(
+        Request.Builder()
+          .url("$apiBaseUrl/account/bootstrap")
+          .headers(authHeaders(session, includeContentType = false, profileId = profileId))
+          .build(),
+      )
+      ensureOk(response, "Could not load linked TVs")
+      val devices = response.json.optJSONArray("devices") ?: JSONArray()
+      buildList {
+        for (index in 0 until devices.length()) {
+          val device = devices.optJSONObject(index) ?: continue
+          val platform = device.optString("platform").ifBlank { null }
+          val deviceType = device.optString("deviceType").ifBlank { null }
+          if (!platform.orEmpty().contains("tv", true) && !deviceType.orEmpty().contains("tv", true)) continue
+          val id = device.optString("id")
+          if (id.isBlank()) continue
+          add(
+            LinkedTvDevice(
+              id = id,
+              name = device.optString("name").ifBlank { "StreamDek TV" },
+              platform = platform,
+              deviceType = deviceType,
+              lastSeenAt = device.optString("lastSeenAt").ifBlank { null },
+              isCurrent = device.optBoolean("isCurrent"),
+            ),
+          )
+        }
+      }
+    }
+  }
+
+  suspend fun activateTvCode(session: AuthSession, userCode: String): Result<String?> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = executeJson(
+        "/auth/tv/activate",
+        JSONObject().put("user_code", userCode),
+        session = session,
+      )
+      ensureOk(response, "Could not link this TV")
+      response.json.optString("deviceName").ifBlank { null }
+    }
+  }
+
+  suspend fun disconnectAccountDevice(session: AuthSession, deviceId: String): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val request = Request.Builder()
+        .url("$apiBaseUrl/account/devices/${encodeQuery(deviceId)}")
+        .delete()
+        .headers(authHeaders(session, includeContentType = false))
+        .build()
+      val response = execute(request)
+      ensureOk(response, "Could not disconnect this TV")
+      Unit
+    }
+  }
+
+
+  private suspend fun authPost(path: String, payload: JSONObject): Result<AuthSession> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = executeJson(path, payload)
+        ensureOk(response, "Authentication failed")
+        val token = response.json.optString("token")
+        val user = parseSessionUser(response.json.optJSONObject("user") ?: JSONObject(), token)
+        AuthSession(token, user)
+      }
+    }
+
+  private fun fetchMediaList(path: String): List<MediaItem> {
+    val response = execute(Request.Builder().url("$apiBaseUrl$path").build())
+    ensureOk(response, "Request failed")
+    return response.json.optJSONArray("results").toMediaItems()
+  }
+
+  private fun executeJson(
+    path: String,
+    payload: JSONObject,
+    session: AuthSession? = null,
+    profileId: String? = null,
+  ): JsonResponse {
+    val request = Request.Builder()
+      .url("$apiBaseUrl$path")
+      .post(payload.toString().toRequestBody(jsonMediaType))
+      .headers(authHeaders(session, profileId = profileId))
+      .build()
+    return execute(request)
+  }
+
+  private fun execute(request: Request, httpClient: OkHttpClient = client): JsonResponse {
+    httpClient.newCall(request).execute().use { response ->
+      val body = response.body?.string().orEmpty()
+      val json = runCatching { JSONObject(body) }.getOrElse {
+        if (body.trimStart().startsWith("[")) {
+          JSONObject().put("__array", JSONArray(body))
+        } else {
+          JSONObject()
+        }
+      }
+      return JsonResponse(response.isSuccessful, json, response.code)
+    }
+  }
+
+  private fun authHeaders(
+    session: AuthSession?,
+    includeContentType: Boolean = true,
+    profileId: String? = null,
+  ): okhttp3.Headers {
+    val builder = okhttp3.Headers.Builder()
+    if (includeContentType) {
+      builder.add("Content-Type", "application/json")
+    }
+    session?.let {
+      builder.add("Authorization", "Bearer ${it.token}")
+      builder.add("x-user-id", it.user.uid)
+      if (!profileId.isNullOrBlank()) {
+        builder.add("x-profile-id", profileId)
+      }
+    }
+    clientIdentity?.let { identity ->
+      builder.add("x-client-session-id", identity.sessionId)
+      builder.add("x-client-device-id", identity.deviceId)
+      builder.add("x-client-name", "StreamDek Mobile")
+      builder.add("x-client-platform", "android")
+      builder.add("x-device-name", android.os.Build.MODEL.ifBlank { "Android device" })
+      builder.add("x-device-type", "phone")
+      builder.add("x-app-version", BuildConfig.VERSION_NAME)
+    }
+    return builder.build()
+  }
+
+  private fun ensureOk(response: JsonResponse, fallback: String) {
+    if (!response.ok) {
+      throw IllegalStateException(response.json.optString("error").ifBlank { if (response.statusCode > 0) "$fallback (${response.statusCode})" else fallback })
+    }
+  }
+
+  private fun encodeQuery(query: String): String = URLEncoder.encode(query, Charsets.UTF_8.name())
+
+  private fun buildMagnet(infoHash: String, filename: String?): String {
+    val suffix = filename?.takeIf { it.isNotBlank() }?.let { "&dn=${encodeQuery(it)}" }.orEmpty()
+    return "magnet:?xt=urn:btih:$infoHash$suffix"
+  }
+
+  private fun buildScrobbleJson(payload: TraktScrobblePayload): JSONObject {
+    val json = JSONObject().put("progress", payload.progress.coerceIn(0.0, 100.0))
+    val ids = JSONObject()
+    payload.mediaId.toIntOrNull()?.let { ids.put("tmdb", it) }
+    Regex("tt\\d+", RegexOption.IGNORE_CASE).find(payload.mediaId)?.value?.let { ids.put("imdb", it) }
+    if (payload.mediaType == "tv") {
+      json.put(
+        "show",
+        JSONObject()
+          .put("title", payload.title)
+          .put("year", payload.year)
+          .put("ids", ids),
+      )
+      if (payload.seasonNumber != null && payload.episodeNumber != null) {
+        json.put(
+          "episode",
+          JSONObject()
+            .put("season", payload.seasonNumber)
+            .put("number", payload.episodeNumber)
+            .put("title", payload.episodeTitle),
+        )
+      }
+    } else {
+      json.put(
+        "movie",
+        JSONObject()
+          .put("title", payload.title)
+          .put("year", payload.year)
+          .put("ids", ids),
+      )
+    }
+    return json
+  }
+}
+
+private data class JsonResponse(val ok: Boolean, val json: JSONObject, val statusCode: Int)
+
+private fun parseSessionUser(user: JSONObject, token: String): SessionUser =
+  SessionUser(
+    uid = user.opt("id")?.toString() ?: user.optString("uid"),
+    email = user.optString("email").ifBlank { null },
+    displayName = user.optString("displayName").ifBlank { null },
+    subscriptionStatus = user.optString("subscriptionStatus").ifBlank { "free" },
+    accessToken = token,
+  )
+
+private fun serializeSessionUser(user: SessionUser): JSONObject =
+  JSONObject()
+    .put("id", user.uid)
+    .put("email", user.email)
+    .put("displayName", user.displayName)
+    .put("subscriptionStatus", user.subscriptionStatus)
+
+private fun JSONArray?.toMediaItems(): List<MediaItem> {
+  if (this == null) return emptyList()
+  return buildList(length()) {
+    for (index in 0 until length()) {
+      val item = optJSONObject(index) ?: continue
+      add(parseMediaItem(item))
+    }
+  }
+}
+
+private fun tmdbImageUrl(value: String?, size: String = "w500"): String? {
+  val raw = value?.takeIf { it.isNotBlank() } ?: return null
+  return if (raw.startsWith("http")) raw else "https://image.tmdb.org/t/p/$size$raw"
+}
+
+
+private fun parseRatingText(raw: String): Double? {
+  raw.toDoubleOrNull()?.let { return it }
+  val fraction = Regex("""(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)""").find(raw)
+  if (fraction != null) {
+    val value = fraction.groupValues[1].toDoubleOrNull()
+    val scale = fraction.groupValues[2].toDoubleOrNull()
+    if (value != null && scale != null && scale > 0.0) return (value / scale) * 10.0
+  }
+  return null
+}
+
+private fun normalizeRatingValue(value: Double, allowPercent: Boolean = false): Double? {
+  if (value.isNaN() || value <= 0.0) return null
+  if (value <= 10.0) return value
+  if (allowPercent && value <= 100.0) return value / 10.0
+  return null
+}
+
+private fun parseRatingValue(json: JSONObject, allowPercent: Boolean = false): Double? {
+  val keys = listOf("rating", "value", "Value", "vote_average", "imdbRating", "tmdbRating", "score", "averageRating")
+  for (key in keys) {
+    if (!json.has(key) || json.isNull(key)) continue
+    val raw = json.opt(key)
+    val value = when (raw) {
+      is Number -> raw.toDouble()
+      is String -> parseRatingText(raw)
+      else -> null
+    } ?: continue
+    normalizeRatingValue(value, allowPercent)?.let { return it }
+  }
+  return null
+}
+
+private fun parseRatingValue(json: JSONObject, keys: List<String>, allowPercent: Boolean = false): Double? {
+  for (key in keys) {
+    if (!json.has(key) || json.isNull(key)) continue
+    val raw = json.opt(key)
+    val value = when (raw) {
+      is Number -> raw.toDouble()
+      is String -> parseRatingText(raw)
+      else -> null
+    } ?: continue
+    normalizeRatingValue(value, allowPercent)?.let { return it }
+  }
+  return null
+}
+
+private fun providerAllowsPercent(provider: String): Boolean {
+  val normalized = provider.lowercase()
+  return "audience" in normalized || "tomato" in normalized || "popcorn" in normalized || normalized == "rt"
+}
+
+private fun parseRatingFromObjects(json: JSONObject, providerNames: List<String>): Double? {
+  val providerKeys = providerNames.map { it.lowercase() }
+  val directKeys = providerKeys + providerKeys.map { "${it}Rating" } + providerKeys.map { "${it}_rating" }
+  val allowPercent = providerKeys.any(::providerAllowsPercent)
+  directKeys.forEach { key ->
+    val nested = json.optJSONObject(key) ?: return@forEach
+    parseRatingValue(nested, allowPercent)?.let { return it }
+  }
+  val ratings = json.optJSONArray("ratings") ?: json.optJSONArray("Ratings") ?: return null
+  for (index in 0 until ratings.length()) {
+    val item = ratings.optJSONObject(index) ?: continue
+    val provider = item.optString("provider")
+      .ifBlank { item.optString("source") }
+      .ifBlank { item.optString("Source") }
+      .lowercase()
+    if (providerKeys.none { provider.contains(it) }) continue
+    parseRatingValue(item, allowPercent || providerAllowsPercent(provider))?.let { return it }
+  }
+  return null
+}
+
+private fun parseMdblistProviderRating(json: JSONObject, allowPercent: Boolean = false): Double? {
+  val array = json.optJSONArray("__array") ?: json.optJSONArray("ratings")
+  if (array != null) {
+    for (index in 0 until array.length()) {
+      val item = array.optJSONObject(index) ?: continue
+      parseRatingValue(item, listOf("rating", "score", "value"), allowPercent)?.let { return it }
+    }
+  }
+  return parseRatingValue(json, listOf("rating", "score", "value"), allowPercent)
+}
+
+private fun normalizeMdblistProviderId(value: String): String {
+  val key = value.trim().lowercase().replace(Regex("[^a-z]"), "")
+  return when (key) {
+    "imdb" -> "IMDb"
+    "tmdb", "themoviedb" -> "TMDB"
+    "rt", "tomatoes", "rottentomatoes", "rottentomato", "rtomatoes" -> "Rotten Tomatoes"
+    "mc", "metacritic", "metascore" -> "Metacritic"
+    "trakt" -> "Trakt"
+    "lb", "letterbox", "letterboxd" -> "Letterboxd"
+    "aud", "audience", "audiencescore", "rtaudience", "popcornmeter" -> "Audience Score"
+    else -> value
+  }
+}
+
+private fun parseExternalRatingItem(item: JSONObject): ExternalRating? {
+  val provider = item.optString("provider")
+    .ifBlank { item.optString("source") }
+    .ifBlank { item.optString("Source") }
+    .ifBlank { item.optString("name") }
+  if (provider.isBlank()) return null
+  val rating = parseRatingValue(item, allowPercent = providerAllowsPercent(provider)) ?: return null
+  val label = item.optString("label")
+    .ifBlank { item.optString("value") }
+    .ifBlank { item.optString("Value") }
+    .ifBlank { null }
+  return ExternalRating(provider = normalizeMdblistProviderId(provider), rating = rating, label = label)
+}
+
+private fun parseExternalRatings(json: JSONObject): List<ExternalRating> {
+  val arrays = listOfNotNull(
+    json.optJSONArray("ratings"),
+    json.optJSONArray("Ratings"),
+    json.optJSONArray("externalRatings"),
+  )
+  val parsed = arrays.flatMap { source ->
+    buildList {
+      for (index in 0 until source.length()) {
+        parseExternalRatingItem(source.optJSONObject(index) ?: continue)?.let(::add)
+      }
+    }
+  }
+  return buildList {
+    addAll(parsed)
+    parseImdbRatingValue(json)?.let { add(ExternalRating("IMDb", it)) }
+    parseTmdbRatingValue(json)?.let { add(ExternalRating("TMDB", it)) }
+    parseRatingFromObjects(json, listOf("trakt"))?.let { add(ExternalRating("Trakt", it)) }
+    parseRatingFromObjects(json, listOf("tomatoes", "rotten", "rottentomatoes"))?.let { add(ExternalRating("Rotten Tomatoes", it)) }
+    parseRatingFromObjects(json, listOf("metacritic"))?.let { add(ExternalRating("Metacritic", it)) }
+    parseRatingFromObjects(json, listOf("letterboxd"))?.let { add(ExternalRating("Letterboxd", it)) }
+    parseRatingFromObjects(json, listOf("audience", "audiencescore", "rtaudience", "popcornmeter"))?.let { add(ExternalRating("Audience Score", it)) }
+  }.distinctBy { it.provider.lowercase() }
+}
+
+private fun parseTraktComments(json: JSONObject): List<TraktComment> {
+  val source = json.optJSONArray("comments")
+    ?: json.optJSONArray("results")
+    ?: json.optJSONArray("__array")
+    ?: return emptyList()
+  return buildList {
+    for (index in 0 until source.length()) {
+      val item = source.optJSONObject(index) ?: continue
+      val user = item.optJSONObject("user")
+      val author = item.optString("author")
+        .ifBlank { item.optString("username") }
+        .ifBlank { user?.optString("username").orEmpty() }
+        .ifBlank { user?.optString("name").orEmpty() }
+      val body = item.optString("comment")
+        .ifBlank { item.optString("body") }
+        .ifBlank { item.optString("text") }
+      if (body.isBlank()) continue
+      add(
+        TraktComment(
+          id = item.opt("id")?.toString().orEmpty().ifBlank { "$index-${author.hashCode()}" },
+          author = author.ifBlank { "Trakt user" },
+          rating = parseTraktCommentRating(item, user),
+          body = body,
+          likes = item.optInt("likes", item.optInt("like_count", 0)),
+        )
+      )
+    }
+  }
+}
+
+private fun parseTraktCommentRating(item: JSONObject, user: JSONObject?): Int? {
+  val directRating = item.optInt("rating", 0).takeIf { it > 0 }
+  if (directRating != null) return directRating
+  val nestedCandidates = listOfNotNull(
+    item.optJSONObject("review"),
+    item.optJSONObject("comment"),
+    item.optJSONObject("item"),
+    item.optJSONObject("episode"),
+    item.optJSONObject("movie"),
+    item.optJSONObject("show"),
+    user?.optJSONObject("rating"),
+  )
+  nestedCandidates.forEach { nested ->
+    nested.optInt("rating", 0).takeIf { it > 0 }?.let { return it }
+    nested.optInt("value", 0).takeIf { it > 0 }?.let { return it }
+  }
+  return null
+}
+
+private fun parseImdbRatingValue(json: JSONObject): Double? =
+  parseRatingValue(json, listOf("imdbRating", "imdb_rating", "imdbVoteAverage", "imdb_vote_average", "averageRating"))
+    ?: parseRatingFromObjects(json, listOf("imdb"))
+
+private fun parseTmdbRatingValue(json: JSONObject): Double? =
+  parseRatingValue(json, listOf("tmdbRating", "tmdb_rating", "vote_average", "rating"))
+    ?: parseRatingFromObjects(json, listOf("tmdb", "themoviedb"))
+
+
+private val tmdbGenreNames = mapOf(
+  12 to "Adventure", 14 to "Fantasy", 16 to "Animation", 18 to "Drama", 27 to "Horror", 28 to "Action",
+  35 to "Comedy", 36 to "History", 37 to "Western", 53 to "Thriller", 80 to "Crime", 99 to "Documentary",
+  878 to "Science Fiction", 9648 to "Mystery", 10402 to "Music", 10749 to "Romance", 10751 to "Family",
+  10752 to "War", 10759 to "Action & Adventure", 10762 to "Kids", 10763 to "News", 10764 to "Reality",
+  10765 to "Sci-Fi & Fantasy", 10766 to "Soap", 10767 to "Talk", 10768 to "War & Politics", 10770 to "TV Movie",
+)
+
+private fun genreLabel(value: String): String? {
+  val cleaned = value.trim()
+  if (cleaned.isBlank() || cleaned == "null") return null
+  return cleaned.toIntOrNull()?.let { tmdbGenreNames[it] } ?: cleaned
+}
+
+private fun parseGenreNames(json: JSONObject): List<String> {
+  val arrays = listOfNotNull(json.optJSONArray("genres"), json.optJSONArray("genre_names"), json.optJSONArray("genreNames"), json.optJSONArray("genre_ids"), json.optJSONArray("genreIds"))
+  for (source in arrays) {
+    val names = buildList {
+      for (index in 0 until source.length()) {
+        val obj = source.optJSONObject(index)
+        val name = if (obj != null) {
+          obj.optString("name").ifBlank { genreLabel(obj.opt("id")?.toString().orEmpty()).orEmpty() }
+        } else {
+          genreLabel(source.opt(index)?.toString().orEmpty()).orEmpty()
+        }
+        if (name.isNotBlank()) add(name)
+      }
+    }
+    if (names.isNotEmpty()) return names.distinct()
+  }
+  return emptyList()
+}
+
+private fun parseMediaItemId(item: JSONObject): String {
+  val ids = item.optJSONObject("ids")
+  return listOfNotNull(
+    item.opt("tmdbId")?.toString(),
+    item.opt("tmdb_id")?.toString(),
+    item.opt("tmdb")?.toString(),
+    item.opt("moviedb_id")?.toString(),
+    item.opt("moviedbId")?.toString(),
+    ids?.opt("tmdb")?.toString(),
+    ids?.opt("tmdbId")?.toString(),
+    ids?.opt("moviedb_id")?.toString(),
+    item.opt("id")?.toString(),
+    item.opt("imdb_id")?.toString(),
+    item.opt("imdbId")?.toString(),
+    ids?.opt("imdb")?.toString(),
+  ).firstOrNull { it.isNotBlank() }.orEmpty()
+}
+
+private fun parseMediaItemType(item: JSONObject): String {
+  if (item.has("logo") && !item.has("title") && !item.has("poster")) return "network"
+  val rawType = item.optString("type").ifBlank { item.optString("media_type").ifBlank { item.optString("kind") } }
+  return when (rawType.trim().lowercase()) {
+    "series", "show", "tv" -> "tv"
+    "movie" -> "movie"
+    else -> if (item.has("first_air_date") || item.has("tvdb_id")) "tv" else "movie"
+  }
+}
+
+private fun parseMediaItemYear(item: JSONObject): String? = listOf(
+  item.opt("year")?.toString(),
+  item.optString("release_date").take(4),
+  item.optString("first_air_date").take(4),
+).firstOrNull { !it.isNullOrBlank() && it != "null" }
+
+private fun parseMediaItem(item: JSONObject): MediaItem =
+  MediaItem(
+    id = parseMediaItemId(item),
+    type = parseMediaItemType(item),
+    title = item.optString("title").ifBlank { item.optString("name") },
+    year = parseMediaItemYear(item),
+    poster = item.optString("poster").ifBlank { item.optString("logo") }.ifBlank { tmdbImageUrl(item.optString("poster_path"), "w500") },
+    backdrop = item.optString("backdrop").ifBlank { item.optString("background") }.ifBlank { item.optString("banner") }.ifBlank { item.optString("fanart") }.ifBlank { tmdbImageUrl(item.optString("backdrop_path"), "w780") },
+    rating = parseRatingValue(item),
+    description = item.optString("description").ifBlank { item.optString("overview") },
+    genres = parseGenreNames(item),
+    titleLogo = parseTitleLogo(item),
+    addedAt = parseFlexibleTimestamp(item, "addedAt", "added_at", "listedAt", "listed_at"),
+    updatedAt = parseFlexibleTimestamp(item, "updatedAt", "updated_at"),
+  )
+
+private fun parseFlexibleTimestamp(json: JSONObject, vararg keys: String): Long? {
+  keys.forEach { key ->
+    val raw = json.opt(key) ?: return@forEach
+    when (raw) {
+      is Number -> {
+        val value = raw.toLong()
+        if (value > 0L) return if (value < 1_000_000_000_000L) value * 1000L else value
+      }
+      is String -> {
+        val trimmed = raw.trim()
+        if (trimmed.isBlank() || trimmed.equals("null", ignoreCase = true)) return@forEach
+        trimmed.toLongOrNull()?.let { numeric ->
+          if (numeric > 0L) return if (numeric < 1_000_000_000_000L) numeric * 1000L else numeric
+        }
+        runCatching { Instant.parse(trimmed).toEpochMilli() }.getOrNull()?.let { if (it > 0L) return it }
+      }
+    }
+  }
+  return null
+}
+private fun parseCastList(source: JSONArray?): List<CastMember> {
+  if (source == null) return emptyList()
+  return buildList {
+    for (index in 0 until source.length()) {
+      val member = source.optJSONObject(index) ?: continue
+      val name = member.optString("name")
+      if (name.isBlank()) continue
+      add(
+        CastMember(
+          id = member.opt("id")?.toString().orEmpty(),
+          name = name,
+          character = member.optString("character").ifBlank { null },
+          photo = member.optString("photo").ifBlank { tmdbImageUrl(member.optString("profile_path"), "w185") },
+        )
+      )
+    }
+  }
+}
+
+private fun parsePersonDetail(json: JSONObject): PersonDetail {
+  val person = json.optJSONObject("person") ?: json
+  val works = json.optJSONArray("popularWorks") ?: json.optJSONArray("knownFor") ?: json.optJSONArray("credits") ?: JSONArray()
+  return PersonDetail(
+    id = person.opt("id")?.toString().orEmpty(),
+    name = person.optString("name"),
+    photo = person.optString("photo").ifBlank { tmdbImageUrl(person.optString("profile_path"), "w342") },
+    biography = person.optString("biography").ifBlank { null },
+    birthday = person.optString("birthday").ifBlank { null },
+    placeOfBirth = person.optString("placeOfBirth").ifBlank { person.optString("place_of_birth").ifBlank { null } },
+    knownFor = person.optString("knownForDepartment").ifBlank { person.optString("known_for_department").ifBlank { null } },
+    popularWorks = works.toMediaItems(),
+  )
+}
+private fun parseTitleLogo(json: JSONObject): String? {
+  json.optString("titleLogo").ifBlank { null }?.let { return tmdbImageUrl(it, "w500") }
+  json.optString("title_logo").ifBlank { null }?.let { return tmdbImageUrl(it, "w500") }
+  json.optString("logo").ifBlank { null }?.let { return tmdbImageUrl(it, "w500") }
+  val logos = json.optJSONObject("images")?.optJSONArray("logos") ?: json.optJSONArray("logos") ?: return null
+  for (index in 0 until logos.length()) {
+    val logo = logos.optJSONObject(index) ?: continue
+    val language = logo.optString("iso_639_1")
+    if (language.isBlank() || language == "en") return tmdbImageUrl(logo.optString("file_path"), "w500")
+  }
+  return null
+}
+
+private fun trailerUrlFor(site: String?, key: String?): String? {
+  if (key.isNullOrBlank()) return null
+  return when {
+    site.equals("YouTube", ignoreCase = true) -> "https://www.youtube.com/watch?v=$key"
+    site.equals("Vimeo", ignoreCase = true) -> "https://vimeo.com/$key"
+    else -> null
+  }
+}
+
+private fun parseTrailerKeys(json: JSONObject): List<String> {
+  val directKeys = json.optJSONArray("trailerKeys")
+  if (directKeys != null && directKeys.length() > 0) {
+    return buildList {
+      for (index in 0 until directKeys.length()) {
+        directKeys.optString(index).ifBlank { null }?.let(::add)
+      }
+    }
+  }
+  val videos = json.optJSONObject("videos")?.optJSONArray("results") ?: json.optJSONArray("videos") ?: return emptyList()
+  return buildList {
+    for (index in 0 until videos.length()) {
+      val video = videos.optJSONObject(index) ?: continue
+      if (!video.optString("site").equals("YouTube", ignoreCase = true)) continue
+      video.optString("key").ifBlank { null }?.let(::add)
+    }
+  }
+}
+
+private fun parseTrailerUrl(json: JSONObject): String? {
+  json.optString("trailerUrl").ifBlank { null }?.let { return it }
+  json.optString("trailer").ifBlank { null }?.let { return it }
+  trailerUrlFor(json.optString("trailerSite"), json.optString("trailerKey"))?.let { return it }
+  parseTrailerKeys(json).firstOrNull()?.let { return trailerUrlFor("YouTube", it) }
+  val videos = json.optJSONObject("videos")?.optJSONArray("results") ?: json.optJSONArray("videos") ?: return null
+  for (index in 0 until videos.length()) {
+    val video = videos.optJSONObject(index) ?: continue
+    val site = video.optString("site")
+    val key = video.optString("key")
+    val type = video.optString("type")
+    if (key.isBlank()) continue
+    if (site.equals("YouTube", ignoreCase = true) && type.contains("Trailer", ignoreCase = true)) return "https://www.youtube.com/watch?v=$key"
+    video.optString("url").ifBlank { null }?.let { return it }
+  }
+  return null
+}
+private fun parseStringMap(source: JSONObject?): Map<String, String> = buildMap {
+  source?.keys()?.forEach { key -> source.optString(key).trim().takeIf { it.isNotBlank() }?.let { put(key, it) } }
+}
+
+private fun parseWatchProviderList(source: JSONArray?): List<WatchProvider> {
+  if (source == null) return emptyList()
+  return buildList {
+    for (index in 0 until source.length()) {
+      val item = source.optJSONObject(index) ?: continue
+      val name = item.optString("name").ifBlank { item.optString("provider_name") }
+      if (name.isBlank()) continue
+      add(
+        WatchProvider(
+          id = item.opt("id")?.toString() ?: item.opt("provider_id")?.toString() ?: name,
+          name = name,
+          logo = item.optString("logo").ifBlank { tmdbImageUrl(item.optString("logo_path"), "w500") },
+          url = item.optString("url").ifBlank { item.optString("link") }.ifBlank { item.optString("web_url") }.ifBlank { null },
+        )
+      )
+    }
+  }
+}
+
+private fun parseProviderBucket(source: JSONObject?): List<WatchProvider> {
+  if (source == null) return emptyList()
+  return buildList {
+    addAll(parseWatchProviderList(source.optJSONArray("flatrate")))
+    addAll(parseWatchProviderList(source.optJSONArray("subscription")))
+    addAll(parseWatchProviderList(source.optJSONArray("rent")))
+  }
+}
+
+private fun parseWatchProviders(json: JSONObject): List<WatchProvider> {
+  val normalized = buildList {
+    addAll(parseWatchProviderList(json.optJSONArray("availableOn")))
+    addAll(parseWatchProviderList(json.optJSONArray("streamingProviders")))
+    addAll(parseWatchProviderList(json.optJSONArray("streaming_providers")))
+    addAll(parseWatchProviderList(json.optJSONArray("rentProviders")))
+    addAll(parseWatchProviderList(json.optJSONArray("rent_providers")))
+    addAll(parseWatchProviderList(json.optJSONArray("providers")))
+    addAll(parseWatchProviderList(json.optJSONArray("watchProviders")))
+    addAll(parseWatchProviderList(json.optJSONArray("watch_providers")))
+    addAll(parseWatchProviderList(json.optJSONArray("networks")))
+    addAll(parseProviderBucket(json.optJSONObject("providers")))
+    addAll(parseProviderBucket(json.optJSONObject("watchProviders")))
+    addAll(parseProviderBucket(json.optJSONObject("watch_providers")))
+  }
+  if (normalized.isNotEmpty()) return normalized.distinctBy { it.id.ifBlank { it.name } }
+
+  val watchProviders = json.optJSONObject("watch/providers") ?: return emptyList()
+  val regions = watchProviders.optJSONObject("results") ?: watchProviders
+  val region = regions.optJSONObject("US")
+    ?: regions.optJSONObject("GB")
+    ?: regions.optJSONObject("NG")
+    ?: regions.keys().asSequence().mapNotNull { regions.optJSONObject(it) }.firstOrNull()
+    ?: return emptyList()
+  return parseProviderBucket(region).distinctBy { it.id.ifBlank { it.name } }
+}
+
+private fun parseReleaseDate(json: JSONObject): String? =
+  json.optString("releaseDate").ifBlank {
+    json.optString("release_date").ifBlank {
+      json.optString("firstAirDate").ifBlank {
+        json.optString("first_air_date").ifBlank { null }
+      }
+    }
+  }
+
+private fun parseMediaDetail(json: JSONObject): MediaDetail =
+  MediaDetail(
+    id = json.opt("tmdbId")?.toString() ?: json.opt("id")?.toString().orEmpty(),
+    type = parseMediaItemType(json),
+    title = json.optString("title").ifBlank { json.optString("name") },
+    titleLogo = parseTitleLogo(json),
+    tagline = json.optString("tagline").ifBlank { null },
+    year = parseMediaItemYear(json),
+    releaseDate = parseReleaseDate(json),
+    description = json.optString("description").ifBlank { json.optString("overview") },
+    poster = json.optString("poster").ifBlank { tmdbImageUrl(json.optString("poster_path"), "w500") },
+    backdrop = json.optString("backdrop").ifBlank { tmdbImageUrl(json.optString("backdrop_path"), "w780") },
+    trailerUrl = parseTrailerUrl(json),
+    trailerSite = json.optString("trailerSite").ifBlank { null },
+    trailerKeys = parseTrailerKeys(json),
+    rating = parseRatingValue(json),
+    imdbRating = parseImdbRatingValue(json) ?: parseRatingValue(json),
+    tmdbRating = parseTmdbRatingValue(json),
+    externalRatings = parseExternalRatings(json),
+    genres = parseGenreNames(json),
+    runtimeMinutes = json.optInt("runtime").takeIf { it > 0 },
+    seasonsCount = json.optInt("numberOfSeasons").takeIf { it > 0 },
+    imdbId = json.optString("imdbId").ifBlank { json.optString("imdb_id").ifBlank { json.optJSONObject("external_ids")?.optString("imdb_id").orEmpty().ifBlank { null } } },
+    seasons = buildList {
+      val source = json.optJSONArray("seasons") ?: JSONArray()
+      for (index in 0 until source.length()) {
+        val season = source.optJSONObject(index) ?: continue
+        add(
+          SeasonSummary(
+            seasonNumber = season.optInt("season_number"),
+            name = season.optString("name").ifBlank { "Season ${season.optInt("season_number")}" },
+            episodeCount = season.optInt("episode_count"),
+            poster = season.optString("poster").ifBlank { tmdbImageUrl(season.optString("poster_path"), "w342") },
+          )
+        )
+      }
+    },
+    cast = parseCastList(json.optJSONArray("cast") ?: json.optJSONObject("credits")?.optJSONArray("cast")),
+    similarTitles = (json.optJSONArray("similarTitles") ?: json.optJSONArray("similar") ?: json.optJSONArray("recommendations")).toMediaItems(),
+    availableOn = parseWatchProviders(json),
+    traktComments = parseTraktComments(json),
+  )
+
+private fun parseEpisode(json: JSONObject, fallbackSeasonNumber: Int? = null): EpisodeItem =
+  EpisodeItem(
+    id = json.opt("id")?.toString().orEmpty(),
+    episodeNumber = json.optInt("episode_number"),
+    seasonNumber = json.optInt("season_number").takeIf { it > 0 } ?: fallbackSeasonNumber ?: 0,
+    name = json.optString("name").ifBlank { "Episode ${json.optInt("episode_number")}" },
+    overview = json.optString("overview"),
+    still = json.optString("still").ifBlank { null },
+    runtime = json.optInt("runtime").takeIf { it > 0 },
+    airDate = json.optString("air_date").ifBlank { json.optString("airDate").ifBlank { json.optString("release_date").ifBlank { null } } },
+  )
+
+private fun parseProfile(json: JSONObject): StreamProfile =
+  StreamProfile(
+    id = json.optString("id"),
+    userId = json.optString("userId"),
+    name = json.optString("name"),
+    avatarIndex = json.optInt("avatarIndex"),
+    hasPinSet = json.optBoolean("hasPinSet"),
+    isDefault = json.optBoolean("isDefault"),
+    subtitleLanguage = json.optString("subtitleLanguage").ifBlank { null },
+    audioLanguage = json.optString("audioLanguage").ifBlank { null },
+  )
+
+private fun parseAddonStringList(values: JSONArray?): List<String> = buildList {
+  val source = values ?: return@buildList
+  for (index in 0 until source.length()) {
+    val item = source.opt(index)
+    when (item) {
+      is String -> item.ifBlank { null }?.let(::add)
+      is JSONObject -> item.optString("name").ifBlank { null }?.let(::add)
+    }
+  }
+}
+
+private fun parseAddonCatalogs(values: JSONArray?): List<AddonCatalog> = buildList {
+  val source = values ?: return@buildList
+  for (index in 0 until source.length()) {
+    val item = source.optJSONObject(index) ?: continue
+    val id = item.optString("id").trim()
+    if (id.isEmpty()) continue
+    add(
+      AddonCatalog(
+        type = item.optString("type").trim(),
+        id = id,
+        name = item.optString("name").ifBlank { id },
+      ),
+    )
+  }
+}
+
+private fun mapHomeCatalogType(rawType: String): String? = when (rawType.trim().lowercase()) {
+  "movie" -> "movie"
+  "series", "tv" -> "tv"
+  "sport", "sports", "channel", "live", "other" -> rawType.trim().lowercase()
+  else -> null
+}
+
+private fun buildAddonSectionTitle(addonName: String, catalogName: String?, differentiator: String? = null): String {
+  val addon = addonName.trim()
+  val catalog = catalogName.orEmpty().trim()
+  val base = when {
+    catalog.isBlank() -> addon
+    addon.isBlank() -> catalog
+    catalog.contains(addon, ignoreCase = true) -> catalog
+    else -> "$addon - $catalog"
+  }
+  return if (differentiator.isNullOrBlank()) base else "$base \u2022 $differentiator"
+}
+
+private fun parseAddon(json: JSONObject): InstalledAddon {
+  val manifest = json.optJSONObject("manifest") ?: JSONObject()
+  val behaviorHints = manifest.optJSONObject("behaviorHints") ?: JSONObject()
+  return InstalledAddon(
+    id = json.optString("id"),
+    enabled = json.optBoolean("enabled"),
+    position = json.optInt("position"),
+    url = json.optString("url").ifBlank { null },
+    baseUrl = json.optString("baseUrl").ifBlank { null },
+    manifestUrl = json.optString("manifestUrl").ifBlank { null },
+    transportUrl = json.optString("transportUrl").ifBlank { null },
+    manifest = AddonManifest(
+      id = manifest.optString("id").ifBlank { json.optString("id") },
+      name = manifest.optString("name").ifBlank { json.optString("id") },
+      version = manifest.optString("version").ifBlank { "unknown" },
+      description = manifest.optString("description").ifBlank { null },
+      logo = manifest.optString("logo").ifBlank { null },
+      url = manifest.optString("url").ifBlank { json.optString("url").ifBlank { null } },
+      baseUrl = manifest.optString("baseUrl").ifBlank { json.optString("baseUrl").ifBlank { null } },
+      manifestUrl = manifest.optString("manifestUrl").ifBlank { json.optString("manifestUrl").ifBlank { null } },
+      transportUrl = manifest.optString("transportUrl").ifBlank { json.optString("transportUrl").ifBlank { null } },
+      resources = parseAddonStringList(manifest.optJSONArray("resources")),
+      types = parseAddonStringList(manifest.optJSONArray("types")),
+      catalogs = parseAddonCatalogs(manifest.optJSONArray("catalogs")),
+      behaviorConfigurable = behaviorHints.optBoolean("configurable"),
+      configurationRequired = behaviorHints.optBoolean("configurationRequired"),
+    ),
+  )
+}
+
+private fun parseStreamsResponse(json: JSONObject): List<AddonStream> {
+  val streams = json.optJSONArray("streams")
+    ?: json.optJSONArray("results")
+    ?: json.optJSONArray("items")
+    ?: json.optJSONArray("__array")
+    ?: JSONArray()
+  return buildList {
+    for (index in 0 until streams.length()) {
+      add(parseAddonStream(streams.optJSONObject(index) ?: JSONObject()))
+    }
+  }
+}
+
+private fun extractInfoHash(rawInfoHash: String?, rawUrl: String?): String? {
+  rawInfoHash?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
+  val url = rawUrl?.trim().orEmpty()
+  if (!url.startsWith("magnet:?", ignoreCase = true)) return null
+  val match = Regex("""btih:([A-Fa-f0-9]{32,40})""").find(url) ?: return null
+  return match.groupValues[1]
+}
+
+private fun parseAddonStream(json: JSONObject): AddonStream =
+  json.run {
+    val parsedUrl = sequenceOf(opt("url"), opt("externalUrl"), optJSONObject("behaviorHints")?.opt("url"))
+      .mapNotNull { value ->
+        when (value) {
+          is JSONObject -> value.optString("url").ifBlank { value.optString("href") }.ifBlank { null }
+          else -> value?.toString()?.takeIf { it.isNotBlank() && it != "null" }
+        }
+      }
+      .firstOrNull()
+    AddonStream(
+      addonId = optString("addonId"),
+      addonName = optString("addonName").ifBlank { optString("addonId") },
+      name = optString("name").ifBlank { null },
+      title = optString("title").ifBlank { null },
+      description = optString("description").ifBlank { null },
+      url = parsedUrl,
+      infoHash = extractInfoHash(optString("infoHash").ifBlank { null }, parsedUrl),
+      fileIdx = optInt("fileIdx").takeIf { has("fileIdx") },
+      filename = optJSONObject("behaviorHints")?.optString("filename")?.ifBlank { null },
+      quality = optString("quality").ifBlank { null },
+      size = optString("size").ifBlank { null },
+      bingeGroup = optJSONObject("behaviorHints")?.optString("bingeGroup")?.ifBlank { null },
+      requestHeaders = parseStreamRequestHeaders(optJSONObject("behaviorHints"), optJSONObject("headers")),
+      source = optString("source").ifBlank { optString("provider") }.ifBlank { null },
+      cachedBy = buildList {
+        val providers = optJSONArray("cachedBy") ?: JSONArray()
+        for (index in 0 until providers.length()) {
+          add(providers.optString(index))
+        }
+      },
+    )
+  }
+
+
+private fun parseStreamRequestHeaders(behaviorHints: JSONObject?, directHeaders: JSONObject?): Map<String, String> {
+  val candidates = listOfNotNull(
+    behaviorHints?.optJSONObject("proxyHeaders")?.optJSONObject("request"),
+    behaviorHints?.optJSONObject("requestHeaders"),
+    directHeaders,
+  )
+  return buildMap {
+    candidates.forEach { source ->
+      source.keys().forEach { key ->
+        source.optString(key).trim().takeIf { it.isNotBlank() }?.let { put(key, it) }
+      }
+    }
+  }
+}private fun parseDebridAccount(json: JSONObject): DebridAccount =
+  DebridAccount(
+    provider = json.optString("provider"),
+    enabled = json.optBoolean("enabled"),
+    priority = json.optInt("priority"),
+    username = json.optString("username").ifBlank { null },
+  )
+
+private fun parseTraktItem(json: JSONObject): TraktItem =
+  TraktItem(
+    id = json.optString("id").ifBlank { json.opt("tmdbId")?.toString().orEmpty() },
+    tmdbId = json.optInt("tmdbId").takeIf { it > 0 },
+    title = json.optString("title").ifBlank { json.optString("name") },
+    type = parseMediaItemType(json),
+    year = parseMediaItemYear(json),
+    rating = parseRatingValue(json),
+    poster = json.optString("poster").ifBlank { tmdbImageUrl(json.optString("poster_path"), "w500") },
+    backdrop = json.optString("backdrop").ifBlank { tmdbImageUrl(json.optString("backdrop_path"), "w780") },
+    description = json.optString("description").ifBlank { null },
+    progress = json.optDouble("progress").takeUnless { it.isNaN() || it == 0.0 },
+    addedAt = parseFlexibleTimestamp(json, "listed_at", "listedAt", "added_at", "addedAt"),
+    updatedAt = parseFlexibleTimestamp(json, "updated_at", "updatedAt", "paused_at", "pausedAt", "last_watched_at", "lastWatchedAt", "watched_at", "watchedAt"),
+  )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

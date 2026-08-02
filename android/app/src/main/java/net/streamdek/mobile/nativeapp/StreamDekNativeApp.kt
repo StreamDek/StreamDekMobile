@@ -210,6 +210,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -3700,7 +3701,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       onSuccess = { release ->
         val available = release.versionCode > BuildConfig.VERSION_CODE || compareSemanticVersions(release.versionName, BuildConfig.VERSION_NAME) > 0
         val mandatory = release.required || (release.minSupportedVersionCode?.let { BuildConfig.VERSION_CODE < it } == true)
-        uiState = uiState.copy(updateChecking = false, availableUpdate = release.takeIf { available }, updatePromptVisible = available && (manual || uiState.autoUpdateChecksEnabled || mandatory), updateStatusMessage = if (available) "Version ${release.versionName} is available." else if (manual) "You are already on the latest version." else null, updateErrorMessage = null)
+        uiState = uiState.copy(updateChecking = false, availableUpdate = release.takeIf { available }, updatePromptVisible = available && (manual || uiState.autoUpdateChecksEnabled || mandatory), updateStatusMessage = if (!available && manual) "You are already on the latest version." else null, updateErrorMessage = null)
       },
       onFailure = { message -> uiState = uiState.copy(updateChecking = false, updateStatusMessage = null, updateErrorMessage = message) },
     )
@@ -3724,7 +3725,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val safeName = release.assetName?.replace(Regex("[^a-zA-Z0-9._-]"), "-") ?: "streamdek-${release.versionCode}.apk"
     val destination = java.io.File(context.cacheDir, "updates/$safeName")
     launchWork(
-      onStart = { uiState = uiState.copy(updateDownloading = true, updateProgress = 0f, updateErrorMessage = null, updateStatusMessage = "Downloading version ${release.versionName}...") },
+      onStart = { uiState = uiState.copy(updateDownloading = true, updateProgress = 0f, updatePromptVisible = false, updateErrorMessage = null, updateStatusMessage = "Downloading version ${release.versionName}...") },
       block = { apiClient.downloadUpdate(release, destination) { downloaded, total ->
         val progress = total?.takeIf { it > 0L }?.let { (downloaded.toDouble() / it.toDouble()).toFloat().coerceIn(0f, 1f) }
         viewModelScope.launch(Dispatchers.Main) { uiState = uiState.copy(updateProgress = progress) }
@@ -5355,8 +5356,26 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
               label = "floating_navigation_corner",
             )
 
+            if (uiState.updateDownloading) {
+              Box(
+                modifier = Modifier
+                  .width(navigationWidth)
+                  .height(74.dp)
+                  .blur(18.dp)
+                  .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.42f), RoundedCornerShape(navigationCornerRadius)),
+              )
+            }
             FrostedGlassSurface(
-              modifier = Modifier.width(navigationWidth).height(74.dp),
+              modifier = Modifier
+                .width(navigationWidth)
+                .height(74.dp)
+                .then(
+                  if (uiState.updateDownloading) {
+                    Modifier.border(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.72f), RoundedCornerShape(navigationCornerRadius))
+                  } else {
+                    Modifier
+                  },
+                ),
               shape = RoundedCornerShape(navigationCornerRadius),
               hazeStateOverride = hazeState,
               blurRadius = 68f,
@@ -5515,7 +5534,13 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
     val browseStateHolder = rememberSaveableStateHolder()
     AnimatedContent(
       targetState = openDetail,
-      modifier = Modifier.fillMaxSize().hazeSource(hazeState),
+      modifier = Modifier
+        .fillMaxSize()
+        .hazeSource(hazeState)
+        .drawWithContent {
+          drawContent()
+          if (uiState.updateDownloading) drawRect(Color.Black.copy(alpha = 0.62f))
+        },
       transitionSpec = {
         when {
           // Opening a detail page: gentle rise from 96% scale with a fade.
@@ -5705,7 +5730,6 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
               onRefreshSync = viewModel::refreshConnectedServices,
               onAutoUpdateChecksChange = viewModel::setAutoUpdateChecks,
               onCheckForUpdates = { viewModel.checkForUpdates(manual = true) },
-              onStartUpdate = viewModel::startUpdate,
             )
           }
         }
@@ -9249,7 +9273,6 @@ private fun SettingsTab(
   onRefreshSync: () -> Unit,
   onAutoUpdateChecksChange: (Boolean) -> Unit,
   onCheckForUpdates: () -> Unit,
-  onStartUpdate: () -> Unit,
 ) {
   var settingsRefreshing by remember { mutableStateOf(false) }
   var settingsSearchVisible by rememberSaveable { mutableStateOf(false) }
@@ -9466,7 +9489,7 @@ private fun SettingsTab(
       }
       item {
         SettingsSection("About") {
-          SettingsNavRow("UP", Color(0xFF22C55E), "App Updates", uiState.availableUpdate?.let { "Version ${it.versionName} available" } ?: "Version ${BuildConfig.VERSION_NAME}", onClick = { onRouteChange(SettingsRoute.AppUpdates) })
+          SettingsNavRow("UP", Color(0xFF22C55E), "App Updates", "Version ${BuildConfig.VERSION_NAME}", onClick = { onRouteChange(SettingsRoute.AppUpdates) })
         }
       }
 
@@ -9669,7 +9692,7 @@ private fun SettingsTab(
         SettingsRoute.Trakt -> item { TraktSettingsSummary(uiState, onRequestTraktDeviceCode, onPollTraktAuthorization, onDisconnectTrakt, onRefreshTrakt) }
         SettingsRoute.Profiles -> item { ProfilesSettingsSummary(uiState, onSwitchProfile, onSelectProfile, onSubmitProfilePin, onCancelProfilePin, onCreateProfile, onUpdateProfile, onDeleteProfile, onMakeDefaultProfile, onUpdateProfilePin) }
         SettingsRoute.Account -> item { AccountSettingsSummary(uiState, onSignOut, onSignIn, onRefreshSync) }
-        SettingsRoute.AppUpdates -> item { AppUpdatesSettingsSummary(uiState, onAutoUpdateChecksChange, onCheckForUpdates, onStartUpdate) }
+        SettingsRoute.AppUpdates -> item { AppUpdatesSettingsSummary(uiState, onAutoUpdateChecksChange, onCheckForUpdates) }
       }
     }
   }
@@ -12100,8 +12123,7 @@ private fun RefreshSyncRow(refreshing: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun AppUpdatesSettingsSummary(uiState: AppUiState, onAutoCheckChange: (Boolean) -> Unit, onCheckNow: () -> Unit, onStartUpdate: () -> Unit) {
-  val release = uiState.availableUpdate
+private fun AppUpdatesSettingsSummary(uiState: AppUiState, onAutoCheckChange: (Boolean) -> Unit, onCheckNow: () -> Unit) {
   Column(verticalArrangement = Arrangement.spacedBy(24.dp)) {
     SettingsSection("App Updates") {
       SettingsSwitchRow("UP", Color(0xFF22C55E), "Check Automatically", "Let StreamDek notify you when a new version is available.", uiState.autoUpdateChecksEnabled, onAutoCheckChange)
@@ -12111,43 +12133,11 @@ private fun AppUpdatesSettingsSummary(uiState: AppUiState, onAutoCheckChange: (B
         Color(0xFF38BDF8),
         "Check for Updates",
         uiState.updateErrorMessage ?: uiState.updateStatusMessage ?: "Check the StreamDek update service now.",
-        value = when { uiState.updateChecking -> "Checking"; release != null -> "Available"; else -> "Current" },
+        value = if (uiState.updateChecking) "Checking" else "Current",
         onClick = onCheckNow,
       )
       SettingsDivider()
       SettingsStaticRow("APP", Color(0xFF94A3B8), "Current Version", BuildConfig.VERSION_NAME)
-    }
-    if (release != null) {
-      Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(28.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))) {
-        Column(modifier = Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-          Box(modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)).border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.38f), RoundedCornerShape(999.dp)).padding(horizontal = 14.dp, vertical = 8.dp)) {
-            Text(if (release.required) "Required update" else "Update available", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Black)
-          }
-          Text("StreamDek ${release.versionName}", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
-          release.fileSizeBytes?.let { Text("Download size ${formatBytesLabel(it).removeSuffix(" used")}", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f), fontWeight = FontWeight.Bold) }
-          if (release.releaseNotes.isNotBlank()) {
-            Text("What is new", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f), fontWeight = FontWeight.Black)
-            Text(release.releaseNotes, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f), style = MaterialTheme.typography.bodyLarge)
-          }
-          uiState.updateProgress?.let { progress ->
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-              Text("${(progress.coerceIn(0f, 1f) * 100).toInt()}% downloaded", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-              LinearProgressIndicator(
-                progress = { progress },
-                modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(999.dp)),
-                color = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-              )
-            }
-          }
-          uiState.updateStatusMessage?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
-          uiState.updateErrorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-          Button(onClick = onStartUpdate, enabled = !uiState.updateDownloading, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary), shape = RoundedCornerShape(999.dp)) {
-            if (uiState.updateDownloading) CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
-            else Text("Update Now", fontWeight = FontWeight.Black)
-          }
-        }
-      }
     }
   }
 }

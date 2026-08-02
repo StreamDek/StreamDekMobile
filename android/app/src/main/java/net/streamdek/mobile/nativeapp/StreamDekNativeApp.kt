@@ -463,8 +463,12 @@ private data class AppUiState(
   val addonsLoading: Boolean = false,
   val addons: List<InstalledAddon> = emptyList(),
   val m3uLoading: Boolean = false,
+  val m3uProgress: Float? = null,
+  val m3uStatusMessage: String? = null,
+  val m3uErrorMessage: String? = null,
   val m3uSources: List<M3uPlaylistSource> = emptyList(),
   val m3uChannels: List<MediaItem> = emptyList(),
+  val m3uVodItems: List<MediaItem> = emptyList(),
   val downloadsEnabled: Boolean = false,
   val downloads: List<DownloadEntry> = emptyList(),
   val debridLoading: Boolean = false,
@@ -603,6 +607,7 @@ private data class FusionBadgeSourceState(
 
 private const val DEFAULT_FUSION_BADGE_URL = "https://pastebin.com/raw/5xiu5fLL"
 private const val MAX_FUSION_BADGE_URLS = 3
+private fun Int.formattedItemCount(): String = String.format("%,d", this)
 private const val LANGUAGE_BADGE_GROUP_ID = "gl"
 private val DEFAULT_RATING_PROVIDER_ORDER = listOf("imdb", "tmdb", "tomatoes", "metacritic", "trakt", "letterboxd", "audience")
 private val DEFAULT_RATING_PROVIDER_IDS = DEFAULT_RATING_PROVIDER_ORDER.toSet()
@@ -699,7 +704,7 @@ private fun MediaItem.isLiveCatalogItem(): Boolean {
   val isLiveTvChannel = sourceCatalogType == "tv" && !looksLikeSeriesDatabaseId(id)
   return sourceCatalogType in liveMediaTypes ||
     isLiveTvChannel ||
-    directStreamUrl != null ||
+    (directStreamUrl != null && sourceCatalogType !in setOf("movie", "series", "vod")) ||
     listOf("live", "channel", "sport", "ultra max tv", "iptv").any { it in catalogText }
 }
 
@@ -1620,6 +1625,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private var streamRequestGeneration: Long = 0L
   private var playbackRequestGeneration: Long = 0L
   private var liveChannelCatalogGeneration: Long = 0L
+  private var m3uLoadGeneration: Long = 0L
   private var liveChannelSwitchSnapshot: LiveChannelSwitchSnapshot? = null
   private var pendingStreamLoad: PendingStreamLoad? = null
   private var pendingDirectContinueEntry: PlaybackMemoryEntry? = null
@@ -2200,7 +2206,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       val addon = uiState.addons.firstOrNull { it.id == fallbackItem.sourceAddonId }
       AddonStream(
         addonId = fallbackItem.sourceAddonId.orEmpty(),
-        addonName = addon?.manifest?.name ?: "Sports source",
+        addonName = addon?.manifest?.name ?: fallbackItem.sourceAddonName ?: if (detailIsLive) "Live source" else "M3U Playlist",
         name = fallbackItem.title,
         title = fallbackItem.title,
         description = fallbackItem.description.ifBlank { null },
@@ -2219,6 +2225,19 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       val fallback = fallbackItem.toFallbackDetail()
       uiState = uiState.copy(
         detailLoading = false, detail = fallback, detailIsLive = true, detailFallbackItem = fallbackItem, selectedPerson = null, personLoading = false,
+        selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null,
+        detailSelectedTab = null, pendingStreamSources = 0, availableStreams = emptyList(), errorMessage = null,
+      )
+      loadStreamsForCurrentDetail(null)
+      return
+    }
+    if (fallbackItem != null && fallbackItem.sourceAddonId?.let(M3uPlaylistManager::isM3uSourceId) == true) {
+      // M3U VOD entries already contain their final playable URL. Avoid sending their local
+      // playlist IDs to TMDB/backend detail endpoints; show the playlist metadata immediately
+      // and expose the direct stream through the normal source/player UI.
+      val fallback = fallbackItem.toFallbackDetail()
+      uiState = uiState.copy(
+        detailLoading = false, detail = fallback, detailIsLive = false, detailFallbackItem = fallbackItem, selectedPerson = null, personLoading = false,
         selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null,
         detailSelectedTab = null, pendingStreamSources = 0, availableStreams = emptyList(), errorMessage = null,
       )
@@ -3183,33 +3202,105 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     launchWork(onStart = {}, block = { apiClient.reorderAddons(uiState.session, reordered.map { it.id }, uiState.activeProfileId) }, onSuccess = { refreshAddons() })
   }
 
+  private fun publishM3uProgress(generation: Long, progress: M3uLoadProgress, aggregateFraction: Float? = progress.fraction) {
+    viewModelScope.launch(Dispatchers.Main.immediate) {
+      if (generation != m3uLoadGeneration) return@launch
+      uiState = uiState.copy(
+        m3uProgress = aggregateFraction?.coerceIn(0f, 1f),
+        m3uStatusMessage = progress.message,
+        m3uErrorMessage = null,
+      )
+    }
+  }
+
   fun loadM3uPlaylists() {
     val sources = M3uPlaylistManager.list()
+    val enabledSources = sources.filter { it.enabled }
+    val generation = ++m3uLoadGeneration
     uiState = uiState.copy(m3uSources = sources)
-    if (sources.none { it.enabled }) {
-      uiState = uiState.copy(m3uChannels = emptyList())
+    if (enabledSources.isEmpty()) {
+      uiState = uiState.copy(
+        m3uLoading = false,
+        m3uProgress = null,
+        m3uStatusMessage = null,
+        m3uErrorMessage = null,
+        m3uChannels = emptyList(),
+        m3uVodItems = emptyList(),
+      )
       return
     }
-    launchWork(
-      onStart = { uiState = uiState.copy(m3uLoading = true) },
-      block = {
-        val channels = sources.filter { it.enabled }.flatMap { source ->
-          M3uPlaylistManager.fetchChannels(source).getOrDefault(emptyList())
-        }
-        Result.success(channels)
-      },
-      onSuccess = { channels -> uiState = uiState.copy(m3uLoading = false, m3uChannels = channels) },
-      onFailure = { uiState = uiState.copy(m3uLoading = false) },
+    uiState = uiState.copy(
+      m3uLoading = true,
+      m3uProgress = 0f,
+      m3uStatusMessage = "Preparing ${enabledSources.size} playlist(s)…",
+      m3uErrorMessage = null,
     )
+    viewModelScope.launch {
+      val liveChannels = mutableListOf<MediaItem>()
+      val vodItems = mutableListOf<MediaItem>()
+      val failures = mutableListOf<String>()
+      enabledSources.forEachIndexed { index, source ->
+        M3uPlaylistManager.fetchItems(source) { progress ->
+          val aggregate = progress.fraction?.let { (index + it) / enabledSources.size.toFloat() }
+          publishM3uProgress(
+            generation,
+            progress.copy(message = "Playlist ${index + 1} of ${enabledSources.size} • ${progress.message}"),
+            aggregate,
+          )
+        }.onSuccess { content ->
+          liveChannels += content.liveChannels
+          vodItems += content.vodItems
+        }.onFailure { error ->
+          failures += "${source.name}: ${error.message ?: "Unable to load"}"
+        }
+      }
+      if (generation != m3uLoadGeneration) return@launch
+      val total = liveChannels.size + vodItems.size
+      uiState = uiState.copy(
+        m3uLoading = false,
+        m3uProgress = 1f,
+        m3uStatusMessage = "Loaded ${total.formattedItemCount()} items: ${liveChannels.size.formattedItemCount()} live and ${vodItems.size.formattedItemCount()} VOD",
+        m3uErrorMessage = failures.takeIf { it.isNotEmpty() }?.joinToString("\n"),
+        m3uChannels = liveChannels,
+        m3uVodItems = vodItems,
+      )
+    }
   }
 
   fun addM3uPlaylist(url: String, name: String) {
-    launchWork(
-      onStart = { uiState = uiState.copy(m3uLoading = true, errorMessage = null) },
-      block = { M3uPlaylistManager.add(url, name) },
-      onSuccess = { loadM3uPlaylists() },
-      onFailure = { message -> uiState = uiState.copy(m3uLoading = false, errorMessage = message) },
+    val generation = ++m3uLoadGeneration
+    uiState = uiState.copy(
+      m3uLoading = true,
+      m3uProgress = 0f,
+      m3uStatusMessage = "Connecting to playlist…",
+      m3uErrorMessage = null,
+      errorMessage = null,
     )
+    viewModelScope.launch {
+      M3uPlaylistManager.add(url, name) { progress -> publishM3uProgress(generation, progress) }
+        .onSuccess { result ->
+          if (generation != m3uLoadGeneration) return@onSuccess
+          val total = result.content.size
+          uiState = uiState.copy(
+            m3uLoading = false,
+            m3uProgress = 1f,
+            m3uStatusMessage = "Added ${result.source.name}: ${total.formattedItemCount()} items (${result.content.liveChannels.size.formattedItemCount()} live, ${result.content.vodItems.size.formattedItemCount()} VOD)",
+            m3uErrorMessage = null,
+            m3uSources = M3uPlaylistManager.list(),
+            m3uChannels = uiState.m3uChannels + result.content.liveChannels,
+            m3uVodItems = uiState.m3uVodItems + result.content.vodItems,
+          )
+        }
+        .onFailure { error ->
+          if (generation != m3uLoadGeneration) return@onFailure
+          uiState = uiState.copy(
+            m3uLoading = false,
+            m3uProgress = null,
+            m3uStatusMessage = null,
+            m3uErrorMessage = error.message ?: "Unable to add that playlist.",
+          )
+        }
+    }
   }
 
   fun removeM3uPlaylist(id: String) {
@@ -3226,7 +3317,6 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     M3uPlaylistManager.move(id, delta)
     uiState = uiState.copy(m3uSources = M3uPlaylistManager.list())
   }
-
   fun setDownloadsEnabled(value: Boolean) {
     appSettingsStore.saveDownloadsEnabled(value)
     uiState = uiState.copy(downloadsEnabled = value)
@@ -3608,7 +3698,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       onStart = { uiState = uiState.copy(updateChecking = true, updateErrorMessage = null, updateStatusMessage = if (manual) "Checking for updates..." else null) },
       block = { apiClient.fetchLatestMobileUpdate() },
       onSuccess = { release ->
-        val available = release.versionCode > BuildConfig.VERSION_CODE
+        val available = release.versionCode > BuildConfig.VERSION_CODE || compareSemanticVersions(release.versionName, BuildConfig.VERSION_NAME) > 0
         val mandatory = release.required || (release.minSupportedVersionCode?.let { BuildConfig.VERSION_CODE < it } == true)
         uiState = uiState.copy(updateChecking = false, availableUpdate = release.takeIf { available }, updatePromptVisible = available && (manual || uiState.autoUpdateChecksEnabled || mandatory), updateStatusMessage = if (available) "Version ${release.versionName} is available." else if (manual) "You are already on the latest version." else null, updateErrorMessage = null)
       },
@@ -5498,7 +5588,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
           ) { tab ->
           when (tab) {
             MainTab.Home -> browseStateHolder.SaveableStateProvider("tab_home") {
-              HomeTab(uiState = uiState, scrollToTopSignal = homeScrollToTopSignal, onReload = { viewModel.loadHome(force = true) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onPlayContinueWatching = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onViewAll = { row -> if (row.id == "continue") selectedTab = MainTab.Continue else viewModel.setBrowseRow(if (row.id == "m3u_playlists") row.copy(items = uiState.m3uChannels) else row) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onResolveHeroTitleLogos = viewModel::resolveHomeHeroTitleLogos, onResolveAddonRatings = viewModel::resolveAddonCatalogRatings, onToggleFavourite = viewModel::toggleFavouriteChannel, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) })
+              HomeTab(uiState = uiState, scrollToTopSignal = homeScrollToTopSignal, onReload = { viewModel.loadHome(force = true) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onPlayContinueWatching = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onViewAll = { row -> if (row.id == "continue") selectedTab = MainTab.Continue else viewModel.setBrowseRow(when (row.id) { "m3u_playlists_live" -> row.copy(items = uiState.m3uChannels); "m3u_playlists_vod" -> row.copy(items = uiState.m3uVodItems); else -> row }) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onResolveHeroTitleLogos = viewModel::resolveHomeHeroTitleLogos, onResolveAddonRatings = viewModel::resolveAddonCatalogRatings, onToggleFavourite = viewModel::toggleFavouriteChannel, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) })
             }
             MainTab.Search -> browseStateHolder.SaveableStateProvider("tab_search") {
               SearchTab(uiState = uiState, ownerKey = watchedOwnerKey(uiState.session, uiState.activeProfileId), onSearch = viewModel::search, onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched)
@@ -6296,13 +6386,14 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
       )
     }
   }
-  val rows = remember(uiState.homeSections, continueWatching, recommendations, trending, uiState.mergedWatchlist, uiState.favouriteChannels, uiState.m3uChannels, uiState.addonCatalogRatings, uiState.showAddonTmdbRatings) {
+  val rows = remember(uiState.homeSections, continueWatching, recommendations, trending, uiState.mergedWatchlist, uiState.favouriteChannels, uiState.m3uChannels, uiState.m3uVodItems, uiState.addonCatalogRatings, uiState.showAddonTmdbRatings) {
     buildList {
       if (continueWatching.isNotEmpty()) add(HomeRow("continue", "Continue Watching", continueWatching))
       if (uiState.favouriteChannels.isNotEmpty()) add(HomeRow("favourites", "Live TV Favourites", uiState.favouriteChannels))
       // Home only needs a small preview. View All receives the complete list separately, which
       // keeps composition and card clicks bounded even for very large IPTV playlists.
-      if (uiState.m3uChannels.isNotEmpty()) add(HomeRow("m3u_playlists", "Playlist Channels", uiState.m3uChannels.take(30)))
+      if (uiState.m3uChannels.isNotEmpty()) add(HomeRow("m3u_playlists_live", "Playlist Live TV", uiState.m3uChannels.take(30)))
+      if (uiState.m3uVodItems.isNotEmpty()) add(HomeRow("m3u_playlists_vod", "Playlist VOD", uiState.m3uVodItems.take(30)))
       uiState.homeSections.forEach { section ->
         if (section.items.isEmpty()) return@forEach
         val items = if (!uiState.showAddonTmdbRatings) section.items else section.items.map { item ->
@@ -6969,8 +7060,8 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
   }
   val browseHazeState = rememberHazeState()
   val modernHeader = headerStyle == HeaderStyle.Modern
-  val isM3uRow = row.id == "m3u_playlists"
-  val isLiveRow = isM3uRow || row.title.contains("live", true) || row.title.contains("sport", true) || row.items.any(MediaItem::isLiveCatalogItem)
+  val isM3uRow = row.id.startsWith("m3u_playlists_")
+  val isLiveRow = row.id == "m3u_playlists_live" || row.title.contains("live", true) || row.title.contains("sport", true) || row.items.any(MediaItem::isLiveCatalogItem)
   val isNetworkRow = row.id == "streaming_networks" || (!isM3uRow && row.items.any { it.type == "network" })
   val usesLandscapeCards = (isLiveRow && liveLandscapeCards) || isNetworkRow
   var query by rememberSaveable(row.id) { mutableStateOf("") }
@@ -11556,7 +11647,16 @@ private fun M3uPlaylistsSettingsSummary(
   var playlistUrl by rememberSaveable { mutableStateOf("") }
   var playlistName by rememberSaveable { mutableStateOf("") }
   var showAddField by rememberSaveable { mutableStateOf(false) }
+  var addingFromSourceCount by rememberSaveable { mutableIntStateOf(-1) }
   val sources = uiState.m3uSources.sortedBy { it.position }
+  LaunchedEffect(sources.size, uiState.m3uLoading, addingFromSourceCount) {
+    if (!uiState.m3uLoading && addingFromSourceCount >= 0 && sources.size > addingFromSourceCount) {
+      playlistUrl = ""
+      playlistName = ""
+      showAddField = false
+      addingFromSourceCount = -1
+    }
+  }
   Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
     Surface(
       color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
@@ -11569,9 +11669,39 @@ private fun M3uPlaylistsSettingsSummary(
         }
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
           Text("M3U playlists", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-          Text("${uiState.m3uChannels.size} channels loaded from ${sources.count { it.enabled }} playlist(s)", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.60f), style = MaterialTheme.typography.bodySmall)
+          Text("${(uiState.m3uChannels.size + uiState.m3uVodItems.size).formattedItemCount()} items (${uiState.m3uChannels.size.formattedItemCount()} live, ${uiState.m3uVodItems.size.formattedItemCount()} VOD) from ${sources.count { it.enabled }} playlist(s)", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.60f), style = MaterialTheme.typography.bodySmall)
         }
         IconButton(onClick = onRefreshM3uPlaylists, enabled = !uiState.m3uLoading) { Icon(Icons.Rounded.Refresh, "Refresh playlists") }
+      }
+    }
+
+    if (uiState.m3uLoading || uiState.m3uStatusMessage != null || uiState.m3uErrorMessage != null) {
+      Surface(
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.07f),
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
+      ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (uiState.m3uLoading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            Text(
+              uiState.m3uStatusMessage ?: if (uiState.m3uLoading) "Loading playlist…" else "Playlist loading finished",
+              modifier = Modifier.weight(1f),
+              color = MaterialTheme.colorScheme.onSurface,
+              fontWeight = FontWeight.SemiBold,
+            )
+          }
+          uiState.m3uProgress?.let { progress ->
+            LinearProgressIndicator(
+              progress = { progress.coerceIn(0f, 1f) },
+              modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(999.dp)),
+              color = MaterialTheme.colorScheme.primary,
+              trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+            )
+            Text("${(progress.coerceIn(0f, 1f) * 100).toInt()}%", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+          }
+          uiState.m3uErrorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+        }
       }
     }
 
@@ -11588,9 +11718,9 @@ private fun M3uPlaylistsSettingsSummary(
             singleLine = true, shape = RoundedCornerShape(16.dp),
           )
           Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(onClick = { showAddField = false; playlistUrl = ""; playlistName = "" }) { Text("Cancel") }
+            TextButton(onClick = { showAddField = false; playlistUrl = ""; playlistName = ""; addingFromSourceCount = -1 }) { Text("Cancel") }
             Button(onClick = {
-              playlistUrl.trim().takeIf { it.isNotEmpty() }?.let { onAddM3uPlaylist(it, playlistName); playlistUrl = ""; playlistName = ""; showAddField = false }
+              playlistUrl.trim().takeIf { it.isNotEmpty() }?.let { addingFromSourceCount = sources.size; onAddM3uPlaylist(it, playlistName) }
             }, enabled = playlistUrl.isNotBlank() && !uiState.m3uLoading, shape = RoundedCornerShape(14.dp)) {
               Text(if (uiState.m3uLoading) "Adding…" else "Add")
             }

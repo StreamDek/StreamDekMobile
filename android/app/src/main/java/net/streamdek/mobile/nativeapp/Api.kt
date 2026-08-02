@@ -255,6 +255,17 @@ data class DiscoverPage(
   val totalPages: Int,
 )
 
+internal fun compareSemanticVersions(left: String, right: String): Int {
+  fun parts(value: String): List<Int> = value.trim().removePrefix("v").substringBefore('-').split('.').map { it.toIntOrNull() ?: 0 }
+  val leftParts = parts(left)
+  val rightParts = parts(right)
+  repeat(maxOf(leftParts.size, rightParts.size)) { index ->
+    val comparison = (leftParts.getOrNull(index) ?: 0).compareTo(rightParts.getOrNull(index) ?: 0)
+    if (comparison != 0) return comparison
+  }
+  return 0
+}
+
 class StreamDekApiClient(context: Context? = null) {
   private val appContext = context?.applicationContext
   private val clientIdentity = appContext?.let { ClientIdentityStore(it).load() }
@@ -1269,30 +1280,106 @@ class StreamDekApiClient(context: Context? = null) {
 
   suspend fun fetchLatestMobileUpdate(): Result<UpdateManifest> = withContext(Dispatchers.IO) {
     runCatching {
-      val response = execute(Request.Builder().url("$apiBaseUrl/public/updates/android-mobile/latest").header("Accept", "application/json").build())
-      ensureOk(response, "Unable to check for updates right now")
-      val json = response.json
-      val versionCode = json.optInt("versionCode")
-      val versionName = json.optString("versionName")
-      val packageName = json.optString("packageName")
-      require(json.optString("platform") == "android-mobile") { "The update service returned the wrong platform" }
-      require(versionCode > 0 && versionName.isNotBlank() && packageName == BuildConfig.APPLICATION_ID) { "The update service returned invalid app metadata" }
-      UpdateManifest(
-        versionCode = versionCode,
-        versionName = versionName,
-        apkUrl = trustedUpdateUrl(json.optString("apkUrl")),
-        releaseNotes = json.optString("releaseNotes"),
-        required = json.optBoolean("required"),
-        minSupportedVersionCode = json.optInt("minSupportedVersionCode").takeIf { json.has("minSupportedVersionCode") && it > 0 },
-        requiredReason = json.optString("requiredReason").takeIf(String::isNotBlank),
-        packageName = packageName,
-        assetName = json.optString("assetName").takeIf(String::isNotBlank),
-        fileSizeBytes = json.optLong("fileSizeBytes").takeIf { json.has("fileSizeBytes") && it > 0L },
-        checksumSha256 = json.optString("checksumSha256").trim().lowercase().takeIf(String::isNotBlank),
+      var serviceFailure: Throwable? = null
+      val serviceManifest = runCatching { fetchUpdateServiceManifest() }
+        .onFailure { serviceFailure = it }
+        .getOrNull()
+
+      // The StreamDek endpoint carries required-update policy, so prefer it when it advertises
+      // a real newer build. If it is stale, malformed, or still points at an older release, the
+      // public GitHub Release becomes a safe source of truth instead of making manual checks fail.
+      if (serviceManifest != null &&
+        serviceManifest.versionCode > BuildConfig.VERSION_CODE &&
+        compareSemanticVersions(serviceManifest.versionName, BuildConfig.VERSION_NAME) > 0
+      ) {
+        return@runCatching serviceManifest
+      }
+
+      val githubManifest = runCatching { fetchGithubMobileUpdate() }.getOrNull()
+      if (githubManifest != null &&
+        (compareSemanticVersions(githubManifest.versionName, serviceManifest?.versionName.orEmpty()) >= 0 || serviceManifest == null)
+      ) {
+        return@runCatching githubManifest
+      }
+      serviceManifest ?: throw IllegalStateException(
+        serviceFailure?.message ?: "StreamDek could not reach either update source.",
+        serviceFailure,
       )
     }
   }
 
+  private fun fetchUpdateServiceManifest(): UpdateManifest {
+    val response = execute(Request.Builder().url("$apiBaseUrl/public/updates/android-mobile/latest").header("Accept", "application/json").build())
+    ensureOk(response, "Unable to check for updates right now")
+    val json = response.json
+    val versionCode = json.optInt("versionCode")
+    val versionName = json.optString("versionName")
+    val packageName = json.optString("packageName")
+    require(json.optString("platform") == "android-mobile") { "The update service returned the wrong platform" }
+    require(versionCode > 0 && versionName.isNotBlank()) { "The update service returned invalid version metadata" }
+    require(packageName == BuildConfig.APPLICATION_ID) {
+      "The update service package is $packageName, expected ${BuildConfig.APPLICATION_ID}"
+    }
+    return UpdateManifest(
+      versionCode = versionCode,
+      versionName = versionName,
+      apkUrl = trustedUpdateUrl(json.optString("apkUrl")),
+      releaseNotes = json.optString("releaseNotes"),
+      required = json.optBoolean("required"),
+      minSupportedVersionCode = json.optInt("minSupportedVersionCode").takeIf { json.has("minSupportedVersionCode") && it > 0 },
+      requiredReason = json.optString("requiredReason").takeIf(String::isNotBlank),
+      packageName = packageName,
+      assetName = json.optString("assetName").takeIf(String::isNotBlank),
+      fileSizeBytes = json.optLong("fileSizeBytes").takeIf { json.has("fileSizeBytes") && it > 0L },
+      checksumSha256 = json.optString("checksumSha256").trim().lowercase().takeIf(String::isNotBlank),
+    )
+  }
+
+  private fun fetchGithubMobileUpdate(): UpdateManifest {
+    val releaseResponse = execute(
+      Request.Builder()
+        .url("https://api.github.com/repos/StreamDek/StreamDekMobile/releases/latest")
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "StreamDek/${BuildConfig.VERSION_NAME}")
+        .build(),
+    )
+    ensureOk(releaseResponse, "Unable to read the latest StreamDek release")
+    val release = releaseResponse.json
+    val tag = release.optString("tag_name")
+    val versionName = tag.removePrefix("v")
+    require(versionName.matches(Regex("\\d+\\.\\d+\\.\\d+"))) { "GitHub returned an invalid release version" }
+    val assets = release.optJSONArray("assets") ?: JSONArray()
+    val asset = (0 until assets.length())
+      .map { assets.getJSONObject(it) }
+      .firstOrNull { it.optString("name").endsWith(".apk", ignoreCase = true) }
+      ?: error("The latest StreamDek release does not contain an APK")
+
+    val propertiesUrl = "https://raw.githubusercontent.com/StreamDek/StreamDekMobile/$tag/android/version.properties"
+    val versionProperties = client.newCall(
+      Request.Builder().url(propertiesUrl).header("User-Agent", "StreamDek/${BuildConfig.VERSION_NAME}").build(),
+    ).execute().use { response ->
+      require(response.isSuccessful) { "Unable to read the release version metadata" }
+      response.body?.string().orEmpty()
+    }
+    val versionCode = versionProperties.lineSequence()
+      .firstOrNull { it.trim().startsWith("VERSION_CODE=") }
+      ?.substringAfter('=')?.trim()?.toIntOrNull()
+      ?: error("The release does not declare VERSION_CODE")
+    val digest = asset.optString("digest").removePrefix("sha256:").trim().lowercase().takeIf { it.length == 64 }
+    return UpdateManifest(
+      versionCode = versionCode,
+      versionName = versionName,
+      apkUrl = trustedUpdateUrl(asset.optString("browser_download_url")),
+      releaseNotes = release.optString("body"),
+      required = false,
+      minSupportedVersionCode = null,
+      requiredReason = null,
+      packageName = BuildConfig.APPLICATION_ID,
+      assetName = asset.optString("name").takeIf(String::isNotBlank),
+      fileSizeBytes = asset.optLong("size").takeIf { it > 0L },
+      checksumSha256 = digest,
+    )
+  }
   suspend fun downloadUpdate(release: UpdateManifest, destination: File, onProgress: (Long, Long?) -> Unit): Result<File> = withContext(Dispatchers.IO) {
     runCatching {
       destination.parentFile?.mkdirs()

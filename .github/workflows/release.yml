@@ -5,17 +5,6 @@ on:
     tags:
       - "v*.*.*"
   workflow_dispatch:
-    inputs:
-      version_name:
-        description: Semantic version to build
-        required: true
-        default: "2.0.0"
-        type: string
-      publish_release:
-        description: Publish a GitHub Release and update manifest
-        required: true
-        default: false
-        type: boolean
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -41,73 +30,84 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Validate release version
+      - name: Validate release tag
         id: version
         shell: bash
-        env:
-          INPUT_VERSION_NAME: ${{ inputs.version_name }}
-          INPUT_PUBLISH_RELEASE: ${{ inputs.publish_release }}
         run: |
           set -Eeuo pipefail
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            release_tag="$GITHUB_REF_NAME"
-            version_name="${release_tag#v}"
-            publish_release="true"
-          else
-            version_name="${INPUT_VERSION_NAME#v}"
-            release_tag="v$version_name"
-            publish_release="${INPUT_PUBLISH_RELEASE:-false}"
+
+          tag_name="${GITHUB_REF_NAME}"
+          version_name="${tag_name#v}"
+          if [ -z "$version_name" ] || [ "$version_name" = "$tag_name" ]; then
+            echo "Release tag must use the vX.Y.Z format."
+            exit 1
           fi
           if [[ ! "$version_name" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Release version must use semantic X.Y.Z format."
+            echo "Release tag must use a semantic version like v1.2.3."
             exit 1
           fi
-          node scripts/validate-version.js "$version_name"
-          IFS='.' read -r major minor patch <<< "$version_name"
-          if (( minor > 999 || patch > 999 )); then
-            echo "Minor and patch versions must be at most 999."
+
+          version_file="android/version.properties"
+          if [ ! -f "$version_file" ]; then
+            echo "Missing $version_file."
             exit 1
           fi
-          version_code=$((major * 1000000 + minor * 1000 + patch))
-          if (( version_code <= 36 )); then
-            echo "Version code must remain above production code 36."
+          committed_version_name="$(sed -n 's/^VERSION_NAME=//p' "$version_file" | tail -n 1)"
+          version_code="$(sed -n 's/^VERSION_CODE=//p' "$version_file" | tail -n 1)"
+          if [ "$committed_version_name" != "$version_name" ]; then
+            echo "Release tag $tag_name does not match VERSION_NAME=$committed_version_name."
             exit 1
           fi
+          if [[ ! "$version_code" =~ ^[1-9][0-9]*$ ]]; then
+            echo "VERSION_CODE must be a positive integer."
+            exit 1
+          fi
+
           echo "version_name=$version_name" >> "$GITHUB_OUTPUT"
           echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
-          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
-          echo "publish_release=$publish_release" >> "$GITHUB_OUTPUT"
 
       - name: Detect Android project
         id: android
         shell: bash
         run: |
           set -Eeuo pipefail
-          project_dir="android"
-          test -f "$project_dir/gradlew"
+
+          if [ -f "android/gradlew" ]; then
+            project_dir="android"
+          else
+            project_dir="$(find . -maxdepth 4 -name gradlew -path '*/android/gradlew' -print -quit | sed 's#/gradlew$##')"
+          fi
+
+          if [ -z "${project_dir:-}" ] || [ ! -f "$project_dir/gradlew" ]; then
+            echo "No Android Gradle project found."
+            exit 1
+          fi
           chmod +x "$project_dir/gradlew"
+
+          app_dir="$project_dir/app"
+          if [ ! -f "$app_dir/build.gradle" ] && [ ! -f "$app_dir/build.gradle.kts" ]; then
+            echo "Android app module not found at $app_dir."
+            exit 1
+          fi
+
           echo "project_dir=$project_dir" >> "$GITHUB_OUTPUT"
-          echo "app_dir=$project_dir/app" >> "$GITHUB_OUTPUT"
+          echo "app_dir=$app_dir" >> "$GITHUB_OUTPUT"
 
       - name: Write CI environment file
         shell: bash
         env:
           STREAMDEK_API_URL_VAR: ${{ vars.STREAMDEK_API_URL }}
           STREAMDEK_API_URL_SECRET: ${{ secrets.STREAMDEK_API_URL }}
-          EXPO_PUBLIC_API_BASE_URL_VAR: ${{ vars.EXPO_PUBLIC_API_BASE_URL }}
-          EXPO_PUBLIC_API_BASE_URL_SECRET: ${{ secrets.EXPO_PUBLIC_API_BASE_URL }}
         run: |
           set -Eeuo pipefail
-          api_url="${STREAMDEK_API_URL_VAR:-${STREAMDEK_API_URL_SECRET:-${EXPO_PUBLIC_API_BASE_URL_VAR:-${EXPO_PUBLIC_API_BASE_URL_SECRET:-}}}}"
+
+          api_url="${STREAMDEK_API_URL_VAR:-$STREAMDEK_API_URL_SECRET}"
+
           if [ -z "$api_url" ]; then
             echo "STREAMDEK_API_URL repository variable or secret is required."
             exit 1
           fi
+
           printf 'STREAMDEK_API_URL=%s\n' "$api_url" > .env
 
       - name: Decode Android keystore
@@ -125,9 +125,12 @@ jobs:
               exit 1
             fi
           done
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "${{ steps.android.outputs.app_dir }}/streamdek-release.jks"
+          if ! printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "${{ steps.android.outputs.app_dir }}/streamdek-release.jks"; then
+            echo "ANDROID_KEYSTORE_BASE64 is not valid base64."
+            exit 1
+          fi
 
-      - name: Build signed release APK
+      - name: Build release APK
         working-directory: ${{ steps.android.outputs.project_dir }}
         shell: bash
         env:
@@ -137,7 +140,9 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           STREAMDEK_VERSION_NAME: ${{ steps.version.outputs.version_name }}
           STREAMDEK_VERSION_CODE: ${{ steps.version.outputs.version_code }}
-        run: ./gradlew --no-daemon clean assembleRelease
+        run: |
+          set -Eeuo pipefail
+          ./gradlew --no-daemon clean assembleRelease
 
       - name: Collect APK
         id: apk
@@ -146,112 +151,47 @@ jobs:
           set -Eeuo pipefail
           mkdir -p dist
           apk_path="$(find "${{ steps.android.outputs.app_dir }}/build/outputs/apk/release" -name '*.apk' -print -quit)"
-          test -n "$apk_path"
-          release_apk="dist/streamdek-${{ steps.version.outputs.release_tag }}.apk"
+          if [ -z "${apk_path:-}" ]; then
+            echo "Release APK was not produced."
+            exit 1
+          fi
+          release_apk="dist/streamdek-${{ github.ref_name }}.apk"
           cp "$apk_path" "$release_apk"
           echo "apk_path=$release_apk" >> "$GITHUB_OUTPUT"
 
-      - name: Upload signed APK artifact
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: streamdek-${{ steps.version.outputs.release_tag }}-apk
+          name: streamdek-${{ github.ref_name }}-apk
           path: ${{ steps.apk.outputs.apk_path }}
           if-no-files-found: error
 
-      - name: Detect release notes
-        if: steps.version.outputs.publish_release == 'true'
+      - name: Detect custom release notes
         id: release_notes
         shell: bash
         run: |
-          notes_path=".github/release-notes/${{ steps.version.outputs.release_tag }}.md"
+          set -Eeuo pipefail
+          notes_path=".github/release-notes/${GITHUB_REF_NAME}.md"
           if [ -f "$notes_path" ]; then
             echo "body_path=$notes_path" >> "$GITHUB_OUTPUT"
             echo "has_custom=true" >> "$GITHUB_OUTPUT"
           else
+            echo "body_path=" >> "$GITHUB_OUTPUT"
             echo "has_custom=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create GitHub Release with custom notes
-        if: steps.version.outputs.publish_release == 'true' && steps.release_notes.outputs.has_custom == 'true'
+      - name: Create GitHub Release (custom notes)
+        if: steps.release_notes.outputs.has_custom == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.release_tag }}
           files: ${{ steps.apk.outputs.apk_path }}
           body_path: ${{ steps.release_notes.outputs.body_path }}
           fail_on_unmatched_files: true
 
-      - name: Create GitHub Release with generated notes
-        if: steps.version.outputs.publish_release == 'true' && steps.release_notes.outputs.has_custom != 'true'
+      - name: Create GitHub Release (generated notes)
+        if: steps.release_notes.outputs.has_custom != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.release_tag }}
           files: ${{ steps.apk.outputs.apk_path }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-
-      - name: Read published release metadata
-        if: steps.version.outputs.publish_release == 'true'
-        id: release_meta
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release view "${{ steps.version.outputs.release_tag }}" --json body --jq '.body // ""' > dist/release-notes.txt
-          published_at="$(gh release view "${{ steps.version.outputs.release_tag }}" --json publishedAt --jq '.publishedAt // ""')"
-          echo "notes_path=dist/release-notes.txt" >> "$GITHUB_OUTPUT"
-          echo "published_at=$published_at" >> "$GITHUB_OUTPUT"
-
-      - name: Generate update manifest
-        if: steps.version.outputs.publish_release == 'true'
-        id: manifest
-        shell: bash
-        env:
-          UPDATE_PLATFORM: android-mobile
-          UPDATE_PACKAGE_NAME: com.anonymous.streamdekmobile
-          UPDATE_VERSION_CODE: ${{ steps.version.outputs.version_code }}
-          UPDATE_VERSION_NAME: ${{ steps.version.outputs.version_name }}
-          UPDATE_ASSET_NAME: streamdek-${{ steps.version.outputs.release_tag }}.apk
-          UPDATE_APK_PATH: ${{ steps.apk.outputs.apk_path }}
-          UPDATE_APK_URL: https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.release_tag }}/streamdek-${{ steps.version.outputs.release_tag }}.apk
-          UPDATE_MANIFEST_OUTPUT_PATH: dist/latest.json
-          UPDATE_REQUIRED: "false"
-          UPDATE_RELEASE_NOTES_FILE: ${{ steps.release_meta.outputs.notes_path }}
-          UPDATE_PUBLISHED_AT: ${{ steps.release_meta.outputs.published_at }}
-        run: node scripts/generate-update-manifest.js
-
-      - name: Upload update manifest artifact
-        if: steps.version.outputs.publish_release == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: streamdek-${{ steps.version.outputs.release_tag }}-update-manifest
-          path: dist/latest.json
-          if-no-files-found: error
-
-      - name: Prepare remote manifest directory
-        if: steps.version.outputs.publish_release == 'true'
-        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262
-        env:
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT || 22 }}
-          envs: DEPLOY_PATH
-          script_stop: true
-          script: |
-            set -Eeuo pipefail
-            test -n "${DEPLOY_PATH:-}"
-            mkdir -p "$DEPLOY_PATH/release-manifests/android-mobile"
-
-      - name: Upload update manifest to VPS
-        if: steps.version.outputs.publish_release == 'true'
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT || 22 }}
-          source: dist/latest.json
-          target: ${{ secrets.DEPLOY_PATH }}/release-manifests/android-mobile
-          strip_components: 1

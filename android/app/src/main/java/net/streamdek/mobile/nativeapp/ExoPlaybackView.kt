@@ -48,10 +48,21 @@ class ExoPlaybackView @JvmOverloads constructor(
   var onStallChangedCallback: ((Boolean) -> Unit)? = null
 
   private var exoPlayer: ExoPlayer? = null
+  // A source change on an already-playing instance (live channel switch) prepares the new
+  // player here, in the background, while the currently-visible `exoPlayer` keeps playing
+  // undisturbed. Only once the candidate reports STATE_READY (or fails) do we swap it in -
+  // this is what avoids the black "shutter" flash `player = null` would otherwise cause.
+  private var pendingPlayer: ExoPlayer? = null
+  private var pendingListener: Player.Listener? = null
   private var source: String? = null
+  private var activeSource: String? = null
+  private var retiringPlayer: ExoPlayer? = null
+  private var retiringSource: String? = null
+  private var awaitingFirstFrameAfterPromotion = false
   private var requestHeaders: Map<String, String> = emptyMap()
   private var pendingPaused = false
   private var pendingSpeed = 1.0
+  private var pendingVolume = 1f
   private var preferredAudioLanguage = "en"
   private var subtitlePositionPercent = 92
   private var pendingSubtitle: MediaItem.SubtitleConfiguration? = null
@@ -69,6 +80,10 @@ class ExoPlaybackView @JvmOverloads constructor(
 
   init {
     useController = false
+    // Retain the last rendered frame while PlayerView moves from the old, visible player to
+    // an already-prepared replacement. Without this, PlayerView briefly exposes its black
+    // shutter between detaching the old video output and receiving the new first frame.
+    setKeepContentOnPlayerReset(true)
     setShutterBackgroundColor(Color.BLACK)
     keepScreenOn = true
     subtitleView?.setApplyEmbeddedStyles(false)
@@ -83,6 +98,7 @@ class ExoPlaybackView @JvmOverloads constructor(
 
   override fun onDetachedFromWindow() {
     removeCallbacks(progressTicker)
+    releasePendingPlayer()
     releasePlayer()
     clearCallbacks()
     super.onDetachedFromWindow()
@@ -98,19 +114,33 @@ class ExoPlaybackView @JvmOverloads constructor(
   fun setSource(url: String?) {
     val next = url?.trim().orEmpty()
     if (next.isBlank() || next == source) return
+    val hadActivePlayer = exoPlayer != null
     source = next
-    if (isAttachedToWindow) prepareSource(next)
+    if (!isAttachedToWindow) return
+    if (hadActivePlayer) prepareSourceInBackground(next) else prepareSource(next)
   }
 
   fun reloadSource() {
     val current = source ?: return
-    prepareSource(current, exoPlayer?.currentPosition ?: 0L)
+    // If the requested source has not replaced the visible source yet, this is a retry of a
+    // failed/slow live-channel candidate. Keep the working channel visible and retry in the
+    // background. A normal reload of the active source can still replace immediately.
+    if (exoPlayer != null && activeSource != current) {
+      prepareSourceInBackground(current)
+    } else {
+      prepareSource(current, exoPlayer?.currentPosition ?: 0L)
+    }
   }
 
   fun setPaused(paused: Boolean) {
     pendingPaused = paused
     keepScreenOn = !paused
     exoPlayer?.playWhenReady = !paused
+  }
+
+  fun setVolume(volume: Float) {
+    pendingVolume = volume.coerceIn(0f, 1f)
+    exoPlayer?.volume = pendingVolume
   }
 
   fun seekTo(positionSeconds: Double) {
@@ -189,13 +219,15 @@ class ExoPlaybackView @JvmOverloads constructor(
     subtitleView?.setBottomPaddingFraction(((100 - subtitlePositionPercent) / 100f).coerceIn(0.02f, 0.50f))
   }
 
-  private fun prepareSource(url: String, startPositionMs: Long = 0L) {
-    releasePlayer()
+  private fun buildPlayer(url: String, startPositionMs: Long): ExoPlayer {
     val httpFactory = DefaultHttpDataSource.Factory()
       .setUserAgent(DEFAULT_USER_AGENT)
       .setAllowCrossProtocolRedirects(true)
       .setDefaultRequestProperties(requestHeaders)
-    val dataSourceFactory = DefaultDataSource.Factory(context, httpFactory)
+    val upstreamFactory = DefaultDataSource.Factory(context, httpFactory)
+    // Transparently serves already-downloaded content from disk (see StreamDekDownloads) when
+    // the URL matches - falls through to the network otherwise, same as any cache miss.
+    val dataSourceFactory = StreamDekDownloads.wrapWithDownloadCache(upstreamFactory)
     val renderers = DefaultRenderersFactory(context)
       .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
       .setEnableDecoderFallback(true)
@@ -203,9 +235,6 @@ class ExoPlaybackView @JvmOverloads constructor(
       .setRenderersFactory(renderers)
       .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
       .build()
-    exoPlayer = active
-    player = active
-    active.addListener(listener)
     preferredAudioLanguageTags(preferredAudioLanguage).takeIf(List<String>::isNotEmpty)?.let { tags ->
       active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
         .setPreferredAudioLanguages(*tags.toTypedArray())
@@ -218,9 +247,79 @@ class ExoPlaybackView @JvmOverloads constructor(
       .build()
     active.setMediaItem(item, startPositionMs.coerceAtLeast(0L))
     active.setPlaybackSpeed(pendingSpeed.toFloat())
+    active.volume = pendingVolume
     active.playWhenReady = !pendingPaused
     active.prepare()
+    return active
+  }
+
+  private fun prepareSource(url: String, startPositionMs: Long = 0L) {
+    releasePendingPlayer()
+    releasePlayer()
+    val active = buildPlayer(url, startPositionMs)
+    exoPlayer = active
+    activeSource = url
+    player = active
+    active.addListener(listener)
     Log.i(TAG, "Preparing CNCVerse VOD with Media3: ${url.substringBefore('?')}")
+  }
+
+  /** Prepares [url] on a second, not-yet-visible player while the current one keeps playing.
+   * Promotes it (see [promotePendingPlayer]) once it's actually ready to show, so a live
+   * channel switch never shows PlayerView's black shutter from `player = null`. */
+  private fun prepareSourceInBackground(url: String) {
+    releasePendingPlayer()
+    val candidate = buildPlayer(url, 0L)
+    // The outgoing channel keeps supplying audio until this candidate has rendered its first
+    // frame. Muting the candidate prevents overlapping audio during that short handoff.
+    candidate.volume = 0f
+    pendingPlayer = candidate
+    val swapListener = object : Player.Listener {
+      override fun onPlaybackStateChanged(state: Int) {
+        if (state == Player.STATE_READY && pendingPlayer === candidate) promotePendingPlayer(candidate, url)
+      }
+      override fun onPlayerError(error: PlaybackException) {
+        if (pendingPlayer !== candidate) return
+        Log.w(TAG, "Background source prepare failed; keeping the current source visible", error)
+        pendingPlayer = null
+        pendingListener = null
+        candidate.release()
+        // Report through the normal retry/failover path, but never tear down the working
+        // player just to surface this candidate's failure.
+        onErrorCallback?.invoke(error.localizedMessage ?: "This source could not be played.")
+      }
+    }
+    candidate.addListener(swapListener)
+    pendingListener = swapListener
+    Log.i(TAG, "Preparing next live source in background: ${url.substringBefore('?')}")
+  }
+
+  private fun promotePendingPlayer(candidate: ExoPlayer, url: String) {
+    pendingListener?.let(candidate::removeListener)
+    pendingListener = null
+    pendingPlayer = null
+    releaseRetiringPlayer()
+    // Attach the already-buffered player without ever assigning `player = null`. PlayerView
+    // retains the outgoing frame, while the outgoing player keeps its audio alive, until the
+    // replacement confirms its first rendered frame in listener.onRenderedFirstFrame().
+    val previous = exoPlayer
+    previous?.removeListener(listener)
+    retiringPlayer = previous
+    retiringSource = activeSource
+    exoPlayer = candidate
+    activeSource = url
+    awaitingFirstFrameAfterPromotion = true
+    candidate.addListener(listener)
+    player = candidate
+    dispatchTracks(candidate.currentTracks)
+  }
+
+  private fun releasePendingPlayer() {
+    val pending = pendingPlayer ?: return
+    pendingListener?.let(pending::removeListener)
+    pendingListener = null
+    pendingPlayer = null
+    pending.release()
   }
 
   private val listener = object : Player.Listener {
@@ -228,18 +327,27 @@ class ExoPlaybackView @JvmOverloads constructor(
       onStallChangedCallback?.invoke(state == Player.STATE_BUFFERING)
       when (state) {
         Player.STATE_READY -> {
-          val active = exoPlayer ?: return
-          val duration = active.duration.takeIf { it > 0 && it != C.TIME_UNSET }?.div(1000.0) ?: 0.0
-          val videoSize = active.videoSize
-          Log.i(TAG, "Ready duration=${duration}s video=${videoSize.width}x${videoSize.height}")
-          onLoadCallback?.invoke(duration, videoSize.width, videoSize.height)
+          // A background-prepared replacement was already READY before it was attached to
+          // PlayerView. Its switch is complete only after onRenderedFirstFrame(), not here.
+          if (!awaitingFirstFrameAfterPromotion) dispatchLoaded(exoPlayer ?: return)
         }
         Player.STATE_ENDED -> onEndCallback?.invoke()
       }
     }
 
+    override fun onRenderedFirstFrame() {
+      if (!awaitingFirstFrameAfterPromotion) return
+      val active = exoPlayer ?: return
+      awaitingFirstFrameAfterPromotion = false
+      active.volume = pendingVolume
+      releaseRetiringPlayer()
+      Log.i(TAG, "Replacement rendered first frame")
+      dispatchLoaded(active)
+    }
+
     override fun onPlayerError(error: PlaybackException) {
       Log.e(TAG, "Media3 playback failed", error)
+      if (awaitingFirstFrameAfterPromotion) restoreRetiringPlayer()
       onErrorCallback?.invoke(error.localizedMessage ?: "This source could not be played.")
     }
 
@@ -286,11 +394,48 @@ class ExoPlaybackView @JvmOverloads constructor(
       .build()
   }
 
+  private fun dispatchLoaded(active: ExoPlayer) {
+    val duration = active.duration.takeIf { it > 0 && it != C.TIME_UNSET }?.div(1000.0) ?: 0.0
+    val videoSize = active.videoSize
+    Log.i(TAG, "Ready duration=${duration}s video=${videoSize.width}x${videoSize.height}")
+    onLoadCallback?.invoke(duration, videoSize.width, videoSize.height)
+  }
+
+  private fun restoreRetiringPlayer() {
+    val failed = exoPlayer
+    val previous = retiringPlayer
+    val previousSource = retiringSource
+    awaitingFirstFrameAfterPromotion = false
+    failed?.removeListener(listener)
+    if (previous != null) {
+      exoPlayer = previous
+      activeSource = previousSource
+      retiringPlayer = null
+      retiringSource = null
+      previous.addListener(listener)
+      player = previous
+    } else {
+      exoPlayer = null
+      activeSource = null
+      player = null
+    }
+    failed?.release()
+  }
+
+  private fun releaseRetiringPlayer() {
+    retiringPlayer?.release()
+    retiringPlayer = null
+    retiringSource = null
+  }
+
   private fun releasePlayer() {
     player = null
     exoPlayer?.removeListener(listener)
     exoPlayer?.release()
     exoPlayer = null
+    activeSource = null
+    awaitingFirstFrameAfterPromotion = false
+    releaseRetiringPlayer()
   }
 
   private fun clearCallbacks() {

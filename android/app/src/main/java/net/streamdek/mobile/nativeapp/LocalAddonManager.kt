@@ -123,6 +123,17 @@ object LocalAddonManager {
 
   fun isLocalAddonId(id: String): Boolean = id.startsWith(ID_PREFIX)
 
+  /** Copies raw add-on records from one owner's storage to another's, without disturbing
+   * whichever owner is currently selected. Used to move a guest's locally-added add-ons
+   * into a newly-registered account. Never overwrites a target that already has add-ons. */
+  fun copyProfileStorageTo(fromOwnerKey: String, toOwnerKey: String) {
+    val storage = prefs ?: return
+    val fromKey = "$KEY_ADDONS:${fromOwnerKey.ifBlank { "guest" }}"
+    val toKey = "$KEY_ADDONS:${toOwnerKey.ifBlank { "guest" }}"
+    if (fromKey == toKey || !storage.getString(toKey, null).isNullOrBlank()) return
+    storage.getString(fromKey, null)?.takeIf { it.isNotBlank() }?.let { raw -> storage.edit().putString(toKey, raw).apply() }
+  }
+
   private fun readAll(): List<LocalAddonRecord> {
     val raw = prefs?.getString(addonsKey(), null) ?: return emptyList()
     return runCatching {

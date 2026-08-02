@@ -3,8 +3,15 @@ apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "org.jetbrains.kotlin.plugin.compose"
 
 def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
-def ciVersionName = (findProperty("STREAMDEK_VERSION_NAME") ?: System.getenv("STREAMDEK_VERSION_NAME") ?: "2.0.0").toString()
-def ciVersionCode = (findProperty("STREAMDEK_VERSION_CODE") ?: System.getenv("STREAMDEK_VERSION_CODE") ?: "2000000").toString().toInteger()
+def versionPropertiesFile = rootProject.file("version.properties")
+def versionProperties = new Properties()
+if (versionPropertiesFile.exists()) {
+    versionPropertiesFile.withInputStream { versionProperties.load(it) }
+}
+def defaultVersionName = versionProperties.getProperty("VERSION_NAME", "1.0.0")
+def defaultVersionCode = versionProperties.getProperty("VERSION_CODE", "1")
+def ciVersionName = (findProperty("STREAMDEK_VERSION_NAME") ?: System.getenv("STREAMDEK_VERSION_NAME") ?: defaultVersionName).toString()
+def ciVersionCode = (findProperty("STREAMDEK_VERSION_CODE") ?: System.getenv("STREAMDEK_VERSION_CODE") ?: defaultVersionCode).toString().toInteger()
 def ciStoreFile = System.getenv("ANDROID_KEYSTORE_PATH")
 def ciStorePassword = System.getenv("ANDROID_STORE_PASSWORD")
 def ciKeyAlias = System.getenv("ANDROID_KEY_ALIAS")
@@ -59,7 +66,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.anonymous.streamdekmobile"
+        applicationId = "net.streamdek.mobile"
         minSdkVersion 24
         targetSdkVersion 36
         versionCode = ciVersionCode

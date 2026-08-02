@@ -693,7 +693,7 @@ class StreamDekApiClient(context: Context? = null) {
         Request.Builder()
           .url("$apiBaseUrl/profiles/$profileId")
           .delete()
-          .headers(authHeaders(session))
+          .headers(authHeaders(session, includeContentType = false))
           .build(),
       )
       ensureOk(response, "Failed to delete profile")

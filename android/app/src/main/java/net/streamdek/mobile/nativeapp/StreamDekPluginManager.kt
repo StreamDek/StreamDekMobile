@@ -93,6 +93,9 @@ private val CHEERIO_COMPAT_SHIM = """
 class StreamDekPluginManager(context: Context) {
   private val prefs = context.getSharedPreferences("streamdek_plugins", Context.MODE_PRIVATE)
   private val http = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
+  // Keyed by "${provider.id}:${provider.code.hashCode()}" so a provider refresh that changes
+  // its scraper source naturally invalidates the cached bytecode instead of reusing stale code.
+  private val providerBytecodeCache = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
   private var storageKey = "state"
   @Volatile var state = load(storageKey); private set
   var onStateChanged: ((String) -> Unit)? = null
@@ -252,12 +255,19 @@ class StreamDekPluginManager(context: Context) {
           }
         }
       }
-      evaluate<Any?>(CHEERIO_COMPAT_SHIM + "\n" + "globalThis.window=globalThis;globalThis.self=globalThis;globalThis.global=globalThis;globalThis.console={log:function(){},error:function(){__sd_log([].slice.call(arguments).map(String).join(' '))}};globalThis.setTimeout=function(fn){fn();return 0};globalThis.clearTimeout=function(){};" +
+      val providerSource = CHEERIO_COMPAT_SHIM + "\n" + "globalThis.window=globalThis;globalThis.self=globalThis;globalThis.global=globalThis;globalThis.console={log:function(){},error:function(){__sd_log([].slice.call(arguments).map(String).join(' '))}};globalThis.setTimeout=function(fn){fn();return 0};globalThis.clearTimeout=function(){};" +
         "var __sd_types=new Proxy({isArrayBuffer:function(v){return v instanceof ArrayBuffer},isTypedArray:function(v){return ArrayBuffer.isView(v)}},{get:function(t,k){return t[k]||function(){return false}}});" +
         "function __sd_emitter(){this._events={}};__sd_emitter.prototype.on=function(n,f){(this._events[n]||(this._events[n]=[])).push(f);return this};__sd_emitter.prototype.once=function(n,f){var s=this;function w(){s.removeListener(n,w);return f.apply(s,arguments)}return this.on(n,w)};__sd_emitter.prototype.emit=function(n){var a=[].slice.call(arguments,1);(this._events[n]||[]).slice().forEach(function(f){f.apply(null,a)});return true};__sd_emitter.prototype.removeListener=function(n,f){this._events[n]=(this._events[n]||[]).filter(function(x){return x!==f});return this};" +
         "function require(n){if(n==='cheerio-without-node-native'||n==='cheerio')return __sd_cheerio;if(n==='crypto-js')return __sdCrypto;if(n==='util'||n==='util/types')return n==='util/types'?__sd_types:{types:__sd_types,inherits:function(c,p){c.prototype=Object.create(p.prototype);c.prototype.constructor=c},promisify:function(f){return function(){var a=[].slice.call(arguments);return new Promise(function(ok,no){a.push(function(e,v){e?no(e):ok(v)});f.apply(null,a)})}},inspect:function(v){try{return JSON.stringify(v)}catch(e){return String(v)}}};if(n==='events')return {EventEmitter:__sd_emitter};if(n==='querystring')return {escape:encodeURIComponent,unescape:decodeURIComponent,stringify:function(o){return Object.keys(o||{}).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(o[k])}).join('&')}};if(n==='url')return {URL:globalThis.URL,URLSearchParams:globalThis.URLSearchParams};throw new Error('Module not available in sandbox: '+n)};" +
         "globalThis.fetch=async function(u,o){o=o||{};var r=JSON.parse(__sd_fetch(String(u),String(o.method||\"GET\"),JSON.stringify(o.headers||{}),String(o.body||\"\")));return {ok:r.ok,status:r.status,url:r.url,headers:{get:function(n){return r.headers[String(n).toLowerCase()]||null}},text:function(){return Promise.resolve(r.body)},json:function(){return Promise.resolve(JSON.parse(r.body))}}};" +
-        "var module={exports:{}};var exports=module.exports;(function(){" + provider.code + "})();")
+        "var module={exports:{}};var exports=module.exports;(function(){" + provider.code + "})();"
+      // Compiling this ~5KB+ shim/boilerplate/provider-source blob to bytecode is the
+      // expensive part of each streams() call; cache it per provider so repeat requests
+      // (e.g. re-opening a detail page) only re-run the cheap per-call bytecode below.
+      val providerBytecode = providerBytecodeCache.getOrPut("${provider.id}:${provider.code.hashCode()}") {
+        compile(providerSource, "provider.js", false)
+      }
+      evaluate<Any?>(providerBytecode)
       val call = "(async function(){var f=module.exports.getStreams||globalThis.getStreams;if(typeof f!=='function')throw new Error('Plugin does not export getStreams');var r=await f(" +
         JSONObject.quote(id) + "," + JSONObject.quote(type) + "," + (season?.toString() ?: "undefined") + "," + (episode?.toString() ?: "undefined") +
         ");__capture_result(JSON.stringify(r||[]));})().catch(function(e){__capture_error(String(e&&e.stack||e));})"

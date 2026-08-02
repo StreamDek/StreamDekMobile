@@ -3,6 +3,7 @@ package net.streamdek.mobile
 import android.graphics.Color
 import android.app.PictureInPictureParams
 import android.content.Intent
+import android.content.Context
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -13,8 +14,13 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import net.streamdek.mobile.nativeapp.StreamDekNativeApp
 import net.streamdek.mobile.nativeapp.normalizeAddonManifestUrl
+import net.streamdek.mobile.nativeapp.localizedAppContext
 
 class MainActivity : ComponentActivity() {
+  override fun attachBaseContext(newBase: Context) {
+    super.attachBaseContext(localizedAppContext(newBase))
+  }
+
   private val pendingAddonManifestUrl = mutableStateOf<String?>(null)
 
   companion object {

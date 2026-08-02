@@ -56,7 +56,9 @@ import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
-import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Replay10
@@ -67,8 +69,10 @@ import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.ViewList
 import androidx.compose.material3.Surface
 import androidx.compose.material.icons.rounded.VolumeUp
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -91,6 +95,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -126,7 +131,7 @@ import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 
-private enum class PlayerPanel { None, Sources, Audio, Subtitles, Speed }
+private enum class PlayerPanel { None, Sources, Audio, Subtitles, Speed, Engine }
 internal enum class ActivePlaybackEngine { Media3, MPV }
 internal fun initialPlaybackEngine(preference: String): ActivePlaybackEngine =
   if (preference.equals("MPV", ignoreCase = true)) ActivePlaybackEngine.MPV else ActivePlaybackEngine.Media3
@@ -167,6 +172,10 @@ fun NativePlayerScreen(
   favouriteChannels: List<MediaItem> = emptyList(),
   favouriteDrawerCards: Boolean = false,
   onSelectLiveChannel: (MediaItem) -> Unit = {},
+  onToggleFavouriteDrawerCards: (Boolean) -> Unit = {},
+  onClearFavourites: () -> Unit = {},
+  downloadsEnabled: Boolean = false,
+  onDownloadStream: (AddonStream) -> Unit = {},
 ) {
   val playerContext = LocalContext.current
   val playerScope = rememberCoroutineScope()
@@ -178,15 +187,26 @@ fun NativePlayerScreen(
       .distinctBy { it.baseUrl.trimEnd('/').lowercase() }
   }
   val surfaceInteractionSource = remember { MutableInteractionSource() }
+  // A live channel switch reuses the same decoder/surface instance instead of tearing it down
+  // (see ExoPlaybackView's background-prepare-then-swap and mpv's `loadfile ... replace`), so
+  // the engine + view-reference state below is keyed by this stable identity rather than
+  // session.url for live sessions - resetting them on every channel would lose the very
+  // references that let the swap happen in place. Everything else (hasLoaded, error, duration,
+  // currentTime) stays keyed by session.url, since those SHOULD reset per channel - that's what
+  // drives the "switching..." overlay while the new channel's own load callback hasn't fired yet.
+  val liveEngineKey = if (session.isLive) "live" else session.url
   var isPaused by remember(session.url) { mutableStateOf(false) }
   var currentTime by remember(session.url) { mutableDoubleStateOf(0.0) }
   var duration by remember(session.url) { mutableDoubleStateOf(0.0) }
   var error by remember(session.url) { mutableStateOf<String?>(null) }
   var hasLoaded by remember(session.url) { mutableStateOf(false) }
-  var playerView by remember(session.url) { mutableStateOf<MPVView?>(null) }
-  var exoPlayerView by remember(session.url) { mutableStateOf<ExoPlaybackView?>(null) }
-  var activeEngine by remember(session.url, session.playerEngine) { mutableStateOf(initialPlaybackEngine(session.playerEngine)) }
-  var autoFallbackUsed by remember(session.url, session.playerEngine) { mutableStateOf(false) }
+  var playerView by remember(liveEngineKey) { mutableStateOf<MPVView?>(null) }
+  var exoPlayerView by remember(liveEngineKey) { mutableStateOf<ExoPlaybackView?>(null) }
+  var activeEngine by remember(liveEngineKey, session.playerEngine) { mutableStateOf(initialPlaybackEngine(session.playerEngine)) }
+  var autoFallbackUsed by remember(liveEngineKey, session.playerEngine) { mutableStateOf(false) }
+  var avMismatchFallbackTried by remember(session.url) { mutableStateOf(false) }
+  var loadedVideoWidth by remember(session.url) { mutableIntStateOf(0) }
+  var loadedVideoHeight by remember(session.url) { mutableIntStateOf(0) }
   var pendingEngineResumeSeconds by remember(session.url) { mutableDoubleStateOf(0.0) }
   fun activeAddSubtitle(path: String) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.addSubtitleFile(path) else playerView?.addSubtitleFile(path) }
   fun activeReload() { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.reloadSource() else playerView?.reloadSource() }
@@ -239,6 +259,7 @@ fun NativePlayerScreen(
   var showChannelSwipeCue by remember(session.url) { mutableStateOf(false) }
   var didApplyResume by remember(session.url) { mutableStateOf(false) }
   var lastCheckpointSecond by remember(session.url) { mutableDoubleStateOf(0.0) }
+  var slowLoadHintVisible by remember(session.url) { mutableStateOf(false) }
   fun progressPercent(): Double =
     if (duration > 0.0) ((currentTime / duration) * 100.0).coerceIn(0.0, 100.0) else 0.0
 
@@ -460,8 +481,22 @@ fun NativePlayerScreen(
   }
 
 
-  val playerLoadCallback: (Double, Int, Int) -> Unit = { loadedDuration, _, _ ->
+  // A live stream that's simply slow to start looks identical to a stuck one until the
+  // 20s stall watchdog or 5-attempt retry budget above kicks in. Give the user an earlier,
+  // reassuring signal instead of leaving the generic spinner up the whole time - this only
+  // fires while nothing has errored, i.e. a connection was actually established.
+  LaunchedEffect(session.url, session.isLive, hasLoaded, error) {
+    slowLoadHintVisible = false
+    if (session.isLive && !hasLoaded && error.isNullOrBlank()) {
+      delay(6_000)
+      if (!hasLoaded && error.isNullOrBlank()) slowLoadHintVisible = true
+    }
+  }
+
+  val playerLoadCallback: (Double, Int, Int) -> Unit = { loadedDuration, width, height ->
     hasLoaded = true
+    loadedVideoWidth = width
+    loadedVideoHeight = height
     if (session.isLive && channelSwitchLoading) onChannelSwitchPlaybackStarted()
     duration = loadedDuration
     error = null
@@ -492,21 +527,32 @@ fun NativePlayerScreen(
       onProgressCheckpoint(((position / total) * 100.0).coerceIn(0.0, 100.0))
     }
   }
+  // Shared engine-swap path for the three ways a session can change decoders: the existing
+  // Auto-preference error fallback (Media3 -> mpv only), a user-initiated pick from the new
+  // Engine panel, and the audio/video-mismatch auto-detection below. All three need the same
+  // "tear down the current engine, remember where we were, let the other engine resume there"
+  // behavior, so it's centralized here instead of duplicated per trigger.
+  fun switchEngine(target: ActivePlaybackEngine, reason: String) {
+    if (target == activeEngine) return
+    pendingEngineResumeSeconds = currentTime.coerceAtLeast(0.0)
+    hasLoaded = false
+    error = null
+    liveStalled = false
+    audioTracks.clear()
+    subtitleTracks.clear()
+    selectedAudioTrackId = null
+    selectedSubtitleTrackId = null
+    externalSubtitleNeedsReapply = selectedExternalSubtitleId != null
+    loadedVideoWidth = 0
+    loadedVideoHeight = 0
+    if (target == ActivePlaybackEngine.Media3) playerView = null else exoPlayerView = null
+    android.util.Log.w("StreamDekPlayer", "Switching playback engine to $target ($reason) at ${pendingEngineResumeSeconds}s")
+    activeEngine = target
+  }
   val playerErrorCallback: (String) -> Unit = { message ->
     if (shouldAutoFallbackToMpv(session.playerEngine, activeEngine, autoFallbackUsed)) {
       autoFallbackUsed = true
-      pendingEngineResumeSeconds = currentTime.coerceAtLeast(0.0)
-      hasLoaded = false
-      error = null
-      liveStalled = false
-      audioTracks.clear()
-      subtitleTracks.clear()
-      selectedAudioTrackId = null
-      selectedSubtitleTrackId = null
-      externalSubtitleNeedsReapply = selectedExternalSubtitleId != null
-      exoPlayerView = null
-      android.util.Log.w("StreamDekPlayer", "Media3 failed; switching Auto playback to mpv at ${pendingEngineResumeSeconds}s: $message")
-      activeEngine = ActivePlaybackEngine.MPV
+      switchEngine(ActivePlaybackEngine.MPV, "Media3 error: $message")
     } else if (session.isLive) {
       android.util.Log.w("StreamDekLivePlayer", "player error for ${session.url}: $message")
       error = "Live feed interrupted. Reconnecting..."
@@ -573,8 +619,32 @@ fun NativePlayerScreen(
       }
     }
   }
+  // Neither engine reports "no video renderer" directly, but both report a 0x0 decoded
+  // frame size and an empty audio-track list, which is the best available signal that one
+  // half of the stream isn't actually playing. Give the engine a few seconds after it claims
+  // to have loaded (mpv/Media3 can report tracks a moment after the load callback fires), then
+  // swap to the other engine once - not on every recheck - so a genuinely audio-only or
+  // video-only source doesn't get bounced back and forth forever.
+  LaunchedEffect(session.url, activeEngine, hasLoaded) {
+    if (!hasLoaded || avMismatchFallbackTried) return@LaunchedEffect
+    // Live manifests often publish their audio rendition metadata a few seconds after video
+    // starts. Treating that transient empty track list as a broken decoder caused an already
+    // playing channel to switch engines and reload 3.5 seconds after a successful handoff.
+    // Explicit player errors and the live stall watchdog still provide safe fallback signals.
+    if (session.isLive) return@LaunchedEffect
+    delay(3_500)
+    if (avMismatchFallbackTried || !hasLoaded || duration <= 0.0) return@LaunchedEffect
+    val noVideo = loadedVideoWidth <= 0 && loadedVideoHeight <= 0
+    val noAudio = audioTracks.isEmpty()
+    if (noVideo != noAudio) {
+      avMismatchFallbackTried = true
+      val target = if (activeEngine == ActivePlaybackEngine.Media3) ActivePlaybackEngine.MPV else ActivePlaybackEngine.Media3
+      switchEngine(target, if (noAudio) "no audio detected" else "no video detected")
+    }
+  }
+
   Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-    key(session.url, activeEngine) {
+    key(liveEngineKey, activeEngine) {
       if (activeEngine == ActivePlaybackEngine.Media3) {
         AndroidView(
           modifier = Modifier.fillMaxSize(),
@@ -600,6 +670,18 @@ fun NativePlayerScreen(
             }
           },
           update = { view ->
+            // Reassigned on every recomposition, not just at creation - a live channel
+            // switch reuses this same view (see key(liveEngineKey, ...) above) instead of
+            // recreating it, so these closures must stay pointed at the *current*
+            // session's hasLoaded/error/etc. state or the new channel's own load/error
+            // signal is silently swallowed by stale callbacks still bound to the state
+            // objects from the channel that was just switched away from.
+            view.onLoadCallback = playerLoadCallback
+            view.onProgressCallback = playerProgressCallback
+            view.onErrorCallback = playerErrorCallback
+            view.onEndCallback = playerEndCallback
+            view.onStallChangedCallback = playerStallCallback
+            view.onTracksChangedCallback = playerTracksCallback
             view.setHeaders(session.requestHeaders)
             view.setPreferredAudioLanguage(session.preferredAudioLanguage)
             view.setSource(session.url)
@@ -639,6 +721,13 @@ fun NativePlayerScreen(
             }
           },
           update = { view ->
+            // See the equivalent comment in the Media3 branch above - same reason.
+            view.onLoadCallback = playerLoadCallback
+            view.onProgressCallback = playerProgressCallback
+            view.onErrorCallback = playerErrorCallback
+            view.onEndCallback = playerEndCallback
+            view.onStallChangedCallback = playerStallCallback
+            view.onTracksChangedCallback = playerTracksCallback
             view.setHeaders(session.requestHeaders)
             view.setPreferredAudioLanguage(session.preferredAudioLanguage)
             view.setSource(session.url)
@@ -678,8 +767,17 @@ fun NativePlayerScreen(
         shape = RoundedCornerShape(22.dp),
       ) { Text(if (nextEpisodeActionAvailable) "Next Episode" else when (activeSkipSegment?.type) { "recap" -> "Skip Recap"; "outro" -> "Skip Ending"; else -> "Skip Intro" }, fontWeight = FontWeight.Bold) }
     }
-    if (isLoading) {
-      PlayerLoadingBackdrop(session = session, message = if (nextEpisodeLoading) listOfNotNull("Loading next episode", nextEpisodeLoadingLabel).joinToString(" · ") else "Preparing stream...")
+    // A live-channel switch has its own compact status indicator below. Keeping the
+    // general loading backdrop here as well produced two competing loading messages.
+    if (isLoading && !(session.isLive && channelSwitchLoading)) {
+      PlayerLoadingBackdrop(
+        session = session,
+        message = when {
+          nextEpisodeLoading -> listOfNotNull("Loading next episode", nextEpisodeLoadingLabel).joinToString(" · ")
+          session.isLive && slowLoadHintVisible -> "This channel is available but is taking a while to load…"
+          else -> "Preparing stream..."
+        },
+      )
     }
 
     if (!isLoading && isPaused) {
@@ -849,6 +947,7 @@ fun NativePlayerScreen(
         onSubtitles = { keepControlsVisible(); activePanel = PlayerPanel.Subtitles },
         onAudio = { keepControlsVisible(); activePanel = PlayerPanel.Audio },
         onSources = { keepControlsVisible(); activePanel = PlayerPanel.Sources },
+        onEngine = { keepControlsVisible(); activePanel = PlayerPanel.Engine },
 
         onLock = {
           controlsLocked = true
@@ -862,7 +961,7 @@ fun NativePlayerScreen(
     }
 
     when (activePanel) {
-      PlayerPanel.Audio -> PlayerModalPanel(title = "Audio", onClose = { activePanel = PlayerPanel.None }) {
+      PlayerPanel.Audio -> PlayerModalPanel(title = "Audio", onClose = { activePanel = PlayerPanel.None }, compact = true) {
         if (audioTracks.isEmpty()) {
           PlayerOptionRow("Default audio", selected = true, onClick = {})
         } else {
@@ -968,11 +1067,30 @@ fun NativePlayerScreen(
                   activePanel = PlayerPanel.None
                   onSelectStream(stream, currentProgressPercent)
                 },
+                showDownload = downloadsEnabled && !session.isLive && stream.infoHash.isNullOrBlank() && !stream.url.isNullOrBlank(),
+                onDownload = { onDownloadStream(stream) },
               )
             }
           if (availableStreams.isEmpty()) {
             Text("No loaded sources yet.", color = Color.White.copy(alpha = 0.66f))
           }
+        }
+      }
+      PlayerPanel.Engine -> PlayerModalPanel(title = "Player Engine", onClose = { activePanel = PlayerPanel.None }, compact = true) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+          PlayerOptionRow("ExoPlayer", selected = activeEngine == ActivePlaybackEngine.Media3) {
+            switchEngine(ActivePlaybackEngine.Media3, "manual switch")
+            activePanel = PlayerPanel.None
+          }
+          PlayerOptionRow("mpv", selected = activeEngine == ActivePlaybackEngine.MPV) {
+            switchEngine(ActivePlaybackEngine.MPV, "manual switch")
+            activePanel = PlayerPanel.None
+          }
+          Text(
+            "Switching keeps your playback position. If a stream plays with no sound or a black screen, try the other engine.",
+            color = Color.White.copy(alpha = 0.58f),
+            style = MaterialTheme.typography.bodySmall,
+          )
         }
       }
       PlayerPanel.Speed -> PlayerModalPanel(title = "Speed", onClose = { activePanel = PlayerPanel.None }, compact = true) {
@@ -1027,7 +1145,7 @@ fun NativePlayerScreen(
 
     AnimatedVisibility(
       visible = session.isLive && showFavouriteDrawer,
-      modifier = Modifier.align(Alignment.CenterEnd).fillMaxWidth(0.25f).fillMaxHeight().zIndex(26f),
+      modifier = Modifier.align(Alignment.CenterEnd).fillMaxWidth(0.275f).fillMaxHeight().zIndex(26f),
       enter = fadeIn(tween(180)) + slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(360)),
       exit = fadeOut(tween(160)) + slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(280)),
     ) {
@@ -1037,25 +1155,47 @@ fun NativePlayerScreen(
         cardView = favouriteDrawerCards,
         onClose = { showFavouriteDrawer = false },
         onSelect = { channel -> showFavouriteDrawer = false; onSelectLiveChannel(channel) },
+        onToggleCardView = onToggleFavouriteDrawerCards,
+        onClearAll = onClearFavourites,
       )
     }
 
     AnimatedVisibility(
-      visible = session.isLive && channelSwitchLoading && !hasLoaded,
+      visible = session.isLive && channelSwitchLoading,
+      modifier = Modifier.fillMaxSize().zIndex(29f),
+      enter = fadeIn(tween(160)),
+      exit = fadeOut(tween(160)),
+    ) {
+      // The previous channel keeps decoding underneath (see ExoPlaybackView's background
+      // swap / mpv's loadfile replace) - this is a tint over it, not a solid cover, so it
+      // stays visible while the new one loads instead of cutting to black.
+      Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f)))
+    }
+
+    AnimatedVisibility(
+      visible = session.isLive && channelSwitchLoading,
       modifier = Modifier.align(Alignment.Center).zIndex(30f),
       enter = fadeIn(tween(160)),
       exit = fadeOut(tween(160)),
     ) {
-      Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        CircularProgressIndicator(color = Color.White, strokeWidth = 2.5.dp, modifier = Modifier.size(34.dp))
+      Row(
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(22.dp))
         Text(
-          channelSwitchLoadingLabel?.let { "Loading $it" } ?: "Loading channel",
+          if (slowLoadHintVisible) {
+            channelSwitchLoadingLabel?.let { "$it is available but is taking a while to load…" } ?: "This channel is available but is taking a while to load…"
+          } else {
+            channelSwitchLoadingLabel?.let { "Switching to $it" } ?: "Switching channel"
+          },
           color = Color.White,
-          fontSize = 13.sp,
+          fontSize = 12.5.sp,
           fontWeight = FontWeight.SemiBold,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
           style = MaterialTheme.typography.bodyMedium.copy(shadow = androidx.compose.ui.graphics.Shadow(Color.Black.copy(alpha = 0.8f), blurRadius = 12f)),
         )
-        Text("Swipe back to cancel", color = Color.White.copy(alpha = 0.72f), fontSize = 10.5.sp)
       }
     }
     if (session.isLive && hasLoaded && !isLoading && error.isNullOrBlank() && !showLiveChannels && !showFavouriteDrawer) {
@@ -1073,12 +1213,21 @@ fun NativePlayerScreen(
   }
 }
 
+/**
+ * Invisible, muted background probe used while switching live channels. It prepares the
+ * newly-resolved stream on its own throwaway Media3 instance without ever touching the
+ * currently-visible player, so the channel already on screen keeps playing (video and
+ * audio) undisturbed until this confirms the new one actually decodes - only then does the
+ * caller swap the real player over to it. Always uses Media3 here regardless of the user's
+ * engine preference: it's cheap to spin up and tear down a second instance of, unlike a
+ * second native mpv context.
+ */
 @Composable
 private fun LiveChannelSwipeCue() {
   val transition = rememberInfiniteTransition(label = "channel_swipe_cue")
   val offset by transition.animateFloat(
-    initialValue = -3f,
-    targetValue = 5f,
+    initialValue = 3f,
+    targetValue = -5f,
     animationSpec = infiniteRepeatable(tween(720), repeatMode = RepeatMode.Reverse),
     label = "channel_swipe_cue_offset",
   )
@@ -1091,7 +1240,7 @@ private fun LiveChannelSwipeCue() {
       style = MaterialTheme.typography.bodyMedium.copy(shadow = shadow),
     )
     Icon(
-      Icons.Rounded.KeyboardArrowDown, contentDescription = null, tint = Color.White.copy(alpha = 0.92f),
+      Icons.Rounded.KeyboardArrowUp, contentDescription = null, tint = Color.White.copy(alpha = 0.92f),
       modifier = Modifier.size(22.dp).graphicsLayer { translationY = offset; shadowElevation = 8f },
     )
   }
@@ -1174,7 +1323,20 @@ private fun LiveFavouriteDrawer(
   cardView: Boolean,
   onClose: () -> Unit,
   onSelect: (MediaItem) -> Unit,
+  onToggleCardView: (Boolean) -> Unit = {},
+  onClearAll: () -> Unit = {},
 ) {
+  var showClearConfirm by remember { mutableStateOf(false) }
+  if (showClearConfirm) {
+    AlertDialog(
+      onDismissRequest = { showClearConfirm = false },
+      icon = { Icon(Icons.Rounded.DeleteSweep, contentDescription = null) },
+      title = { Text("Clear all favourites?") },
+      text = { Text("This removes all ${favourites.size} channels from your Live TV favourites.") },
+      confirmButton = { Button(onClick = { showClearConfirm = false; onClearAll() }) { Text("Clear all") } },
+      dismissButton = { TextButton(onClick = { showClearConfirm = false }) { Text("Cancel") } },
+    )
+  }
   Box(
     modifier = Modifier.fillMaxSize().background(
       Brush.horizontalGradient(
@@ -1193,6 +1355,21 @@ private fun LiveFavouriteDrawer(
         Column(modifier = Modifier.weight(1f)) {
           Text("Favourites", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
           Text("${favourites.size} channels", color = Color.White.copy(alpha = 0.55f), fontSize = 10.sp)
+        }
+        IconButton(onClick = { onToggleCardView(!cardView) }, modifier = Modifier.size(32.dp)) {
+          Icon(
+            if (cardView) Icons.Rounded.ViewList else Icons.Rounded.GridView,
+            contentDescription = if (cardView) "Switch to text list" else "Switch to card view",
+            tint = Color.White.copy(alpha = 0.85f),
+            modifier = Modifier.size(18.dp),
+          )
+        }
+        IconButton(onClick = { showClearConfirm = true }, enabled = favourites.isNotEmpty(), modifier = Modifier.size(32.dp)) {
+          Icon(
+            Icons.Rounded.DeleteSweep, contentDescription = "Clear all favourites",
+            tint = Color.White.copy(alpha = if (favourites.isNotEmpty()) 0.85f else 0.3f),
+            modifier = Modifier.size(18.dp),
+          )
         }
       }
       if (favourites.isEmpty()) {
@@ -1318,24 +1495,33 @@ private fun PlayerPausedContent(session: PlayerSession) {
 }
 @Composable
 private fun PlayerCenterControls(isPaused: Boolean, onPauseToggle: () -> Unit, onSeek: (Double) -> Unit, showEpisodeNavigation: Boolean, onPreviousEpisode: () -> Unit, onNextEpisode: () -> Unit, showSeeking: Boolean = true) {
+  // Fixed button sizes and a fixed gap between them, centered in whatever space is
+  // available - a width-based padding/arrangement here (as this used to have) shrinks
+  // the available room on narrower screens and squashes the buttons together instead of
+  // just centering a smaller group, so this deliberately never scales with screen width.
   Row(
-    modifier = Modifier.fillMaxSize().padding(horizontal = 300.dp),
-    horizontalArrangement = Arrangement.SpaceEvenly,
+    modifier = Modifier.fillMaxSize(),
+    horizontalArrangement = Arrangement.Center,
     verticalAlignment = Alignment.CenterVertically,
   ) {
-    if (showSeeking) PlayerRoundAction(icon = Icons.Rounded.Replay10, onClick = { onSeek(-10.0) }) else Spacer(modifier = Modifier.size(74.dp))
-    Box(
-      modifier = Modifier
-        .size(90.dp)
-        .clip(CircleShape)
-        .background(Color.White.copy(alpha = 0.14f))
-        .border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape)
-        .clickable(onClick = onPauseToggle),
-      contentAlignment = Alignment.Center,
+    Row(
+      horizontalArrangement = Arrangement.spacedBy(48.dp),
+      verticalAlignment = Alignment.CenterVertically,
     ) {
-      Icon(if (isPaused) Icons.Rounded.PlayArrow else Icons.Rounded.Pause, contentDescription = null, tint = Color.White, modifier = Modifier.size(54.dp))
+      if (showSeeking) PlayerRoundAction(icon = Icons.Rounded.Replay10, onClick = { onSeek(-10.0) }) else Spacer(modifier = Modifier.size(74.dp))
+      Box(
+        modifier = Modifier
+          .size(90.dp)
+          .clip(CircleShape)
+          .background(Color.White.copy(alpha = 0.14f))
+          .border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape)
+          .clickable(onClick = onPauseToggle),
+        contentAlignment = Alignment.Center,
+      ) {
+        Icon(if (isPaused) Icons.Rounded.PlayArrow else Icons.Rounded.Pause, contentDescription = null, tint = Color.White, modifier = Modifier.size(54.dp))
+      }
+      if (showSeeking) PlayerRoundAction(icon = Icons.Rounded.Forward10, onClick = { onSeek(10.0) }) else Spacer(modifier = Modifier.size(74.dp))
     }
-    if (showSeeking) PlayerRoundAction(icon = Icons.Rounded.Forward10, onClick = { onSeek(10.0) }) else Spacer(modifier = Modifier.size(74.dp))
   }
 }
 
@@ -1370,6 +1556,7 @@ private fun PlayerBottomControls(
   isLive: Boolean,
   onAudio: () -> Unit,
   onSources: () -> Unit,
+  onEngine: () -> Unit,
   onLock: () -> Unit,
 ) {
   Column(
@@ -1411,6 +1598,7 @@ private fun PlayerBottomControls(
           PlayerDockButton("Audio", Icons.Rounded.VolumeUp, onAudio)
         }
         PlayerDockButton("Sources", Icons.Rounded.GridView, onSources)
+        PlayerDockButton("Engine", Icons.Rounded.Tune, onEngine)
         PlayerDockButton("Lock", Icons.Rounded.Lock, onLock)
       }
     }
@@ -1505,6 +1693,8 @@ private fun PlayerSourceCard(
   stream: AddonStream,
   active: Boolean,
   onClick: () -> Unit,
+  showDownload: Boolean = false,
+  onDownload: () -> Unit = {},
 ) {
   val header = listOfNotNull(stream.addonName.takeIf { it.isNotBlank() } ?: stream.addonId, stream.source?.takeIf { it.isNotBlank() }, stream.quality?.takeIf { it.isNotBlank() }).distinct().joinToString("  ")
   val metaLine = listOfNotNull(
@@ -1526,7 +1716,14 @@ private fun PlayerSourceCard(
       .padding(horizontal = 18.dp, vertical = 16.dp),
     verticalArrangement = Arrangement.spacedBy(8.dp),
   ) {
-    Text(header, color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+      Text(header, color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+      if (showDownload) {
+        IconButton(onClick = onDownload, modifier = Modifier.size(28.dp)) {
+          Icon(Icons.Rounded.Download, contentDescription = "Download for offline playback", tint = Color.White.copy(alpha = 0.78f), modifier = Modifier.size(18.dp))
+        }
+      }
+    }
     if (metaLine.isNotBlank()) {
       Text(metaLine, color = Color.White.copy(alpha = 0.74f), style = MaterialTheme.typography.bodyMedium)
     }

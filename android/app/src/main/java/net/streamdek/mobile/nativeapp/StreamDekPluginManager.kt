@@ -32,6 +32,35 @@ data class PluginRepo(val url: String, val name: String, val version: String, va
 data class PluginProvider(val id: String, val repoUrl: String, val name: String, val types: List<String>, val enabled: Boolean, val code: String)
 data class PluginState(val enabled: Boolean = true, val repos: List<PluginRepo> = emptyList(), val providers: List<PluginProvider> = emptyList(), val updatedAt: Long = 0L)
 
+internal fun normalizePluginRepositoryUrl(raw: String): String {
+  var value = raw.trim()
+  if (!value.startsWith("http://", true) && !value.startsWith("https://", true)) value = "https://$value"
+  val uri = URI(value)
+  require(uri.scheme in setOf("http", "https") && !uri.host.isNullOrBlank()) { "Invalid repository URL." }
+  return value
+}
+
+internal fun pluginRepositoryUrlCandidates(url: String): List<String> {
+  val normalized = normalizePluginRepositoryUrl(url)
+  val uri = URI(normalized)
+  val lastSegment = uri.path.orEmpty().substringAfterLast('/')
+  val looksDirectoryLike = uri.path.orEmpty().endsWith('/') || !lastSegment.contains('.')
+  if (!looksDirectoryLike) return listOf(normalized)
+  val fallbackPath = uri.path.orEmpty().trimEnd('/') + "/manifest.json"
+  val fallback = URI(uri.scheme, uri.userInfo, uri.host, uri.port, fallbackPath, uri.query, uri.fragment).toString()
+  return listOf(normalized, fallback).distinct()
+}
+
+internal fun resolvePluginProviderUrl(repositoryUrl: String, filename: String): String {
+  val trimmed = filename.trim()
+  require(trimmed.isNotBlank()) { "Provider filename is missing." }
+  if (trimmed.startsWith("http://", true) || trimmed.startsWith("https://", true)) return trimmed
+  val manifest = URI(repositoryUrl)
+  val resolved = manifest.resolve(trimmed.trimStart('/'))
+  if (resolved.query != null || manifest.query == null) return resolved.toString()
+  return URI(resolved.scheme, resolved.userInfo, resolved.host, resolved.port, resolved.path, manifest.query, resolved.fragment).toString()
+}
+
 private val CHEERIO_COMPAT_SHIM = """
   function __sdIds(raw){try{return JSON.parse(raw||'[]')}catch(e){return []}}
   function __sdToken(id){return {__sd_node:Number(id)}}
@@ -103,14 +132,15 @@ class StreamDekPluginManager(context: Context) {
   suspend fun add(raw: String): Result<Unit> = withContext(Dispatchers.IO) { runCatching {
     val url = normalizeUrl(raw)
     require(state.repos.none { it.url.equals(url, true) }) { "Repository already installed." }
-    val loaded = fetchRepo(url, emptyMap())
+    val loaded = fetchRepoWithFallback(url, emptyMap())
+    require(state.repos.none { it.url.equals(loaded.first.url, true) }) { "Repository already installed." }
     state = state.copy(repos = state.repos + loaded.first, providers = state.providers + loaded.second)
     save()
   } }
 
   suspend fun refresh(url: String): Result<Unit> = withContext(Dispatchers.IO) { runCatching {
     val old = state.providers.filter { it.repoUrl == url }.associateBy { it.id }
-    val loaded = fetchRepo(url, old)
+    val loaded = fetchRepoWithFallback(url, old)
     val existingRepo = state.repos.firstOrNull { it.url == url }
     val refreshedProviders = loaded.second.map { provider ->
       if (existingRepo?.enabled == false) provider.copy(enabled = false) else provider
@@ -302,14 +332,13 @@ class StreamDekPluginManager(context: Context) {
     val version = manifest.optString("version").trim()
     require(name.isNotEmpty() && version.isNotEmpty()) { "Invalid repository manifest." }
     val entries = manifest.optJSONArray("scrapers") ?: throw IllegalArgumentException("No providers in repository.")
-    val base = url.substringBefore('?').removeSuffix("/manifest.json").trimEnd('/')
     val providers = buildList {
       for (index in 0 until entries.length()) {
         val item = entries.optJSONObject(index) ?: continue
         val key = item.optString("id")
         val file = item.optString("filename")
         if (key.isBlank() || file.isBlank()) continue
-        val source = if (file.startsWith("http")) file else base + "/" + file.trimStart('/')
+        val source = resolvePluginProviderUrl(url, file)
         val providerId = url.lowercase() + ":" + key
         val types = item.optJSONArray("supportedTypes")
         add(PluginProvider(providerId, url, item.optString("name").ifBlank { key }, buildList {
@@ -320,6 +349,16 @@ class StreamDekPluginManager(context: Context) {
     }
     require(providers.isNotEmpty()) { "No compatible providers in repository." }
     return PluginRepo(url, name, version, manifest.optString("description").ifBlank { null }) to providers
+  }
+
+  private fun fetchRepoWithFallback(url: String, previous: Map<String, PluginProvider>): Pair<PluginRepo, List<PluginProvider>> {
+    var lastFailure: Throwable? = null
+    for (candidate in pluginRepositoryUrlCandidates(url)) {
+      runCatching { fetchRepo(candidate, previous) }
+        .onSuccess { return it }
+        .onFailure { lastFailure = it }
+    }
+    throw lastFailure ?: IllegalArgumentException("Invalid repository URL.")
   }
 
   private fun text(url: String): String = try {
@@ -341,14 +380,7 @@ class StreamDekPluginManager(context: Context) {
     throw e
   }
 
-  private fun normalizeUrl(raw: String): String {
-    var value = raw.trim()
-    if (!value.startsWith("http")) value = "https://" + value
-    val uri = URI(value)
-    require(uri.scheme in setOf("http", "https") && !uri.host.isNullOrBlank()) { "Invalid repository URL." }
-    if (!uri.path.endsWith(".json")) value = value.trimEnd('/') + "/manifest.json"
-    return value
-  }
+  private fun normalizeUrl(raw: String): String = normalizePluginRepositoryUrl(raw)
 
   private fun normalizeType(value: String) = if (value.lowercase() in setOf("series", "show")) "tv" else value.lowercase()
 

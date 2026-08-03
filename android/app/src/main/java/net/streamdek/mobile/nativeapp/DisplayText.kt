@@ -39,6 +39,9 @@ internal fun normalizePreferredAudioLanguage(value: String?): String = when (val
   "ja", "jpn", "japanese" -> "ja"
   "ko", "kor", "korean" -> "ko"
   "hi", "hin", "hindi" -> "hi"
+  "ta", "tam", "tamil" -> "ta"
+  "zh", "zho", "chi", "chinese", "cmn", "mandarin" -> "zh"
+  "vi", "vie", "vietnamese" -> "vi"
   else -> "en"
 }
 
@@ -53,6 +56,9 @@ internal fun preferredAudioLanguageTags(value: String?): List<String> = when (no
   "ja" -> listOf("ja", "jpn")
   "ko" -> listOf("ko", "kor")
   "hi" -> listOf("hi", "hin")
+  "ta" -> listOf("ta", "tam")
+  "zh" -> listOf("zh", "zho", "chi", "cmn")
+  "vi" -> listOf("vi", "vie")
   else -> listOf("en", "eng")
 }
 

@@ -16,6 +16,9 @@ class DisplayTextTest {
     assertEquals("en", normalizePreferredAudioLanguage("English"))
     assertEquals("hi", normalizePreferredAudioLanguage("hin"))
     assertEquals("original", normalizePreferredAudioLanguage("Original"))
+    assertEquals("ta", normalizePreferredAudioLanguage("Tamil"))
+    assertEquals("zh", normalizePreferredAudioLanguage("Mandarin"))
+    assertEquals("vi", normalizePreferredAudioLanguage("Vietnamese"))
   }
 
   @Test fun usesPlayableIdentityForDuplicateSources() {

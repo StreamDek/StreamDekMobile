@@ -21,6 +21,8 @@ data class M3uPlaylistSource(
   val url: String,
   val enabled: Boolean = true,
   val position: Int = 0,
+  val liveItemCount: Int? = null,
+  val vodItemCount: Int? = null,
 )
 data class M3uLoadProgress(
   val message: String,
@@ -94,9 +96,13 @@ object M3uPlaylistManager {
         onProgress(M3uLoadProgress("Reading ${source.name}: ${parsed.formattedM3uCount()} items found", 0.55f + parseFraction * 0.45f, parsed))
       }
       require(items.isNotEmpty()) { "No playable items were found in that playlist." }
-      writeAll(existing + source)
+      val summarizedSource = source.copy(
+        liveItemCount = items.count { it.sourceCatalogType != "movie" },
+        vodItemCount = items.count { it.sourceCatalogType == "movie" },
+      )
+      writeAll(existing + summarizedSource)
       onProgress(M3uLoadProgress("Loaded ${items.size.formattedM3uCount()} items from ${source.name}", 1f, items.size))
-      M3uAddResult(source, items.toM3uPlaylistItems())
+      M3uAddResult(summarizedSource, items.toM3uPlaylistItems())
     }
   }
 
@@ -116,6 +122,15 @@ object M3uPlaylistManager {
     val item = current.removeAt(index)
     current.add(target, item)
     writeAll(current.mapIndexed { newPosition, record -> record.copy(position = newPosition) })
+  }
+
+  fun updateContentSummary(id: String, content: M3uPlaylistItems) {
+    writeAll(readAll().map { source ->
+      if (source.id == id) source.copy(
+        liveItemCount = content.liveChannels.size,
+        vodItemCount = content.vodItems.size,
+      ) else source
+    })
   }
 
   suspend fun fetchItems(
@@ -179,6 +194,8 @@ object M3uPlaylistManager {
           url = item.getString("url"),
           enabled = item.optBoolean("enabled", true),
           position = item.optInt("position", 0),
+          liveItemCount = item.optInt("liveItemCount").takeIf { item.has("liveItemCount") },
+          vodItemCount = item.optInt("vodItemCount").takeIf { item.has("vodItemCount") },
         )
       }
     }.getOrDefault(emptyList())
@@ -193,7 +210,11 @@ object M3uPlaylistManager {
           .put("name", source.name)
           .put("url", source.url)
           .put("enabled", source.enabled)
-          .put("position", source.position),
+          .put("position", source.position)
+          .apply {
+            source.liveItemCount?.let { put("liveItemCount", it) }
+            source.vodItemCount?.let { put("vodItemCount", it) }
+          },
       )
     }
     prefs?.edit()?.putString(sourcesKey(), array.toString())?.apply()

@@ -922,7 +922,7 @@ private class AppSettingsStore(context: Context) {
     navigationAutoCollapseSeconds = prefs.getInt("navigation_auto_collapse_seconds", 5).coerceIn(2, 15),
     showStreamsList = profilePrefs.getBoolean("show_streams_list", true),
     heroTrailerAutoplay = profilePrefs.getBoolean("hero_trailer_autoplay", true),
-    heroTrailerResolution = profilePrefs.getInt("hero_trailer_resolution", 720).coerceIn(360, 1080),
+    heroTrailerResolution = profilePrefs.getInt("hero_trailer_resolution", 720).coerceIn(360, 2160),
     showHeroSynopsis = profilePrefs.getBoolean("show_hero_synopsis", true),
     continueWatchingStyle = runCatching { ContinueWatchingStyle.valueOf(profilePrefs.getString("continue_watching_style", ContinueWatchingStyle.Glass.name) ?: ContinueWatchingStyle.Glass.name) }.getOrDefault(ContinueWatchingStyle.Glass),
     liveLandscapeCards = profilePrefs.getBoolean("live_landscape_cards", true),
@@ -984,7 +984,7 @@ private class AppSettingsStore(context: Context) {
   fun saveNavigationAutoCollapseSeconds(value: Int) { prefs.edit().putInt("navigation_auto_collapse_seconds", value.coerceIn(2, 15)).apply() }
   fun saveShowStreamsList(value: Boolean) { profilePrefs.edit().putBoolean("show_streams_list", value).apply() }
   fun saveHeroTrailerAutoplay(value: Boolean) { profilePrefs.edit().putBoolean("hero_trailer_autoplay", value).apply() }
-  fun saveHeroTrailerResolution(value: Int) { profilePrefs.edit().putInt("hero_trailer_resolution", value.coerceIn(360, 1080)).apply() }
+  fun saveHeroTrailerResolution(value: Int) { profilePrefs.edit().putInt("hero_trailer_resolution", value.coerceIn(360, 2160)).apply() }
   fun saveShowHeroSynopsis(value: Boolean) { profilePrefs.edit().putBoolean("show_hero_synopsis", value).apply() }
   fun saveContinueWatchingStyle(value: ContinueWatchingStyle) { profilePrefs.edit().putString("continue_watching_style", value.name).apply() }
   fun saveLiveLandscapeCards(value: Boolean) { profilePrefs.edit().putBoolean("live_landscape_cards", value).apply() }
@@ -3251,17 +3251,18 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         }.onSuccess { content ->
           liveChannels += content.liveChannels
           vodItems += content.vodItems
+          M3uPlaylistManager.updateContentSummary(source.id, content)
         }.onFailure { error ->
           failures += "${source.name}: ${error.message ?: "Unable to load"}"
         }
       }
       if (generation != m3uLoadGeneration) return@launch
-      val total = liveChannels.size + vodItems.size
       uiState = uiState.copy(
         m3uLoading = false,
-        m3uProgress = 1f,
-        m3uStatusMessage = "Loaded ${total.formattedItemCount()} items: ${liveChannels.size.formattedItemCount()} live and ${vodItems.size.formattedItemCount()} VOD",
+        m3uProgress = null,
+        m3uStatusMessage = null,
         m3uErrorMessage = failures.takeIf { it.isNotEmpty() }?.joinToString("\n"),
+        m3uSources = M3uPlaylistManager.list(),
         m3uChannels = liveChannels,
         m3uVodItems = vodItems,
       )
@@ -3281,11 +3282,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       M3uPlaylistManager.add(url, name) { progress -> publishM3uProgress(generation, progress) }
         .onSuccess { result ->
           if (generation != m3uLoadGeneration) return@onSuccess
-          val total = result.content.size
           uiState = uiState.copy(
             m3uLoading = false,
-            m3uProgress = 1f,
-            m3uStatusMessage = "Added ${result.source.name}: ${total.formattedItemCount()} items (${result.content.liveChannels.size.formattedItemCount()} live, ${result.content.vodItems.size.formattedItemCount()} VOD)",
+            m3uProgress = null,
+            m3uStatusMessage = null,
             m3uErrorMessage = null,
             m3uSources = M3uPlaylistManager.list(),
             m3uChannels = uiState.m3uChannels + result.content.liveChannels,
@@ -3524,7 +3524,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       homeCatalogRows = homeCatalogRows ?: uiState.homeCatalogRows,
       seasonTabStyle = seasonTabStyle ?: uiState.seasonTabStyle,
       heroTrailerAutoplay = preferences.heroTrailerAutoplay ?: uiState.heroTrailerAutoplay,
-      heroTrailerResolution = preferences.heroTrailerResolution?.coerceIn(360, 1080) ?: uiState.heroTrailerResolution,
+      heroTrailerResolution = preferences.heroTrailerResolution?.coerceIn(360, 2160) ?: uiState.heroTrailerResolution,
       ratingsEnabled = preferences.ratingsEnabled ?: uiState.ratingsEnabled,
       externalRatingsEnabled = preferences.externalRatingsEnabled ?: uiState.externalRatingsEnabled,
       enabledRatingProviders = ratingProviders ?: uiState.enabledRatingProviders,
@@ -4193,7 +4193,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     refreshFusionBadgeSources()
     loadHome(force = forceHome)
     refreshAddons()
-    loadM3uPlaylists()
+    if (uiState.session == null) loadM3uPlaylists()
     refreshTraktData()
     uiState = uiState.copy(mergedWatchlist = loadLocalWatchlist(), favouriteChannels = loadLocalFavouriteChannels(), localContinueWatching = loadLocalContinueWatching(), localResumeEntries = loadResumeEntries())
     if (uiState.session != null) {
@@ -5161,6 +5161,9 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
   var navigationActivityKey by remember { mutableIntStateOf(0) }
   var showNavigationCaret by remember { mutableStateOf(false) }
   val showProfilePicker = uiState.showProfilePicker && openDetail == null && browseRow == null && networkBrowse == null
+  val updatePromptRouteEligible = !showAuth && !requireGuestProfile && !showProfilePicker &&
+    !uiState.profileTransitioning && uiState.pinPromptProfileId == null
+  var delayedUpdatePromptVisible by remember { mutableStateOf(false) }
   val activity = LocalContext.current as? Activity
 
   LaunchedEffect(Unit) {
@@ -5182,6 +5185,14 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
     if (uiState.updateDownloading && uiState.collapsibleNavigationEnabled) {
       navigationActivityKey += 1
       navigationExpanded = true
+    }
+  }
+
+  LaunchedEffect(uiState.updatePromptVisible, updatePromptRouteEligible, uiState.availableUpdate?.versionCode) {
+    delayedUpdatePromptVisible = false
+    if (uiState.updatePromptVisible && updatePromptRouteEligible && uiState.availableUpdate != null) {
+      delay(3_000L)
+      delayedUpdatePromptVisible = true
     }
   }
 
@@ -5309,7 +5320,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
     )
   }
 
-  if (uiState.updatePromptVisible && uiState.availableUpdate != null) {
+  if (delayedUpdatePromptVisible && uiState.updatePromptVisible && uiState.availableUpdate != null) {
     UpdatePromptDialog(uiState = uiState, onUpdate = viewModel::startUpdate, onDismiss = viewModel::dismissUpdatePrompt)
   }
 
@@ -9588,7 +9599,7 @@ private fun SettingsTab(
             SettingsSection("Detail Screen") {
               SettingsSwitchRow("TRL", Color(0xFF22C55E), "Hero trailer autoplay", "Play a trailer automatically at the top of a media page when one is available.", uiState.heroTrailerAutoplay, onHeroTrailerAutoplayChange)
               SettingsDivider()
-              SettingsChoiceRow("HD", Color(0xFF38BDF8), "Trailer resolution", "Choose the best video quality trailers may use.", listOf("360p", "720p", "1080p"), "${uiState.heroTrailerResolution}p") { selected -> onHeroTrailerResolutionChange(selected.removeSuffix("p").toInt()) }
+              SettingsChoiceRow("HD", Color(0xFF38BDF8), "Trailer resolution", "Choose the best video quality trailers may use.", listOf("360p", "720p", "1080p", "2160p"), "${uiState.heroTrailerResolution}p") { selected -> onHeroTrailerResolutionChange(selected.removeSuffix("p").toInt()) }
               SettingsDivider()
               SettingsNavRow("MDB", Color(0xFFF5C518), "Ratings", "Turn ratings on and choose which rating services appear.", value = if (uiState.ratingsEnabled) "Enabled" else "Off", onClick = { onRouteChange(SettingsRoute.Ratings) })
               SettingsDivider()
@@ -9643,7 +9654,7 @@ private fun SettingsTab(
             SettingsSection("Playback") {
               SettingsChoiceRow("PLY", Color(0xFF22C55E), "Default Player", "Automatic starts with Media3 and switches to mpv if a source cannot play.", listOf("Auto", "Media3", "MPV"), uiState.playerEngine, onPlayerEngineChange)
               SettingsDivider()
-              SettingsChoiceRow("AUD", Color(0xFFF59E0B), "Default Audio", "Choose the spoken language StreamDek should prefer when a video offers more than one.", listOf("en", "original", "es", "fr", "de", "it", "pt", "ja", "ko", "hi"), uiState.preferredAudioLanguage, onPreferredAudioLanguageChange)
+              SettingsChoiceRow("AUD", Color(0xFFF59E0B), "Default Audio", "Choose the spoken language StreamDek should prefer when a video offers more than one.", listOf("en", "original", "es", "fr", "de", "it", "pt", "ja", "ko", "hi", "ta", "zh", "vi"), uiState.preferredAudioLanguage, onPreferredAudioLanguageChange)
               SettingsDivider()
               SettingsSwitchRow("PIP", Color(0xFF6366F1), "Floating Player", "Keep the video in a small window when you leave StreamDek.", uiState.pictureInPictureEnabled, onPictureInPictureEnabledChange)
               SettingsDivider()
@@ -10393,7 +10404,7 @@ private fun SettingsNavRow(icon: String, iconColor: Color, title: String, subtit
       Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), maxLines = 3, overflow = TextOverflow.Ellipsis)
     }
     value?.let {
-      Text(if (title == "Max File Size" && it == "0") "Unlimited" else if (it == "Auto") "Best Available" else it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+      Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodyMedium, maxLines = 1)
     }
     Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f))
   }
@@ -10481,7 +10492,7 @@ private fun ThemePresetPicker(selected: AppThemePreset, onSelected: (AppThemePre
 }
 
 @Composable
-private fun SettingsSwitchRow(icon: String, iconColor: Color, title: String, subtitle: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit, logoProvider: String? = null, enabled: Boolean = true) {
+private fun SettingsSwitchRow(icon: String?, iconColor: Color, title: String, subtitle: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit, logoProvider: String? = null, enabled: Boolean = true) {
   Row(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
     if (logoProvider != null) {
       Image(
@@ -10490,7 +10501,7 @@ private fun SettingsSwitchRow(icon: String, iconColor: Color, title: String, sub
         modifier = Modifier.size(22.dp),
         contentScale = ContentScale.Fit,
       )
-    } else {
+    } else if (icon != null) {
       SettingsIcon(icon, iconColor)
     }
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -10542,12 +10553,15 @@ private fun SettingsChoiceSheet(title: String, options: List<String>, selected: 
       contentAlignment = Alignment.BottomCenter,
     ) {
       Surface(
-        modifier = Modifier.fillMaxWidth().clickable(enabled = false, onClick = {}),
+        modifier = Modifier.fillMaxWidth().heightIn(max = 680.dp).clickable(enabled = false, onClick = {}),
         color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)),
       ) {
-        Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Column(
+          modifier = Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 28.dp),
+          verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
           Text(title, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
           if (title == "Continue Watching Style" || title == "Page Style") {
             options.chunked(2).forEach { rowOptions ->
@@ -10744,6 +10758,7 @@ private fun PageStyleSkeletonPreview(style: DetailPageStyle, selected: Boolean) 
 }
 
 private fun settingsOptionLabel(title: String, option: String): String = when {
+  title == "Trailer resolution" && option == "2160p" -> "4K"
   title == "Language" -> supportedAppLanguages[normalizeAppLanguage(option)] ?: "English"
   title == "Default Player" -> when (option) {
     "Auto" -> "Auto"
@@ -10762,6 +10777,9 @@ private fun settingsOptionLabel(title: String, option: String): String = when {
     "ja" -> "Japanese"
     "ko" -> "Korean"
     "hi" -> "Hindi"
+    "ta" -> "Tamil"
+    "zh" -> "Chinese"
+    "vi" -> "Vietnamese"
     else -> option
   }
   title == "Max File Size" && option == "0" -> "Unlimited"
@@ -11588,7 +11606,7 @@ private fun PluginsSettingsSummary() {
                 else "Streams"
               }.distinct().joinToString(" / ")
               SettingsSwitchRow(
-                "P",
+                null,
                 Color(0xFF38BDF8),
                 provider.name,
                 "$supportedTypes - ${repository.name}",
@@ -11776,6 +11794,23 @@ private fun M3uPlaylistsSettingsSummary(
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                   Text(source.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                   Text(source.url, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                  val liveCount = source.liveItemCount
+                  val vodCount = source.vodItemCount
+                  if (liveCount != null || vodCount != null) {
+                    val live = liveCount ?: 0
+                    val vod = vodCount ?: 0
+                    val contentType = when {
+                      live > 0 && vod > 0 -> "Live + VOD"
+                      vod > 0 -> "VOD"
+                      else -> "Live"
+                    }
+                    Text(
+                      "${(live + vod).formattedItemCount()} items • $contentType",
+                      color = MaterialTheme.colorScheme.primary,
+                      style = MaterialTheme.typography.labelMedium,
+                      fontWeight = FontWeight.SemiBold,
+                    )
+                  }
                 }
                 Switch(checked = source.enabled, onCheckedChange = { onSetM3uPlaylistEnabled(source.id, it) })
               }
@@ -12835,9 +12870,11 @@ private fun TrailerPlaybackView(
     onReadyChanged(false)
     resolved = false
     val youtubeCookies = if (isYoutubeTrailer) android.webkit.CookieManager.getInstance().getCookie("https://www.youtube.com") else null
-    resolution = resolveTrailerPlaybackSource(url, maxHeight, youtubeCookies)
+    val result = resolveTrailerPlaybackSource(url, maxHeight, youtubeCookies)
+    resolution = result
     resolved = true
-    if (resolution?.youtubeLoginRequired == true && !youtubeLoginAttempted) youtubeLoginRequired = true
+    android.util.Log.d("TrailerPlayback", "resolved native=${result.source != null} requested=${maxHeight}p selected=${result.source?.height ?: 0}p separateAudio=${!result.source?.audioUrl.isNullOrBlank()} loginRequired=${result.youtubeLoginRequired}")
+    if (result.youtubeLoginRequired && !youtubeLoginAttempted) youtubeLoginRequired = true
   }
 
   val source = resolution?.source
@@ -12847,6 +12884,7 @@ private fun TrailerPlaybackView(
   val useYoutubeWebFallback = isYoutubeTrailer && resolved && !youtubeLoginRequired &&
     (nativePlaybackFailed || source == null)
   if (useYoutubeWebFallback) {
+    android.util.Log.w("TrailerPlayback", "Using WebView fallback requested=${maxHeight}p nativeFailed=$nativePlaybackFailed sourceMissing=${source == null}; iframe quality is controlled by YouTube")
     TrailerWebView(
       url = url,
       modifier = modifier,
@@ -13097,6 +13135,7 @@ private fun Media3TextureTrailerPlayer(
         if (playbackState == Player.STATE_ENDED) latestOnEnded.value()
       }
       override fun onVideoSizeChanged(videoSize: VideoSize) {
+        android.util.Log.d("TrailerPlayback", "decoded=${videoSize.width}x${videoSize.height} requestedMax=${maxHeight}p")
         attachedContainer?.setVideoSize(videoSize)
       }
       override fun onPlayerError(error: PlaybackException) {

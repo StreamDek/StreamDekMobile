@@ -12,7 +12,10 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.OAEPParameterSpec
 import javax.crypto.spec.PSource
 
-private const val HANDOFF_ALGORITHM = "RSA-OAEP-256+A256GCM"
+// Android Keystore implementations on Fire OS and older Android TV releases use
+// SHA-1 for OAEP's MGF1 digest even when the OAEP message digest is SHA-256.
+// Name that interoperability choice explicitly so receivers never have to guess.
+private const val HANDOFF_ALGORITHM = "RSA-OAEP-256-MGF1-SHA1+A256GCM"
 private val HANDOFF_AAD = "streamdek-handoff-v1".toByteArray(Charsets.UTF_8)
 
 internal fun encryptPlaybackHandoff(payloadJson: String, tvPublicKeyBase64: String): JSONObject {
@@ -29,7 +32,7 @@ internal fun encryptPlaybackHandoff(payloadJson: String, tvPublicKeyBase64: Stri
   rsa.init(
     Cipher.ENCRYPT_MODE,
     publicKey,
-    OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT),
+    OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA1, PSource.PSpecified.DEFAULT),
   )
   val encryptedKey = rsa.doFinal(aesKey.encoded)
   val encoder = Base64.getUrlEncoder().withoutPadding()

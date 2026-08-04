@@ -23,7 +23,6 @@ import java.net.URI
 import java.security.MessageDigest
 import java.net.URLEncoder
 import java.time.Instant
-import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 private const val SESSION_PREFS = "streamdek_native_session"
@@ -35,22 +34,45 @@ private const val WATCHLIST_PREFS = "streamdek_native_watchlist"
 private const val FAVOURITE_CHANNELS_PREFS = "streamdek_native_favourite_channels"
 private const val CLIENT_IDENTITY_PREFS = "streamdek_native_client_identity"
 private const val CLIENT_DEVICE_ID_KEY = "device_id"
+private const val CLIENT_PREVIOUS_DEVICE_ID_KEY = "previous_device_id"
 private const val HOME_CATALOG_PREVIEW_LIMIT = 20
 
 private data class ClientIdentity(
   val deviceId: String,
-  val sessionId: String = UUID.randomUUID().toString(),
+  val sessionId: String,
+  val previousDeviceId: String?,
+  val deviceName: String,
 )
 
 private class ClientIdentityStore(context: Context) {
-  private val prefs = context.getSharedPreferences(CLIENT_IDENTITY_PREFS, Context.MODE_PRIVATE)
+  private val appContext = context.applicationContext
+  private val prefs = appContext.getSharedPreferences(CLIENT_IDENTITY_PREFS, Context.MODE_PRIVATE)
 
   fun load(): ClientIdentity {
-    val existing = prefs.getString(CLIENT_DEVICE_ID_KEY, null)?.takeIf(String::isNotBlank)
-    val deviceId = existing ?: UUID.randomUUID().toString().also {
-      prefs.edit().putString(CLIENT_DEVICE_ID_KEY, it).apply()
+    val androidId = android.provider.Settings.Secure.getString(appContext.contentResolver, android.provider.Settings.Secure.ANDROID_ID)
+      ?.takeIf { it.isNotBlank() }
+      ?: android.os.Build.FINGERPRINT
+    val digest = MessageDigest.getInstance("SHA-256")
+      .digest("streamdek:phone:$androidId".toByteArray(Charsets.UTF_8))
+      .joinToString("") { "%02x".format(it) }
+    val deviceId = "sd-phone-${digest.take(32)}"
+    val stored = prefs.getString(CLIENT_DEVICE_ID_KEY, null)?.takeIf(String::isNotBlank)
+    if (stored != null && stored != deviceId && prefs.getString(CLIENT_PREVIOUS_DEVICE_ID_KEY, null).isNullOrBlank()) {
+      prefs.edit().putString(CLIENT_PREVIOUS_DEVICE_ID_KEY, stored).apply()
     }
-    return ClientIdentity(deviceId)
+    if (stored != deviceId) prefs.edit().putString(CLIENT_DEVICE_ID_KEY, deviceId).apply()
+    val sessionDigest = MessageDigest.getInstance("SHA-256")
+      .digest("streamdek-session:$deviceId".toByteArray(Charsets.UTF_8))
+      .joinToString("") { "%02x".format(it) }
+    val maker = android.os.Build.MANUFACTURER.trim().replaceFirstChar { it.uppercase() }
+    val model = android.os.Build.MODEL.trim()
+    val baseName = listOf(maker, model).filter { it.isNotBlank() }.distinct().joinToString(" ").ifBlank { "Android phone" }
+    return ClientIdentity(
+      deviceId = deviceId,
+      sessionId = "session-${sessionDigest.take(32)}",
+      previousDeviceId = prefs.getString(CLIENT_PREVIOUS_DEVICE_ID_KEY, null)?.takeIf { it.isNotBlank() && it != deviceId },
+      deviceName = "$baseName [${deviceId.takeLast(6).uppercase()}]",
+    )
   }
 }
 
@@ -233,6 +255,8 @@ private fun parseFavouriteChannel(item: JSONObject): MediaItem = MediaItem(
   directStreamUrl = item.optString("directStreamUrl").takeIf { it.isNotBlank() && it != "null" },
 )
 
+data class FavouriteChannelsEnvelope(val items: List<MediaItem>, val updatedAt: Long)
+
 data class TraktScrobblePayload(
   val mediaId: String,
   val mediaType: String,
@@ -254,17 +278,6 @@ data class DiscoverPage(
   val page: Int,
   val totalPages: Int,
 )
-
-internal fun compareSemanticVersions(left: String, right: String): Int {
-  fun parts(value: String): List<Int> = value.trim().removePrefix("v").substringBefore('-').split('.').map { it.toIntOrNull() ?: 0 }
-  val leftParts = parts(left)
-  val rightParts = parts(right)
-  repeat(maxOf(leftParts.size, rightParts.size)) { index ->
-    val comparison = (leftParts.getOrNull(index) ?: 0).compareTo(rightParts.getOrNull(index) ?: 0)
-    if (comparison != 0) return comparison
-  }
-  return 0
-}
 
 class StreamDekApiClient(context: Context? = null) {
   private val appContext = context?.applicationContext
@@ -658,6 +671,51 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
 
+  suspend fun fetchLiveFavouriteChannels(session: AuthSession, profileId: String): Result<FavouriteChannelsEnvelope> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(
+        Request.Builder()
+          .url("$apiBaseUrl/profiles/${encodeQuery(profileId)}/live-favourites")
+          .headers(authHeaders(session, includeContentType = false, profileId = profileId))
+          .build(),
+      )
+      ensureOk(response, "Failed to load live favourites")
+      val items = response.json.optJSONArray("items") ?: JSONArray()
+      FavouriteChannelsEnvelope(
+        items = buildList {
+          for (index in 0 until items.length()) {
+            items.optJSONObject(index)?.let { add(parseFavouriteChannel(it)) }
+          }
+        },
+        updatedAt = response.json.optLong("updatedAt"),
+      )
+    }
+  }
+
+  suspend fun saveLiveFavouriteChannels(session: AuthSession, profileId: String, items: List<MediaItem>): Result<FavouriteChannelsEnvelope> = withContext(Dispatchers.IO) {
+    runCatching {
+      val payload = JSONArray().apply {
+        items.forEach { item ->
+          put(JSONObject()
+            .put("id", item.id).put("type", "live").put("title", item.title)
+            .put("year", item.year).put("poster", item.poster).put("backdrop", item.backdrop)
+            .put("rating", item.rating).put("description", item.description)
+            .put("sourceAddonId", item.sourceAddonId).put("sourceAddonName", item.sourceAddonName)
+            .put("sourceCatalogType", item.sourceCatalogType).put("sourceCatalogId", item.sourceCatalogId)
+            .put("sourceCatalogName", item.sourceCatalogName).put("directStreamUrl", item.directStreamUrl)
+            .put("requestHeaders", JSONObject(item.requestHeaders)).put("addedAt", item.addedAt).put("updatedAt", item.updatedAt))
+        }
+      }
+      val request = Request.Builder()
+        .url("$apiBaseUrl/profiles/${encodeQuery(profileId)}/live-favourites")
+        .put(JSONObject().put("items", payload).toString().toRequestBody(jsonMediaType))
+        .headers(authHeaders(session, profileId = profileId))
+        .build()
+      val response = execute(request)
+      ensureOk(response, "Failed to sync live favourites")
+      FavouriteChannelsEnvelope(items, response.json.optLong("updatedAt"))
+    }
+  }
   suspend fun createProfile(session: AuthSession, name: String, avatarIndex: Int = 0): Result<StreamProfile> =
     withContext(Dispatchers.IO) {
       runCatching {
@@ -1280,106 +1338,30 @@ class StreamDekApiClient(context: Context? = null) {
 
   suspend fun fetchLatestMobileUpdate(): Result<UpdateManifest> = withContext(Dispatchers.IO) {
     runCatching {
-      var serviceFailure: Throwable? = null
-      val serviceManifest = runCatching { fetchUpdateServiceManifest() }
-        .onFailure { serviceFailure = it }
-        .getOrNull()
-
-      // The StreamDek endpoint carries required-update policy, so prefer it when it advertises
-      // a real newer build. If it is stale, malformed, or still points at an older release, the
-      // public GitHub Release becomes a safe source of truth instead of making manual checks fail.
-      if (serviceManifest != null &&
-        serviceManifest.versionCode > BuildConfig.VERSION_CODE &&
-        compareSemanticVersions(serviceManifest.versionName, BuildConfig.VERSION_NAME) > 0
-      ) {
-        return@runCatching serviceManifest
-      }
-
-      val githubManifest = runCatching { fetchGithubMobileUpdate() }.getOrNull()
-      if (githubManifest != null &&
-        (compareSemanticVersions(githubManifest.versionName, serviceManifest?.versionName.orEmpty()) >= 0 || serviceManifest == null)
-      ) {
-        return@runCatching githubManifest
-      }
-      serviceManifest ?: throw IllegalStateException(
-        serviceFailure?.message ?: "StreamDek could not reach either update source.",
-        serviceFailure,
+      val response = execute(Request.Builder().url("$apiBaseUrl/public/updates/android-mobile/latest").header("Accept", "application/json").build())
+      ensureOk(response, "Unable to check for updates right now")
+      val json = response.json
+      val versionCode = json.optInt("versionCode")
+      val versionName = json.optString("versionName")
+      val packageName = json.optString("packageName")
+      require(json.optString("platform") == "android-mobile") { "The update service returned the wrong platform" }
+      require(versionCode > 0 && versionName.isNotBlank() && packageName == BuildConfig.APPLICATION_ID) { "The update service returned invalid app metadata" }
+      UpdateManifest(
+        versionCode = versionCode,
+        versionName = versionName,
+        apkUrl = trustedUpdateUrl(json.optString("apkUrl")),
+        releaseNotes = json.optString("releaseNotes"),
+        required = json.optBoolean("required"),
+        minSupportedVersionCode = json.optInt("minSupportedVersionCode").takeIf { json.has("minSupportedVersionCode") && it > 0 },
+        requiredReason = json.optString("requiredReason").takeIf(String::isNotBlank),
+        packageName = packageName,
+        assetName = json.optString("assetName").takeIf(String::isNotBlank),
+        fileSizeBytes = json.optLong("fileSizeBytes").takeIf { json.has("fileSizeBytes") && it > 0L },
+        checksumSha256 = json.optString("checksumSha256").trim().lowercase().takeIf(String::isNotBlank),
       )
     }
   }
 
-  private fun fetchUpdateServiceManifest(): UpdateManifest {
-    val response = execute(Request.Builder().url("$apiBaseUrl/public/updates/android-mobile/latest").header("Accept", "application/json").build())
-    ensureOk(response, "Unable to check for updates right now")
-    val json = response.json
-    val versionCode = json.optInt("versionCode")
-    val versionName = json.optString("versionName")
-    val packageName = json.optString("packageName")
-    require(json.optString("platform") == "android-mobile") { "The update service returned the wrong platform" }
-    require(versionCode > 0 && versionName.isNotBlank()) { "The update service returned invalid version metadata" }
-    require(packageName == BuildConfig.APPLICATION_ID) {
-      "The update service package is $packageName, expected ${BuildConfig.APPLICATION_ID}"
-    }
-    return UpdateManifest(
-      versionCode = versionCode,
-      versionName = versionName,
-      apkUrl = trustedUpdateUrl(json.optString("apkUrl")),
-      releaseNotes = json.optString("releaseNotes"),
-      required = json.optBoolean("required"),
-      minSupportedVersionCode = json.optInt("minSupportedVersionCode").takeIf { json.has("minSupportedVersionCode") && it > 0 },
-      requiredReason = json.optString("requiredReason").takeIf(String::isNotBlank),
-      packageName = packageName,
-      assetName = json.optString("assetName").takeIf(String::isNotBlank),
-      fileSizeBytes = json.optLong("fileSizeBytes").takeIf { json.has("fileSizeBytes") && it > 0L },
-      checksumSha256 = json.optString("checksumSha256").trim().lowercase().takeIf(String::isNotBlank),
-    )
-  }
-
-  private fun fetchGithubMobileUpdate(): UpdateManifest {
-    val releaseResponse = execute(
-      Request.Builder()
-        .url("https://api.github.com/repos/StreamDek/StreamDekMobile/releases/latest")
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "StreamDek/${BuildConfig.VERSION_NAME}")
-        .build(),
-    )
-    ensureOk(releaseResponse, "Unable to read the latest StreamDek release")
-    val release = releaseResponse.json
-    val tag = release.optString("tag_name")
-    val versionName = tag.removePrefix("v")
-    require(versionName.matches(Regex("\\d+\\.\\d+\\.\\d+"))) { "GitHub returned an invalid release version" }
-    val assets = release.optJSONArray("assets") ?: JSONArray()
-    val asset = (0 until assets.length())
-      .map { assets.getJSONObject(it) }
-      .firstOrNull { it.optString("name").endsWith(".apk", ignoreCase = true) }
-      ?: error("The latest StreamDek release does not contain an APK")
-
-    val propertiesUrl = "https://raw.githubusercontent.com/StreamDek/StreamDekMobile/$tag/android/version.properties"
-    val versionProperties = client.newCall(
-      Request.Builder().url(propertiesUrl).header("User-Agent", "StreamDek/${BuildConfig.VERSION_NAME}").build(),
-    ).execute().use { response ->
-      require(response.isSuccessful) { "Unable to read the release version metadata" }
-      response.body?.string().orEmpty()
-    }
-    val versionCode = versionProperties.lineSequence()
-      .firstOrNull { it.trim().startsWith("VERSION_CODE=") }
-      ?.substringAfter('=')?.trim()?.toIntOrNull()
-      ?: error("The release does not declare VERSION_CODE")
-    val digest = asset.optString("digest").removePrefix("sha256:").trim().lowercase().takeIf { it.length == 64 }
-    return UpdateManifest(
-      versionCode = versionCode,
-      versionName = versionName,
-      apkUrl = trustedUpdateUrl(asset.optString("browser_download_url")),
-      releaseNotes = release.optString("body"),
-      required = false,
-      minSupportedVersionCode = null,
-      requiredReason = null,
-      packageName = BuildConfig.APPLICATION_ID,
-      assetName = asset.optString("name").takeIf(String::isNotBlank),
-      fileSizeBytes = asset.optLong("size").takeIf { it > 0L },
-      checksumSha256 = digest,
-    )
-  }
   suspend fun downloadUpdate(release: UpdateManifest, destination: File, onProgress: (Long, Long?) -> Unit): Result<File> = withContext(Dispatchers.IO) {
     runCatching {
       destination.parentFile?.mkdirs()
@@ -1783,6 +1765,7 @@ class StreamDekApiClient(context: Context? = null) {
               deviceType = deviceType,
               lastSeenAt = device.optString("lastSeenAt").ifBlank { null },
               isCurrent = device.optBoolean("isCurrent"),
+              handoffPublicKey = device.optJSONObject("capabilities")?.optString("handoffPublicKey")?.ifBlank { null },
             ),
           )
         }
@@ -1790,6 +1773,58 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
 
+  suspend fun sendPlaybackHandoff(
+    session: AuthSession,
+    profileId: String?,
+    targetDevice: LinkedTvDevice,
+    player: PlayerSession,
+    positionSeconds: Double,
+  ): Result<PlaybackHandoffReceipt> = withContext(Dispatchers.IO) {
+    runCatching {
+      val stream = player.currentStream
+      val streamJson = JSONObject()
+        .put("addonId", stream?.addonId)
+        .put("addonName", stream?.addonName)
+        .put("name", stream?.name)
+        .put("title", stream?.title)
+        .put("description", stream?.description)
+        // Use the already-resolved playable URL so the TV resumes the exact source selected on mobile.
+        .put("url", player.url)
+        .put("infoHash", stream?.infoHash)
+        .put("fileIdx", stream?.fileIdx)
+        .put("filename", stream?.filename)
+        .put("quality", stream?.quality ?: player.qualityLabel)
+        .put("size", stream?.size ?: player.sizeLabel)
+        .put("bingeGroup", stream?.bingeGroup)
+        .put("source", stream?.source)
+        .put("requestHeaders", JSONObject(player.requestHeaders))
+      val payload = JSONObject()
+        .put("mediaId", player.mediaId)
+        .put("mediaType", player.mediaType)
+        .put("imdbId", player.imdbId)
+        .put("title", player.title)
+        .put("year", player.year)
+        .put("seasonNumber", player.seasonNumber)
+        .put("episodeNumber", player.episodeNumber)
+        .put("episodeTitle", player.episodeTitle)
+        .put("positionSeconds", positionSeconds.coerceAtLeast(0.0))
+        .put("sourceLabel", player.sourceLabel)
+        .put("quality", player.qualityLabel)
+        .put("stream", streamJson)
+      val publicKey = targetDevice.handoffPublicKey
+        ?: throw IllegalStateException("That TV must update or reconnect before it can receive secure handoffs.")
+      val encryptedPayload = encryptPlaybackHandoff(payload.toString(), publicKey)
+      val response = executeJson(
+        "/handoffs",
+        JSONObject().put("targetDeviceId", targetDevice.id).put("encryptedPayload", encryptedPayload),
+        session = session,
+        profileId = profileId,
+      )
+      ensureOk(response, "Could not send playback to that TV")
+      val handoff = response.json.optJSONObject("handoff") ?: throw IllegalStateException("The TV handoff was not created.")
+      PlaybackHandoffReceipt(handoff.optString("id"), handoff.optString("expiresAt").ifBlank { null })
+    }
+  }
   suspend fun activateTvCode(session: AuthSession, userCode: String): Result<String?> = withContext(Dispatchers.IO) {
     runCatching {
       val response = executeJson(
@@ -1906,8 +1941,9 @@ class StreamDekApiClient(context: Context? = null) {
       builder.add("x-client-device-id", identity.deviceId)
       builder.add("x-client-name", "StreamDek Mobile")
       builder.add("x-client-platform", "android")
-      builder.add("x-device-name", android.os.Build.MODEL.ifBlank { "Android device" })
+      builder.add("x-device-name", identity.deviceName)
       builder.add("x-device-type", "phone")
+      identity.previousDeviceId?.let { builder.add("x-previous-device-id", it) }
       builder.add("x-app-version", BuildConfig.VERSION_NAME)
     }
     return builder.build()

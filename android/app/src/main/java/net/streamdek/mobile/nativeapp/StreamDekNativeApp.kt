@@ -9,6 +9,7 @@ import android.graphics.RenderEffect as AndroidRenderEffect
 import android.graphics.Shader
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import android.provider.Settings
 import android.graphics.Matrix
 import android.view.TextureView
@@ -210,7 +211,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -464,12 +464,8 @@ private data class AppUiState(
   val addonsLoading: Boolean = false,
   val addons: List<InstalledAddon> = emptyList(),
   val m3uLoading: Boolean = false,
-  val m3uProgress: Float? = null,
-  val m3uStatusMessage: String? = null,
-  val m3uErrorMessage: String? = null,
   val m3uSources: List<M3uPlaylistSource> = emptyList(),
   val m3uChannels: List<MediaItem> = emptyList(),
-  val m3uVodItems: List<MediaItem> = emptyList(),
   val downloadsEnabled: Boolean = false,
   val downloads: List<DownloadEntry> = emptyList(),
   val debridLoading: Boolean = false,
@@ -488,6 +484,7 @@ private data class AppUiState(
   val pinPromptProfileId: String? = null,
   val pinPromptProfileName: String? = null,
   val playerSession: PlayerSession? = null,
+  val handoffDevices: List<LinkedTvDevice> = emptyList(),
   val playerLaunching: Boolean = false,
   val playerLaunchingLabel: String? = null,
   val liveChannelSwitching: Boolean = false,
@@ -608,7 +605,6 @@ private data class FusionBadgeSourceState(
 
 private const val DEFAULT_FUSION_BADGE_URL = "https://pastebin.com/raw/5xiu5fLL"
 private const val MAX_FUSION_BADGE_URLS = 3
-private fun Int.formattedItemCount(): String = String.format("%,d", this)
 private const val LANGUAGE_BADGE_GROUP_ID = "gl"
 private val DEFAULT_RATING_PROVIDER_ORDER = listOf("imdb", "tmdb", "tomatoes", "metacritic", "trakt", "letterboxd", "audience")
 private val DEFAULT_RATING_PROVIDER_IDS = DEFAULT_RATING_PROVIDER_ORDER.toSet()
@@ -705,7 +701,7 @@ private fun MediaItem.isLiveCatalogItem(): Boolean {
   val isLiveTvChannel = sourceCatalogType == "tv" && !looksLikeSeriesDatabaseId(id)
   return sourceCatalogType in liveMediaTypes ||
     isLiveTvChannel ||
-    (directStreamUrl != null && sourceCatalogType !in setOf("movie", "series", "vod")) ||
+    directStreamUrl != null ||
     listOf("live", "channel", "sport", "ultra max tv", "iptv").any { it in catalogText }
 }
 
@@ -922,7 +918,7 @@ private class AppSettingsStore(context: Context) {
     navigationAutoCollapseSeconds = prefs.getInt("navigation_auto_collapse_seconds", 5).coerceIn(2, 15),
     showStreamsList = profilePrefs.getBoolean("show_streams_list", true),
     heroTrailerAutoplay = profilePrefs.getBoolean("hero_trailer_autoplay", true),
-    heroTrailerResolution = profilePrefs.getInt("hero_trailer_resolution", 720).coerceIn(360, 2160),
+    heroTrailerResolution = profilePrefs.getInt("hero_trailer_resolution", 720).coerceIn(360, 1080),
     showHeroSynopsis = profilePrefs.getBoolean("show_hero_synopsis", true),
     continueWatchingStyle = runCatching { ContinueWatchingStyle.valueOf(profilePrefs.getString("continue_watching_style", ContinueWatchingStyle.Glass.name) ?: ContinueWatchingStyle.Glass.name) }.getOrDefault(ContinueWatchingStyle.Glass),
     liveLandscapeCards = profilePrefs.getBoolean("live_landscape_cards", true),
@@ -984,7 +980,7 @@ private class AppSettingsStore(context: Context) {
   fun saveNavigationAutoCollapseSeconds(value: Int) { prefs.edit().putInt("navigation_auto_collapse_seconds", value.coerceIn(2, 15)).apply() }
   fun saveShowStreamsList(value: Boolean) { profilePrefs.edit().putBoolean("show_streams_list", value).apply() }
   fun saveHeroTrailerAutoplay(value: Boolean) { profilePrefs.edit().putBoolean("hero_trailer_autoplay", value).apply() }
-  fun saveHeroTrailerResolution(value: Int) { profilePrefs.edit().putInt("hero_trailer_resolution", value.coerceIn(360, 2160)).apply() }
+  fun saveHeroTrailerResolution(value: Int) { profilePrefs.edit().putInt("hero_trailer_resolution", value.coerceIn(360, 1080)).apply() }
   fun saveShowHeroSynopsis(value: Boolean) { profilePrefs.edit().putBoolean("show_hero_synopsis", value).apply() }
   fun saveContinueWatchingStyle(value: ContinueWatchingStyle) { profilePrefs.edit().putString("continue_watching_style", value.name).apply() }
   fun saveLiveLandscapeCards(value: Boolean) { profilePrefs.edit().putBoolean("live_landscape_cards", value).apply() }
@@ -1626,7 +1622,6 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private var streamRequestGeneration: Long = 0L
   private var playbackRequestGeneration: Long = 0L
   private var liveChannelCatalogGeneration: Long = 0L
-  private var m3uLoadGeneration: Long = 0L
   private var liveChannelSwitchSnapshot: LiveChannelSwitchSnapshot? = null
   private var pendingStreamLoad: PendingStreamLoad? = null
   private var pendingDirectContinueEntry: PlaybackMemoryEntry? = null
@@ -2002,6 +1997,23 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     saveCurrentPlaybackSnapshot(progressPercent)
   }
 
+  fun refreshHandoffDevices() {
+    val session = uiState.session ?: run {
+      uiState = uiState.copy(handoffDevices = emptyList())
+      return
+    }
+    viewModelScope.launch {
+      apiClient.fetchLinkedTvDevices(session, uiState.activeProfileId)
+        .onSuccess { devices -> uiState = uiState.copy(handoffDevices = devices.filterNot { it.isCurrent }) }
+        .onFailure { uiState = uiState.copy(handoffDevices = emptyList()) }
+    }
+  }
+
+  suspend fun handoffCurrentPlayback(device: LinkedTvDevice, positionSeconds: Double): Result<PlaybackHandoffReceipt> {
+    val session = uiState.session ?: return Result.failure(IllegalStateException("Sign in to hand off playback to a TV."))
+    val player = uiState.playerSession ?: return Result.failure(IllegalStateException("Playback is no longer active."))
+    return apiClient.sendPlaybackHandoff(session, uiState.activeProfileId, device, player, positionSeconds)
+  }
   fun loadHome(force: Boolean = false) {
     if (uiState.homeSections.isNotEmpty() && !force) return
     launchWork(
@@ -2207,7 +2219,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       val addon = uiState.addons.firstOrNull { it.id == fallbackItem.sourceAddonId }
       AddonStream(
         addonId = fallbackItem.sourceAddonId.orEmpty(),
-        addonName = addon?.manifest?.name ?: fallbackItem.sourceAddonName ?: if (detailIsLive) "Live source" else "M3U Playlist",
+        addonName = addon?.manifest?.name ?: "Sports source",
         name = fallbackItem.title,
         title = fallbackItem.title,
         description = fallbackItem.description.ifBlank { null },
@@ -2226,19 +2238,6 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       val fallback = fallbackItem.toFallbackDetail()
       uiState = uiState.copy(
         detailLoading = false, detail = fallback, detailIsLive = true, detailFallbackItem = fallbackItem, selectedPerson = null, personLoading = false,
-        selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null,
-        detailSelectedTab = null, pendingStreamSources = 0, availableStreams = emptyList(), errorMessage = null,
-      )
-      loadStreamsForCurrentDetail(null)
-      return
-    }
-    if (fallbackItem != null && fallbackItem.sourceAddonId?.let(M3uPlaylistManager::isM3uSourceId) == true) {
-      // M3U VOD entries already contain their final playable URL. Avoid sending their local
-      // playlist IDs to TMDB/backend detail endpoints; show the playlist metadata immediately
-      // and expose the direct stream through the normal source/player UI.
-      val fallback = fallbackItem.toFallbackDetail()
-      uiState = uiState.copy(
-        detailLoading = false, detail = fallback, detailIsLive = false, detailFallbackItem = fallbackItem, selectedPerson = null, personLoading = false,
         selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null,
         detailSelectedTab = null, pendingStreamSources = 0, availableStreams = emptyList(), errorMessage = null,
       )
@@ -2774,9 +2773,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       },
       onFailure = failure@ { message ->
         if (requestGeneration != playbackRequestGeneration) return@failure
-        // Live channels commonly carry dead mirrors — roll on to the next source
-        // instead of stopping at the first failure.
-        if (uiState.detailIsLive && playNextLiveSource(stream, episode)) return@failure
+        // A failed resolver should not stop automatic playback at the first ranked source.
+        // Preserve position for VOD and roll live channels on from zero.
+        if (playNextStreamSource(stream, selectedEpisode, if (uiState.detailIsLive) 0.0 else resumePercentOverride)) return@failure
         pendingDirectContinueFallback?.let { showDetails ->
           pendingDirectContinueFallback = null
           pendingDirectContinueEntry = null
@@ -2796,10 +2795,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   /**
-   * Advances to the next live source after [failedStream]. Returns false when the
-   * list is exhausted so the caller can surface the original error.
+   * Advances to the next ranked source after a resolver failure. For a remembered source
+   * that is not in the current list, discard the stale memory and start a fresh ranked search.
    */
-  private fun playNextLiveSource(failedStream: AddonStream, episode: EpisodeItem?): Boolean {
+  private fun playNextStreamSource(failedStream: AddonStream, episode: EpisodeItem?, resumePercent: Double?): Boolean {
     val detail = uiState.detail ?: return false
     val streams = uiState.availableStreams
     val failedKey = streamIdentity(failedStream)
@@ -2807,12 +2806,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val next = streams.drop((index + 1).coerceAtLeast(0)).firstOrNull { streamIdentity(it) != failedKey }
     if (next != null) {
       uiState = uiState.copy(playerLaunchingLabel = buildSourceLabel(next) ?: next.addonName)
-      playStream(next, episode)
+      playStream(next, episode, resumePercentOverride = resumePercent)
       return true
     }
-    // The remembered source failed before the full list was loaded — forget it and
-    // start a fresh search so the channel still plays.
-    if (index < 0 && loadPlaybackMemoryEntry(detail, null)?.stream != null) {
+    if (index < 0 && loadPlaybackMemoryEntry(detail, episode)?.stream != null) {
       playbackResumeStore.removeTitle(activeOwnerKey() ?: GUEST_OWNER_KEY, detail.id, if (detail.type == "series") "tv" else detail.type)
       uiState = uiState.copy(localResumeEntries = loadResumeEntries())
       playBestStream(episode)
@@ -2820,7 +2817,6 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
     return false
   }
-
   fun confirmLiveChannelSwitchStarted() {
     if (!uiState.liveChannelSwitching) return
     val detail = uiState.detail
@@ -3203,105 +3199,33 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     launchWork(onStart = {}, block = { apiClient.reorderAddons(uiState.session, reordered.map { it.id }, uiState.activeProfileId) }, onSuccess = { refreshAddons() })
   }
 
-  private fun publishM3uProgress(generation: Long, progress: M3uLoadProgress, aggregateFraction: Float? = progress.fraction) {
-    viewModelScope.launch(Dispatchers.Main.immediate) {
-      if (generation != m3uLoadGeneration) return@launch
-      uiState = uiState.copy(
-        m3uProgress = aggregateFraction?.coerceIn(0f, 1f),
-        m3uStatusMessage = progress.message,
-        m3uErrorMessage = null,
-      )
-    }
-  }
-
   fun loadM3uPlaylists() {
     val sources = M3uPlaylistManager.list()
-    val enabledSources = sources.filter { it.enabled }
-    val generation = ++m3uLoadGeneration
     uiState = uiState.copy(m3uSources = sources)
-    if (enabledSources.isEmpty()) {
-      uiState = uiState.copy(
-        m3uLoading = false,
-        m3uProgress = null,
-        m3uStatusMessage = null,
-        m3uErrorMessage = null,
-        m3uChannels = emptyList(),
-        m3uVodItems = emptyList(),
-      )
+    if (sources.none { it.enabled }) {
+      uiState = uiState.copy(m3uChannels = emptyList())
       return
     }
-    uiState = uiState.copy(
-      m3uLoading = true,
-      m3uProgress = 0f,
-      m3uStatusMessage = "Preparing ${enabledSources.size} playlist(s)…",
-      m3uErrorMessage = null,
-    )
-    viewModelScope.launch {
-      val liveChannels = mutableListOf<MediaItem>()
-      val vodItems = mutableListOf<MediaItem>()
-      val failures = mutableListOf<String>()
-      enabledSources.forEachIndexed { index, source ->
-        M3uPlaylistManager.fetchItems(source) { progress ->
-          val aggregate = progress.fraction?.let { (index + it) / enabledSources.size.toFloat() }
-          publishM3uProgress(
-            generation,
-            progress.copy(message = "Playlist ${index + 1} of ${enabledSources.size} • ${progress.message}"),
-            aggregate,
-          )
-        }.onSuccess { content ->
-          liveChannels += content.liveChannels
-          vodItems += content.vodItems
-          M3uPlaylistManager.updateContentSummary(source.id, content)
-        }.onFailure { error ->
-          failures += "${source.name}: ${error.message ?: "Unable to load"}"
+    launchWork(
+      onStart = { uiState = uiState.copy(m3uLoading = true) },
+      block = {
+        val channels = sources.filter { it.enabled }.flatMap { source ->
+          M3uPlaylistManager.fetchChannels(source).getOrDefault(emptyList())
         }
-      }
-      if (generation != m3uLoadGeneration) return@launch
-      uiState = uiState.copy(
-        m3uLoading = false,
-        m3uProgress = null,
-        m3uStatusMessage = null,
-        m3uErrorMessage = failures.takeIf { it.isNotEmpty() }?.joinToString("\n"),
-        m3uSources = M3uPlaylistManager.list(),
-        m3uChannels = liveChannels,
-        m3uVodItems = vodItems,
-      )
-    }
+        Result.success(channels)
+      },
+      onSuccess = { channels -> uiState = uiState.copy(m3uLoading = false, m3uChannels = channels) },
+      onFailure = { uiState = uiState.copy(m3uLoading = false) },
+    )
   }
 
   fun addM3uPlaylist(url: String, name: String) {
-    val generation = ++m3uLoadGeneration
-    uiState = uiState.copy(
-      m3uLoading = true,
-      m3uProgress = 0f,
-      m3uStatusMessage = "Connecting to playlist…",
-      m3uErrorMessage = null,
-      errorMessage = null,
+    launchWork(
+      onStart = { uiState = uiState.copy(m3uLoading = true, errorMessage = null) },
+      block = { M3uPlaylistManager.add(url, name) },
+      onSuccess = { loadM3uPlaylists() },
+      onFailure = { message -> uiState = uiState.copy(m3uLoading = false, errorMessage = message) },
     )
-    viewModelScope.launch {
-      M3uPlaylistManager.add(url, name) { progress -> publishM3uProgress(generation, progress) }
-        .onSuccess { result ->
-          if (generation != m3uLoadGeneration) return@onSuccess
-          uiState = uiState.copy(
-            m3uLoading = false,
-            m3uProgress = null,
-            m3uStatusMessage = null,
-            m3uErrorMessage = null,
-            m3uSources = M3uPlaylistManager.list(),
-            m3uChannels = uiState.m3uChannels + result.content.liveChannels,
-            m3uVodItems = uiState.m3uVodItems + result.content.vodItems,
-          )
-        }
-        .onFailure { error ->
-          if (generation != m3uLoadGeneration) return@onFailure
-          uiState = uiState.copy(
-            m3uLoading = false,
-            m3uProgress = null,
-            m3uStatusMessage = null,
-            m3uErrorMessage = error.message ?: "Unable to add that playlist.",
-          )
-        }
-    }
   }
 
   fun removeM3uPlaylist(id: String) {
@@ -3318,6 +3242,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     M3uPlaylistManager.move(id, delta)
     uiState = uiState.copy(m3uSources = M3uPlaylistManager.list())
   }
+
   fun setDownloadsEnabled(value: Boolean) {
     appSettingsStore.saveDownloadsEnabled(value)
     uiState = uiState.copy(downloadsEnabled = value)
@@ -3524,7 +3449,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       homeCatalogRows = homeCatalogRows ?: uiState.homeCatalogRows,
       seasonTabStyle = seasonTabStyle ?: uiState.seasonTabStyle,
       heroTrailerAutoplay = preferences.heroTrailerAutoplay ?: uiState.heroTrailerAutoplay,
-      heroTrailerResolution = preferences.heroTrailerResolution?.coerceIn(360, 2160) ?: uiState.heroTrailerResolution,
+      heroTrailerResolution = preferences.heroTrailerResolution?.coerceIn(360, 1080) ?: uiState.heroTrailerResolution,
       ratingsEnabled = preferences.ratingsEnabled ?: uiState.ratingsEnabled,
       externalRatingsEnabled = preferences.externalRatingsEnabled ?: uiState.externalRatingsEnabled,
       enabledRatingProviders = ratingProviders ?: uiState.enabledRatingProviders,
@@ -3613,16 +3538,48 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     if (!item.isLiveCatalogItem()) return
     val ownerKey = activeOwnerKey() ?: return
     val current = loadLocalFavouriteChannels().toMutableList()
-    val index = current.indexOfFirst { it.id == item.id }
+    val index = current.indexOfFirst { it.id == item.id && it.sourceAddonId == item.sourceAddonId }
     if (index >= 0) current.removeAt(index) else current.add(0, item.copy(addedAt = item.addedAt ?: System.currentTimeMillis()))
     favouriteChannelStore.save(ownerKey, current)
     uiState = uiState.copy(favouriteChannels = current)
+    syncLiveFavouriteChannels(current)
   }
 
   fun clearFavouriteChannels() {
     val ownerKey = activeOwnerKey() ?: return
     favouriteChannelStore.clear(ownerKey)
     uiState = uiState.copy(favouriteChannels = emptyList())
+    syncLiveFavouriteChannels(emptyList())
+  }
+
+  private fun syncLiveFavouriteChannels(items: List<MediaItem>) {
+    val session = uiState.session ?: return
+    val profileId = uiState.activeProfileId ?: return
+    viewModelScope.launch {
+      apiClient.saveLiveFavouriteChannels(session, profileId, items).onFailure { failure ->
+        Log.w("StreamDekFavourites", "Live favourites will retry on the next profile refresh", failure)
+      }
+    }
+  }
+
+  private fun refreshLiveFavouriteChannels() {
+    val session = uiState.session ?: return
+    val profileId = uiState.activeProfileId ?: return
+    val ownerKey = activeOwnerKey() ?: return
+    val local = favouriteChannelStore.load(ownerKey)
+    viewModelScope.launch {
+      apiClient.fetchLiveFavouriteChannels(session, profileId).onSuccess { cloud ->
+        if (uiState.activeProfileId != profileId || activeOwnerKey() != ownerKey) return@onSuccess
+        if (cloud.updatedAt > 0L) {
+          favouriteChannelStore.save(ownerKey, cloud.items)
+          uiState = uiState.copy(favouriteChannels = cloud.items)
+        } else if (local.isNotEmpty()) {
+          apiClient.saveLiveFavouriteChannels(session, profileId, local)
+        }
+      }.onFailure { failure ->
+        Log.w("StreamDekFavourites", "Using locally cached live favourites", failure)
+      }
+    }
   }
 
   fun toggleFavouriteChannelForCurrentSession() {
@@ -3699,9 +3656,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       onStart = { uiState = uiState.copy(updateChecking = true, updateErrorMessage = null, updateStatusMessage = if (manual) "Checking for updates..." else null) },
       block = { apiClient.fetchLatestMobileUpdate() },
       onSuccess = { release ->
-        val available = release.versionCode > BuildConfig.VERSION_CODE || compareSemanticVersions(release.versionName, BuildConfig.VERSION_NAME) > 0
+        val available = release.versionCode > BuildConfig.VERSION_CODE
         val mandatory = release.required || (release.minSupportedVersionCode?.let { BuildConfig.VERSION_CODE < it } == true)
-        uiState = uiState.copy(updateChecking = false, availableUpdate = release.takeIf { available }, updatePromptVisible = available && (manual || uiState.autoUpdateChecksEnabled || mandatory), updateStatusMessage = if (!available && manual) "You are already on the latest version." else null, updateErrorMessage = null)
+        uiState = uiState.copy(updateChecking = false, availableUpdate = release.takeIf { available }, updatePromptVisible = available && (manual || uiState.autoUpdateChecksEnabled || mandatory), updateStatusMessage = if (available) "Version ${release.versionName} is available." else if (manual) "You are already on the latest version." else null, updateErrorMessage = null)
       },
       onFailure = { message -> uiState = uiState.copy(updateChecking = false, updateStatusMessage = null, updateErrorMessage = message) },
     )
@@ -3725,7 +3682,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val safeName = release.assetName?.replace(Regex("[^a-zA-Z0-9._-]"), "-") ?: "streamdek-${release.versionCode}.apk"
     val destination = java.io.File(context.cacheDir, "updates/$safeName")
     launchWork(
-      onStart = { uiState = uiState.copy(updateDownloading = true, updateProgress = 0f, updatePromptVisible = false, updateErrorMessage = null, updateStatusMessage = "Downloading version ${release.versionName}...") },
+      onStart = { uiState = uiState.copy(updateDownloading = true, updateProgress = 0f, updateErrorMessage = null, updateStatusMessage = "Downloading version ${release.versionName}...") },
       block = { apiClient.downloadUpdate(release, destination) { downloaded, total ->
         val progress = total?.takeIf { it > 0L }?.let { (downloaded.toDouble() / it.toDouble()).toFloat().coerceIn(0f, 1f) }
         viewModelScope.launch(Dispatchers.Main) { uiState = uiState.copy(updateProgress = progress) }
@@ -4193,7 +4150,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     refreshFusionBadgeSources()
     loadHome(force = forceHome)
     refreshAddons()
-    if (uiState.session == null) loadM3uPlaylists()
+    loadM3uPlaylists()
     refreshTraktData()
     uiState = uiState.copy(mergedWatchlist = loadLocalWatchlist(), favouriteChannels = loadLocalFavouriteChannels(), localContinueWatching = loadLocalContinueWatching(), localResumeEntries = loadResumeEntries())
     if (uiState.session != null) {
@@ -4212,6 +4169,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     val activeProfile = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }
     refreshTraktData()
     refreshProfilePlugins()
+    refreshLiveFavouriteChannels()
     uiState = appSettingsStore.applyTo(uiState.copy(
       mergedWatchlist = loadLocalWatchlist(),
       favouriteChannels = loadLocalFavouriteChannels(),
@@ -4565,6 +4523,9 @@ fun StreamDekNativeApp(
   val viewModel = viewModel<NativeAppViewModel>(factory = NativeAppViewModelFactory(context))
   val snackbarHostState = remember { SnackbarHostState() }
   val uiState = viewModel.uiState
+  LaunchedEffect(uiState.playerSession?.url, uiState.session?.user?.uid) {
+    if (uiState.playerSession != null && uiState.playerSession?.isLive != true) viewModel.refreshHandoffDevices()
+  }
   val systemDarkMode = isSystemInDarkTheme()
   val darkMode = when (uiState.appAppearance) {
     AppAppearance.Dark -> true
@@ -4643,6 +4604,8 @@ fun StreamDekNativeApp(
               state.second && uiState.playerSession != null -> { NativePlayerScreen(
                 session = uiState.playerSession,
                 availableStreams = uiState.availableStreams,
+                handoffDevices = uiState.handoffDevices,
+                onHandoff = viewModel::handoffCurrentPlayback,
                 onBack = viewModel::dismissPlayer,
                 onScrobble = viewModel::scrobblePlayer,
                 onProgressCheckpoint = viewModel::savePlayerProgressCheckpoint,
@@ -5161,9 +5124,6 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
   var navigationActivityKey by remember { mutableIntStateOf(0) }
   var showNavigationCaret by remember { mutableStateOf(false) }
   val showProfilePicker = uiState.showProfilePicker && openDetail == null && browseRow == null && networkBrowse == null
-  val updatePromptRouteEligible = !showAuth && !requireGuestProfile && !showProfilePicker &&
-    !uiState.profileTransitioning && uiState.pinPromptProfileId == null
-  var delayedUpdatePromptVisible by remember { mutableStateOf(false) }
   val activity = LocalContext.current as? Activity
 
   LaunchedEffect(Unit) {
@@ -5185,14 +5145,6 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
     if (uiState.updateDownloading && uiState.collapsibleNavigationEnabled) {
       navigationActivityKey += 1
       navigationExpanded = true
-    }
-  }
-
-  LaunchedEffect(uiState.updatePromptVisible, updatePromptRouteEligible, uiState.availableUpdate?.versionCode) {
-    delayedUpdatePromptVisible = false
-    if (uiState.updatePromptVisible && updatePromptRouteEligible && uiState.availableUpdate != null) {
-      delay(3_000L)
-      delayedUpdatePromptVisible = true
     }
   }
 
@@ -5320,7 +5272,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
     )
   }
 
-  if (delayedUpdatePromptVisible && uiState.updatePromptVisible && uiState.availableUpdate != null) {
+  if (uiState.updatePromptVisible && uiState.availableUpdate != null) {
     UpdatePromptDialog(uiState = uiState, onUpdate = viewModel::startUpdate, onDismiss = viewModel::dismissUpdatePrompt)
   }
 
@@ -5367,26 +5319,8 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
               label = "floating_navigation_corner",
             )
 
-            if (uiState.updateDownloading) {
-              Box(
-                modifier = Modifier
-                  .width(navigationWidth)
-                  .height(74.dp)
-                  .blur(18.dp)
-                  .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.42f), RoundedCornerShape(navigationCornerRadius)),
-              )
-            }
             FrostedGlassSurface(
-              modifier = Modifier
-                .width(navigationWidth)
-                .height(74.dp)
-                .then(
-                  if (uiState.updateDownloading) {
-                    Modifier.border(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.72f), RoundedCornerShape(navigationCornerRadius))
-                  } else {
-                    Modifier
-                  },
-                ),
+              modifier = Modifier.width(navigationWidth).height(74.dp),
               shape = RoundedCornerShape(navigationCornerRadius),
               hazeStateOverride = hazeState,
               blurRadius = 68f,
@@ -5545,13 +5479,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
     val browseStateHolder = rememberSaveableStateHolder()
     AnimatedContent(
       targetState = openDetail,
-      modifier = Modifier
-        .fillMaxSize()
-        .hazeSource(hazeState)
-        .drawWithContent {
-          drawContent()
-          if (uiState.updateDownloading) drawRect(Color.Black.copy(alpha = 0.62f))
-        },
+      modifier = Modifier.fillMaxSize().hazeSource(hazeState),
       transitionSpec = {
         when {
           // Opening a detail page: gentle rise from 96% scale with a fade.
@@ -5624,7 +5552,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
           ) { tab ->
           when (tab) {
             MainTab.Home -> browseStateHolder.SaveableStateProvider("tab_home") {
-              HomeTab(uiState = uiState, scrollToTopSignal = homeScrollToTopSignal, onReload = { viewModel.loadHome(force = true) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onPlayContinueWatching = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onViewAll = { row -> if (row.id == "continue") selectedTab = MainTab.Continue else viewModel.setBrowseRow(when (row.id) { "m3u_playlists_live" -> row.copy(items = uiState.m3uChannels); "m3u_playlists_vod" -> row.copy(items = uiState.m3uVodItems); else -> row }) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onResolveHeroTitleLogos = viewModel::resolveHomeHeroTitleLogos, onResolveAddonRatings = viewModel::resolveAddonCatalogRatings, onToggleFavourite = viewModel::toggleFavouriteChannel, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) })
+              HomeTab(uiState = uiState, scrollToTopSignal = homeScrollToTopSignal, onReload = { viewModel.loadHome(force = true) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onPlayContinueWatching = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onViewAll = { row -> if (row.id == "continue") selectedTab = MainTab.Continue else viewModel.setBrowseRow(if (row.id == "m3u_playlists") row.copy(items = uiState.m3uChannels) else row) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onResolveHeroTitleLogos = viewModel::resolveHomeHeroTitleLogos, onResolveAddonRatings = viewModel::resolveAddonCatalogRatings, onToggleFavourite = viewModel::toggleFavouriteChannel, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) })
             }
             MainTab.Search -> browseStateHolder.SaveableStateProvider("tab_search") {
               SearchTab(uiState = uiState, ownerKey = watchedOwnerKey(uiState.session, uiState.activeProfileId), onSearch = viewModel::search, onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched)
@@ -5741,6 +5669,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
               onRefreshSync = viewModel::refreshConnectedServices,
               onAutoUpdateChecksChange = viewModel::setAutoUpdateChecks,
               onCheckForUpdates = { viewModel.checkForUpdates(manual = true) },
+              onStartUpdate = viewModel::startUpdate,
             )
           }
         }
@@ -6421,14 +6350,13 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
       )
     }
   }
-  val rows = remember(uiState.homeSections, continueWatching, recommendations, trending, uiState.mergedWatchlist, uiState.favouriteChannels, uiState.m3uChannels, uiState.m3uVodItems, uiState.addonCatalogRatings, uiState.showAddonTmdbRatings) {
+  val rows = remember(uiState.homeSections, continueWatching, recommendations, trending, uiState.mergedWatchlist, uiState.favouriteChannels, uiState.m3uChannels, uiState.addonCatalogRatings, uiState.showAddonTmdbRatings) {
     buildList {
       if (continueWatching.isNotEmpty()) add(HomeRow("continue", "Continue Watching", continueWatching))
       if (uiState.favouriteChannels.isNotEmpty()) add(HomeRow("favourites", "Live TV Favourites", uiState.favouriteChannels))
       // Home only needs a small preview. View All receives the complete list separately, which
       // keeps composition and card clicks bounded even for very large IPTV playlists.
-      if (uiState.m3uChannels.isNotEmpty()) add(HomeRow("m3u_playlists_live", "Playlist Live TV", uiState.m3uChannels.take(30)))
-      if (uiState.m3uVodItems.isNotEmpty()) add(HomeRow("m3u_playlists_vod", "Playlist VOD", uiState.m3uVodItems.take(30)))
+      if (uiState.m3uChannels.isNotEmpty()) add(HomeRow("m3u_playlists", "Playlist Channels", uiState.m3uChannels.take(30)))
       uiState.homeSections.forEach { section ->
         if (section.items.isEmpty()) return@forEach
         val items = if (!uiState.showAddonTmdbRatings) section.items else section.items.map { item ->
@@ -7095,8 +7023,8 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
   }
   val browseHazeState = rememberHazeState()
   val modernHeader = headerStyle == HeaderStyle.Modern
-  val isM3uRow = row.id.startsWith("m3u_playlists_")
-  val isLiveRow = row.id == "m3u_playlists_live" || row.title.contains("live", true) || row.title.contains("sport", true) || row.items.any(MediaItem::isLiveCatalogItem)
+  val isM3uRow = row.id == "m3u_playlists"
+  val isLiveRow = isM3uRow || row.title.contains("live", true) || row.title.contains("sport", true) || row.items.any(MediaItem::isLiveCatalogItem)
   val isNetworkRow = row.id == "streaming_networks" || (!isM3uRow && row.items.any { it.type == "network" })
   val usesLandscapeCards = (isLiveRow && liveLandscapeCards) || isNetworkRow
   var query by rememberSaveable(row.id) { mutableStateOf("") }
@@ -9284,6 +9212,7 @@ private fun SettingsTab(
   onRefreshSync: () -> Unit,
   onAutoUpdateChecksChange: (Boolean) -> Unit,
   onCheckForUpdates: () -> Unit,
+  onStartUpdate: () -> Unit,
 ) {
   var settingsRefreshing by remember { mutableStateOf(false) }
   var settingsSearchVisible by rememberSaveable { mutableStateOf(false) }
@@ -9454,7 +9383,7 @@ private fun SettingsTab(
       }
       item {
         SettingsSection("Account & Profiles") {
-          SettingsNavRow(uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }?.name?.trim()?.firstOrNull()?.uppercase() ?: "?", Color(0xFFE5E7EB), "Account", uiState.session?.user?.email ?: "Signed out", onClick = { onRouteChange(SettingsRoute.Account) })
+          SettingsNavRow(uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }?.name?.trim()?.firstOrNull()?.uppercase() ?: "?", Color(0xFFE5E7EB), "Account", uiState.session?.user?.email?.let(::obfuscateEmail) ?: "Signed out", onClick = { onRouteChange(SettingsRoute.Account) })
           SettingsDivider()
           SettingsProfileRow(uiState = uiState, onClick = onSwitchProfile)
         }
@@ -9500,7 +9429,7 @@ private fun SettingsTab(
       }
       item {
         SettingsSection("About") {
-          SettingsNavRow("UP", Color(0xFF22C55E), "App Updates", "Version ${BuildConfig.VERSION_NAME}", onClick = { onRouteChange(SettingsRoute.AppUpdates) })
+          SettingsNavRow("UP", Color(0xFF22C55E), "App Updates", uiState.availableUpdate?.let { "Version ${it.versionName} available" } ?: "Version ${BuildConfig.VERSION_NAME}", onClick = { onRouteChange(SettingsRoute.AppUpdates) })
         }
       }
 
@@ -9599,7 +9528,7 @@ private fun SettingsTab(
             SettingsSection("Detail Screen") {
               SettingsSwitchRow("TRL", Color(0xFF22C55E), "Hero trailer autoplay", "Play a trailer automatically at the top of a media page when one is available.", uiState.heroTrailerAutoplay, onHeroTrailerAutoplayChange)
               SettingsDivider()
-              SettingsChoiceRow("HD", Color(0xFF38BDF8), "Trailer resolution", "Choose the best video quality trailers may use.", listOf("360p", "720p", "1080p", "2160p"), "${uiState.heroTrailerResolution}p") { selected -> onHeroTrailerResolutionChange(selected.removeSuffix("p").toInt()) }
+              SettingsChoiceRow("HD", Color(0xFF38BDF8), "Trailer resolution", "Choose the best video quality trailers may use.", listOf("360p", "720p", "1080p"), "${uiState.heroTrailerResolution}p") { selected -> onHeroTrailerResolutionChange(selected.removeSuffix("p").toInt()) }
               SettingsDivider()
               SettingsNavRow("MDB", Color(0xFFF5C518), "Ratings", "Turn ratings on and choose which rating services appear.", value = if (uiState.ratingsEnabled) "Enabled" else "Off", onClick = { onRouteChange(SettingsRoute.Ratings) })
               SettingsDivider()
@@ -9654,7 +9583,7 @@ private fun SettingsTab(
             SettingsSection("Playback") {
               SettingsChoiceRow("PLY", Color(0xFF22C55E), "Default Player", "Automatic starts with Media3 and switches to mpv if a source cannot play.", listOf("Auto", "Media3", "MPV"), uiState.playerEngine, onPlayerEngineChange)
               SettingsDivider()
-              SettingsChoiceRow("AUD", Color(0xFFF59E0B), "Default Audio", "Choose the spoken language StreamDek should prefer when a video offers more than one.", listOf("en", "original", "es", "fr", "de", "it", "pt", "ja", "ko", "hi", "ta", "zh", "vi"), uiState.preferredAudioLanguage, onPreferredAudioLanguageChange)
+              SettingsChoiceRow("AUD", Color(0xFFF59E0B), "Default Audio", "Choose the spoken language StreamDek should prefer when a video offers more than one.", listOf("en", "original", "es", "fr", "de", "it", "pt", "ja", "ko", "hi"), uiState.preferredAudioLanguage, onPreferredAudioLanguageChange)
               SettingsDivider()
               SettingsSwitchRow("PIP", Color(0xFF6366F1), "Floating Player", "Keep the video in a small window when you leave StreamDek.", uiState.pictureInPictureEnabled, onPictureInPictureEnabledChange)
               SettingsDivider()
@@ -9703,7 +9632,7 @@ private fun SettingsTab(
         SettingsRoute.Trakt -> item { TraktSettingsSummary(uiState, onRequestTraktDeviceCode, onPollTraktAuthorization, onDisconnectTrakt, onRefreshTrakt) }
         SettingsRoute.Profiles -> item { ProfilesSettingsSummary(uiState, onSwitchProfile, onSelectProfile, onSubmitProfilePin, onCancelProfilePin, onCreateProfile, onUpdateProfile, onDeleteProfile, onMakeDefaultProfile, onUpdateProfilePin) }
         SettingsRoute.Account -> item { AccountSettingsSummary(uiState, onSignOut, onSignIn, onRefreshSync) }
-        SettingsRoute.AppUpdates -> item { AppUpdatesSettingsSummary(uiState, onAutoUpdateChecksChange, onCheckForUpdates) }
+        SettingsRoute.AppUpdates -> item { AppUpdatesSettingsSummary(uiState, onAutoUpdateChecksChange, onCheckForUpdates, onStartUpdate) }
       }
     }
   }
@@ -10404,21 +10333,38 @@ private fun SettingsNavRow(icon: String, iconColor: Color, title: String, subtit
       Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), maxLines = 3, overflow = TextOverflow.Ellipsis)
     }
     value?.let {
-      Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+      Text(if (title == "Max File Size" && it == "0") "Unlimited" else if (it == "Auto") "Best Available" else it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodyMedium, maxLines = 1)
     }
     Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f))
   }
 }
 
 @Composable
-private fun SettingsStaticRow(icon: String, iconColor: Color, title: String, subtitle: String) {
+private fun SettingsStaticRow(icon: String, iconColor: Color, title: String, subtitle: String, trailing: (@Composable () -> Unit)? = null) {
   Row(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
     SettingsIcon(icon, iconColor)
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
       Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
       Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f))
     }
+    trailing?.invoke()
   }
+}
+
+private fun obfuscateEmail(email: String): String {
+  val local = email.substringBefore('@')
+  val domain = email.substringAfter('@', "")
+  if (domain.isBlank()) return "••••••"
+  val localHint = when (local.length) {
+    0 -> ""
+    1 -> local.first().toString()
+    2 -> local.first() + "•"
+    else -> "${local.take(2)}${"•".repeat((local.length - 3).coerceIn(2, 6))}${local.last()}"
+  }
+  val host = domain.substringBeforeLast('.', domain)
+  val suffix = domain.substringAfterLast('.', "")
+  val hostHint = host.take(1) + "•••"
+  return "$localHint@$hostHint${if (suffix.isBlank()) "" else ".$suffix"}"
 }
 
 private fun formatBytesLabel(bytes: Long): String {
@@ -10492,7 +10438,7 @@ private fun ThemePresetPicker(selected: AppThemePreset, onSelected: (AppThemePre
 }
 
 @Composable
-private fun SettingsSwitchRow(icon: String?, iconColor: Color, title: String, subtitle: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit, logoProvider: String? = null, enabled: Boolean = true) {
+private fun SettingsSwitchRow(icon: String, iconColor: Color, title: String, subtitle: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit, logoProvider: String? = null, enabled: Boolean = true) {
   Row(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
     if (logoProvider != null) {
       Image(
@@ -10501,7 +10447,7 @@ private fun SettingsSwitchRow(icon: String?, iconColor: Color, title: String, su
         modifier = Modifier.size(22.dp),
         contentScale = ContentScale.Fit,
       )
-    } else if (icon != null) {
+    } else {
       SettingsIcon(icon, iconColor)
     }
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -10553,15 +10499,12 @@ private fun SettingsChoiceSheet(title: String, options: List<String>, selected: 
       contentAlignment = Alignment.BottomCenter,
     ) {
       Surface(
-        modifier = Modifier.fillMaxWidth().heightIn(max = 680.dp).clickable(enabled = false, onClick = {}),
+        modifier = Modifier.fillMaxWidth().clickable(enabled = false, onClick = {}),
         color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)),
       ) {
-        Column(
-          modifier = Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 28.dp),
-          verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
+        Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
           Text(title, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
           if (title == "Continue Watching Style" || title == "Page Style") {
             options.chunked(2).forEach { rowOptions ->
@@ -10758,7 +10701,6 @@ private fun PageStyleSkeletonPreview(style: DetailPageStyle, selected: Boolean) 
 }
 
 private fun settingsOptionLabel(title: String, option: String): String = when {
-  title == "Trailer resolution" && option == "2160p" -> "4K"
   title == "Language" -> supportedAppLanguages[normalizeAppLanguage(option)] ?: "English"
   title == "Default Player" -> when (option) {
     "Auto" -> "Auto"
@@ -10777,9 +10719,6 @@ private fun settingsOptionLabel(title: String, option: String): String = when {
     "ja" -> "Japanese"
     "ko" -> "Korean"
     "hi" -> "Hindi"
-    "ta" -> "Tamil"
-    "zh" -> "Chinese"
-    "vi" -> "Vietnamese"
     else -> option
   }
   title == "Max File Size" && option == "0" -> "Unlimited"
@@ -11426,6 +11365,133 @@ private fun SubtitleSourcesSettings(ownerKey: String) {
   }
 }
 
+private data class PluginSourceTestState(
+  val providerName: String,
+  val testLabel: String,
+  val loading: Boolean = true,
+  val streams: List<AddonStream> = emptyList(),
+  val error: String? = null,
+)
+
+@Composable
+private fun PluginSourceTestDialog(state: PluginSourceTestState, onDismiss: () -> Unit) {
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text("Test ${state.providerName}", fontWeight = FontWeight.Black) },
+    text = {
+      Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(state.testLabel, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodySmall)
+        when {
+          state.loading -> Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+            Text("Checking this source...")
+          }
+          state.error != null -> Text(state.error, color = MaterialTheme.colorScheme.error)
+          state.streams.isEmpty() -> Text("The source completed its ${state.testLabel.substringBefore(" •")} check but returned no playable results. It may be offline, region-blocked, or not carry this title.")
+          else -> {
+            Text("${state.streams.size} sample ${if (state.streams.size == 1) "result" else "results"}", fontWeight = FontWeight.Bold)
+            state.streams.forEach { stream ->
+              Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.055f)) {
+                Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                  Text(stream.title?.takeIf { it.isNotBlank() } ?: stream.name ?: state.providerName, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                  listOfNotNull(stream.quality, stream.size).joinToString("  •  ").takeIf { it.isNotBlank() }?.let {
+                    Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+  )
+}
+
+@Composable
+private fun PluginProviderSettingsDialog(provider: PluginProvider, onDismiss: () -> Unit) {
+  val scope = rememberCoroutineScope()
+  var loading by remember(provider.id) { mutableStateOf(true) }
+  var saving by remember(provider.id) { mutableStateOf(false) }
+  var fields by remember(provider.id) { mutableStateOf<List<PluginSettingField>>(emptyList()) }
+  var values by remember(provider.id) { mutableStateOf(StreamDekPlugins.manager.providerSettings(provider.id)) }
+  var error by remember(provider.id) { mutableStateOf<String?>(null) }
+
+  LaunchedEffect(provider.id) {
+    StreamDekPlugins.manager.settingsSchema(provider.id)
+      .onSuccess { loaded ->
+        fields = loaded
+        val withDefaults = values.toMutableMap()
+        loaded.forEach { field -> field.key?.let { key -> if (key !in withDefaults && field.defaultValue != null) withDefaults[key] = field.defaultValue } }
+        values = withDefaults
+      }
+      .onFailure { error = humanReadablePluginError(it) }
+    loading = false
+  }
+
+  Dialog(onDismissRequest = { if (!saving) onDismiss() }) {
+    Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f))) {
+      Column(Modifier.fillMaxWidth().heightIn(max = 620.dp).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text("Source settings", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f))
+        Text(provider.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
+        when {
+          loading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
+          error != null -> Text(error.orEmpty(), color = MaterialTheme.colorScheme.error)
+          fields.isEmpty() -> Text("This source did not return any settings.")
+          else -> fields.forEach { field ->
+            when (field.type) {
+              "header" -> Text(field.label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+              "toggle" -> field.key?.let { key ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                  Column(Modifier.weight(1f)) {
+                    Text(field.label, fontWeight = FontWeight.SemiBold)
+                    field.description?.let { Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall) }
+                  }
+                  Switch(checked = values[key] as? Boolean ?: (field.defaultValue as? Boolean ?: false), onCheckedChange = { values = values + (key to it) })
+                }
+              }
+              "select" -> field.key?.let { key ->
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                  Text(field.label, fontWeight = FontWeight.SemiBold)
+                  field.description?.let { Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall) }
+                  androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    field.options.forEach { option ->
+                      FilterChip(selected = values[key]?.toString() == option.value, onClick = { values = values + (key to option.value) }, label = { Text(option.label) })
+                    }
+                  }
+                }
+              }
+              "text" -> field.key?.let { key ->
+                OutlinedTextField(
+                  value = values[key]?.toString().orEmpty(),
+                  onValueChange = { values = values + (key to it) },
+                  label = { Text(field.label) },
+                  placeholder = field.placeholder?.let { placeholder -> { Text(placeholder) } },
+                  supportingText = field.description?.let { description -> { Text(description) } },
+                  visualTransformation = if (field.isPassword) PasswordVisualTransformation() else VisualTransformation.None,
+                  singleLine = true,
+                  modifier = Modifier.fillMaxWidth(),
+                )
+              }
+            }
+          }
+        }
+        Row(Modifier.align(Alignment.End), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          TextButton(onClick = onDismiss, enabled = !saving) { Text("Cancel") }
+          Button(onClick = {
+            saving = true
+            scope.launch {
+              StreamDekPlugins.manager.saveProviderSettings(provider.id, values)
+              saving = false
+              onDismiss()
+            }
+          }, enabled = !loading && error == null && !saving) { Text(if (saving) "Saving..." else "Save") }
+        }
+      }
+    }
+  }
+}
+
 @Composable
 private fun PluginsSettingsSummary() {
   val scope = rememberCoroutineScope()
@@ -11436,6 +11502,8 @@ private fun PluginsSettingsSummary() {
   var expandedPluginUrl by rememberSaveable { mutableStateOf<String?>(null) }
   var detailsRepoUrl by rememberSaveable { mutableStateOf<String?>(null) }
   var displayNameVersion by remember { mutableStateOf(0) }
+  var settingsProviderId by remember { mutableStateOf<String?>(null) }
+  var sourceTest by remember { mutableStateOf<PluginSourceTestState?>(null) }
 
   fun syncState() {
     pluginState = StreamDekPlugins.manager.state
@@ -11451,6 +11519,12 @@ private fun PluginsSettingsSummary() {
       )
     }
   }
+  settingsProviderId?.let { id ->
+    pluginState.providers.firstOrNull { it.id == id }?.let { provider ->
+      PluginProviderSettingsDialog(provider = provider, onDismiss = { settingsProviderId = null })
+    }
+  }
+  sourceTest?.let { test -> PluginSourceTestDialog(test, onDismiss = { sourceTest = null }) }
 
   Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
     SettingsSection("Plugins") {
@@ -11486,9 +11560,9 @@ private fun PluginsSettingsSummary() {
             StreamDekPlugins.manager.add(repositoryUrl)
               .onSuccess {
                 repositoryUrl = ""
-                message = "Plugin collection added."
+                message = StreamDekPlugins.manager.consumeOperationNotice() ?: "Plugin collection added."
               }
-              .onFailure { message = it.message ?: "Could not add that plugin collection." }
+              .onFailure { message = humanReadablePluginError(it) }
             syncState()
             busy = false
           }
@@ -11542,8 +11616,8 @@ private fun PluginsSettingsSummary() {
                 busy = true
                 scope.launch {
                   StreamDekPlugins.manager.refresh(repository.url)
-                    .onSuccess { message = "Plugin collection updated." }
-                    .onFailure { message = it.message ?: "Could not update this plugin collection." }
+                    .onSuccess { message = StreamDekPlugins.manager.consumeOperationNotice() ?: "Plugin collection updated." }
+                    .onFailure { message = humanReadablePluginError(it) }
                   syncState()
                   busy = false
                 }
@@ -11562,7 +11636,7 @@ private fun PluginsSettingsSummary() {
       }
       pluginState.repos.forEachIndexed { pluginIndex, repository ->
         if (pluginIndex > 0) SettingsDivider()
-        val pluginSources = pluginState.providers.filter { it.repoUrl == repository.url }
+        val pluginSources = pluginState.providers.filter { it.repoUrl == repository.url }.sortedBy { it.name.lowercase() }
         val expanded = expandedPluginUrl == repository.url
         Row(
           modifier = Modifier
@@ -11605,18 +11679,41 @@ private fun PluginsSettingsSummary() {
                 else if (type.equals("tv", true) || type.equals("series", true)) "Series"
                 else "Streams"
               }.distinct().joinToString(" / ")
-              SettingsSwitchRow(
-                null,
-                Color(0xFF38BDF8),
-                provider.name,
-                "$supportedTypes - ${repository.name}",
-                provider.enabled && repository.enabled,
-                onCheckedChange = {
-                  StreamDekPlugins.manager.enableProvider(provider.id, it)
-                  syncState()
-                },
-                enabled = repository.enabled,
-              )
+              Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                  Text(provider.name, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
+                  Text("$supportedTypes - ${repository.name}${if (provider.hasSettings) " - Settings available" else ""}", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall)
+                }
+                IconButton(
+                  onClick = {
+                    val testMedia = StreamDekPlugins.manager.testMediaForProvider(provider.id)
+                    sourceTest = PluginSourceTestState(provider.name, testMedia.label)
+                    scope.launch {
+                      StreamDekPlugins.manager.testProvider(provider.id)
+                        .onSuccess { streams -> sourceTest = PluginSourceTestState(provider.name, testMedia.label, loading = false, streams = streams) }
+                        .onFailure { failure -> sourceTest = PluginSourceTestState(provider.name, testMedia.label, loading = false, error = humanReadablePluginError(failure)) }
+                    }
+                  },
+                  enabled = repository.enabled && provider.enabled && provider.types.any { it.equals("movie", true) || it.equals("tv", true) || it.equals("series", true) },
+                ) { Icon(Icons.Rounded.PlayCircleOutline, contentDescription = "Test ${provider.name}") }
+                if (provider.hasSettings) {
+                  IconButton(onClick = { settingsProviderId = provider.id }, enabled = repository.enabled) {
+                    Icon(Icons.Rounded.Settings, contentDescription = "Configure ${provider.name}")
+                  }
+                }
+                Switch(
+                  checked = provider.enabled && repository.enabled,
+                  onCheckedChange = {
+                    StreamDekPlugins.manager.enableProvider(provider.id, it)
+                    syncState()
+                  },
+                  enabled = repository.enabled,
+                )
+              }
             }
           }
         }
@@ -11688,16 +11785,7 @@ private fun M3uPlaylistsSettingsSummary(
   var playlistUrl by rememberSaveable { mutableStateOf("") }
   var playlistName by rememberSaveable { mutableStateOf("") }
   var showAddField by rememberSaveable { mutableStateOf(false) }
-  var addingFromSourceCount by rememberSaveable { mutableIntStateOf(-1) }
   val sources = uiState.m3uSources.sortedBy { it.position }
-  LaunchedEffect(sources.size, uiState.m3uLoading, addingFromSourceCount) {
-    if (!uiState.m3uLoading && addingFromSourceCount >= 0 && sources.size > addingFromSourceCount) {
-      playlistUrl = ""
-      playlistName = ""
-      showAddField = false
-      addingFromSourceCount = -1
-    }
-  }
   Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
     Surface(
       color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
@@ -11710,39 +11798,9 @@ private fun M3uPlaylistsSettingsSummary(
         }
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
           Text("M3U playlists", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-          Text("${(uiState.m3uChannels.size + uiState.m3uVodItems.size).formattedItemCount()} items (${uiState.m3uChannels.size.formattedItemCount()} live, ${uiState.m3uVodItems.size.formattedItemCount()} VOD) from ${sources.count { it.enabled }} playlist(s)", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.60f), style = MaterialTheme.typography.bodySmall)
+          Text("${uiState.m3uChannels.size} channels loaded from ${sources.count { it.enabled }} playlist(s)", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.60f), style = MaterialTheme.typography.bodySmall)
         }
         IconButton(onClick = onRefreshM3uPlaylists, enabled = !uiState.m3uLoading) { Icon(Icons.Rounded.Refresh, "Refresh playlists") }
-      }
-    }
-
-    if (uiState.m3uLoading || uiState.m3uStatusMessage != null || uiState.m3uErrorMessage != null) {
-      Surface(
-        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.07f),
-        shape = RoundedCornerShape(18.dp),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
-      ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (uiState.m3uLoading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-            Text(
-              uiState.m3uStatusMessage ?: if (uiState.m3uLoading) "Loading playlist…" else "Playlist loading finished",
-              modifier = Modifier.weight(1f),
-              color = MaterialTheme.colorScheme.onSurface,
-              fontWeight = FontWeight.SemiBold,
-            )
-          }
-          uiState.m3uProgress?.let { progress ->
-            LinearProgressIndicator(
-              progress = { progress.coerceIn(0f, 1f) },
-              modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(999.dp)),
-              color = MaterialTheme.colorScheme.primary,
-              trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-            )
-            Text("${(progress.coerceIn(0f, 1f) * 100).toInt()}%", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-          }
-          uiState.m3uErrorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-        }
       }
     }
 
@@ -11759,9 +11817,9 @@ private fun M3uPlaylistsSettingsSummary(
             singleLine = true, shape = RoundedCornerShape(16.dp),
           )
           Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(onClick = { showAddField = false; playlistUrl = ""; playlistName = ""; addingFromSourceCount = -1 }) { Text("Cancel") }
+            TextButton(onClick = { showAddField = false; playlistUrl = ""; playlistName = "" }) { Text("Cancel") }
             Button(onClick = {
-              playlistUrl.trim().takeIf { it.isNotEmpty() }?.let { addingFromSourceCount = sources.size; onAddM3uPlaylist(it, playlistName) }
+              playlistUrl.trim().takeIf { it.isNotEmpty() }?.let { onAddM3uPlaylist(it, playlistName); playlistUrl = ""; playlistName = ""; showAddField = false }
             }, enabled = playlistUrl.isNotBlank() && !uiState.m3uLoading, shape = RoundedCornerShape(14.dp)) {
               Text(if (uiState.m3uLoading) "Adding…" else "Add")
             }
@@ -11794,23 +11852,6 @@ private fun M3uPlaylistsSettingsSummary(
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                   Text(source.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                   Text(source.url, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                  val liveCount = source.liveItemCount
-                  val vodCount = source.vodItemCount
-                  if (liveCount != null || vodCount != null) {
-                    val live = liveCount ?: 0
-                    val vod = vodCount ?: 0
-                    val contentType = when {
-                      live > 0 && vod > 0 -> "Live + VOD"
-                      vod > 0 -> "VOD"
-                      else -> "Live"
-                    }
-                    Text(
-                      "${(live + vod).formattedItemCount()} items • $contentType",
-                      color = MaterialTheme.colorScheme.primary,
-                      style = MaterialTheme.typography.labelMedium,
-                      fontWeight = FontWeight.SemiBold,
-                    )
-                  }
                 }
                 Switch(checked = source.enabled, onCheckedChange = { onSetM3uPlaylistEnabled(source.id, it) })
               }
@@ -12115,9 +12156,21 @@ private fun RatingsSettingsSummary(
 
 @Composable
 private fun AccountSettingsSummary(uiState: AppUiState, onSignOut: () -> Unit, onSignIn: () -> Unit, onRefreshSync: () -> Unit) {
+  var emailVisible by rememberSaveable { mutableStateOf(false) }
   Column(verticalArrangement = Arrangement.spacedBy(24.dp)) {
     SettingsSection("Account and Services") {
-      SettingsStaticRow("@", Color(0xFFE5E7EB), "Account", uiState.session?.user?.email ?: "Signed out")
+val accountEmail = uiState.session?.user?.email
+      SettingsStaticRow(
+        "@", Color(0xFFE5E7EB), "Account",
+        accountEmail?.let { if (emailVisible) it else obfuscateEmail(it) } ?: "Signed out",
+        trailing = accountEmail?.let {
+          {
+            IconButton(onClick = { emailVisible = !emailVisible }) {
+              Icon(if (emailVisible) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility, contentDescription = if (emailVisible) "Hide email address" else "Show full email address")
+            }
+          }
+        },
+      )
       if (uiState.session != null) {
         SettingsDivider()
         RefreshSyncRow(refreshing = uiState.syncRefreshing, onClick = onRefreshSync)
@@ -12158,7 +12211,8 @@ private fun RefreshSyncRow(refreshing: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun AppUpdatesSettingsSummary(uiState: AppUiState, onAutoCheckChange: (Boolean) -> Unit, onCheckNow: () -> Unit) {
+private fun AppUpdatesSettingsSummary(uiState: AppUiState, onAutoCheckChange: (Boolean) -> Unit, onCheckNow: () -> Unit, onStartUpdate: () -> Unit) {
+  val release = uiState.availableUpdate
   Column(verticalArrangement = Arrangement.spacedBy(24.dp)) {
     SettingsSection("App Updates") {
       SettingsSwitchRow("UP", Color(0xFF22C55E), "Check Automatically", "Let StreamDek notify you when a new version is available.", uiState.autoUpdateChecksEnabled, onAutoCheckChange)
@@ -12168,11 +12222,43 @@ private fun AppUpdatesSettingsSummary(uiState: AppUiState, onAutoCheckChange: (B
         Color(0xFF38BDF8),
         "Check for Updates",
         uiState.updateErrorMessage ?: uiState.updateStatusMessage ?: "Check the StreamDek update service now.",
-        value = if (uiState.updateChecking) "Checking" else "Current",
+        value = when { uiState.updateChecking -> "Checking"; release != null -> "Available"; else -> "Current" },
         onClick = onCheckNow,
       )
       SettingsDivider()
       SettingsStaticRow("APP", Color(0xFF94A3B8), "Current Version", BuildConfig.VERSION_NAME)
+    }
+    if (release != null) {
+      Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(28.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))) {
+        Column(modifier = Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+          Box(modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)).border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.38f), RoundedCornerShape(999.dp)).padding(horizontal = 14.dp, vertical = 8.dp)) {
+            Text(if (release.required) "Required update" else "Update available", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Black)
+          }
+          Text("StreamDek ${release.versionName}", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
+          release.fileSizeBytes?.let { Text("Download size ${formatBytesLabel(it).removeSuffix(" used")}", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f), fontWeight = FontWeight.Bold) }
+          if (release.releaseNotes.isNotBlank()) {
+            Text("What is new", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f), fontWeight = FontWeight.Black)
+            Text(release.releaseNotes, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f), style = MaterialTheme.typography.bodyLarge)
+          }
+          uiState.updateProgress?.let { progress ->
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+              Text("${(progress.coerceIn(0f, 1f) * 100).toInt()}% downloaded", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+              LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(999.dp)),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+              )
+            }
+          }
+          uiState.updateStatusMessage?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+          uiState.updateErrorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+          Button(onClick = onStartUpdate, enabled = !uiState.updateDownloading, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary), shape = RoundedCornerShape(999.dp)) {
+            if (uiState.updateDownloading) CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+            else Text("Update Now", fontWeight = FontWeight.Black)
+          }
+        }
+      }
     }
   }
 }
@@ -12870,11 +12956,9 @@ private fun TrailerPlaybackView(
     onReadyChanged(false)
     resolved = false
     val youtubeCookies = if (isYoutubeTrailer) android.webkit.CookieManager.getInstance().getCookie("https://www.youtube.com") else null
-    val result = resolveTrailerPlaybackSource(url, maxHeight, youtubeCookies)
-    resolution = result
+    resolution = resolveTrailerPlaybackSource(url, maxHeight, youtubeCookies)
     resolved = true
-    android.util.Log.d("TrailerPlayback", "resolved native=${result.source != null} requested=${maxHeight}p selected=${result.source?.height ?: 0}p separateAudio=${!result.source?.audioUrl.isNullOrBlank()} loginRequired=${result.youtubeLoginRequired}")
-    if (result.youtubeLoginRequired && !youtubeLoginAttempted) youtubeLoginRequired = true
+    if (resolution?.youtubeLoginRequired == true && !youtubeLoginAttempted) youtubeLoginRequired = true
   }
 
   val source = resolution?.source
@@ -12884,7 +12968,6 @@ private fun TrailerPlaybackView(
   val useYoutubeWebFallback = isYoutubeTrailer && resolved && !youtubeLoginRequired &&
     (nativePlaybackFailed || source == null)
   if (useYoutubeWebFallback) {
-    android.util.Log.w("TrailerPlayback", "Using WebView fallback requested=${maxHeight}p nativeFailed=$nativePlaybackFailed sourceMissing=${source == null}; iframe quality is controlled by YouTube")
     TrailerWebView(
       url = url,
       modifier = modifier,
@@ -13135,7 +13218,6 @@ private fun Media3TextureTrailerPlayer(
         if (playbackState == Player.STATE_ENDED) latestOnEnded.value()
       }
       override fun onVideoSizeChanged(videoSize: VideoSize) {
-        android.util.Log.d("TrailerPlayback", "decoded=${videoSize.width}x${videoSize.height} requestedMax=${maxHeight}p")
         attachedContainer?.setVideoSize(videoSize)
       }
       override fun onPlayerError(error: PlaybackException) {

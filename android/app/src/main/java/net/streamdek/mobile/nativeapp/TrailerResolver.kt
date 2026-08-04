@@ -31,7 +31,7 @@ suspend fun resolveTrailerPlaybackSource(url: String, maxHeight: Int = 720, yout
     if (trimmed.isBlank()) return@withTimeoutOrNull TrailerPlaybackResolution()
     if (isNativePlayableTrailerUrl(trimmed)) return@withTimeoutOrNull TrailerPlaybackResolution(source = TrailerPlaybackSource(trimmed))
     val youtubeKey = extractYoutubeTrailerKey(trimmed) ?: return@withTimeoutOrNull TrailerPlaybackResolution()
-    resolveYoutubePlaybackSource(youtubeKey, maxHeight.coerceIn(360, 2160), youtubeCookies)
+    resolveYoutubePlaybackSource(youtubeKey, maxHeight.coerceIn(360, 1080), youtubeCookies)
   } ?: TrailerPlaybackResolution()
 }
 
@@ -184,22 +184,15 @@ private fun requestYoutubePlayer(videoId: String, apiKey: String, visitorData: S
       if (maxHeight > 360 && hlsManifest.isNotBlank()) {
         return@use TrailerPlaybackResolution(source = TrailerPlaybackSource(hlsManifest, height = maxHeight, requestHeaders = playbackHeaders))
       }
-      val source = selectTrailerSource(formats, adaptiveFormats, maxHeight)
+      val adaptiveVideo = selectAdaptiveVideo(adaptiveFormats, maxHeight)
+      val adaptiveAudio = selectAdaptiveAudio(adaptiveFormats)
+      val source = selectProgressiveTrailer(formats, maxHeight)
+        ?: (if (adaptiveVideo != null && adaptiveAudio != null) TrailerPlaybackSource(adaptiveVideo.first, adaptiveAudio, adaptiveVideo.second) else null)
         ?: hlsManifest.takeIf { it.isNotBlank() }?.let { TrailerPlaybackSource(it) }
-      Log.d(trailerResolverTag, "${client.name}: selected=${source?.height ?: 0}p separateAudio=${!source?.audioUrl.isNullOrBlank()} requested=${maxHeight}p")
       TrailerPlaybackResolution(source = source?.copy(requestHeaders = playbackHeaders))
     }
   }.onFailure { Log.w(trailerResolverTag, "${client.name}: ${it.message}") }.getOrElse { TrailerPlaybackResolution() }
 }
-internal fun selectTrailerSource(formats: JSONArray?, adaptiveFormats: JSONArray?, maxHeight: Int): TrailerPlaybackSource? {
-  val adaptiveVideo = selectAdaptiveVideo(adaptiveFormats, maxHeight)
-  val adaptiveAudio = selectAdaptiveAudio(adaptiveFormats)
-  // Higher YouTube qualities are separate video/audio tracks. Prefer that pair when
-  // available; progressive formats are commonly capped at 720p even when 4K was found.
-  return (if (adaptiveVideo != null && adaptiveAudio != null) TrailerPlaybackSource(adaptiveVideo.first, adaptiveAudio, adaptiveVideo.second) else null)
-    ?: selectProgressiveTrailer(formats, maxHeight)
-}
-
 private fun selectProgressiveTrailer(formats: JSONArray?, maxHeight: Int): TrailerPlaybackSource? {
   if (formats == null) return null
   var selected: TrailerPlaybackSource? = null
@@ -217,28 +210,16 @@ private fun selectProgressiveTrailer(formats: JSONArray?, maxHeight: Int): Trail
   return selected
 }
 
-internal fun selectAdaptiveVideo(formats: JSONArray?, maxHeight: Int): Pair<String, Int>? {
+private fun selectAdaptiveVideo(formats: JSONArray?, maxHeight: Int): Pair<String, Int>? {
   if (formats == null) return null
   var selected: Pair<String, Int>? = null
-  var selectedCodecRank = -1
   for (index in 0 until formats.length()) {
     val item = formats.optJSONObject(index) ?: continue
     val url = item.optString("url")
     val mime = item.optString("mimeType")
     val height = item.optInt("height", 0)
-    if (url.isBlank() || !mime.contains("video/", true) || height !in 1..maxHeight) continue
-    // YouTube usually exposes 1440p/2160p as VP9 or AV1 rather than AVC. Prefer broadly
-    // supported AVC/VP9 at the same height, but never discard a higher available resolution.
-    val codecRank = when {
-      mime.contains("avc1", true) -> 3
-      mime.contains("vp9", true) || mime.contains("vp09", true) -> 2
-      mime.contains("av01", true) -> 1
-      else -> 0
-    }
-    if (selected == null || height > selected.second || (height == selected.second && codecRank > selectedCodecRank)) {
-      selected = url to height
-      selectedCodecRank = codecRank
-    }
+    if (url.isBlank() || !mime.contains("video/mp4", true) || !mime.contains("avc1", true) || height !in 1..maxHeight) continue
+    if (selected == null || height > selected.second) selected = url to height
   }
   return selected
 }

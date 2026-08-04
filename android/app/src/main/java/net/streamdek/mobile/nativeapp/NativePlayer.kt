@@ -2,8 +2,6 @@ package net.streamdek.mobile.nativeapp
 
 import android.app.Activity
 import android.content.Context
-import android.media.AudioManager
-import android.provider.Settings
 import android.content.pm.ActivityInfo
 import android.view.View
 import androidx.activity.compose.BackHandler
@@ -19,7 +17,6 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -54,7 +51,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Forward10
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.Brightness6
 import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.Lock
@@ -73,10 +69,10 @@ import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.Tv
 import androidx.compose.material.icons.rounded.ViewList
 import androidx.compose.material3.Surface
 import androidx.compose.material.icons.rounded.VolumeUp
-import androidx.compose.material.icons.rounded.VolumeOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -135,18 +131,21 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
-import kotlin.math.roundToInt
 
 private enum class PlayerPanel { None, Sources, Audio, Subtitles, Speed, Engine }
-private enum class PlayerAdjustmentKind { Brightness, Volume }
-
-internal fun adjustedPlayerLevel(initial: Float, totalDragY: Float, playerHeight: Float): Float =
-  (initial - (totalDragY / playerHeight.coerceAtLeast(1f)) * 1.5f).coerceIn(0f, 1f)
 internal enum class ActivePlaybackEngine { Media3, MPV }
 internal fun initialPlaybackEngine(preference: String): ActivePlaybackEngine =
   if (preference.equals("MPV", ignoreCase = true)) ActivePlaybackEngine.MPV else ActivePlaybackEngine.Media3
 internal fun shouldAutoFallbackToMpv(preference: String, activeEngine: ActivePlaybackEngine, fallbackUsed: Boolean): Boolean =
   preference.equals("Auto", ignoreCase = true) && activeEngine == ActivePlaybackEngine.Media3 && !fallbackUsed
+internal fun nextUntriedPlaybackSource(
+  availableStreams: List<AddonStream>,
+  currentStream: AddonStream?,
+  failedKeys: Set<String>,
+): AddonStream? {
+  val excluded = if (currentStream == null) failedKeys else failedKeys + playerStreamIdentity(currentStream)
+  return availableStreams.firstOrNull { playerStreamIdentity(it) !in excluded }
+}
 private enum class SubtitlePanelTab { BuiltIn, Addons, Style }
 private data class ExternalSubtitle(val id: String, val language: String, val label: String, val url: String)
 private data class SkipSegment(val type: String, val startSeconds: Double, val endSeconds: Double)
@@ -160,6 +159,8 @@ private fun episodeContext(session: PlayerSession): String? = if (session.season
 fun NativePlayerScreen(
   session: PlayerSession,
   availableStreams: List<AddonStream>,
+  handoffDevices: List<LinkedTvDevice> = emptyList(),
+  onHandoff: suspend (LinkedTvDevice, Double) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) },
   onBack: (Double) -> Unit,
   onScrobble: (String, Double) -> Unit,
   onProgressCheckpoint: (Double) -> Unit,
@@ -190,7 +191,6 @@ fun NativePlayerScreen(
   val playerContext = LocalContext.current
   val playerScope = rememberCoroutineScope()
   val activity = playerContext as? Activity
-  val audioManager = remember(playerContext) { playerContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager }
   // Manually added subtitle sources plus any installed addon that advertises the
   // Stremio "subtitles" resource.
   val userSubtitleSources = remember(session.url, playerContext, session.userSubtitleSources, session.addonSubtitleSources) {
@@ -215,9 +215,6 @@ fun NativePlayerScreen(
   var exoPlayerView by remember(liveEngineKey) { mutableStateOf<ExoPlaybackView?>(null) }
   var activeEngine by remember(liveEngineKey, session.playerEngine) { mutableStateOf(initialPlaybackEngine(session.playerEngine)) }
   var autoFallbackUsed by remember(liveEngineKey, session.playerEngine) { mutableStateOf(false) }
-  var avMismatchFallbackTried by remember(session.url) { mutableStateOf(false) }
-  var loadedVideoWidth by remember(session.url) { mutableIntStateOf(0) }
-  var loadedVideoHeight by remember(session.url) { mutableIntStateOf(0) }
   var pendingEngineResumeSeconds by remember(session.url) { mutableDoubleStateOf(0.0) }
   fun activeAddSubtitle(path: String) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.addSubtitleFile(path) else playerView?.addSubtitleFile(path) }
   fun activeReload() { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.reloadSource() else playerView?.reloadSource() }
@@ -271,41 +268,10 @@ fun NativePlayerScreen(
   var didApplyResume by remember(session.url) { mutableStateOf(false) }
   var lastCheckpointSecond by remember(session.url) { mutableDoubleStateOf(0.0) }
   var slowLoadHintVisible by remember(session.url) { mutableStateOf(false) }
-  var adjustmentKind by remember { mutableStateOf<PlayerAdjustmentKind?>(null) }
-  var adjustmentLevel by remember { mutableFloatStateOf(0f) }
-  var adjustmentFeedbackVersion by remember { mutableIntStateOf(0) }
-  fun currentWindowBrightness(): Float {
-    val windowValue = activity?.window?.attributes?.screenBrightness ?: -1f
-    if (windowValue in 0f..1f) return windowValue.coerceIn(0.02f, 1f)
-    return runCatching {
-      Settings.System.getInt(playerContext.contentResolver, Settings.System.SCREEN_BRIGHTNESS) / 255f
-    }.getOrDefault(0.5f).coerceIn(0.02f, 1f)
-  }
-  fun currentMediaVolume(): Float {
-    val manager = audioManager ?: return 0.5f
-    val maximum = manager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
-    return manager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maximum.toFloat()
-  }
-  fun applyBrightness(level: Float) {
-    val target = level.coerceIn(0.02f, 1f)
-    activity?.window?.let { window ->
-      val attributes = window.attributes
-      attributes.screenBrightness = target
-      window.attributes = attributes
-    }
-    adjustmentKind = PlayerAdjustmentKind.Brightness
-    adjustmentLevel = target
-    adjustmentFeedbackVersion += 1
-  }
-  fun applyMediaVolume(level: Float) {
-    val manager = audioManager ?: return
-    val maximum = manager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
-    val target = (level.coerceIn(0f, 1f) * maximum).roundToInt().coerceIn(0, maximum)
-    manager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
-    adjustmentKind = PlayerAdjustmentKind.Volume
-    adjustmentLevel = target.toFloat() / maximum.toFloat()
-    adjustmentFeedbackVersion += 1
-  }
+  val failedSourceKeys = remember(session.mediaId, session.seasonNumber, session.episodeNumber) { mutableStateListOf<String>() }
+  var handoffPickerVisible by remember(session.url) { mutableStateOf(false) }
+  var handoffLoading by remember(session.url) { mutableStateOf(false) }
+  var handoffError by remember(session.url) { mutableStateOf<String?>(null) }
   fun progressPercent(): Double =
     if (duration > 0.0) ((currentTime / duration) * 100.0).coerceIn(0.0, 100.0) else 0.0
 
@@ -355,13 +321,6 @@ fun NativePlayerScreen(
     }
   }
 
-  LaunchedEffect(adjustmentFeedbackVersion) {
-    if (adjustmentFeedbackVersion > 0) {
-      delay(900)
-      adjustmentKind = null
-    }
-  }
-
   LaunchedEffect(controlsLocked, showUnlockControl, unlockActivityVersion) {
     if (controlsLocked && showUnlockControl) {
       delay(2_600)
@@ -371,7 +330,6 @@ fun NativePlayerScreen(
 
   DisposableEffect(activity) {
     val previous = activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-    val previousBrightness = activity?.window?.attributes?.screenBrightness ?: -1f
     val decorView = activity?.window?.decorView
     val previousSystemUi = decorView?.systemUiVisibility ?: 0
     MainActivity.pipShouldEnter = session.pictureInPictureEnabled
@@ -387,11 +345,6 @@ fun NativePlayerScreen(
     onDispose {
       MainActivity.pipShouldEnter = false
       activity?.requestedOrientation = previous
-      activity?.window?.let { window ->
-        val attributes = window.attributes
-        attributes.screenBrightness = previousBrightness
-        window.attributes = attributes
-      }
       decorView?.systemUiVisibility = previousSystemUi
       if (scrobbleStarted && !session.isLive) onScrobble("stop", progressPercent())
     }
@@ -552,10 +505,8 @@ fun NativePlayerScreen(
     }
   }
 
-  val playerLoadCallback: (Double, Int, Int) -> Unit = { loadedDuration, width, height ->
+  val playerLoadCallback: (Double, Int, Int) -> Unit = { loadedDuration, _, _ ->
     hasLoaded = true
-    loadedVideoWidth = width
-    loadedVideoHeight = height
     if (session.isLive && channelSwitchLoading) onChannelSwitchPlaybackStarted()
     duration = loadedDuration
     error = null
@@ -586,11 +537,8 @@ fun NativePlayerScreen(
       onProgressCheckpoint(((position / total) * 100.0).coerceIn(0.0, 100.0))
     }
   }
-  // Shared engine-swap path for the three ways a session can change decoders: the existing
-  // Auto-preference error fallback (Media3 -> mpv only), a user-initiated pick from the new
-  // Engine panel, and the audio/video-mismatch auto-detection below. All three need the same
-  // "tear down the current engine, remember where we were, let the other engine resume there"
-  // behavior, so it's centralized here instead of duplicated per trigger.
+  // Shared engine-swap path for automatic Media3 -> mpv error fallback and a user-initiated
+  // engine change. Position is retained across the decoder swap.
   fun switchEngine(target: ActivePlaybackEngine, reason: String) {
     if (target == activeEngine) return
     pendingEngineResumeSeconds = currentTime.coerceAtLeast(0.0)
@@ -602,8 +550,6 @@ fun NativePlayerScreen(
     selectedAudioTrackId = null
     selectedSubtitleTrackId = null
     externalSubtitleNeedsReapply = selectedExternalSubtitleId != null
-    loadedVideoWidth = 0
-    loadedVideoHeight = 0
     if (target == ActivePlaybackEngine.Media3) playerView = null else exoPlayerView = null
     android.util.Log.w("StreamDekPlayer", "Switching playback engine to $target ($reason) at ${pendingEngineResumeSeconds}s")
     activeEngine = target
@@ -617,7 +563,18 @@ fun NativePlayerScreen(
       error = "Live feed interrupted. Reconnecting..."
       retryOrFailoverLiveFeed()
     } else {
-      error = message
+      session.currentStream?.let { current ->
+        val currentKey = playerStreamIdentity(current)
+        if (currentKey !in failedSourceKeys) failedSourceKeys.add(currentKey)
+      }
+      val nextSource = nextUntriedPlaybackSource(availableStreams, session.currentStream, failedSourceKeys.toSet())
+      if (nextSource != null) {
+        failedSourceKeys.add(playerStreamIdentity(nextSource))
+        error = "Source failed. Switching to another stream..."
+        onSelectStream(nextSource, progressPercent())
+      } else {
+        error = message
+      }
     }
   }
   val playerEndCallback: () -> Unit = {
@@ -678,30 +635,47 @@ fun NativePlayerScreen(
       }
     }
   }
-  // Neither engine reports "no video renderer" directly, but both report a 0x0 decoded
-  // frame size and an empty audio-track list, which is the best available signal that one
-  // half of the stream isn't actually playing. Give the engine a few seconds after it claims
-  // to have loaded (mpv/Media3 can report tracks a moment after the load callback fires), then
-  // swap to the other engine once - not on every recheck - so a genuinely audio-only or
-  // video-only source doesn't get bounced back and forth forever.
-  LaunchedEffect(session.url, activeEngine, hasLoaded) {
-    if (!hasLoaded || avMismatchFallbackTried) return@LaunchedEffect
-    // Live manifests often publish their audio rendition metadata a few seconds after video
-    // starts. Treating that transient empty track list as a broken decoder caused an already
-    // playing channel to switch engines and reload 3.5 seconds after a successful handoff.
-    // Explicit player errors and the live stall watchdog still provide safe fallback signals.
-    if (session.isLive) return@LaunchedEffect
-    delay(3_500)
-    if (avMismatchFallbackTried || !hasLoaded || duration <= 0.0) return@LaunchedEffect
-    val noVideo = loadedVideoWidth <= 0 && loadedVideoHeight <= 0
-    val noAudio = audioTracks.isEmpty()
-    if (noVideo != noAudio) {
-      avMismatchFallbackTried = true
-      val target = if (activeEngine == ActivePlaybackEngine.Media3) ActivePlaybackEngine.MPV else ActivePlaybackEngine.Media3
-      switchEngine(target, if (noAudio) "no audio detected" else "no video detected")
-    }
-  }
 
+  if (handoffPickerVisible) {
+    AlertDialog(
+      onDismissRequest = { if (!handoffLoading) handoffPickerVisible = false },
+      title = { Text("Continue on a TV", fontWeight = FontWeight.Black) },
+      text = {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+          Text("Choose a TV linked to your StreamDek account. Playback will resume at ${formatClock(currentTime)}.")
+          if (handoffDevices.isEmpty()) {
+            Text("No linked TVs are available. Link a TV from Settings > Connect to TV first.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f))
+          } else {
+            handoffDevices.forEach { device ->
+              Button(
+                onClick = {
+                  handoffLoading = true
+                  handoffError = null
+                  playerScope.launch {
+                    onHandoff(device, currentTime)
+                      .onSuccess {
+                        isPaused = true
+                        activeSetPaused(true)
+                        handoffLoading = false
+                        handoffPickerVisible = false
+                      }
+                      .onFailure { failure ->
+                        handoffLoading = false
+                        handoffError = failure.message ?: "Could not send playback to that TV."
+                      }
+                  }
+                },
+                enabled = !handoffLoading,
+                modifier = Modifier.fillMaxWidth(),
+              ) { Text(if (handoffLoading) "Sending…" else device.name) }
+            }
+          }
+          handoffError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        }
+      },
+      confirmButton = { TextButton(onClick = { handoffPickerVisible = false }, enabled = !handoffLoading) { Text("Cancel") } },
+    )
+  }
   Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
     key(liveEngineKey, activeEngine) {
       if (activeEngine == ActivePlaybackEngine.Media3) {
@@ -855,59 +829,34 @@ fun NativePlayerScreen(
       modifier = Modifier
         .fillMaxSize()
         .background(Color.Black.copy(alpha = if (isLoading || controlsLocked || (!showControls && activePanel == PlayerPanel.None)) 0.0f else if (activePanel == PlayerPanel.None) 0.18f else 0.58f))
-        .pointerInput(session.url, session.isLive, isLoading, controlsLocked, audioManager) {
-          if (!isLoading && !controlsLocked) {
+        .pointerInput(session.url, session.isLive, isLoading, controlsLocked) {
+          if (session.isLive && !isLoading && !controlsLocked) {
             var totalX = 0f
             var totalY = 0f
-            var dragStartX = 0f
-            var initialBrightness = 0.5f
-            var initialVolume = 0.5f
-            var didAdjustLevel = false
             detectDragGestures(
-              onDragStart = { offset ->
-                totalX = 0f
-                totalY = 0f
-                dragStartX = offset.x
-                initialBrightness = currentWindowBrightness()
-                initialVolume = currentMediaVolume()
-                didAdjustLevel = false
-              },
+              onDragStart = { totalX = 0f; totalY = 0f },
               onDragEnd = {
-                val startedInChannelZone = dragStartX >= size.width * 0.33f && dragStartX < size.width * 0.67f
-                if (session.isLive && !didAdjustLevel) {
-                  when {
-                    startedInChannelZone && totalY < -90f && kotlin.math.abs(totalY) > kotlin.math.abs(totalX) -> {
-                      showFavouriteDrawer = false
-                      showLiveChannels = true
-                      showChannelSwipeCue = false
-                      showControls = false
-                      activePanel = PlayerPanel.None
-                    }
-                    totalX < -90f && kotlin.math.abs(totalX) > kotlin.math.abs(totalY) -> {
-                      showLiveChannels = false
-                      showFavouriteDrawer = true
-                      showControls = false
-                      activePanel = PlayerPanel.None
-                    }
-                    totalY > 90f && showLiveChannels -> showLiveChannels = false
+                when {
+                  totalY < -90f && kotlin.math.abs(totalY) > kotlin.math.abs(totalX) -> {
+                    showFavouriteDrawer = false
+                    showLiveChannels = true
+                    showChannelSwipeCue = false
+                    showControls = false
+                    activePanel = PlayerPanel.None
                   }
+                  totalX < -90f && kotlin.math.abs(totalX) > kotlin.math.abs(totalY) -> {
+                    showLiveChannels = false
+                    showFavouriteDrawer = true
+                    showControls = false
+                    activePanel = PlayerPanel.None
+                  }
+                  totalY > 90f && showLiveChannels -> showLiveChannels = false
                 }
               },
               onDrag = { change, amount ->
+                change.consume()
                 totalX += amount.x
                 totalY += amount.y
-                val verticalGesture = kotlin.math.abs(totalY) > kotlin.math.abs(totalX) && kotlin.math.abs(totalY) > 12f
-                when {
-                  verticalGesture && dragStartX < size.width * 0.33f -> {
-                    applyBrightness(adjustedPlayerLevel(initialBrightness, totalY, size.height.toFloat()))
-                    didAdjustLevel = true
-                  }
-                  verticalGesture && dragStartX >= size.width * 0.67f -> {
-                    applyMediaVolume(adjustedPlayerLevel(initialVolume, totalY, size.height.toFloat()))
-                    didAdjustLevel = true
-                  }
-                }
-                change.consume()
               },
             )
           }
@@ -928,41 +877,6 @@ fun NativePlayerScreen(
           }
           },
       )
-
-    AnimatedVisibility(
-      visible = adjustmentKind != null && !controlsLocked,
-      modifier = Modifier.align(Alignment.Center).zIndex(19f),
-      enter = fadeIn(animationSpec = tween(120)),
-      exit = fadeOut(animationSpec = tween(180)),
-    ) {
-      Surface(
-        color = Color(0xD9161A23),
-        shape = RoundedCornerShape(22.dp),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
-      ) {
-        Column(
-          modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
-          horizontalAlignment = Alignment.CenterHorizontally,
-          verticalArrangement = Arrangement.spacedBy(7.dp),
-        ) {
-          Icon(
-            when (adjustmentKind) {
-              PlayerAdjustmentKind.Brightness -> Icons.Rounded.Brightness6
-              PlayerAdjustmentKind.Volume -> if (adjustmentLevel <= 0f) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp
-              null -> Icons.Rounded.VolumeUp
-            },
-            contentDescription = null,
-            tint = Color.White,
-            modifier = Modifier.size(28.dp),
-          )
-          Text(
-            "${if (adjustmentKind == PlayerAdjustmentKind.Brightness) "Brightness" else "Volume"} ${(adjustmentLevel * 100f).toInt()}%",
-            color = Color.White,
-            fontWeight = FontWeight.Bold,
-          )
-        }
-      }
-    }
 
     AnimatedVisibility(
       visible = !isLoading && controlsLocked && showUnlockControl,
@@ -1004,6 +918,7 @@ fun NativePlayerScreen(
         onBack = { closePlayer() },
         isFavourite = isFavourite,
         onToggleFavourite = onToggleFavourite,
+        onHandoff = { handoffError = null; handoffPickerVisible = true },
         modifier = Modifier.align(Alignment.TopStart),
       )
     }
@@ -1355,7 +1270,7 @@ private fun LiveChannelSwipeCue() {
   )
   Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
     Text(
-      "Swipe up in the middle for all channels", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+      "Swipe up for all channels", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
       style = MaterialTheme.typography.bodyMedium.copy(shadow = shadow),
     )
     Icon(
@@ -1743,6 +1658,7 @@ private fun androidx.compose.foundation.layout.BoxScope.PlayerTopHeader(
   modifier: Modifier = Modifier,
   isFavourite: Boolean = false,
   onToggleFavourite: () -> Unit = {},
+  onHandoff: () -> Unit = {},
 ) {
   Row(
     modifier = modifier
@@ -1785,6 +1701,19 @@ private fun androidx.compose.foundation.layout.BoxScope.PlayerTopHeader(
         if (detailLine.isNotBlank()) {
           Text(text = detailLine, color = Color.White.copy(alpha = 0.72f), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+      }
+    }
+    if (!session.isLive) {
+      Box(
+        modifier = Modifier
+          .size(44.dp)
+          .clip(CircleShape)
+          .background(Color.White.copy(alpha = 0.10f))
+          .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+          .clickable(onClick = onHandoff),
+        contentAlignment = Alignment.Center,
+      ) {
+        Icon(Icons.Rounded.Tv, contentDescription = "Hand off to TV", tint = Color.White)
       }
     }
     if (session.isLive) {
@@ -1942,7 +1871,7 @@ private fun formatClock(seconds: Double): String {
   val secs = total % 60
   return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, secs) else "%d:%02d".format(minutes, secs)
 }
-private fun playerStreamIdentity(stream: AddonStream?): String =
+internal fun playerStreamIdentity(stream: AddonStream?): String =
   stream?.let(::addonStreamPlaybackIdentity).orEmpty()
 
 private val playerHttpClient = OkHttpClient()

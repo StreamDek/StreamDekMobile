@@ -20,8 +20,13 @@ data class LinkedTvDevice(
   val deviceType: String?,
   val lastSeenAt: String?,
   val isCurrent: Boolean,
+  val handoffPublicKey: String? = null,
 )
 
+data class PlaybackHandoffReceipt(
+  val id: String,
+  val expiresAt: String?,
+)
 data class MediaItem(
   val id: String,
   val type: String,

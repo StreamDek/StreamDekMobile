@@ -918,7 +918,7 @@ private class AppSettingsStore(context: Context) {
     navigationAutoCollapseSeconds = prefs.getInt("navigation_auto_collapse_seconds", 5).coerceIn(2, 15),
     showStreamsList = profilePrefs.getBoolean("show_streams_list", true),
     heroTrailerAutoplay = profilePrefs.getBoolean("hero_trailer_autoplay", true),
-    heroTrailerResolution = profilePrefs.getInt("hero_trailer_resolution", 720).coerceIn(360, 1080),
+    heroTrailerResolution = profilePrefs.getInt("hero_trailer_resolution", 720).coerceIn(360, 2160),
     showHeroSynopsis = profilePrefs.getBoolean("show_hero_synopsis", true),
     continueWatchingStyle = runCatching { ContinueWatchingStyle.valueOf(profilePrefs.getString("continue_watching_style", ContinueWatchingStyle.Glass.name) ?: ContinueWatchingStyle.Glass.name) }.getOrDefault(ContinueWatchingStyle.Glass),
     liveLandscapeCards = profilePrefs.getBoolean("live_landscape_cards", true),
@@ -980,7 +980,7 @@ private class AppSettingsStore(context: Context) {
   fun saveNavigationAutoCollapseSeconds(value: Int) { prefs.edit().putInt("navigation_auto_collapse_seconds", value.coerceIn(2, 15)).apply() }
   fun saveShowStreamsList(value: Boolean) { profilePrefs.edit().putBoolean("show_streams_list", value).apply() }
   fun saveHeroTrailerAutoplay(value: Boolean) { profilePrefs.edit().putBoolean("hero_trailer_autoplay", value).apply() }
-  fun saveHeroTrailerResolution(value: Int) { profilePrefs.edit().putInt("hero_trailer_resolution", value.coerceIn(360, 1080)).apply() }
+  fun saveHeroTrailerResolution(value: Int) { profilePrefs.edit().putInt("hero_trailer_resolution", value.coerceIn(360, 2160)).apply() }
   fun saveShowHeroSynopsis(value: Boolean) { profilePrefs.edit().putBoolean("show_hero_synopsis", value).apply() }
   fun saveContinueWatchingStyle(value: ContinueWatchingStyle) { profilePrefs.edit().putString("continue_watching_style", value.name).apply() }
   fun saveLiveLandscapeCards(value: Boolean) { profilePrefs.edit().putBoolean("live_landscape_cards", value).apply() }
@@ -2013,6 +2013,65 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val session = uiState.session ?: return Result.failure(IllegalStateException("Sign in to hand off playback to a TV."))
     val player = uiState.playerSession ?: return Result.failure(IllegalStateException("Playback is no longer active."))
     return apiClient.sendPlaybackHandoff(session, uiState.activeProfileId, device, player, positionSeconds)
+  }
+  suspend fun handoffLiveChannel(item: MediaItem, device: LinkedTvDevice): Result<PlaybackHandoffReceipt> = runCatching {
+    require(item.isLiveCatalogItem()) { "Only live channels can be sent from this menu." }
+    val session = uiState.session ?: throw IllegalStateException("Sign in to watch this channel on a TV.")
+    val detail = item.toFallbackDetail()
+    val directStream = item.directStreamUrl?.takeIf { it.isNotBlank() }?.let { url ->
+      AddonStream(
+        addonId = item.sourceAddonId.orEmpty(),
+        addonName = uiState.addons.firstOrNull { it.id == item.sourceAddonId }?.manifest?.name ?: "Live TV",
+        name = item.title,
+        title = item.title,
+        description = item.description.ifBlank { null },
+        url = url,
+        infoHash = null,
+        fileIdx = null,
+        filename = null,
+        quality = null,
+        size = null,
+        cachedBy = emptyList(),
+        requestHeaders = item.requestHeaders,
+      )
+    }
+    val streams = if (directStream != null) {
+      listOf(directStream)
+    } else {
+      val addonId = item.sourceAddonId ?: throw IllegalStateException("The addon for this channel is no longer available.")
+      val addon = uiState.addons.firstOrNull { it.id == addonId && it.enabled }
+        ?: throw IllegalStateException("Enable this channel's addon before sending it to a TV.")
+      val typeCandidates = buildList {
+        item.sourceCatalogType?.takeIf { it.isNotBlank() }?.let(::add)
+        item.type.takeIf { it.isNotBlank() }?.let(::add)
+        addAll(listOf("live", "channel", "tv", "sport", "sports", "other"))
+      }.map { it.lowercase() }.distinct()
+      var lastFailure: Throwable? = null
+      var resolved = emptyList<AddonStream>()
+      for (type in typeCandidates) {
+        apiClient.fetchStreamsFromAddon(session, addon.id, type, item.id, uiState.activeProfileId)
+          .onSuccess { if (it.isNotEmpty()) resolved = it }
+          .onFailure { lastFailure = it }
+        if (resolved.isNotEmpty()) break
+      }
+      if (resolved.isEmpty()) {
+        for (type in typeCandidates.take(3)) {
+          apiClient.fetchFreshStreamsFromAddon(addon, type, item.id)
+            .onSuccess { if (it.isNotEmpty()) resolved = it }
+            .onFailure { lastFailure = it }
+          if (resolved.isNotEmpty()) break
+        }
+      }
+      if (resolved.isEmpty()) throw lastFailure ?: IllegalStateException("No playable stream was found for this channel.")
+      resolved
+    }
+    val ranked = rankedStreams(mediaStreamsOnly(streams, detail), uiState.debridAccounts.isNotEmpty(), uiState.preferredQuality, uiState.maxFileSizeGb)
+    val selected = ranked.firstOrNull() ?: throw IllegalStateException("No playable stream was found for this channel.")
+    val directUrl = selected.url?.takeIf { it.isNotBlank() && !it.startsWith("magnet:", ignoreCase = true) }
+    val playback = if (directUrl != null) ResolvedPlayback(directUrl, selected) else resolvePlayback(selected, detail, null).getOrThrow()
+    val player = buildPlayerSession(playback.url, detail, buildSourceLabel(playback.stream), null, playback.stream)
+      .copy(isLive = true, synopsis = null)
+    apiClient.sendPlaybackHandoff(session, uiState.activeProfileId, device, player, 0.0).getOrThrow()
   }
   fun loadHome(force: Boolean = false) {
     if (uiState.homeSections.isNotEmpty() && !force) return
@@ -3449,7 +3508,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       homeCatalogRows = homeCatalogRows ?: uiState.homeCatalogRows,
       seasonTabStyle = seasonTabStyle ?: uiState.seasonTabStyle,
       heroTrailerAutoplay = preferences.heroTrailerAutoplay ?: uiState.heroTrailerAutoplay,
-      heroTrailerResolution = preferences.heroTrailerResolution?.coerceIn(360, 1080) ?: uiState.heroTrailerResolution,
+      heroTrailerResolution = preferences.heroTrailerResolution?.coerceIn(360, 2160) ?: uiState.heroTrailerResolution,
       ratingsEnabled = preferences.ratingsEnabled ?: uiState.ratingsEnabled,
       externalRatingsEnabled = preferences.externalRatingsEnabled ?: uiState.externalRatingsEnabled,
       enabledRatingProviders = ratingProviders ?: uiState.enabledRatingProviders,
@@ -4524,7 +4583,7 @@ fun StreamDekNativeApp(
   val snackbarHostState = remember { SnackbarHostState() }
   val uiState = viewModel.uiState
   LaunchedEffect(uiState.playerSession?.url, uiState.session?.user?.uid) {
-    if (uiState.playerSession != null && uiState.playerSession?.isLive != true) viewModel.refreshHandoffDevices()
+    if (uiState.playerSession != null) viewModel.refreshHandoffDevices()
   }
   val systemDarkMode = isSystemInDarkTheme()
   val darkMode = when (uiState.appAppearance) {
@@ -5535,7 +5594,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
           }
         } else if (browseRow != null) {
           browseStateHolder.SaveableStateProvider("browse_row_${browseRow.id}") {
-            BrowseSectionScreen(row = browseRow, loadedItems = uiState.browseLoadedItems, returnItemId = uiState.browseReturnItemId, headerStyle = uiState.headerStyle, liveLandscapeCards = uiState.liveLandscapeCards, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, onBack = { viewModel.setBrowseRow(null) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { viewModel.rememberBrowseReturnItem(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onToggleWatchlist = viewModel::toggleWatchlist, onToggleFavourite = viewModel::toggleFavouriteChannel, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, onMarkWatched = viewModel::markWatched, onLoadMore = viewModel::loadMoreRowItems)
+            BrowseSectionScreen(row = browseRow, loadedItems = uiState.browseLoadedItems, returnItemId = uiState.browseReturnItemId, headerStyle = uiState.headerStyle, liveLandscapeCards = uiState.liveLandscapeCards, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel, onBack = { viewModel.setBrowseRow(null) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { viewModel.rememberBrowseReturnItem(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onToggleWatchlist = viewModel::toggleWatchlist, onToggleFavourite = viewModel::toggleFavouriteChannel, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, onMarkWatched = viewModel::markWatched, onLoadMore = viewModel::loadMoreRowItems)
           }
         } else {
           AnimatedContent(
@@ -5552,7 +5611,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
           ) { tab ->
           when (tab) {
             MainTab.Home -> browseStateHolder.SaveableStateProvider("tab_home") {
-              HomeTab(uiState = uiState, scrollToTopSignal = homeScrollToTopSignal, onReload = { viewModel.loadHome(force = true) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onPlayContinueWatching = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onViewAll = { row -> if (row.id == "continue") selectedTab = MainTab.Continue else viewModel.setBrowseRow(if (row.id == "m3u_playlists") row.copy(items = uiState.m3uChannels) else row) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onResolveHeroTitleLogos = viewModel::resolveHomeHeroTitleLogos, onResolveAddonRatings = viewModel::resolveAddonCatalogRatings, onToggleFavourite = viewModel::toggleFavouriteChannel, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) })
+              HomeTab(uiState = uiState, scrollToTopSignal = homeScrollToTopSignal, onReload = { viewModel.loadHome(force = true) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onPlayContinueWatching = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onViewAll = { row -> if (row.id == "continue") selectedTab = MainTab.Continue else viewModel.setBrowseRow(if (row.id == "m3u_playlists") row.copy(items = uiState.m3uChannels) else row) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onResolveHeroTitleLogos = viewModel::resolveHomeHeroTitleLogos, onResolveAddonRatings = viewModel::resolveAddonCatalogRatings, onToggleFavourite = viewModel::toggleFavouriteChannel, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel)
             }
             MainTab.Search -> browseStateHolder.SaveableStateProvider("tab_search") {
               SearchTab(uiState = uiState, ownerKey = watchedOwnerKey(uiState.session, uiState.activeProfileId), onSearch = viewModel::search, onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched)
@@ -6291,7 +6350,7 @@ private fun mixedHeroItems(sections: List<MediaSection>, continueWatching: List<
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () -> Unit, onOpen: (MediaItem) -> Unit, onPlayContinueWatching: (MediaItem) -> Unit, onViewAll: (HomeRow) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onMarkWatched: (MediaItem) -> Unit, onRestartFromBeginning: (MediaItem) -> Unit, onResolveHeroTitleLogos: (List<MediaItem>) -> Unit, onResolveAddonRatings: (List<MediaItem>) -> Unit = {}, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}) {
+private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () -> Unit, onOpen: (MediaItem) -> Unit, onPlayContinueWatching: (MediaItem) -> Unit, onViewAll: (HomeRow) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onMarkWatched: (MediaItem) -> Unit, onRestartFromBeginning: (MediaItem) -> Unit, onResolveHeroTitleLogos: (List<MediaItem>) -> Unit, onResolveAddonRatings: (List<MediaItem>) -> Unit = {}, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }) {
   if (uiState.homeLoading && uiState.homeSections.isEmpty()) {
     SplashScene()
     return
@@ -6432,7 +6491,7 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
       itemsIndexed(rows, key = { _, row -> row.id }) { index, row ->
         Column {
           if (heroItems.isNotEmpty() && index > 0) Spacer(modifier = Modifier.height(14.dp))
-          HomeStrip(rowId = row.id, title = row.title, items = row.items, continueWatchingStyle = uiState.continueWatchingStyle, liveLandscapeCards = uiState.liveLandscapeCards, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, onOpen = onOpen, onViewAll = { onViewAll(row) }, onToggleWatchlist = onToggleWatchlist, onToggleFavourite = onToggleFavourite, onEnableAddon = onEnableAddon, onMarkWatched = onMarkWatched, onRestartFromBeginning = onRestartFromBeginning, onPlayContinueWatching = onPlayContinueWatching)
+          HomeStrip(rowId = row.id, title = row.title, items = row.items, continueWatchingStyle = uiState.continueWatchingStyle, liveLandscapeCards = uiState.liveLandscapeCards, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = handoffDevices, onRefreshHandoffDevices = onRefreshHandoffDevices, onHandoffLive = onHandoffLive, onOpen = onOpen, onViewAll = { onViewAll(row) }, onToggleWatchlist = onToggleWatchlist, onToggleFavourite = onToggleFavourite, onEnableAddon = onEnableAddon, onMarkWatched = onMarkWatched, onRestartFromBeginning = onRestartFromBeginning, onPlayContinueWatching = onPlayContinueWatching)
         }
       }
     }
@@ -7009,7 +7068,7 @@ private fun AdaptivePageTitle(
 private val builtInPageableRowIds = setOf("new_movies", "new_series", "trending_movies", "trending_series")
 
 @Composable
-private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, returnItemId: String?, headerStyle: HeaderStyle, liveLandscapeCards: Boolean, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), onBack: () -> Unit, onOpen: (MediaItem) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, onLoadMore: (suspend (String, MediaItem?, Int) -> List<MediaItem>)? = null) {
+private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, returnItemId: String?, headerStyle: HeaderStyle, liveLandscapeCards: Boolean, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onBack: () -> Unit, onOpen: (MediaItem) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, onLoadMore: (suspend (String, MediaItem?, Int) -> List<MediaItem>)? = null) {
   fun isFavourite(item: MediaItem): Boolean = favouriteItems.any { it.id == item.id && it.type == item.type }
   var filter by rememberSaveable(row.id) { mutableStateOf(MediaFilter.All) }
   var columns by rememberSaveable(row.id) { mutableStateOf(3) }
@@ -7154,9 +7213,9 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
         gridItems(filteredItems, key = { "${it.type}-${it.id}" }) { item ->
           val disabled = isFavouritesRow && addonFor(item)?.enabled == false
           when {
-            isLiveRow && liveLandscapeCards -> NetworkHomeCard(item = item, sports = true, modifier = Modifier.fillMaxWidth(), dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) })
+            isLiveRow && liveLandscapeCards -> NetworkHomeCard(item = item, sports = true, modifier = Modifier.fillMaxWidth(), dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) }, onLongPress = { actionItem = item; onRefreshHandoffDevices() })
             isNetworkRow -> NetworkHomeCard(item = item, sports = false, modifier = Modifier.fillMaxWidth(), dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) })
-            else -> LibraryPosterTile(item = item, modifier = Modifier.alpha(if (disabled) 0.4f else 1f), showMeta = false, onClick = { handleOpen(item) }, onLongPress = { actionItem = item })
+            else -> LibraryPosterTile(item = item, modifier = Modifier.alpha(if (disabled) 0.4f else 1f), showMeta = false, onClick = { handleOpen(item) }, onLongPress = { actionItem = item; if (isLiveRow) onRefreshHandoffDevices() })
           }
         }
         if (isLoadingMore) {
@@ -7267,10 +7326,14 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
     }
   }
   actionItem?.let { item ->
-    if (isFavouritesRow) {
-      FavouriteChannelActionsDialog(
+    if (isLiveRow) {
+      LiveChannelActionsDialog(
         item = item,
-        onRemoveFromFavourites = { onToggleFavourite(item) },
+        isFavourite = isFavourite(item),
+        devices = handoffDevices,
+        onToggleFavourite = { onToggleFavourite(item) },
+        onRefreshDevices = onRefreshHandoffDevices,
+        onHandoff = { device -> onHandoffLive(item, device) },
         onDismiss = { actionItem = null },
       )
     } else {
@@ -7354,7 +7417,7 @@ private fun BrowseSectionHeaderContent(
   }
 }
 @Composable
-private fun NetworkHomeCard(item: MediaItem, sports: Boolean = false, modifier: Modifier = Modifier.width(176.dp), dimmed: Boolean = false, favourite: Boolean = false, onClick: () -> Unit) {
+private fun NetworkHomeCard(item: MediaItem, sports: Boolean = false, modifier: Modifier = Modifier.width(176.dp), dimmed: Boolean = false, favourite: Boolean = false, onClick: () -> Unit, onLongPress: () -> Unit = {}) {
   Column(
     modifier = modifier.alpha(if (dimmed) 0.4f else 1f),
     horizontalAlignment = Alignment.CenterHorizontally,
@@ -7367,7 +7430,7 @@ private fun NetworkHomeCard(item: MediaItem, sports: Boolean = false, modifier: 
         .clip(RoundedCornerShape(22.dp))
         .background(if (sports) Color(0xFF171717) else Color.White)
         .border(1.dp, Color.Black.copy(alpha = 0.08f), RoundedCornerShape(22.dp))
-        .clickable(onClick = onClick)
+        .pointerInput(item.id, item.type) { detectTapGestures(onTap = { onClick() }, onLongPress = { onLongPress() }) }
         .padding(horizontal = if (sports) 0.dp else 22.dp, vertical = if (sports) 0.dp else 18.dp),
       contentAlignment = Alignment.Center,
     ) {
@@ -7410,7 +7473,7 @@ private fun NetworkHomeCard(item: MediaItem, sports: Boolean = false, modifier: 
 }
 
 @Composable
-private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, continueWatchingStyle: ContinueWatchingStyle, liveLandscapeCards: Boolean, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), onOpen: (MediaItem) -> Unit, onViewAll: () -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, onRestartFromBeginning: (MediaItem) -> Unit, onPlayContinueWatching: (MediaItem) -> Unit) {
+private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, continueWatchingStyle: ContinueWatchingStyle, liveLandscapeCards: Boolean, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onOpen: (MediaItem) -> Unit, onViewAll: () -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, onRestartFromBeginning: (MediaItem) -> Unit, onPlayContinueWatching: (MediaItem) -> Unit) {
   fun isFavourite(item: MediaItem): Boolean = favouriteItems.any { it.id == item.id && it.type == item.type }
   val isAddonRow = rowId.startsWith("addon:")
   val isFavouritesRow = rowId == "favourites"
@@ -7452,18 +7515,22 @@ private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, cont
         if (rowId == "continue") {
           ContinueWatchingCard(item = item, style = continueWatchingStyle, onClick = { onPlayContinueWatching(item) }, onLongPress = { actionItem = item })
         } else if (rowId == "streaming_networks" || (isSportsRow && liveLandscapeCards)) {
-          NetworkHomeCard(item = item, sports = isSportsRow, dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) })
+          NetworkHomeCard(item = item, sports = isSportsRow, dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) }, onLongPress = { if (isSportsRow) { actionItem = item; onRefreshHandoffDevices() } })
         } else {
-          PosterCard(item = item, dimmed = disabled, onClick = { handleOpen(item) }, onLongPress = { actionItem = item })
+          PosterCard(item = item, dimmed = disabled, onClick = { handleOpen(item) }, onLongPress = { actionItem = item; if (isSportsRow) onRefreshHandoffDevices() })
         }
       }
     }
   }
   actionItem?.let { item ->
-    if (isFavouritesRow) {
-      FavouriteChannelActionsDialog(
+    if (isSportsRow) {
+      LiveChannelActionsDialog(
         item = item,
-        onRemoveFromFavourites = { onToggleFavourite(item) },
+        isFavourite = isFavourite(item),
+        devices = handoffDevices,
+        onToggleFavourite = { onToggleFavourite(item) },
+        onRefreshDevices = onRefreshHandoffDevices,
+        onHandoff = { device -> onHandoffLive(item, device) },
         onDismiss = { actionItem = null },
       )
     } else if (rowId == "continue") {
@@ -7671,6 +7738,76 @@ private fun ContinueWatchingActionsDialog(
         }
         context.startActivity(Intent.createChooser(shareIntent, item.title))
         onDismiss()
+      }
+    }
+  }
+}
+@Composable
+private fun LiveChannelActionsDialog(
+  item: MediaItem,
+  isFavourite: Boolean,
+  devices: List<LinkedTvDevice>,
+  onToggleFavourite: () -> Unit,
+  onRefreshDevices: () -> Unit,
+  onHandoff: suspend (LinkedTvDevice) -> Result<PlaybackHandoffReceipt>,
+  onDismiss: () -> Unit,
+) {
+  val context = LocalContext.current
+  val scope = rememberCoroutineScope()
+  var choosingTv by remember(item.id) { mutableStateOf(false) }
+  var sendingDeviceId by remember(item.id) { mutableStateOf<String?>(null) }
+  var statusMessage by remember(item.id) { mutableStateOf<String?>(null) }
+  Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    CardActionsAmbientScaffold(item = item, onDismiss = onDismiss) {
+      if (!choosingTv) {
+        AmbientActionRow(if (isFavourite) "Remove from Favourites" else "Add to Favourites", icon = if (isFavourite) Icons.Rounded.Close else Icons.Rounded.Star) {
+          onToggleFavourite()
+          onDismiss()
+        }
+        AmbientActionRow("Watch on StreamDek TV", icon = Icons.Rounded.Tv) {
+          statusMessage = null
+          onRefreshDevices()
+          choosingTv = true
+        }
+        AmbientActionRow("Share", icon = Icons.Rounded.Share) {
+          val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, item.title)
+          }
+          context.startActivity(Intent.createChooser(shareIntent, item.title))
+          onDismiss()
+        }
+      } else {
+        Text("Choose a StreamDek TV", color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black, modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp))
+        statusMessage?.let { message ->
+          Text(message, color = Color.White.copy(alpha = 0.78f), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(horizontal = 22.dp, vertical = 4.dp))
+        }
+        if (devices.isEmpty()) {
+          Text("No linked TV is available yet. Make sure StreamDek TV is signed in and online.", color = Color.White.copy(alpha = 0.72f), modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp))
+          AmbientActionRow("Refresh TVs", icon = Icons.Rounded.Refresh) { onRefreshDevices() }
+        } else {
+          devices.forEach { device ->
+            AmbientActionRow(if (sendingDeviceId == device.id) "Sending to ${device.name}…" else device.name, icon = Icons.Rounded.Tv) {
+              if (sendingDeviceId == null) {
+                sendingDeviceId = device.id
+                statusMessage = "Preparing ${item.title} securely…"
+                scope.launch {
+                  onHandoff(device)
+                    .onSuccess {
+                      statusMessage = "Sent to ${device.name}. Accept the prompt on your TV."
+                      delay(900)
+                      onDismiss()
+                    }
+                    .onFailure { error ->
+                      sendingDeviceId = null
+                      statusMessage = error.message ?: "This channel could not be sent. Please try again."
+                    }
+                }
+              }
+            }
+          }
+        }
+        AmbientActionRow("Back", icon = Icons.Rounded.Close) { choosingTv = false; statusMessage = null }
       }
     }
   }
@@ -9528,7 +9665,7 @@ private fun SettingsTab(
             SettingsSection("Detail Screen") {
               SettingsSwitchRow("TRL", Color(0xFF22C55E), "Hero trailer autoplay", "Play a trailer automatically at the top of a media page when one is available.", uiState.heroTrailerAutoplay, onHeroTrailerAutoplayChange)
               SettingsDivider()
-              SettingsChoiceRow("HD", Color(0xFF38BDF8), "Trailer resolution", "Choose the best video quality trailers may use.", listOf("360p", "720p", "1080p"), "${uiState.heroTrailerResolution}p") { selected -> onHeroTrailerResolutionChange(selected.removeSuffix("p").toInt()) }
+              SettingsChoiceRow("HD", Color(0xFF38BDF8), "Trailer resolution", "Choose the best video quality trailers may use.", listOf("360p", "720p", "1080p", "2160p"), "${uiState.heroTrailerResolution}p") { selected -> onHeroTrailerResolutionChange(selected.removeSuffix("p").toInt()) }
               SettingsDivider()
               SettingsNavRow("MDB", Color(0xFFF5C518), "Ratings", "Turn ratings on and choose which rating services appear.", value = if (uiState.ratingsEnabled) "Enabled" else "Off", onClick = { onRouteChange(SettingsRoute.Ratings) })
               SettingsDivider()
@@ -10724,6 +10861,7 @@ private fun settingsOptionLabel(title: String, option: String): String = when {
   title == "Max File Size" && option == "0" -> "Unlimited"
   title == "Max File Size" -> "$option GB"
   title == "Preferred Stream Quality" && option == "2160p" -> "4K"
+  title == "Trailer resolution" && option == "2160p" -> "4K"
   title == "Preferred Stream Quality" && option == "Auto" -> "Best Available"
   title == "mpv Video Compatibility" -> when (option) {
     "HW+" -> "Recommended"
@@ -10790,6 +10928,12 @@ private fun settingsOptionDescription(title: String, option: String): String? = 
     "1080p" -> "Prefer Full HD streams first."
     "720p" -> "Prefer HD streams first."
     else -> "Use StreamDek ranking without a fixed resolution target."
+  }
+  "Trailer resolution" -> when (option) {
+    "2160p" -> "Use up to 4K when the trailer provides it."
+    "1080p" -> "Use up to Full HD."
+    "720p" -> "Use up to HD."
+    else -> "Use up to 360p to reduce data use."
   }
   "Appearance" -> when (option) {
     AppAppearance.System.name -> "Follow the current device appearance."

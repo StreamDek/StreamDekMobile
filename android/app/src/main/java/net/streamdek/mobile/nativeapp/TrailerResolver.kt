@@ -31,9 +31,11 @@ suspend fun resolveTrailerPlaybackSource(url: String, maxHeight: Int = 720, yout
     if (trimmed.isBlank()) return@withTimeoutOrNull TrailerPlaybackResolution()
     if (isNativePlayableTrailerUrl(trimmed)) return@withTimeoutOrNull TrailerPlaybackResolution(source = TrailerPlaybackSource(trimmed))
     val youtubeKey = extractYoutubeTrailerKey(trimmed) ?: return@withTimeoutOrNull TrailerPlaybackResolution()
-    resolveYoutubePlaybackSource(youtubeKey, maxHeight.coerceIn(360, 1080), youtubeCookies)
+    resolveYoutubePlaybackSource(youtubeKey, normalizeTrailerMaxHeight(maxHeight), youtubeCookies)
   } ?: TrailerPlaybackResolution()
 }
+
+internal fun normalizeTrailerMaxHeight(maxHeight: Int): Int = maxHeight.coerceIn(360, 2160)
 
 private fun isNativePlayableTrailerUrl(url: String): Boolean {
   val lower = url.lowercase()

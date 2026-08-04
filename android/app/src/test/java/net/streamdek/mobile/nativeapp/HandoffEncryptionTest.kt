@@ -21,13 +21,13 @@ class HandoffEncryptionTest {
 
     val envelope = encryptPlaybackHandoff(original, encoder.encodeToString(keyPair.public.encoded))
     assertEquals(1, envelope.getInt("version"))
-    assertEquals("RSA-OAEP-256+A256GCM", envelope.getString("algorithm"))
+    assertEquals("RSA-OAEP-256-MGF1-SHA1+A256GCM", envelope.getString("algorithm"))
 
     val rsa = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding")
     rsa.init(
       Cipher.DECRYPT_MODE,
       keyPair.private,
-      OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT),
+      OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA1, PSource.PSpecified.DEFAULT),
     )
     val aesKey = rsa.doFinal(decoder.decode(envelope.getString("encryptedKey")))
     val aes = Cipher.getInstance("AES/GCM/NoPadding")

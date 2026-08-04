@@ -3,6 +3,8 @@ package net.streamdek.mobile.nativeapp
 import android.app.Activity
 import android.content.Context
 import android.content.pm.ActivityInfo
+import android.media.AudioManager
+import android.provider.Settings
 import android.view.View
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -17,6 +19,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -50,6 +53,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Forward10
+import androidx.compose.material.icons.rounded.Brightness6
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.HighQuality
@@ -72,6 +76,7 @@ import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Tv
 import androidx.compose.material.icons.rounded.ViewList
 import androidx.compose.material3.Surface
+import androidx.compose.material.icons.rounded.VolumeOff
 import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -131,8 +136,13 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.roundToInt
 
 private enum class PlayerPanel { None, Sources, Audio, Subtitles, Speed, Engine }
+private enum class PlayerAdjustmentKind { Brightness, Volume }
+
+internal fun adjustedPlayerLevel(initial: Float, totalDragY: Float, playerHeight: Float): Float =
+  (initial - (totalDragY / playerHeight.coerceAtLeast(1f)) * 1.5f).coerceIn(0f, 1f)
 internal enum class ActivePlaybackEngine { Media3, MPV }
 internal fun initialPlaybackEngine(preference: String): ActivePlaybackEngine =
   if (preference.equals("MPV", ignoreCase = true)) ActivePlaybackEngine.MPV else ActivePlaybackEngine.Media3
@@ -191,6 +201,7 @@ fun NativePlayerScreen(
   val playerContext = LocalContext.current
   val playerScope = rememberCoroutineScope()
   val activity = playerContext as? Activity
+  val audioManager = remember(playerContext) { playerContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager }
   // Manually added subtitle sources plus any installed addon that advertises the
   // Stremio "subtitles" resource.
   val userSubtitleSources = remember(session.url, playerContext, session.userSubtitleSources, session.addonSubtitleSources) {
@@ -272,6 +283,41 @@ fun NativePlayerScreen(
   var handoffPickerVisible by remember(session.url) { mutableStateOf(false) }
   var handoffLoading by remember(session.url) { mutableStateOf(false) }
   var handoffError by remember(session.url) { mutableStateOf<String?>(null) }
+  var adjustmentKind by remember { mutableStateOf<PlayerAdjustmentKind?>(null) }
+  var adjustmentLevel by remember { mutableFloatStateOf(0f) }
+  var adjustmentFeedbackVersion by remember { mutableIntStateOf(0) }
+  fun currentWindowBrightness(): Float {
+    val windowValue = activity?.window?.attributes?.screenBrightness ?: -1f
+    if (windowValue in 0f..1f) return windowValue.coerceIn(0.02f, 1f)
+    return runCatching {
+      Settings.System.getInt(playerContext.contentResolver, Settings.System.SCREEN_BRIGHTNESS) / 255f
+    }.getOrDefault(0.5f).coerceIn(0.02f, 1f)
+  }
+  fun currentMediaVolume(): Float {
+    val manager = audioManager ?: return 0.5f
+    val maximum = manager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+    return manager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maximum.toFloat()
+  }
+  fun applyBrightness(level: Float) {
+    val target = level.coerceIn(0.02f, 1f)
+    activity?.window?.let { window ->
+      val attributes = window.attributes
+      attributes.screenBrightness = target
+      window.attributes = attributes
+    }
+    adjustmentKind = PlayerAdjustmentKind.Brightness
+    adjustmentLevel = target
+    adjustmentFeedbackVersion += 1
+  }
+  fun applyMediaVolume(level: Float) {
+    val manager = audioManager ?: return
+    val maximum = manager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+    val target = (level.coerceIn(0f, 1f) * maximum).roundToInt().coerceIn(0, maximum)
+    manager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+    adjustmentKind = PlayerAdjustmentKind.Volume
+    adjustmentLevel = target.toFloat() / maximum.toFloat()
+    adjustmentFeedbackVersion += 1
+  }
   fun progressPercent(): Double =
     if (duration > 0.0) ((currentTime / duration) * 100.0).coerceIn(0.0, 100.0) else 0.0
 
@@ -328,8 +374,16 @@ fun NativePlayerScreen(
     }
   }
 
+  LaunchedEffect(adjustmentFeedbackVersion) {
+    if (adjustmentFeedbackVersion > 0) {
+      delay(900)
+      adjustmentKind = null
+    }
+  }
+
   DisposableEffect(activity) {
     val previous = activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    val previousBrightness = activity?.window?.attributes?.screenBrightness ?: -1f
     val decorView = activity?.window?.decorView
     val previousSystemUi = decorView?.systemUiVisibility ?: 0
     MainActivity.pipShouldEnter = session.pictureInPictureEnabled
@@ -345,6 +399,11 @@ fun NativePlayerScreen(
     onDispose {
       MainActivity.pipShouldEnter = false
       activity?.requestedOrientation = previous
+      activity?.window?.let { window ->
+        val attributes = window.attributes
+        attributes.screenBrightness = previousBrightness
+        window.attributes = attributes
+      }
       decorView?.systemUiVisibility = previousSystemUi
       if (scrobbleStarted && !session.isLive) onScrobble("stop", progressPercent())
     }
@@ -829,34 +888,59 @@ fun NativePlayerScreen(
       modifier = Modifier
         .fillMaxSize()
         .background(Color.Black.copy(alpha = if (isLoading || controlsLocked || (!showControls && activePanel == PlayerPanel.None)) 0.0f else if (activePanel == PlayerPanel.None) 0.18f else 0.58f))
-        .pointerInput(session.url, session.isLive, isLoading, controlsLocked) {
-          if (session.isLive && !isLoading && !controlsLocked) {
+        .pointerInput(session.url, session.isLive, isLoading, controlsLocked, audioManager) {
+          if (!isLoading && !controlsLocked) {
             var totalX = 0f
             var totalY = 0f
+            var dragStartX = 0f
+            var initialBrightness = 0.5f
+            var initialVolume = 0.5f
+            var didAdjustLevel = false
             detectDragGestures(
-              onDragStart = { totalX = 0f; totalY = 0f },
+              onDragStart = { offset ->
+                totalX = 0f
+                totalY = 0f
+                dragStartX = offset.x
+                initialBrightness = currentWindowBrightness()
+                initialVolume = currentMediaVolume()
+                didAdjustLevel = false
+              },
               onDragEnd = {
-                when {
-                  totalY < -90f && kotlin.math.abs(totalY) > kotlin.math.abs(totalX) -> {
-                    showFavouriteDrawer = false
-                    showLiveChannels = true
-                    showChannelSwipeCue = false
-                    showControls = false
-                    activePanel = PlayerPanel.None
+                val startedInChannelZone = dragStartX >= size.width * 0.33f && dragStartX < size.width * 0.67f
+                if (session.isLive && !didAdjustLevel) {
+                  when {
+                    startedInChannelZone && totalY < -90f && kotlin.math.abs(totalY) > kotlin.math.abs(totalX) -> {
+                      showFavouriteDrawer = false
+                      showLiveChannels = true
+                      showChannelSwipeCue = false
+                      showControls = false
+                      activePanel = PlayerPanel.None
+                    }
+                    totalX < -90f && kotlin.math.abs(totalX) > kotlin.math.abs(totalY) -> {
+                      showLiveChannels = false
+                      showFavouriteDrawer = true
+                      showControls = false
+                      activePanel = PlayerPanel.None
+                    }
+                    totalY > 90f && showLiveChannels -> showLiveChannels = false
                   }
-                  totalX < -90f && kotlin.math.abs(totalX) > kotlin.math.abs(totalY) -> {
-                    showLiveChannels = false
-                    showFavouriteDrawer = true
-                    showControls = false
-                    activePanel = PlayerPanel.None
-                  }
-                  totalY > 90f && showLiveChannels -> showLiveChannels = false
                 }
               },
               onDrag = { change, amount ->
-                change.consume()
                 totalX += amount.x
                 totalY += amount.y
+                val verticalGesture = kotlin.math.abs(totalY) > kotlin.math.abs(totalX) && kotlin.math.abs(totalY) > 12f
+                when {
+                  verticalGesture && dragStartX < size.width * 0.33f -> {
+                    applyBrightness(adjustedPlayerLevel(initialBrightness, totalY, size.height.toFloat()))
+                    didAdjustLevel = true
+                  }
+                  verticalGesture && dragStartX >= size.width * 0.67f -> {
+                    applyMediaVolume(adjustedPlayerLevel(initialVolume, totalY, size.height.toFloat()))
+                    didAdjustLevel = true
+                  }
+                }
+                change.consume()
               },
             )
           }
@@ -877,6 +961,41 @@ fun NativePlayerScreen(
           }
           },
       )
+
+    AnimatedVisibility(
+      visible = adjustmentKind != null && !controlsLocked,
+      modifier = Modifier.align(Alignment.Center).zIndex(19f),
+      enter = fadeIn(animationSpec = tween(120)),
+      exit = fadeOut(animationSpec = tween(180)),
+    ) {
+      Surface(
+        color = Color(0xD9161A23),
+        shape = RoundedCornerShape(22.dp),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
+      ) {
+        Column(
+          modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+          horizontalAlignment = Alignment.CenterHorizontally,
+          verticalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+          Icon(
+            when (adjustmentKind) {
+              PlayerAdjustmentKind.Brightness -> Icons.Rounded.Brightness6
+              PlayerAdjustmentKind.Volume -> if (adjustmentLevel <= 0f) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp
+              null -> Icons.Rounded.VolumeUp
+            },
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(28.dp),
+          )
+          Text(
+            "${if (adjustmentKind == PlayerAdjustmentKind.Brightness) "Brightness" else "Volume"} ${(adjustmentLevel * 100f).toInt()}%",
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+          )
+        }
+      }
+    }
 
     AnimatedVisibility(
       visible = !isLoading && controlsLocked && showUnlockControl,
@@ -1270,7 +1389,7 @@ private fun LiveChannelSwipeCue() {
   )
   Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
     Text(
-      "Swipe up for all channels", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+      "Swipe up in the middle for all channels", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
       style = MaterialTheme.typography.bodyMedium.copy(shadow = shadow),
     )
     Icon(

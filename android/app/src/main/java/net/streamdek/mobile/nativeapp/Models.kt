@@ -41,8 +41,11 @@ data class MediaItem(
   val sourceCatalogType: String? = null,
   val sourceCatalogId: String? = null,
   val sourceCatalogName: String? = null,
+  val sourceCatalogGenre: String? = null,
   val directStreamUrl: String? = null,
   val requestHeaders: Map<String, String> = emptyMap(),
+  val resumeSeasonNumber: Int? = null,
+  val resumeEpisodeNumber: Int? = null,
 )
 
 data class SeasonSummary(
@@ -61,6 +64,25 @@ data class EpisodeItem(
   val still: String?,
   val runtime: Int?,
   val airDate: String? = null,
+  // Some Stremio bridges use an opaque per-episode id instead of the conventional
+  // parentId:season:episode form. Keep that transport id separate from the display/TMDB id.
+  val sourceStreamId: String? = null,
+)
+
+data class LocalAddonMeta(
+  val id: String,
+  val imdbId: String?,
+  val type: String,
+  val title: String,
+  val year: String?,
+  val releaseDate: String?,
+  val description: String,
+  val poster: String?,
+  val backdrop: String?,
+  val genres: List<String>,
+  val runtimeMinutes: Int?,
+  val cast: List<CastMember>,
+  val episodes: List<EpisodeItem>,
 )
 
 data class CastMember(
@@ -164,12 +186,13 @@ data class CloudPlaybackPreferences(
   val syncOnCellular: Boolean? = null,
   val detailPageStyle: String? = null,
   val continueWatchingStyle: String? = null,
-  val includeLiveInContinueWatching: Boolean? = null,
   val liveLandscapeCards: Boolean? = null,
+  val liveFavouriteDrawerCards: Boolean? = null,
   val showHeroSynopsis: Boolean? = null,
   val vividAmbient: Boolean? = null,
   val ambientTintPercent: Int? = null,
   val defaultAppCatalogsEnabled: Boolean? = null,
+  val homeCatalogRowsJson: String? = null,
   val seasonTabStyle: String? = null,
   val heroTrailerAutoplay: Boolean? = null,
   val heroTrailerResolution: Int? = null,
@@ -180,6 +203,8 @@ data class CloudPlaybackPreferences(
   val pictureInPictureEnabled: Boolean? = null,
   val decoderMode: String? = null,
   val renderSurface: String? = null,
+  val playerEngine: String? = null,
+  val preferredAudioLanguage: String? = null,
   val skipIntroEnabled: Boolean? = null,
   val skipRecapEnabled: Boolean? = null,
   val skipEndingEnabled: Boolean? = null,
@@ -194,6 +219,7 @@ data class CloudPlaybackPreferences(
   val blurUnwatchedEpisodes: Boolean? = null,
   val fusionBadgesEnabled: Boolean? = null,
   val showSizeBadges: Boolean? = null,
+  val showAddonTmdbRatings: Boolean? = null,
   val preferredQuality: String? = null,
   val maxFileSizeGb: Int? = null,
   val badgePosition: String? = null,
@@ -220,6 +246,12 @@ data class AddonCatalog(
   val type: String,
   val id: String,
   val name: String,
+  // Stremio catalogs can declare a "genre" extra property with a list of options (e.g. a
+  // "Netflix" catalog that's really a menu of many named sub-lists like "Top 10 Series
+  // Today"). Without picking one, the addon has nothing to key its response on, and some
+  // addons fall back to the same generic/default result for every such catalog. When present,
+  // the first option is used as the catalog's default preview row.
+  val genreOptions: List<String> = emptyList(),
 )
 
 data class AddonManifest(
@@ -372,6 +404,11 @@ data class PlayerSession(
   val nextEpisodeThresholdMinutes: Int = 2,
   val requestHeaders: Map<String, String> = emptyMap(),
   val runtimeMinutes: Int? = null,
+  val addonSubtitleSources: List<UserSubtitleSource> = emptyList(),
+  val userSubtitleSources: List<UserSubtitleSource> = emptyList(),
+  val isProxied: Boolean = false,
+  val playerEngine: String = "Auto",
+  val preferredAudioLanguage: String = "en",
 )
 
 

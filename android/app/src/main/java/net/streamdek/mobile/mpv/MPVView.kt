@@ -11,6 +11,8 @@ import dev.jdtech.mpv.MPVLib
 import java.io.File
 import java.io.FileOutputStream
 import net.streamdek.mobile.BuildConfig
+import net.streamdek.mobile.nativeapp.normalizePreferredAudioLanguage
+import net.streamdek.mobile.nativeapp.preferredAudioLanguageTags
 
 data class MpvTrackInfo(
     val id: Int,
@@ -45,6 +47,7 @@ class MPVView @JvmOverloads constructor(
     private var pendingResizeMode: String = "cover"
     private var pendingDecoderMode: String = "HW+"
     private var pendingRenderSurface: String = "Standard"
+    private var pendingPreferredAudioLanguage: String = "en"
     private var paused = false
     private var surface: Surface? = null
     private var headers: Map<String, String>? = null
@@ -71,6 +74,13 @@ class MPVView @JvmOverloads constructor(
     var onErrorCallback: ((message: String) -> Unit)? = null
     var onTracksChangedCallback: ((audioTracks: List<MpvTrackInfo>, subtitleTracks: List<MpvTrackInfo>, selectedAudioTrackId: Int?, selectedSubtitleTrackId: Int?) -> Unit)? = null
 
+    /**
+     * Fired when mpv starts or stops waiting on the network cache. A live feed can
+     * starve indefinitely without ever emitting END_FILE or an error, so this is the
+     * only signal the player gets that playback has stalled rather than failed.
+     */
+    var onStallChangedCallback: ((stalled: Boolean) -> Unit)? = null
+
     init {
         surfaceTextureListener = this
         isOpaque = false
@@ -90,7 +100,7 @@ class MPVView @JvmOverloads constructor(
             MPVLib.addObserver(this)
             MPVLib.addLogObserver(this)
             MPVLib.setPropertyString("android-surface-size", "${width}x${height}")
-            // Apply resize mode â€” default to cover (Fill) so videos always fill the screen
+            // Apply resize mode — default to cover (Fill) so videos always fill the screen
             when (pendingResizeMode) {
                 "cover" -> {
                     MPVLib.setPropertyDouble("panscan", 1.0)
@@ -141,6 +151,7 @@ class MPVView @JvmOverloads constructor(
         onEndCallback = null
         onErrorCallback = null
         onTracksChangedCallback = null
+        onStallChangedCallback = null
         if (wasInitialized) {
             MPVLib.removeObserver(this)
             MPVLib.removeLogObserver(this)
@@ -173,6 +184,11 @@ class MPVView @JvmOverloads constructor(
         MPVLib.setOptionString("cache-on-disk", "yes")
         MPVLib.setOptionString("cache-pause-wait", "1")
         MPVLib.setOptionString("demuxer-seekable-cache", "yes")
+        val protocolWhitelistResult = MPVLib.setOptionString(
+            "demuxer-lavf-o",
+            "protocol_whitelist=[file,tcp,tls,http,https,crypto,data]",
+        )
+        if (BuildConfig.DEBUG) Log.i(TAG, "protocol whitelist option result=$protocolWhitelistResult")
         MPVLib.setOptionString("demuxer-readahead-secs", "45")
         MPVLib.setOptionString("demuxer-max-bytes", "536870912")
         MPVLib.setOptionString("demuxer-max-back-bytes", "536870912")
@@ -188,9 +204,12 @@ class MPVView @JvmOverloads constructor(
         MPVLib.setOptionString("sub-fonts-dir", "/system/fonts")
         MPVLib.setOptionString("sub-codepage", "auto")
         MPVLib.setOptionString("embeddedfonts", "yes")
-        MPVLib.setOptionString("alang", "eng,en")
+        MPVLib.setOptionString("alang", preferredAudioLanguageTags(pendingPreferredAudioLanguage).joinToString(","))
         MPVLib.setOptionString("slang", "eng,en")
-        MPVLib.setOptionString("sid", "auto")
+        // Selecting an HLS subtitle rendition before FILE_LOADED can block the entire source
+        // when an add-on advertises a dead subtitle playlist. NativePlayer applies the user's
+        // preferred subtitle only after the video itself has prepared.
+        MPVLib.setOptionString("sid", "no")
         MPVLib.setOptionString("terminal", "no")
         MPVLib.setOptionString("input-default-bindings", "no")
         MPVLib.setOptionString("osc", "no")
@@ -257,6 +276,7 @@ class MPVView @JvmOverloads constructor(
         MPVLib.observeProperty("duration/full", MPV_FORMAT_DOUBLE)
         MPVLib.observeProperty("pause", MPV_FORMAT_FLAG)
         MPVLib.observeProperty("eof-reached", MPV_FORMAT_FLAG)
+        MPVLib.observeProperty("paused-for-cache", MPV_FORMAT_FLAG)
         MPVLib.observeProperty("aid", MPV_FORMAT_INT64)
         MPVLib.observeProperty("sid", MPV_FORMAT_INT64)
         MPVLib.observeProperty("width", MPV_FORMAT_INT64)
@@ -433,6 +453,13 @@ class MPVView @JvmOverloads constructor(
         applyRenderSurfaceMode()
     }
 
+    fun setPreferredAudioLanguage(language: String?) {
+        pendingPreferredAudioLanguage = normalizePreferredAudioLanguage(language)
+        if (initialized && !isDestroyed) {
+            MPVLib.setPropertyString("alang", preferredAudioLanguageTags(pendingPreferredAudioLanguage).joinToString(","))
+        }
+    }
+
     fun setAudioTrack(trackId: Int) {
         if (!initialized || isDestroyed) return
         MPVLib.setPropertyInt("aid", trackId)
@@ -479,7 +506,7 @@ class MPVView @JvmOverloads constructor(
         ensureSubtitleVisibility()
         // Subtitle storage may provide file:// URIs (e.g. "file:///data/user/0/.../sub.srt").
         // MPV's sub-add on Android expects the raw absolute path, not a file:// URI,
-        // so we strip the scheme prefix. "file://" + "/absolute/path" â†’ "/absolute/path".
+        // so we strip the scheme prefix. "file://" + "/absolute/path" → "/absolute/path".
         val normalizedPath = if (path.startsWith("file://")) path.removePrefix("file://") else path
         if (BuildConfig.DEBUG) Log.i(TAG, "addSubtitleFile: $normalizedPath")
         // "select" tells mpv to activate this sub immediately after loading it
@@ -519,7 +546,7 @@ class MPVView @JvmOverloads constructor(
     }
 
     /**
-     * Set subtitle vertical position (0â€“150; 90 = near bottom, 0 = top).
+     * Set subtitle vertical position (0–150; 90 = near bottom, 0 = top).
      * Maps to mpv's `sub-pos` property.
      */
     fun setSubtitlePosition(position: Int) {
@@ -649,6 +676,9 @@ class MPVView @JvmOverloads constructor(
         if (property == "eof-reached" && value) {
             onEndCallback?.invoke()
         }
+        if (property == "paused-for-cache") {
+            onStallChangedCallback?.invoke(value)
+        }
     }
 
     override fun eventProperty(property: String, value: String) {
@@ -659,7 +689,7 @@ class MPVView @JvmOverloads constructor(
         if (isDestroyed) return
         when (eventId) {
             MPV_EVENT_FILE_LOADED -> {
-                // New source has started â€” END_FILE events from here on are genuine
+                // New source has started — END_FILE events from here on are genuine
                 isSwitchingSource = false
                 lastMpvErrorMessage = null
                 ensureSubtitleVisibility()
@@ -680,7 +710,7 @@ class MPVView @JvmOverloads constructor(
                 val eofReached = MPVLib.getPropertyBoolean("eof-reached") ?: false
                 val fileError = MPVLib.getPropertyString("file-error")?.trim().orEmpty()
                 if (fileError.isNotBlank() && !fileError.equals("success", ignoreCase = true)) {
-                    // Genuine file-error string â€” always surface this, even during a source switch,
+                    // Genuine file-error string — always surface this, even during a source switch,
                     // because it means the new source itself failed to open.
                     isSwitchingSource = false
                     val baseMessage = "MPV could not play this source ($fileError)."
@@ -688,7 +718,7 @@ class MPVView @JvmOverloads constructor(
                     onErrorCallback?.invoke(detailed)
                 } else if (isSwitchingSource) {
                     // END_FILE fired for the outgoing source during a loadfile replace.
-                    // FILE_LOADED for the incoming source hasn't arrived yet â€” suppress
+                    // FILE_LOADED for the incoming source hasn't arrived yet — suppress
                     // this event so the React side never sees a false error overlay.
                     if (BuildConfig.DEBUG) Log.i(TAG, "END_FILE suppressed (isSwitchingSource=true, duration=$duration, eofReached=$eofReached)")
                 } else if (duration < 1.0 && !eofReached) {
@@ -714,7 +744,7 @@ class MPVView @JvmOverloads constructor(
             if (BuildConfig.DEBUG) Log.i(TAG, "mpv[$prefix][$level] $trimmed")
         }
 
-        // Ignore internal MPV scripting/hook messages â€” they are never user-actionable
+        // Ignore internal MPV scripting/hook messages — they are never user-actionable
         // and frequently appear during normal source switches (e.g. auto_profiles hooks
         // being torn down). Storing them in lastMpvErrorMessage causes false error
         // overlays when END_FILE subsequently fires.

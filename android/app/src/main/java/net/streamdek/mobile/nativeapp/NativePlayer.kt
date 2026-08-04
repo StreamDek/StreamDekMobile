@@ -2,6 +2,8 @@ package net.streamdek.mobile.nativeapp
 
 import android.app.Activity
 import android.content.Context
+import android.media.AudioManager
+import android.provider.Settings
 import android.content.pm.ActivityInfo
 import android.view.View
 import androidx.activity.compose.BackHandler
@@ -9,15 +11,20 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.rememberScrollState
@@ -27,6 +34,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -43,20 +54,33 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Forward10
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Brightness6
 import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.HighQuality
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.ChevronLeft
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.Sensors
 import androidx.compose.material.icons.rounded.SettingsOverscan
 import androidx.compose.material.icons.rounded.SlowMotionVideo
+import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.ViewList
 import androidx.compose.material3.Surface
 import androidx.compose.material.icons.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.VolumeOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -76,12 +100,14 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -89,6 +115,7 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -108,8 +135,18 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.roundToInt
 
-private enum class PlayerPanel { None, Sources, Audio, Subtitles, Speed }
+private enum class PlayerPanel { None, Sources, Audio, Subtitles, Speed, Engine }
+private enum class PlayerAdjustmentKind { Brightness, Volume }
+
+internal fun adjustedPlayerLevel(initial: Float, totalDragY: Float, playerHeight: Float): Float =
+  (initial - (totalDragY / playerHeight.coerceAtLeast(1f)) * 1.5f).coerceIn(0f, 1f)
+internal enum class ActivePlaybackEngine { Media3, MPV }
+internal fun initialPlaybackEngine(preference: String): ActivePlaybackEngine =
+  if (preference.equals("MPV", ignoreCase = true)) ActivePlaybackEngine.MPV else ActivePlaybackEngine.Media3
+internal fun shouldAutoFallbackToMpv(preference: String, activeEngine: ActivePlaybackEngine, fallbackUsed: Boolean): Boolean =
+  preference.equals("Auto", ignoreCase = true) && activeEngine == ActivePlaybackEngine.Media3 && !fallbackUsed
 private enum class SubtitlePanelTab { BuiltIn, Addons, Style }
 private data class ExternalSubtitle(val id: String, val language: String, val label: String, val url: String)
 private data class SkipSegment(val type: String, val startSeconds: Double, val endSeconds: Double)
@@ -133,18 +170,66 @@ fun NativePlayerScreen(
   nextEpisodeLoadingLabel: String? = null,
   onPreviousEpisode: () -> Unit = {},
   onNextEpisode: () -> Unit = {},
+  isFavourite: Boolean = false,
+  onToggleFavourite: () -> Unit = {},
+  liveChannels: List<MediaItem> = emptyList(),
+  liveChannelsLoading: Boolean = false,
+  channelSwitchLoading: Boolean = false,
+  channelSwitchLoadingLabel: String? = null,
+  onCancelChannelSwitch: () -> Unit = {},
+  onChannelSwitchPlaybackStarted: () -> Unit = {},
+  channelSwitchFallbackAvailable: Boolean = false,
+  favouriteChannels: List<MediaItem> = emptyList(),
+  favouriteDrawerCards: Boolean = false,
+  onSelectLiveChannel: (MediaItem) -> Unit = {},
+  onToggleFavouriteDrawerCards: (Boolean) -> Unit = {},
+  onClearFavourites: () -> Unit = {},
+  downloadsEnabled: Boolean = false,
+  onDownloadStream: (AddonStream) -> Unit = {},
 ) {
   val playerContext = LocalContext.current
   val playerScope = rememberCoroutineScope()
   val activity = playerContext as? Activity
-  val userSubtitleSources = remember(session.url, playerContext) { UserSubtitleSourceStore.load(playerContext).filter { it.enabled } }
+  val audioManager = remember(playerContext) { playerContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager }
+  // Manually added subtitle sources plus any installed addon that advertises the
+  // Stremio "subtitles" resource.
+  val userSubtitleSources = remember(session.url, playerContext, session.userSubtitleSources, session.addonSubtitleSources) {
+    (session.userSubtitleSources.filter { it.enabled } + session.addonSubtitleSources)
+      .distinctBy { it.baseUrl.trimEnd('/').lowercase() }
+  }
   val surfaceInteractionSource = remember { MutableInteractionSource() }
+  // A live channel switch reuses the same decoder/surface instance instead of tearing it down
+  // (see ExoPlaybackView's background-prepare-then-swap and mpv's `loadfile ... replace`), so
+  // the engine + view-reference state below is keyed by this stable identity rather than
+  // session.url for live sessions - resetting them on every channel would lose the very
+  // references that let the swap happen in place. Everything else (hasLoaded, error, duration,
+  // currentTime) stays keyed by session.url, since those SHOULD reset per channel - that's what
+  // drives the "switching..." overlay while the new channel's own load callback hasn't fired yet.
+  val liveEngineKey = if (session.isLive) "live" else session.url
   var isPaused by remember(session.url) { mutableStateOf(false) }
   var currentTime by remember(session.url) { mutableDoubleStateOf(0.0) }
   var duration by remember(session.url) { mutableDoubleStateOf(0.0) }
   var error by remember(session.url) { mutableStateOf<String?>(null) }
   var hasLoaded by remember(session.url) { mutableStateOf(false) }
-  var playerView by remember(session.url) { mutableStateOf<MPVView?>(null) }
+  var playerView by remember(liveEngineKey) { mutableStateOf<MPVView?>(null) }
+  var exoPlayerView by remember(liveEngineKey) { mutableStateOf<ExoPlaybackView?>(null) }
+  var activeEngine by remember(liveEngineKey, session.playerEngine) { mutableStateOf(initialPlaybackEngine(session.playerEngine)) }
+  var autoFallbackUsed by remember(liveEngineKey, session.playerEngine) { mutableStateOf(false) }
+  var avMismatchFallbackTried by remember(session.url) { mutableStateOf(false) }
+  var loadedVideoWidth by remember(session.url) { mutableIntStateOf(0) }
+  var loadedVideoHeight by remember(session.url) { mutableIntStateOf(0) }
+  var pendingEngineResumeSeconds by remember(session.url) { mutableDoubleStateOf(0.0) }
+  fun activeAddSubtitle(path: String) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.addSubtitleFile(path) else playerView?.addSubtitleFile(path) }
+  fun activeReload() { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.reloadSource() else playerView?.reloadSource() }
+  fun activeSetPaused(paused: Boolean) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setPaused(paused) else playerView?.setPaused(paused) }
+  fun activeSeekTo(seconds: Double) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.seekTo(seconds) else playerView?.seekTo(seconds) }
+  fun activeSetAudioTrack(id: Int) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setAudioTrack(id) else playerView?.setAudioTrack(id) }
+  fun activeDisableSubtitleTrack() { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.disableSubtitleTrack() else playerView?.disableSubtitleTrack() }
+  fun activeSetSubtitleTrack(id: Int) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleTrack(id) else playerView?.setSubtitleTrack(id) }
+  fun activeSetSubtitleFontSize(size: Int) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleFontSize(size) else playerView?.setSubtitleFontSize(size) }
+  fun activeSetSubtitlePosition(position: Int) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitlePosition(position) else playerView?.setSubtitlePosition(position) }
+  fun activeSetSubtitleDelay(seconds: Double) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleDelay(seconds) else playerView?.setSubtitleDelay(seconds) }
+  fun activeSetSpeed(speed: Double) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSpeed(speed) else playerView?.setSpeed(speed) }
   var resizeMode by rememberSaveable(session.url) { mutableStateOf("cover") }
   var playbackSpeed by rememberSaveable(session.url) { mutableFloatStateOf(1f) }
   var activePanel by rememberSaveable(session.url) { mutableStateOf(PlayerPanel.None) }
@@ -154,23 +239,73 @@ fun NativePlayerScreen(
   var subtitleColor by rememberSaveable(session.url) { mutableStateOf("#FFFFFFFF") }
   var selectedAudioTrackId by remember(session.url) { mutableStateOf<Int?>(null) }
   var selectedSubtitleTrackId by remember(session.url) { mutableStateOf<Int?>(null) }
+  var preferredAudioTrackKey by remember(session.url) { mutableStateOf<String?>(null) }
+  var preferredSubtitleTrackKey by remember(session.url) { mutableStateOf<String?>(null) }
   var subtitleTab by rememberSaveable(session.url) { mutableStateOf(SubtitlePanelTab.BuiltIn) }
   var subtitleDisabledByUser by remember(session.url) { mutableStateOf(false) }
+  var userPickedAudio by remember(session.url) { mutableStateOf(false) }
+  var userPickedSubtitle by remember(session.url) { mutableStateOf(false) }
   var externalSubtitles by remember(session.url) { mutableStateOf<List<ExternalSubtitle>>(emptyList()) }
   var selectedExternalSubtitleId by remember(session.url) { mutableStateOf<String?>(null) }
+  var externalSubtitleNeedsReapply by remember(session.url) { mutableStateOf(false) }
   var subtitlesLoading by remember(session.url) { mutableStateOf(false) }
   var skipSegments by remember(session.url) { mutableStateOf<List<SkipSegment>>(emptyList()) }
   val audioTracks = remember(session.url) { mutableStateListOf<MpvTrackInfo>() }
   val subtitleTracks = remember(session.url) { mutableStateListOf<MpvTrackInfo>() }
   var scrobbleStarted by remember(session.url) { mutableStateOf(false) }
   var showControls by remember(session.url) { mutableStateOf(true) }
+  var controlsLocked by rememberSaveable(session.url) { mutableStateOf(false) }
+  var showUnlockControl by remember(session.url) { mutableStateOf(false) }
+  var unlockActivityVersion by remember(session.url) { mutableIntStateOf(0) }
   var controlActivityVersion by remember(session.url) { mutableIntStateOf(0) }
   var playbackEnded by remember(session.url) { mutableStateOf(false) }
   var completionDispatched by remember(session.url) { mutableStateOf(false) }
   var liveReconnectVersion by remember(session.url) { mutableIntStateOf(0) }
+  var liveStalled by remember(session.url) { mutableStateOf(false) }
+  var liveRetryAttempts by remember(session.url) { mutableIntStateOf(0) }
+  var lastLiveRetryAtMs by remember(session.url) { mutableStateOf(0L) }
   var showPausedInfo by remember(session.url) { mutableStateOf(false) }
+  var showLiveChannels by remember(session.url) { mutableStateOf(false) }
+  var showFavouriteDrawer by remember(session.url) { mutableStateOf(false) }
+  var showChannelSwipeCue by remember(session.url) { mutableStateOf(false) }
   var didApplyResume by remember(session.url) { mutableStateOf(false) }
   var lastCheckpointSecond by remember(session.url) { mutableDoubleStateOf(0.0) }
+  var slowLoadHintVisible by remember(session.url) { mutableStateOf(false) }
+  var adjustmentKind by remember { mutableStateOf<PlayerAdjustmentKind?>(null) }
+  var adjustmentLevel by remember { mutableFloatStateOf(0f) }
+  var adjustmentFeedbackVersion by remember { mutableIntStateOf(0) }
+  fun currentWindowBrightness(): Float {
+    val windowValue = activity?.window?.attributes?.screenBrightness ?: -1f
+    if (windowValue in 0f..1f) return windowValue.coerceIn(0.02f, 1f)
+    return runCatching {
+      Settings.System.getInt(playerContext.contentResolver, Settings.System.SCREEN_BRIGHTNESS) / 255f
+    }.getOrDefault(0.5f).coerceIn(0.02f, 1f)
+  }
+  fun currentMediaVolume(): Float {
+    val manager = audioManager ?: return 0.5f
+    val maximum = manager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+    return manager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maximum.toFloat()
+  }
+  fun applyBrightness(level: Float) {
+    val target = level.coerceIn(0.02f, 1f)
+    activity?.window?.let { window ->
+      val attributes = window.attributes
+      attributes.screenBrightness = target
+      window.attributes = attributes
+    }
+    adjustmentKind = PlayerAdjustmentKind.Brightness
+    adjustmentLevel = target
+    adjustmentFeedbackVersion += 1
+  }
+  fun applyMediaVolume(level: Float) {
+    val manager = audioManager ?: return
+    val maximum = manager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+    val target = (level.coerceIn(0f, 1f) * maximum).roundToInt().coerceIn(0, maximum)
+    manager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+    adjustmentKind = PlayerAdjustmentKind.Volume
+    adjustmentLevel = target.toFloat() / maximum.toFloat()
+    adjustmentFeedbackVersion += 1
+  }
   fun progressPercent(): Double =
     if (duration > 0.0) ((currentTime / duration) * 100.0).coerceIn(0.0, 100.0) else 0.0
 
@@ -200,10 +335,43 @@ fun NativePlayerScreen(
     controlActivityVersion += 1
   }
 
-  BackHandler { closePlayer() }
+  BackHandler {
+    when {
+      channelSwitchLoading -> onCancelChannelSwitch()
+      session.isLive && channelSwitchFallbackAvailable && !error.isNullOrBlank() -> onCancelChannelSwitch()
+      showFavouriteDrawer -> showFavouriteDrawer = false
+      showLiveChannels -> showLiveChannels = false
+      !controlsLocked -> closePlayer()
+    }
+  }
+
+  LaunchedEffect(session.url, session.isLive) {
+    if (!session.isLive) return@LaunchedEffect
+    while (true) {
+      showChannelSwipeCue = true
+      delay(3_500)
+      showChannelSwipeCue = false
+      delay(11_500)
+    }
+  }
+
+  LaunchedEffect(adjustmentFeedbackVersion) {
+    if (adjustmentFeedbackVersion > 0) {
+      delay(900)
+      adjustmentKind = null
+    }
+  }
+
+  LaunchedEffect(controlsLocked, showUnlockControl, unlockActivityVersion) {
+    if (controlsLocked && showUnlockControl) {
+      delay(2_600)
+      showUnlockControl = false
+    }
+  }
 
   DisposableEffect(activity) {
     val previous = activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    val previousBrightness = activity?.window?.attributes?.screenBrightness ?: -1f
     val decorView = activity?.window?.decorView
     val previousSystemUi = decorView?.systemUiVisibility ?: 0
     MainActivity.pipShouldEnter = session.pictureInPictureEnabled
@@ -219,6 +387,11 @@ fun NativePlayerScreen(
     onDispose {
       MainActivity.pipShouldEnter = false
       activity?.requestedOrientation = previous
+      activity?.window?.let { window ->
+        val attributes = window.attributes
+        attributes.screenBrightness = previousBrightness
+        window.attributes = attributes
+      }
       decorView?.systemUiVisibility = previousSystemUi
       if (scrobbleStarted && !session.isLive) onScrobble("stop", progressPercent())
     }
@@ -274,23 +447,33 @@ fun NativePlayerScreen(
     }
   }
 
-  LaunchedEffect(session.url, duration, session.autoLoadSubtitles, playerView, subtitleDisabledByUser, session.isLive, userSubtitleSources) {
+  LaunchedEffect(session.url, duration, session.autoLoadSubtitles, playerView, exoPlayerView, subtitleDisabledByUser, session.isLive, userSubtitleSources) {
     if (session.isLive) return@LaunchedEffect
-    if (!session.autoLoadSubtitles || duration <= 0.0 || playerView == null || subtitleDisabledByUser) return@LaunchedEffect
+    if (!session.autoLoadSubtitles || duration <= 0.0 || (playerView == null && exoPlayerView == null) || subtitleDisabledByUser) return@LaunchedEffect
     delay(1_200)
     subtitlesLoading = true
     val results = fetchExternalSubtitles(session, userSubtitleSources)
     externalSubtitles = results
-    if (selectedSubtitleTrackId == null && selectedExternalSubtitleId == null && !subtitleDisabledByUser) {
+    if (selectedSubtitleTrackId == null && selectedExternalSubtitleId == null && !subtitleDisabledByUser && !userPickedSubtitle) {
       results.firstOrNull { it.language == "en" }?.let { subtitle ->
         selectedExternalSubtitleId = subtitle.id
         // Download off the player thread first — handing mpv a remote URL stalls
         // playback while it fetches the file.
         val localPath = downloadSubtitleToCache(playerContext, subtitle.url)
-        if (localPath != null && selectedExternalSubtitleId == subtitle.id) playerView?.addSubtitleFile(localPath)
+        if (localPath != null && selectedExternalSubtitleId == subtitle.id) activeAddSubtitle(localPath)
       }
     }
     subtitlesLoading = false
+  }
+  LaunchedEffect(activeEngine, playerView, externalSubtitleNeedsReapply, selectedExternalSubtitleId, externalSubtitles) {
+    if (activeEngine != ActivePlaybackEngine.MPV || playerView == null || !externalSubtitleNeedsReapply) return@LaunchedEffect
+    val subtitle = externalSubtitles.firstOrNull { it.id == selectedExternalSubtitleId } ?: return@LaunchedEffect
+    delay(700)
+    val localPath = downloadSubtitleToCache(playerContext, subtitle.url)
+    if (localPath != null && activeEngine == ActivePlaybackEngine.MPV && selectedExternalSubtitleId == subtitle.id) {
+      playerView?.addSubtitleFile(localPath)
+      externalSubtitleNeedsReapply = false
+    }
   }
   LaunchedEffect(session.url, isPaused, duration, session.isLive) {
     if (session.isLive) return@LaunchedEffect
@@ -304,106 +487,321 @@ fun NativePlayerScreen(
       if (!isPaused) onScrobble("pause", progressPercent())
     }
   }
+  // Shared budget check for every live-feed retry trigger (stall watchdog below AND mpv's own
+  // error callback). Both used to bump liveReconnectVersion directly, but only the watchdog
+  // respected the 5-attempt cap — a stream that mpv rejects outright (bad URL, wrong protocol,
+  // missing required headers) errors out again within milliseconds of every reload, so the
+  // uncapped path re-triggered itself continuously with only a ~300ms backoff: exactly what
+  // "keeps reloading and reloading" looks like. Routing both triggers through this one function
+  // means every retry — however it was triggered — counts against the same budget before
+  // failing over to the next source or giving up.
+  fun retryOrFailoverLiveFeed() {
+    val now = System.currentTimeMillis()
+    // A long gap since the previous retry means the feed recovered — reset the budget.
+    if (now - lastLiveRetryAtMs > 60_000L) liveRetryAttempts = 0
+    if (liveRetryAttempts >= 5) {
+      android.util.Log.w("StreamDekLivePlayer", "retry budget exhausted for ${session.url}, looking for a next source")
+      val currentKey = playerStreamIdentity(session.currentStream)
+      val currentIndex = availableStreams.indexOfFirst { playerStreamIdentity(it) == currentKey }
+      val nextSource = availableStreams.drop((currentIndex + 1).coerceAtLeast(0)).firstOrNull { playerStreamIdentity(it) != currentKey }
+      if (nextSource != null) {
+        error = "Switching to another source..."
+        onSelectStream(nextSource, 0.0)
+      } else {
+        error = "This live feed keeps stalling. Tap retry or choose another source."
+      }
+      return
+    }
+    lastLiveRetryAtMs = now
+    liveRetryAttempts += 1
+    android.util.Log.d("StreamDekLivePlayer", "retry attempt $liveRetryAttempts for ${session.url}")
+    liveReconnectVersion += 1
+  }
+
   LaunchedEffect(liveReconnectVersion) {
     if (session.isLive && liveReconnectVersion > 0) {
-      delay(300)
+      // Back off a little on repeated attempts so a dead feed isn't hammered.
+      delay((300L + (liveRetryAttempts - 1).coerceAtLeast(0) * 700L).coerceAtMost(3_000L))
       error = null
-      playerView?.reloadSource()
-      playerView?.setPaused(false)
+      liveStalled = false
+      activeReload()
+      activeSetPaused(false)
     }
   }
 
+  // Only treat mpv's paused-for-cache signal as a live stall. Many healthy HLS/DASH live
+  // manifests expose a static or discontinuous time-pos, so using a quiet time-pos as failure
+  // evidence caused StreamDek itself to reload working CNCVerse feeds every 20 seconds.
+  // Real demux/decode failures still flow through onError/onEnd below.
+  LaunchedEffect(session.url, session.isLive, isPaused, hasLoaded, liveStalled, liveReconnectVersion, error) {
+    if (!session.isLive || isPaused || !hasLoaded || !liveStalled || !error.isNullOrBlank()) return@LaunchedEffect
+    delay(20_000L)
+    if (liveStalled) retryOrFailoverLiveFeed()
+  }
+
+
+  // A live stream that's simply slow to start looks identical to a stuck one until the
+  // 20s stall watchdog or 5-attempt retry budget above kicks in. Give the user an earlier,
+  // reassuring signal instead of leaving the generic spinner up the whole time - this only
+  // fires while nothing has errored, i.e. a connection was actually established.
+  LaunchedEffect(session.url, session.isLive, hasLoaded, error) {
+    slowLoadHintVisible = false
+    if (session.isLive && !hasLoaded && error.isNullOrBlank()) {
+      delay(6_000)
+      if (!hasLoaded && error.isNullOrBlank()) slowLoadHintVisible = true
+    }
+  }
+
+  val playerLoadCallback: (Double, Int, Int) -> Unit = { loadedDuration, width, height ->
+    hasLoaded = true
+    loadedVideoWidth = width
+    loadedVideoHeight = height
+    if (session.isLive && channelSwitchLoading) onChannelSwitchPlaybackStarted()
+    duration = loadedDuration
+    error = null
+    if (session.autoLoadSubtitles && !userPickedSubtitle && !subtitleDisabledByUser && selectedSubtitleTrackId == null) {
+      subtitleTracks.firstOrNull { normalizeSubtitleLanguage(it.language) == "en" }?.let { englishSubtitle ->
+        selectedSubtitleTrackId = englishSubtitle.id
+        activeSetSubtitleTrack(englishSubtitle.id)
+      }
+    }
+    if (pendingEngineResumeSeconds > 0.0 && loadedDuration > 0.0) {
+      val resumeAt = pendingEngineResumeSeconds.coerceIn(0.0, (loadedDuration - 2.0).coerceAtLeast(0.0))
+      pendingEngineResumeSeconds = 0.0
+      activeSeekTo(resumeAt)
+      currentTime = resumeAt
+    } else if (!didApplyResume && session.resumePercent > 0.0 && loadedDuration > 0.0) {
+      val resumeAt = (loadedDuration * (session.resumePercent / 100.0)).coerceIn(0.0, (loadedDuration - 5.0).coerceAtLeast(0.0))
+      activeSeekTo(resumeAt)
+      currentTime = resumeAt
+      didApplyResume = true
+    }
+  }
+  val playerProgressCallback: (Double, Double) -> Unit = { position, total ->
+    currentTime = position
+    duration = total
+    if (!session.isLive && !isPaused && total > 0.0 && position >= total - 0.75) finishPlayback()
+    if (!session.isLive && !isPaused && total > 0.0 && position >= 10.0 && position - lastCheckpointSecond >= 10.0) {
+      lastCheckpointSecond = position
+      onProgressCheckpoint(((position / total) * 100.0).coerceIn(0.0, 100.0))
+    }
+  }
+  // Shared engine-swap path for the three ways a session can change decoders: the existing
+  // Auto-preference error fallback (Media3 -> mpv only), a user-initiated pick from the new
+  // Engine panel, and the audio/video-mismatch auto-detection below. All three need the same
+  // "tear down the current engine, remember where we were, let the other engine resume there"
+  // behavior, so it's centralized here instead of duplicated per trigger.
+  fun switchEngine(target: ActivePlaybackEngine, reason: String) {
+    if (target == activeEngine) return
+    pendingEngineResumeSeconds = currentTime.coerceAtLeast(0.0)
+    hasLoaded = false
+    error = null
+    liveStalled = false
+    audioTracks.clear()
+    subtitleTracks.clear()
+    selectedAudioTrackId = null
+    selectedSubtitleTrackId = null
+    externalSubtitleNeedsReapply = selectedExternalSubtitleId != null
+    loadedVideoWidth = 0
+    loadedVideoHeight = 0
+    if (target == ActivePlaybackEngine.Media3) playerView = null else exoPlayerView = null
+    android.util.Log.w("StreamDekPlayer", "Switching playback engine to $target ($reason) at ${pendingEngineResumeSeconds}s")
+    activeEngine = target
+  }
+  val playerErrorCallback: (String) -> Unit = { message ->
+    if (shouldAutoFallbackToMpv(session.playerEngine, activeEngine, autoFallbackUsed)) {
+      autoFallbackUsed = true
+      switchEngine(ActivePlaybackEngine.MPV, "Media3 error: $message")
+    } else if (session.isLive) {
+      android.util.Log.w("StreamDekLivePlayer", "player error for ${session.url}: $message")
+      error = "Live feed interrupted. Reconnecting..."
+      retryOrFailoverLiveFeed()
+    } else {
+      error = message
+    }
+  }
+  val playerEndCallback: () -> Unit = {
+    if (session.isLive) {
+      android.util.Log.d("StreamDekLivePlayer", "player end-of-file for ${session.url}")
+      retryOrFailoverLiveFeed()
+    } else {
+      finishPlayback()
+    }
+  }
+  val playerStallCallback: (Boolean) -> Unit = { stalled -> if (session.isLive) liveStalled = stalled }
+  fun trackPreferenceKey(track: MpvTrackInfo): String = listOf(
+    normalizeSubtitleLanguage(track.language).orEmpty(),
+    track.title.orEmpty().trim().lowercase(),
+  ).joinToString("|")
+  val playerTracksCallback: (List<MpvTrackInfo>, List<MpvTrackInfo>, Int?, Int?) -> Unit = { audio, subtitles, audioId, subtitleId ->
+    audioTracks.clear()
+    subtitleTracks.clear()
+    audioTracks.addAll(audio)
+    subtitleTracks.addAll(subtitles)
+    if (userPickedAudio) {
+      val preferredAudio = preferredAudioTrackKey?.let { key -> audio.firstOrNull { trackPreferenceKey(it) == key } }
+      selectedAudioTrackId = preferredAudio?.id ?: audioId ?: selectedAudioTrackId
+      if (preferredAudio != null && audioId != preferredAudio.id) activeSetAudioTrack(preferredAudio.id)
+    } else {
+      selectedAudioTrackId = audioId
+      val preferredLanguage = normalizePreferredAudioLanguage(session.preferredAudioLanguage)
+      val preferredAudio = preferredAudioLanguageTags(preferredLanguage)
+        .map(::normalizeSubtitleLanguage)
+        .firstNotNullOfOrNull { wanted -> audio.firstOrNull { normalizeSubtitleLanguage(it.language) == wanted } }
+      if (preferredLanguage != "original" && preferredAudio != null && audioId != preferredAudio.id) {
+        selectedAudioTrackId = preferredAudio.id
+        activeSetAudioTrack(preferredAudio.id)
+      }
+    }
+    if (userPickedSubtitle || subtitleDisabledByUser) {
+      when {
+        subtitleDisabledByUser -> selectedSubtitleTrackId = null
+        selectedExternalSubtitleId != null && subtitleId != null -> selectedSubtitleTrackId = subtitleId
+        else -> {
+          val preferredSubtitle = preferredSubtitleTrackKey?.let { key -> subtitles.firstOrNull { trackPreferenceKey(it) == key } }
+          selectedSubtitleTrackId = preferredSubtitle?.id ?: subtitleId
+          if (preferredSubtitle != null && subtitleId != preferredSubtitle.id) activeSetSubtitleTrack(preferredSubtitle.id)
+        }
+      }
+    } else if (hasLoaded) {
+      selectedSubtitleTrackId = subtitleId
+      val englishSubtitle = subtitles.firstOrNull { normalizeSubtitleLanguage(it.language) == "en" }
+      when {
+        session.autoLoadSubtitles && englishSubtitle != null && subtitleId != englishSubtitle.id -> {
+          selectedSubtitleTrackId = englishSubtitle.id
+          activeSetSubtitleTrack(englishSubtitle.id)
+        }
+        (!session.autoLoadSubtitles || englishSubtitle == null) && subtitleId != null -> {
+          selectedSubtitleTrackId = null
+          activeDisableSubtitleTrack()
+        }
+      }
+    }
+  }
+  // Neither engine reports "no video renderer" directly, but both report a 0x0 decoded
+  // frame size and an empty audio-track list, which is the best available signal that one
+  // half of the stream isn't actually playing. Give the engine a few seconds after it claims
+  // to have loaded (mpv/Media3 can report tracks a moment after the load callback fires), then
+  // swap to the other engine once - not on every recheck - so a genuinely audio-only or
+  // video-only source doesn't get bounced back and forth forever.
+  LaunchedEffect(session.url, activeEngine, hasLoaded) {
+    if (!hasLoaded || avMismatchFallbackTried) return@LaunchedEffect
+    // Live manifests often publish their audio rendition metadata a few seconds after video
+    // starts. Treating that transient empty track list as a broken decoder caused an already
+    // playing channel to switch engines and reload 3.5 seconds after a successful handoff.
+    // Explicit player errors and the live stall watchdog still provide safe fallback signals.
+    if (session.isLive) return@LaunchedEffect
+    delay(3_500)
+    if (avMismatchFallbackTried || !hasLoaded || duration <= 0.0) return@LaunchedEffect
+    val noVideo = loadedVideoWidth <= 0 && loadedVideoHeight <= 0
+    val noAudio = audioTracks.isEmpty()
+    if (noVideo != noAudio) {
+      avMismatchFallbackTried = true
+      val target = if (activeEngine == ActivePlaybackEngine.Media3) ActivePlaybackEngine.MPV else ActivePlaybackEngine.Media3
+      switchEngine(target, if (noAudio) "no audio detected" else "no video detected")
+    }
+  }
 
   Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-    key(session.url) {
-      AndroidView(
-      modifier = Modifier.fillMaxSize(),
-      factory = { context ->
-        MPVView(context).apply {
-          playerView = this
-          onLoadCallback = { loadedDuration, _, _ ->
-            hasLoaded = true
-            duration = loadedDuration
-            error = null
-            if (!didApplyResume && session.resumePercent > 0.0 && loadedDuration > 0.0) {
-              val resumeAt = (loadedDuration * (session.resumePercent / 100.0)).coerceIn(0.0, (loadedDuration - 5.0).coerceAtLeast(0.0))
-              seekTo(resumeAt)
-              currentTime = resumeAt
-              didApplyResume = true
+    key(liveEngineKey, activeEngine) {
+      if (activeEngine == ActivePlaybackEngine.Media3) {
+        AndroidView(
+          modifier = Modifier.fillMaxSize(),
+          factory = { context ->
+            ExoPlaybackView(context).apply {
+              exoPlayerView = this
+              onLoadCallback = playerLoadCallback
+              onProgressCallback = playerProgressCallback
+              onErrorCallback = playerErrorCallback
+              onEndCallback = playerEndCallback
+              onStallChangedCallback = playerStallCallback
+              onTracksChangedCallback = playerTracksCallback
+              setResizeMode(resizeMode)
+              setSpeed(playbackSpeed.toDouble())
+              setSubtitleDelay(subtitleDelay.toDouble())
+              setSubtitleFontSize(subtitleSize)
+              setSubtitlePosition(subtitlePosition)
+              setSubtitleColor(subtitleColor)
+              setHeaders(session.requestHeaders)
+              setPreferredAudioLanguage(session.preferredAudioLanguage)
+              setSource(session.url)
+              setPaused(false)
             }
-          }
-          onProgressCallback = { position, total ->
-            currentTime = position
-            duration = total
-            if (!session.isLive && !isPaused && total > 0.0 && position >= total - 0.75) finishPlayback()
-            if (!session.isLive && !isPaused && total > 0.0 && position >= 10.0 && position - lastCheckpointSecond >= 10.0) {
-              lastCheckpointSecond = position
-              onProgressCheckpoint(((position / total) * 100.0).coerceIn(0.0, 100.0))
+          },
+          update = { view ->
+            // Reassigned on every recomposition, not just at creation - a live channel
+            // switch reuses this same view (see key(liveEngineKey, ...) above) instead of
+            // recreating it, so these closures must stay pointed at the *current*
+            // session's hasLoaded/error/etc. state or the new channel's own load/error
+            // signal is silently swallowed by stale callbacks still bound to the state
+            // objects from the channel that was just switched away from.
+            view.onLoadCallback = playerLoadCallback
+            view.onProgressCallback = playerProgressCallback
+            view.onErrorCallback = playerErrorCallback
+            view.onEndCallback = playerEndCallback
+            view.onStallChangedCallback = playerStallCallback
+            view.onTracksChangedCallback = playerTracksCallback
+            view.setHeaders(session.requestHeaders)
+            view.setPreferredAudioLanguage(session.preferredAudioLanguage)
+            view.setSource(session.url)
+            view.setPaused(isPaused)
+            view.setResizeMode(resizeMode)
+            view.setSpeed(playbackSpeed.toDouble())
+            view.setSubtitleDelay(subtitleDelay.toDouble())
+            view.setSubtitleFontSize(subtitleSize)
+            view.setSubtitlePosition(subtitlePosition)
+            view.setSubtitleColor(subtitleColor)
+          },
+        )
+      } else {
+        AndroidView(
+          modifier = Modifier.fillMaxSize(),
+          factory = { context ->
+            MPVView(context).apply {
+              playerView = this
+              onLoadCallback = playerLoadCallback
+              onProgressCallback = playerProgressCallback
+              onErrorCallback = playerErrorCallback
+              onEndCallback = playerEndCallback
+              onStallChangedCallback = playerStallCallback
+              onTracksChangedCallback = playerTracksCallback
+              setResizeMode(resizeMode)
+              setDecoderMode(session.decoderMode)
+              setRenderSurface(session.renderSurface)
+              setSpeed(playbackSpeed.toDouble())
+              setSubtitleDelay(subtitleDelay.toDouble())
+              setSubtitleFontSize(subtitleSize)
+              setSubtitlePosition(subtitlePosition)
+              setSubtitleColor(subtitleColor)
+              setHeaders(session.requestHeaders)
+              setPreferredAudioLanguage(session.preferredAudioLanguage)
+              setSource(session.url)
+              setPaused(false)
             }
-          }
-          onErrorCallback = { message ->
-            if (session.isLive) {
-              error = "Live feed interrupted. Reconnecting..."
-              liveReconnectVersion += 1
-            } else {
-              error = message
-            }
-          }
-          onEndCallback = { if (session.isLive) liveReconnectVersion += 1 else finishPlayback() }
-          onTracksChangedCallback = { audio, subtitles, audioId, subtitleId ->
-            audioTracks.clear()
-            subtitleTracks.clear()
-            audioTracks.addAll(audio)
-            subtitleTracks.addAll(subtitles)
-            selectedAudioTrackId = audioId
-            val englishAudio = audio.firstOrNull { normalizeSubtitleLanguage(it.language) == "en" }
-            if (englishAudio != null && audioId != englishAudio.id) {
-              selectedAudioTrackId = englishAudio.id
-              setAudioTrack(englishAudio.id)
-            }
-            selectedSubtitleTrackId = subtitleId
-            if (!subtitleDisabledByUser) {
-              val englishSubtitle = subtitles.firstOrNull { normalizeSubtitleLanguage(it.language) == "en" }
-              when {
-                englishSubtitle != null && subtitleId != englishSubtitle.id -> {
-                  selectedSubtitleTrackId = englishSubtitle.id
-                  setSubtitleTrack(englishSubtitle.id)
-                }
-                englishSubtitle == null && subtitleId != null -> {
-                  selectedSubtitleTrackId = null
-                  disableSubtitleTrack()
-                }
-              }
-            }
-          }
-          setResizeMode(resizeMode)
-          setDecoderMode(session.decoderMode)
-          setRenderSurface(session.renderSurface)
-          setSpeed(playbackSpeed.toDouble())
-          setSubtitleDelay(subtitleDelay.toDouble())
-          setSubtitleFontSize(subtitleSize)
-          setSubtitlePosition(subtitlePosition)
-          setSubtitleColor(subtitleColor)
-          setHeaders(session.requestHeaders)
-          setSource(session.url)
-          setPaused(false)
-        }
-      },
-      update = { view ->
-        view.setHeaders(session.requestHeaders)
-        view.setSource(session.url)
-        view.setPaused(isPaused)
-        view.setResizeMode(resizeMode)
-        view.setDecoderMode(session.decoderMode)
-        view.setRenderSurface(session.renderSurface)
-        view.setSpeed(playbackSpeed.toDouble())
-        view.setSubtitleDelay(subtitleDelay.toDouble())
-        view.setSubtitleFontSize(subtitleSize)
-        view.setSubtitlePosition(subtitlePosition)
-        view.setSubtitleColor(subtitleColor)
-        view.setHeaders(session.requestHeaders)
-        },
-      )
+          },
+          update = { view ->
+            // See the equivalent comment in the Media3 branch above - same reason.
+            view.onLoadCallback = playerLoadCallback
+            view.onProgressCallback = playerProgressCallback
+            view.onErrorCallback = playerErrorCallback
+            view.onEndCallback = playerEndCallback
+            view.onStallChangedCallback = playerStallCallback
+            view.onTracksChangedCallback = playerTracksCallback
+            view.setHeaders(session.requestHeaders)
+            view.setPreferredAudioLanguage(session.preferredAudioLanguage)
+            view.setSource(session.url)
+            view.setPaused(isPaused)
+            view.setResizeMode(resizeMode)
+            view.setDecoderMode(session.decoderMode)
+            view.setRenderSurface(session.renderSurface)
+            view.setSpeed(playbackSpeed.toDouble())
+            view.setSubtitleDelay(subtitleDelay.toDouble())
+            view.setSubtitleFontSize(subtitleSize)
+            view.setSubtitlePosition(subtitlePosition)
+            view.setSubtitleColor(subtitleColor)
+          },
+        )
+      }
     }
 
     AnimatedVisibility(
@@ -419,7 +817,7 @@ fun NativePlayerScreen(
           } else {
             activeSkipSegment?.let { segment ->
               currentTime = segment.endSeconds
-              playerView?.seekTo(segment.endSeconds)
+              activeSeekTo(segment.endSeconds)
               skipSegments = skipSegments - segment
             }
           }
@@ -428,8 +826,17 @@ fun NativePlayerScreen(
         shape = RoundedCornerShape(22.dp),
       ) { Text(if (nextEpisodeActionAvailable) "Next Episode" else when (activeSkipSegment?.type) { "recap" -> "Skip Recap"; "outro" -> "Skip Ending"; else -> "Skip Intro" }, fontWeight = FontWeight.Bold) }
     }
-    if (isLoading) {
-      PlayerLoadingBackdrop(session = session, message = if (nextEpisodeLoading) listOfNotNull("Loading next episode", nextEpisodeLoadingLabel).joinToString(" · ") else "Preparing stream...")
+    // A live-channel switch has its own compact status indicator below. Keeping the
+    // general loading backdrop here as well produced two competing loading messages.
+    if (isLoading && !(session.isLive && channelSwitchLoading)) {
+      PlayerLoadingBackdrop(
+        session = session,
+        message = when {
+          nextEpisodeLoading -> listOfNotNull("Loading next episode", nextEpisodeLoadingLabel).joinToString(" · ")
+          session.isLive && slowLoadHintVisible -> "This channel is available but is taking a while to load…"
+          else -> "Preparing stream..."
+        },
+      )
     }
 
     if (!isLoading && isPaused) {
@@ -447,9 +854,75 @@ fun NativePlayerScreen(
     Box(
       modifier = Modifier
         .fillMaxSize()
-        .background(Color.Black.copy(alpha = if (isLoading || (!showControls && activePanel == PlayerPanel.None)) 0.0f else if (activePanel == PlayerPanel.None) 0.18f else 0.58f))
+        .background(Color.Black.copy(alpha = if (isLoading || controlsLocked || (!showControls && activePanel == PlayerPanel.None)) 0.0f else if (activePanel == PlayerPanel.None) 0.18f else 0.58f))
+        .pointerInput(session.url, session.isLive, isLoading, controlsLocked, audioManager) {
+          if (!isLoading && !controlsLocked) {
+            var totalX = 0f
+            var totalY = 0f
+            var dragStartX = 0f
+            var initialBrightness = 0.5f
+            var initialVolume = 0.5f
+            var didAdjustLevel = false
+            detectDragGestures(
+              onDragStart = { offset ->
+                totalX = 0f
+                totalY = 0f
+                dragStartX = offset.x
+                initialBrightness = currentWindowBrightness()
+                initialVolume = currentMediaVolume()
+                didAdjustLevel = false
+              },
+              onDragEnd = {
+                val startedInChannelZone = dragStartX >= size.width * 0.33f && dragStartX < size.width * 0.67f
+                if (session.isLive && !didAdjustLevel) {
+                  when {
+                    startedInChannelZone && totalY < -90f && kotlin.math.abs(totalY) > kotlin.math.abs(totalX) -> {
+                      showFavouriteDrawer = false
+                      showLiveChannels = true
+                      showChannelSwipeCue = false
+                      showControls = false
+                      activePanel = PlayerPanel.None
+                    }
+                    totalX < -90f && kotlin.math.abs(totalX) > kotlin.math.abs(totalY) -> {
+                      showLiveChannels = false
+                      showFavouriteDrawer = true
+                      showControls = false
+                      activePanel = PlayerPanel.None
+                    }
+                    totalY > 90f && showLiveChannels -> showLiveChannels = false
+                  }
+                }
+              },
+              onDrag = { change, amount ->
+                totalX += amount.x
+                totalY += amount.y
+                val verticalGesture = kotlin.math.abs(totalY) > kotlin.math.abs(totalX) && kotlin.math.abs(totalY) > 12f
+                when {
+                  verticalGesture && dragStartX < size.width * 0.33f -> {
+                    applyBrightness(adjustedPlayerLevel(initialBrightness, totalY, size.height.toFloat()))
+                    didAdjustLevel = true
+                  }
+                  verticalGesture && dragStartX >= size.width * 0.67f -> {
+                    applyMediaVolume(adjustedPlayerLevel(initialVolume, totalY, size.height.toFloat()))
+                    didAdjustLevel = true
+                  }
+                }
+                change.consume()
+              },
+            )
+          }
+        }
         .clickable(enabled = !isLoading, interactionSource = surfaceInteractionSource, indication = null) {
-          if (activePanel == PlayerPanel.None) {
+          if (controlsLocked) {
+            showUnlockControl = true
+            unlockActivityVersion += 1
+          } else if (showLiveChannels) {
+            showLiveChannels = false
+            showControls = false
+          } else if (showFavouriteDrawer) {
+            showFavouriteDrawer = false
+            showControls = false
+          } else if (activePanel == PlayerPanel.None) {
             showPausedInfo = false
             showControls = !showControls
           }
@@ -457,19 +930,86 @@ fun NativePlayerScreen(
       )
 
     AnimatedVisibility(
-      visible = !isLoading && (showControls || activePanel != PlayerPanel.None || !error.isNullOrBlank()),
+      visible = adjustmentKind != null && !controlsLocked,
+      modifier = Modifier.align(Alignment.Center).zIndex(19f),
+      enter = fadeIn(animationSpec = tween(120)),
+      exit = fadeOut(animationSpec = tween(180)),
+    ) {
+      Surface(
+        color = Color(0xD9161A23),
+        shape = RoundedCornerShape(22.dp),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
+      ) {
+        Column(
+          modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+          horizontalAlignment = Alignment.CenterHorizontally,
+          verticalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+          Icon(
+            when (adjustmentKind) {
+              PlayerAdjustmentKind.Brightness -> Icons.Rounded.Brightness6
+              PlayerAdjustmentKind.Volume -> if (adjustmentLevel <= 0f) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp
+              null -> Icons.Rounded.VolumeUp
+            },
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(28.dp),
+          )
+          Text(
+            "${if (adjustmentKind == PlayerAdjustmentKind.Brightness) "Brightness" else "Volume"} ${(adjustmentLevel * 100f).toInt()}%",
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+          )
+        }
+      }
+    }
+
+    AnimatedVisibility(
+      visible = !isLoading && controlsLocked && showUnlockControl,
+      modifier = Modifier.align(Alignment.CenterEnd).padding(end = 22.dp).zIndex(20f),
+      enter = fadeIn(animationSpec = tween(180)),
+      exit = fadeOut(animationSpec = tween(140)),
+    ) {
+      Surface(
+        color = Color(0xD9161A23),
+        shape = RoundedCornerShape(24.dp),
+        modifier = Modifier
+          .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(24.dp))
+          .pointerInput(session.url) {
+            detectTapGestures(onLongPress = {
+              controlsLocked = false
+              showUnlockControl = false
+              keepControlsVisible()
+            })
+          },
+      ) {
+        Row(
+          modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+          horizontalArrangement = Arrangement.spacedBy(7.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Icon(Icons.Rounded.Lock, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+          Text("Hold to unlock", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        }
+      }
+    }
+
+    AnimatedVisibility(
+      visible = !isLoading && !controlsLocked && (showControls || activePanel != PlayerPanel.None || !error.isNullOrBlank()),
       enter = fadeIn(animationSpec = tween(220)),
       exit = fadeOut(animationSpec = tween(220)),
     ) {
       PlayerTopHeader(
         session = session,
         onBack = { closePlayer() },
+        isFavourite = isFavourite,
+        onToggleFavourite = onToggleFavourite,
         modifier = Modifier.align(Alignment.TopStart),
       )
     }
 
     AnimatedVisibility(
-      visible = !isLoading && activePanel == PlayerPanel.None && (showControls || !error.isNullOrBlank()),
+      visible = !isLoading && !controlsLocked && activePanel == PlayerPanel.None && (showControls || !error.isNullOrBlank()),
       enter = fadeIn(animationSpec = tween(220)) + slideInVertically(initialOffsetY = { it / 12 }, animationSpec = tween(280)),
       exit = fadeOut(animationSpec = tween(220)) + slideOutVertically(targetOffsetY = { it / 14 }, animationSpec = tween(220)),
     ) {
@@ -491,7 +1031,7 @@ fun NativePlayerScreen(
         showEpisodeNavigation = session.mediaType == "tv" && session.autoPlayNextEpisode,
         onSeek = { delta ->
           currentTime = (currentTime + delta).coerceIn(0.0, duration.takeIf { it > 0.0 } ?: Double.MAX_VALUE)
-          playerView?.seekTo(currentTime)
+          activeSeekTo(currentTime)
           keepControlsVisible()
         },
         showSeeking = !session.isLive,
@@ -499,7 +1039,7 @@ fun NativePlayerScreen(
     }
 
     AnimatedVisibility(
-      visible = !isLoading && activePanel == PlayerPanel.None && (showControls || !error.isNullOrBlank()),
+      visible = !isLoading && !controlsLocked && activePanel == PlayerPanel.None && (showControls || !error.isNullOrBlank()),
       modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
       enter = fadeIn(animationSpec = tween(220)) + slideInVertically(initialOffsetY = { it / 10 }, animationSpec = tween(280)),
       exit = fadeOut(animationSpec = tween(220)) + slideOutVertically(targetOffsetY = { it / 12 }, animationSpec = tween(220)),
@@ -513,7 +1053,7 @@ fun NativePlayerScreen(
         resizeMode = resizeMode,
         speed = playbackSpeed,
         onProgressChange = { fraction -> currentTime = duration * fraction; keepControlsVisible() },
-        onProgressFinished = { playerView?.seekTo(currentTime); keepControlsVisible() },
+        onProgressFinished = { activeSeekTo(currentTime); keepControlsVisible() },
         onZoom = {
           keepControlsVisible()
           resizeMode = when (resizeMode) {
@@ -526,18 +1066,30 @@ fun NativePlayerScreen(
         onSubtitles = { keepControlsVisible(); activePanel = PlayerPanel.Subtitles },
         onAudio = { keepControlsVisible(); activePanel = PlayerPanel.Audio },
         onSources = { keepControlsVisible(); activePanel = PlayerPanel.Sources },
+        onEngine = { keepControlsVisible(); activePanel = PlayerPanel.Engine },
+
+        onLock = {
+          controlsLocked = true
+          showUnlockControl = true
+          unlockActivityVersion += 1
+          showControls = false
+          showPausedInfo = false
+          activePanel = PlayerPanel.None
+        },
       )
     }
 
     when (activePanel) {
-      PlayerPanel.Audio -> PlayerModalPanel(title = "Audio", onClose = { activePanel = PlayerPanel.None }) {
+      PlayerPanel.Audio -> PlayerModalPanel(title = "Audio", onClose = { activePanel = PlayerPanel.None }, compact = true) {
         if (audioTracks.isEmpty()) {
           PlayerOptionRow("Default audio", selected = true, onClick = {})
         } else {
           audioTracks.forEach { track ->
             PlayerOptionRow(trackLabel(track), selected = selectedAudioTrackId == track.id) {
+              userPickedAudio = true
               selectedAudioTrackId = track.id
-              playerView?.setAudioTrack(track.id)
+              preferredAudioTrackKey = trackPreferenceKey(track)
+              activeSetAudioTrack(track.id)
             }
           }
         }
@@ -564,17 +1116,21 @@ fun NativePlayerScreen(
           SubtitlePanelTab.BuiltIn -> {
             PlayerOptionRow("None", selected = selectedSubtitleTrackId == null && selectedExternalSubtitleId == null) {
               subtitleDisabledByUser = true
+              userPickedSubtitle = true
               selectedSubtitleTrackId = null
               selectedExternalSubtitleId = null
-              playerView?.disableSubtitleTrack()
+              preferredSubtitleTrackKey = null
+              activeDisableSubtitleTrack()
             }
             if (subtitleTracks.isEmpty()) Text("No embedded subtitle tracks.", color = Color.White.copy(alpha = 0.64f))
             subtitleTracks.forEach { track ->
               PlayerOptionRow(trackLabel(track), selected = selectedSubtitleTrackId == track.id) {
                 subtitleDisabledByUser = false
+                userPickedSubtitle = true
                 selectedExternalSubtitleId = null
                 selectedSubtitleTrackId = track.id
-                playerView?.setSubtitleTrack(track.id)
+                preferredSubtitleTrackKey = trackPreferenceKey(track)
+                activeSetSubtitleTrack(track.id)
               }
             }
           }
@@ -584,13 +1140,14 @@ fun NativePlayerScreen(
             externalSubtitles.forEach { subtitle ->
               PlayerOptionRow(subtitle.label, selected = selectedExternalSubtitleId == subtitle.id) {
                 subtitleDisabledByUser = false
+                userPickedSubtitle = true
                 selectedSubtitleTrackId = null
                 selectedExternalSubtitleId = subtitle.id
                 // Fetch in the background and hand mpv a local file so the video
                 // keeps playing while the new subtitle loads.
                 playerScope.launch {
                   val localPath = downloadSubtitleToCache(playerContext, subtitle.url)
-                  if (localPath != null && selectedExternalSubtitleId == subtitle.id) playerView?.addSubtitleFile(localPath)
+                  if (localPath != null && selectedExternalSubtitleId == subtitle.id) activeAddSubtitle(localPath)
                 }
               }
             }
@@ -599,17 +1156,17 @@ fun NativePlayerScreen(
             Text("Subtitle size: $subtitleSize", color = Color.White.copy(alpha = 0.72f))
             Slider(value = subtitleSize.toFloat(), valueRange = 28f..84f, onValueChange = {
               subtitleSize = it.toInt()
-              playerView?.setSubtitleFontSize(subtitleSize)
+              activeSetSubtitleFontSize(subtitleSize)
             })
             Text("Position: $subtitlePosition", color = Color.White.copy(alpha = 0.72f))
             Slider(value = subtitlePosition.toFloat(), valueRange = 50f..110f, onValueChange = {
               subtitlePosition = it.toInt()
-              playerView?.setSubtitlePosition(subtitlePosition)
+              activeSetSubtitlePosition(subtitlePosition)
             })
             Text("Delay: ${"%.1f".format(subtitleDelay)}s", color = Color.White.copy(alpha = 0.72f))
             Slider(value = subtitleDelay, valueRange = -5f..5f, onValueChange = {
               subtitleDelay = it
-              playerView?.setSubtitleDelay(it.toDouble())
+              activeSetSubtitleDelay(it.toDouble())
             })
           }
         }
@@ -619,6 +1176,7 @@ fun NativePlayerScreen(
       }) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
           availableStreams
+            .distinctBy(::addonStreamPlaybackIdentity)
             .take(16)
             .forEach { stream ->
               PlayerSourceCard(
@@ -628,11 +1186,30 @@ fun NativePlayerScreen(
                   activePanel = PlayerPanel.None
                   onSelectStream(stream, currentProgressPercent)
                 },
+                showDownload = downloadsEnabled && !session.isLive && stream.infoHash.isNullOrBlank() && !stream.url.isNullOrBlank(),
+                onDownload = { onDownloadStream(stream) },
               )
             }
           if (availableStreams.isEmpty()) {
             Text("No loaded sources yet.", color = Color.White.copy(alpha = 0.66f))
           }
+        }
+      }
+      PlayerPanel.Engine -> PlayerModalPanel(title = "Player Engine", onClose = { activePanel = PlayerPanel.None }, compact = true) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+          PlayerOptionRow("ExoPlayer", selected = activeEngine == ActivePlaybackEngine.Media3) {
+            switchEngine(ActivePlaybackEngine.Media3, "manual switch")
+            activePanel = PlayerPanel.None
+          }
+          PlayerOptionRow("mpv", selected = activeEngine == ActivePlaybackEngine.MPV) {
+            switchEngine(ActivePlaybackEngine.MPV, "manual switch")
+            activePanel = PlayerPanel.None
+          }
+          Text(
+            "Switching keeps your playback position. If a stream plays with no sound or a black screen, try the other engine.",
+            color = Color.White.copy(alpha = 0.58f),
+            style = MaterialTheme.typography.bodySmall,
+          )
         }
       }
       PlayerPanel.Speed -> PlayerModalPanel(title = "Speed", onClose = { activePanel = PlayerPanel.None }, compact = true) {
@@ -642,7 +1219,7 @@ fun NativePlayerScreen(
               selected = playbackSpeed == speed,
               onClick = {
                 playbackSpeed = speed
-                playerView?.setSpeed(speed.toDouble())
+                activeSetSpeed(speed.toDouble())
               },
               label = { Text(if (speed == 1f) "1x" else "${speed}x") },
             )
@@ -651,7 +1228,96 @@ fun NativePlayerScreen(
       }
       PlayerPanel.None -> Unit
     }
-    if (session.isLive && hasLoaded && !isLoading && error.isNullOrBlank()) {
+    AnimatedVisibility(
+      visible = session.isLive && !isLoading && !controlsLocked && showChannelSwipeCue && !showControls && activePanel == PlayerPanel.None && !showLiveChannels && !showFavouriteDrawer,
+      modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 22.dp).zIndex(18f),
+      enter = fadeIn(tween(220)) + slideInVertically(initialOffsetY = { it / 2 }, animationSpec = tween(280)),
+      exit = fadeOut(tween(180)) + slideOutVertically(targetOffsetY = { it / 3 }, animationSpec = tween(220)),
+    ) { LiveChannelSwipeCue() }
+
+    AnimatedVisibility(
+      visible = session.isLive && !isLoading && !controlsLocked && !showFavouriteDrawer,
+      modifier = Modifier.align(Alignment.CenterEnd).zIndex(19f),
+      enter = fadeIn(tween(180)) + slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(260)),
+      exit = fadeOut(tween(160)) + slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(220)),
+    ) {
+      Surface(
+        modifier = Modifier.width(36.dp).height(92.dp).clickable { showLiveChannels = false; showFavouriteDrawer = true },
+        color = Color(0xB3151820),
+        shape = RoundedCornerShape(topStart = 22.dp, bottomStart = 22.dp),
+      ) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Rounded.ChevronLeft, contentDescription = "Open favourites", tint = Color.White, modifier = Modifier.size(28.dp)) } }
+    }
+
+    AnimatedVisibility(
+      visible = session.isLive && showLiveChannels,
+      modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().zIndex(24f),
+      enter = fadeIn(tween(180)) + slideInVertically(initialOffsetY = { it }, animationSpec = tween(340)),
+      exit = fadeOut(tween(160)) + slideOutVertically(targetOffsetY = { it }, animationSpec = tween(260)),
+    ) {
+      LiveChannelTray(
+        channels = liveChannels,
+        currentChannelId = session.mediaId,
+        loading = liveChannelsLoading,
+        onSelect = { channel -> showLiveChannels = false; onSelectLiveChannel(channel) },
+      )
+    }
+
+    AnimatedVisibility(
+      visible = session.isLive && showFavouriteDrawer,
+      modifier = Modifier.align(Alignment.CenterEnd).fillMaxWidth(0.275f).fillMaxHeight().zIndex(26f),
+      enter = fadeIn(tween(180)) + slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(360)),
+      exit = fadeOut(tween(160)) + slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(280)),
+    ) {
+      LiveFavouriteDrawer(
+        favourites = favouriteChannels,
+        currentChannelId = session.mediaId,
+        cardView = favouriteDrawerCards,
+        onClose = { showFavouriteDrawer = false },
+        onSelect = { channel -> showFavouriteDrawer = false; onSelectLiveChannel(channel) },
+        onToggleCardView = onToggleFavouriteDrawerCards,
+        onClearAll = onClearFavourites,
+      )
+    }
+
+    AnimatedVisibility(
+      visible = session.isLive && channelSwitchLoading,
+      modifier = Modifier.fillMaxSize().zIndex(29f),
+      enter = fadeIn(tween(160)),
+      exit = fadeOut(tween(160)),
+    ) {
+      // The previous channel keeps decoding underneath (see ExoPlaybackView's background
+      // swap / mpv's loadfile replace) - this is a tint over it, not a solid cover, so it
+      // stays visible while the new one loads instead of cutting to black.
+      Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f)))
+    }
+
+    AnimatedVisibility(
+      visible = session.isLive && channelSwitchLoading,
+      modifier = Modifier.align(Alignment.Center).zIndex(30f),
+      enter = fadeIn(tween(160)),
+      exit = fadeOut(tween(160)),
+    ) {
+      Row(
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(22.dp))
+        Text(
+          if (slowLoadHintVisible) {
+            channelSwitchLoadingLabel?.let { "$it is available but is taking a while to load…" } ?: "This channel is available but is taking a while to load…"
+          } else {
+            channelSwitchLoadingLabel?.let { "Switching to $it" } ?: "Switching channel"
+          },
+          color = Color.White,
+          fontSize = 12.5.sp,
+          fontWeight = FontWeight.SemiBold,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+          style = MaterialTheme.typography.bodyMedium.copy(shadow = androidx.compose.ui.graphics.Shadow(Color.Black.copy(alpha = 0.8f), blurRadius = 12f)),
+        )
+      }
+    }
+    if (session.isLive && hasLoaded && !isLoading && error.isNullOrBlank() && !showLiveChannels && !showFavouriteDrawer) {
       Surface(
         modifier = Modifier.align(Alignment.BottomEnd).padding(end = 20.dp, bottom = 20.dp).zIndex(12f),
         color = Color(0xFFE11D48),
@@ -660,6 +1326,198 @@ fun NativePlayerScreen(
         Row(modifier = Modifier.padding(horizontal = 13.5.dp, vertical = 6.3.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
           Box(modifier = Modifier.size(6.3.dp).clip(CircleShape).background(Color.White))
           Text("LIVE", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.8.sp, letterSpacing = 0.9.sp)
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Invisible, muted background probe used while switching live channels. It prepares the
+ * newly-resolved stream on its own throwaway Media3 instance without ever touching the
+ * currently-visible player, so the channel already on screen keeps playing (video and
+ * audio) undisturbed until this confirms the new one actually decodes - only then does the
+ * caller swap the real player over to it. Always uses Media3 here regardless of the user's
+ * engine preference: it's cheap to spin up and tear down a second instance of, unlike a
+ * second native mpv context.
+ */
+@Composable
+private fun LiveChannelSwipeCue() {
+  val transition = rememberInfiniteTransition(label = "channel_swipe_cue")
+  val offset by transition.animateFloat(
+    initialValue = 3f,
+    targetValue = -5f,
+    animationSpec = infiniteRepeatable(tween(720), repeatMode = RepeatMode.Reverse),
+    label = "channel_swipe_cue_offset",
+  )
+  val shadow = androidx.compose.ui.graphics.Shadow(
+    color = Color.Black.copy(alpha = 0.78f), offset = Offset(0f, 2f), blurRadius = 14f,
+  )
+  Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
+    Text(
+      "Swipe up in the middle for all channels", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+      style = MaterialTheme.typography.bodyMedium.copy(shadow = shadow),
+    )
+    Icon(
+      Icons.Rounded.KeyboardArrowUp, contentDescription = null, tint = Color.White.copy(alpha = 0.92f),
+      modifier = Modifier.size(22.dp).graphicsLayer { translationY = offset; shadowElevation = 8f },
+    )
+  }
+}
+
+@Composable
+private fun LiveChannelTray(
+  channels: List<MediaItem>,
+  currentChannelId: String,
+  loading: Boolean,
+  onSelect: (MediaItem) -> Unit,
+) {
+  val currentIndex = channels.indexOfFirst { it.id == currentChannelId }.coerceAtLeast(0)
+  val listState = rememberLazyListState(initialFirstVisibleItemIndex = currentIndex)
+  LaunchedEffect(channels.size, currentChannelId) {
+    channels.indexOfFirst { it.id == currentChannelId }.takeIf { it >= 0 }?.let { listState.animateScrollToItem(it) }
+  }
+  Column(
+    modifier = Modifier.fillMaxWidth().background(
+      Brush.verticalGradient(
+        colorStops = arrayOf(0f to Color.Transparent, 0.28f to Color.Black.copy(alpha = 0.20f), 1f to Color.Black.copy(alpha = 0.58f)),
+      ),
+    ).padding(top = 18.dp, bottom = 18.dp),
+    verticalArrangement = Arrangement.spacedBy(8.dp),
+  ) {
+    Row(
+      modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Text(
+        if (loading) "Loading all channels…" else "All channels", color = Color.White,
+        fontWeight = FontWeight.Bold, fontSize = 14.sp,
+        style = MaterialTheme.typography.titleSmall.copy(
+          shadow = androidx.compose.ui.graphics.Shadow(Color.Black.copy(alpha = 0.8f), Offset(0f, 2f), 12f),
+        ),
+      )
+      Text("Swipe down to close", color = Color.White.copy(alpha = 0.72f), fontSize = 10.sp)
+    }
+    if (channels.isEmpty()) {
+      Box(modifier = Modifier.fillMaxWidth().height(92.dp), contentAlignment = Alignment.Center) {
+        if (loading) CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(26.dp))
+        else Text("No channels were returned by this add-on.", color = Color.White.copy(alpha = 0.78f), fontSize = 12.sp)
+      }
+    } else {
+      LazyRow(
+        state = listState,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+      ) {
+        items(channels, key = { "${it.sourceAddonId}-${it.sourceCatalogId}-${it.type}-${it.id}" }) { channel ->
+          val selected = channel.id == currentChannelId
+          Box(
+            modifier = Modifier.width(160.dp).height(90.dp).clip(RoundedCornerShape(10.dp))
+              .border(if (selected) 2.dp else 1.dp, if (selected) Color.White else Color.White.copy(alpha = 0.20f), RoundedCornerShape(10.dp))
+              .clickable { onSelect(channel) },
+          ) {
+            AsyncImage(model = channel.backdrop ?: channel.poster, contentDescription = channel.title, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Transparent, Color.Black.copy(alpha = 0.86f)))))
+            Text(
+              channel.title, modifier = Modifier.align(Alignment.BottomStart).padding(horizontal = 9.dp, vertical = 7.dp),
+              color = Color.White, fontSize = 11.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+              maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            if (selected) Text(
+              "NOW PLAYING", modifier = Modifier.align(Alignment.TopStart).padding(7.dp), color = Color.White,
+              fontSize = 7.5.sp, fontWeight = FontWeight.Black, letterSpacing = 0.7.sp,
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun LiveFavouriteDrawer(
+  favourites: List<MediaItem>,
+  currentChannelId: String,
+  cardView: Boolean,
+  onClose: () -> Unit,
+  onSelect: (MediaItem) -> Unit,
+  onToggleCardView: (Boolean) -> Unit = {},
+  onClearAll: () -> Unit = {},
+) {
+  var showClearConfirm by remember { mutableStateOf(false) }
+  if (showClearConfirm) {
+    AlertDialog(
+      onDismissRequest = { showClearConfirm = false },
+      icon = { Icon(Icons.Rounded.DeleteSweep, contentDescription = null) },
+      title = { Text("Clear all favourites?") },
+      text = { Text("This removes all ${favourites.size} channels from your Live TV favourites.") },
+      confirmButton = { Button(onClick = { showClearConfirm = false; onClearAll() }) { Text("Clear all") } },
+      dismissButton = { TextButton(onClick = { showClearConfirm = false }) { Text("Cancel") } },
+    )
+  }
+  Box(
+    modifier = Modifier.fillMaxSize().background(
+      Brush.horizontalGradient(
+        colorStops = arrayOf(
+          0f to Color.Transparent,
+          0.18f to Color(0xA613161D),
+          0.48f to Color(0xDD13161D),
+          1f to Color(0xF013161D),
+        ),
+      ),
+    ),
+  ) {
+    Column(modifier = Modifier.fillMaxSize().padding(start = 20.dp, end = 14.dp, top = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+      Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        IconButton(onClick = onClose) { Icon(Icons.Rounded.ChevronRight, contentDescription = "Close favourites", tint = Color.White) }
+        Column(modifier = Modifier.weight(1f)) {
+          Text("Favourites", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+          Text("${favourites.size} channels", color = Color.White.copy(alpha = 0.55f), fontSize = 10.sp)
+        }
+        IconButton(onClick = { onToggleCardView(!cardView) }, modifier = Modifier.size(32.dp)) {
+          Icon(
+            if (cardView) Icons.Rounded.ViewList else Icons.Rounded.GridView,
+            contentDescription = if (cardView) "Switch to text list" else "Switch to card view",
+            tint = Color.White.copy(alpha = 0.85f),
+            modifier = Modifier.size(18.dp),
+          )
+        }
+        IconButton(onClick = { showClearConfirm = true }, enabled = favourites.isNotEmpty(), modifier = Modifier.size(32.dp)) {
+          Icon(
+            Icons.Rounded.DeleteSweep, contentDescription = "Clear all favourites",
+            tint = Color.White.copy(alpha = if (favourites.isNotEmpty()) 0.85f else 0.3f),
+            modifier = Modifier.size(18.dp),
+          )
+        }
+      }
+      if (favourites.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+          Text("Favourite channels appear here.", color = Color.White.copy(alpha = 0.62f), fontSize = 12.sp, textAlign = TextAlign.Center)
+        }
+      } else {
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(if (cardView) 10.dp else 2.dp)) {
+          items(favourites, key = { "${it.type}-${it.id}" }) { channel ->
+            val selected = channel.id == currentChannelId
+            if (cardView) {
+              Column(
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(if (selected) Color.White.copy(alpha = 0.15f) else Color.White.copy(alpha = 0.06f)).clickable { onSelect(channel) }.padding(7.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
+              ) {
+                AsyncImage(model = channel.backdrop ?: channel.poster, contentDescription = channel.title, modifier = Modifier.fillMaxWidth().height(62.dp).clip(RoundedCornerShape(10.dp)), contentScale = ContentScale.Crop)
+                Text(channel.title, color = Color.White, fontSize = 11.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+              }
+            } else {
+              Row(
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(11.dp)).background(if (selected) Color.White.copy(alpha = 0.13f) else Color.Transparent).clickable { onSelect(channel) }.padding(horizontal = 10.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                Box(modifier = Modifier.size(5.dp).clip(CircleShape).background(if (selected) Color(0xFFE11D48) else Color.White.copy(alpha = 0.32f)))
+                Text(channel.title, color = Color.White.copy(alpha = if (selected) 1f else 0.82f), fontSize = 11.5.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal, maxLines = 1, overflow = TextOverflow.Ellipsis)
+              }
+            }
+          }
         }
       }
     }
@@ -756,24 +1614,33 @@ private fun PlayerPausedContent(session: PlayerSession) {
 }
 @Composable
 private fun PlayerCenterControls(isPaused: Boolean, onPauseToggle: () -> Unit, onSeek: (Double) -> Unit, showEpisodeNavigation: Boolean, onPreviousEpisode: () -> Unit, onNextEpisode: () -> Unit, showSeeking: Boolean = true) {
+  // Fixed button sizes and a fixed gap between them, centered in whatever space is
+  // available - a width-based padding/arrangement here (as this used to have) shrinks
+  // the available room on narrower screens and squashes the buttons together instead of
+  // just centering a smaller group, so this deliberately never scales with screen width.
   Row(
-    modifier = Modifier.fillMaxSize().padding(horizontal = 300.dp),
-    horizontalArrangement = Arrangement.SpaceEvenly,
+    modifier = Modifier.fillMaxSize(),
+    horizontalArrangement = Arrangement.Center,
     verticalAlignment = Alignment.CenterVertically,
   ) {
-    if (showSeeking) PlayerRoundAction(icon = Icons.Rounded.Replay10, onClick = { onSeek(-10.0) }) else Spacer(modifier = Modifier.size(74.dp))
-    Box(
-      modifier = Modifier
-        .size(90.dp)
-        .clip(CircleShape)
-        .background(Color.White.copy(alpha = 0.14f))
-        .border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape)
-        .clickable(onClick = onPauseToggle),
-      contentAlignment = Alignment.Center,
+    Row(
+      horizontalArrangement = Arrangement.spacedBy(48.dp),
+      verticalAlignment = Alignment.CenterVertically,
     ) {
-      Icon(if (isPaused) Icons.Rounded.PlayArrow else Icons.Rounded.Pause, contentDescription = null, tint = Color.White, modifier = Modifier.size(54.dp))
+      if (showSeeking) PlayerRoundAction(icon = Icons.Rounded.Replay10, onClick = { onSeek(-10.0) }) else Spacer(modifier = Modifier.size(74.dp))
+      Box(
+        modifier = Modifier
+          .size(90.dp)
+          .clip(CircleShape)
+          .background(Color.White.copy(alpha = 0.14f))
+          .border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape)
+          .clickable(onClick = onPauseToggle),
+        contentAlignment = Alignment.Center,
+      ) {
+        Icon(if (isPaused) Icons.Rounded.PlayArrow else Icons.Rounded.Pause, contentDescription = null, tint = Color.White, modifier = Modifier.size(54.dp))
+      }
+      if (showSeeking) PlayerRoundAction(icon = Icons.Rounded.Forward10, onClick = { onSeek(10.0) }) else Spacer(modifier = Modifier.size(74.dp))
     }
-    if (showSeeking) PlayerRoundAction(icon = Icons.Rounded.Forward10, onClick = { onSeek(10.0) }) else Spacer(modifier = Modifier.size(74.dp))
   }
 }
 
@@ -808,6 +1675,8 @@ private fun PlayerBottomControls(
   isLive: Boolean,
   onAudio: () -> Unit,
   onSources: () -> Unit,
+  onEngine: () -> Unit,
+  onLock: () -> Unit,
 ) {
   Column(
     modifier = Modifier
@@ -842,10 +1711,14 @@ private fun PlayerBottomControls(
         verticalAlignment = Alignment.CenterVertically,
       ) {
         PlayerDockButton("Zoom", Icons.Rounded.SettingsOverscan, onZoom)
-        PlayerDockButton("Speed", Icons.Rounded.SlowMotionVideo, onSpeed)
-        PlayerDockButton("Subs", Icons.Rounded.Subtitles, onSubtitles)
-        PlayerDockButton("Audio", Icons.Rounded.VolumeUp, onAudio)
+        if (!isLive) {
+          PlayerDockButton("Speed", Icons.Rounded.SlowMotionVideo, onSpeed)
+          PlayerDockButton("Subs", Icons.Rounded.Subtitles, onSubtitles)
+          PlayerDockButton("Audio", Icons.Rounded.VolumeUp, onAudio)
+        }
         PlayerDockButton("Sources", Icons.Rounded.GridView, onSources)
+        PlayerDockButton("Engine", Icons.Rounded.Tune, onEngine)
+        PlayerDockButton("Lock", Icons.Rounded.Lock, onLock)
       }
     }
   }
@@ -868,6 +1741,8 @@ private fun androidx.compose.foundation.layout.BoxScope.PlayerTopHeader(
   session: PlayerSession,
   onBack: () -> Unit,
   modifier: Modifier = Modifier,
+  isFavourite: Boolean = false,
+  onToggleFavourite: () -> Unit = {},
 ) {
   Row(
     modifier = modifier
@@ -892,13 +1767,41 @@ private fun androidx.compose.foundation.layout.BoxScope.PlayerTopHeader(
       val yearLabel = session.year?.toString().orEmpty()
       val titleLine = listOfNotNull(session.title, episodeContext(session), yearLabel.takeIf { it.isNotBlank() }).joinToString(" | ")
       Text(text = titleLine, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-      val detailLine = listOfNotNull(
-        session.qualityLabel?.takeIf { it.isNotBlank() },
-        session.sizeLabel?.takeIf { it.isNotBlank() },
-        session.sourceLabel?.takeIf { it.isNotBlank() },
-      ).joinToString(" | ")
-      if (detailLine.isNotBlank()) {
-        Text(text = detailLine, color = Color.White.copy(alpha = 0.72f), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+      if (session.isLive) {
+        Text(
+          text = if (session.isProxied) "Proxied stream" else "Direct stream",
+          color = (if (session.isProxied) Color(0xFF22C55E) else Color(0xFFCBD5E1)).copy(alpha = 0.86f),
+          fontSize = 10.sp,
+          fontWeight = FontWeight.SemiBold,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+      } else {
+        val detailLine = listOfNotNull(
+          session.qualityLabel?.takeIf { it.isNotBlank() },
+          session.sizeLabel?.takeIf { it.isNotBlank() },
+          session.sourceLabel?.takeIf { it.isNotBlank() },
+        ).joinToString(" | ")
+        if (detailLine.isNotBlank()) {
+          Text(text = detailLine, color = Color.White.copy(alpha = 0.72f), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+      }
+    }
+    if (session.isLive) {
+      Box(
+        modifier = Modifier
+          .size(44.dp)
+          .clip(CircleShape)
+          .background(Color.White.copy(alpha = 0.10f))
+          .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+          .clickable(onClick = onToggleFavourite),
+        contentAlignment = Alignment.Center,
+      ) {
+        Icon(
+          if (isFavourite) Icons.Rounded.Star else Icons.Rounded.StarBorder,
+          contentDescription = if (isFavourite) "Remove from favourites" else "Add to favourites",
+          tint = if (isFavourite) Color(0xFFFACC15) else Color.White,
+        )
       }
     }
   }
@@ -909,6 +1812,8 @@ private fun PlayerSourceCard(
   stream: AddonStream,
   active: Boolean,
   onClick: () -> Unit,
+  showDownload: Boolean = false,
+  onDownload: () -> Unit = {},
 ) {
   val header = listOfNotNull(stream.addonName.takeIf { it.isNotBlank() } ?: stream.addonId, stream.source?.takeIf { it.isNotBlank() }, stream.quality?.takeIf { it.isNotBlank() }).distinct().joinToString("  ")
   val metaLine = listOfNotNull(
@@ -930,7 +1835,14 @@ private fun PlayerSourceCard(
       .padding(horizontal = 18.dp, vertical = 16.dp),
     verticalArrangement = Arrangement.spacedBy(8.dp),
   ) {
-    Text(header, color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+      Text(header, color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+      if (showDownload) {
+        IconButton(onClick = onDownload, modifier = Modifier.size(28.dp)) {
+          Icon(Icons.Rounded.Download, contentDescription = "Download for offline playback", tint = Color.White.copy(alpha = 0.78f), modifier = Modifier.size(18.dp))
+        }
+      }
+    }
     if (metaLine.isNotBlank()) {
       Text(metaLine, color = Color.White.copy(alpha = 0.74f), style = MaterialTheme.typography.bodyMedium)
     }
@@ -1030,12 +1942,21 @@ private fun formatClock(seconds: Double): String {
   val secs = total % 60
   return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, secs) else "%d:%02d".format(minutes, secs)
 }
+private fun playerStreamIdentity(stream: AddonStream?): String =
+  stream?.let(::addonStreamPlaybackIdentity).orEmpty()
+
 private val playerHttpClient = OkHttpClient()
 
 private fun normalizeSubtitleLanguage(language: String?): String = when (language?.trim()?.lowercase()) {
   "eng", "english" -> "en"
   "spa", "spanish" -> "es"
+  "fra", "fre", "french" -> "fr"
+  "deu", "ger", "german" -> "de"
+  "ita", "italian" -> "it"
   "por", "portuguese", "pt-br", "pob" -> "pt"
+  "jpn", "japanese" -> "ja"
+  "kor", "korean" -> "ko"
+  "hin", "hindi" -> "hi"
   else -> language?.trim()?.lowercase().orEmpty().substringBefore('-')
 }
 
@@ -1162,7 +2083,5 @@ private suspend fun fetchSkipSegments(session: PlayerSession): List<SkipSegment>
 }
 private fun streamsRepresentSameSource(candidate: AddonStream, current: AddonStream?): Boolean {
   current ?: return false
-  if (!candidate.url.isNullOrBlank() && candidate.url == current.url) return true
-  if (!candidate.infoHash.isNullOrBlank() && candidate.infoHash == current.infoHash && candidate.fileIdx == current.fileIdx) return true
-  return candidate.addonId == current.addonId && candidate.name == current.name && candidate.title == current.title && candidate.filename == current.filename
+  return addonStreamPlaybackIdentity(candidate) == addonStreamPlaybackIdentity(current)
 }

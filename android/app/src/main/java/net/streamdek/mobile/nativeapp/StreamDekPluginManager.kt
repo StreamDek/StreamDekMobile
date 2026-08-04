@@ -32,6 +32,35 @@ data class PluginRepo(val url: String, val name: String, val version: String, va
 data class PluginProvider(val id: String, val repoUrl: String, val name: String, val types: List<String>, val enabled: Boolean, val code: String)
 data class PluginState(val enabled: Boolean = true, val repos: List<PluginRepo> = emptyList(), val providers: List<PluginProvider> = emptyList(), val updatedAt: Long = 0L)
 
+internal fun normalizePluginRepositoryUrl(raw: String): String {
+  var value = raw.trim()
+  if (!value.startsWith("http://", true) && !value.startsWith("https://", true)) value = "https://$value"
+  val uri = URI(value)
+  require(uri.scheme in setOf("http", "https") && !uri.host.isNullOrBlank()) { "Invalid repository URL." }
+  return value
+}
+
+internal fun pluginRepositoryUrlCandidates(url: String): List<String> {
+  val normalized = normalizePluginRepositoryUrl(url)
+  val uri = URI(normalized)
+  val lastSegment = uri.path.orEmpty().substringAfterLast('/')
+  val looksDirectoryLike = uri.path.orEmpty().endsWith('/') || !lastSegment.contains('.')
+  if (!looksDirectoryLike) return listOf(normalized)
+  val fallbackPath = uri.path.orEmpty().trimEnd('/') + "/manifest.json"
+  val fallback = URI(uri.scheme, uri.userInfo, uri.host, uri.port, fallbackPath, uri.query, uri.fragment).toString()
+  return listOf(normalized, fallback).distinct()
+}
+
+internal fun resolvePluginProviderUrl(repositoryUrl: String, filename: String): String {
+  val trimmed = filename.trim()
+  require(trimmed.isNotBlank()) { "Provider filename is missing." }
+  if (trimmed.startsWith("http://", true) || trimmed.startsWith("https://", true)) return trimmed
+  val manifest = URI(repositoryUrl)
+  val resolved = manifest.resolve(trimmed.trimStart('/'))
+  if (resolved.query != null || manifest.query == null) return resolved.toString()
+  return URI(resolved.scheme, resolved.userInfo, resolved.host, resolved.port, resolved.path, manifest.query, resolved.fragment).toString()
+}
+
 private val CHEERIO_COMPAT_SHIM = """
   function __sdIds(raw){try{return JSON.parse(raw||'[]')}catch(e){return []}}
   function __sdToken(id){return {__sd_node:Number(id)}}
@@ -93,6 +122,9 @@ private val CHEERIO_COMPAT_SHIM = """
 class StreamDekPluginManager(context: Context) {
   private val prefs = context.getSharedPreferences("streamdek_plugins", Context.MODE_PRIVATE)
   private val http = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
+  // Keyed by "${provider.id}:${provider.code.hashCode()}" so a provider refresh that changes
+  // its scraper source naturally invalidates the cached bytecode instead of reusing stale code.
+  private val providerBytecodeCache = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
   private var storageKey = "state"
   @Volatile var state = load(storageKey); private set
   var onStateChanged: ((String) -> Unit)? = null
@@ -100,14 +132,15 @@ class StreamDekPluginManager(context: Context) {
   suspend fun add(raw: String): Result<Unit> = withContext(Dispatchers.IO) { runCatching {
     val url = normalizeUrl(raw)
     require(state.repos.none { it.url.equals(url, true) }) { "Repository already installed." }
-    val loaded = fetchRepo(url, emptyMap())
+    val loaded = fetchRepoWithFallback(url, emptyMap())
+    require(state.repos.none { it.url.equals(loaded.first.url, true) }) { "Repository already installed." }
     state = state.copy(repos = state.repos + loaded.first, providers = state.providers + loaded.second)
     save()
   } }
 
   suspend fun refresh(url: String): Result<Unit> = withContext(Dispatchers.IO) { runCatching {
     val old = state.providers.filter { it.repoUrl == url }.associateBy { it.id }
-    val loaded = fetchRepo(url, old)
+    val loaded = fetchRepoWithFallback(url, old)
     val existingRepo = state.repos.firstOrNull { it.url == url }
     val refreshedProviders = loaded.second.map { provider ->
       if (existingRepo?.enabled == false) provider.copy(enabled = false) else provider
@@ -252,12 +285,19 @@ class StreamDekPluginManager(context: Context) {
           }
         }
       }
-      evaluate<Any?>(CHEERIO_COMPAT_SHIM + "\n" + "globalThis.window=globalThis;globalThis.self=globalThis;globalThis.global=globalThis;globalThis.console={log:function(){},error:function(){__sd_log([].slice.call(arguments).map(String).join(' '))}};globalThis.setTimeout=function(fn){fn();return 0};globalThis.clearTimeout=function(){};" +
+      val providerSource = CHEERIO_COMPAT_SHIM + "\n" + "globalThis.window=globalThis;globalThis.self=globalThis;globalThis.global=globalThis;globalThis.console={log:function(){},error:function(){__sd_log([].slice.call(arguments).map(String).join(' '))}};globalThis.setTimeout=function(fn){fn();return 0};globalThis.clearTimeout=function(){};" +
         "var __sd_types=new Proxy({isArrayBuffer:function(v){return v instanceof ArrayBuffer},isTypedArray:function(v){return ArrayBuffer.isView(v)}},{get:function(t,k){return t[k]||function(){return false}}});" +
         "function __sd_emitter(){this._events={}};__sd_emitter.prototype.on=function(n,f){(this._events[n]||(this._events[n]=[])).push(f);return this};__sd_emitter.prototype.once=function(n,f){var s=this;function w(){s.removeListener(n,w);return f.apply(s,arguments)}return this.on(n,w)};__sd_emitter.prototype.emit=function(n){var a=[].slice.call(arguments,1);(this._events[n]||[]).slice().forEach(function(f){f.apply(null,a)});return true};__sd_emitter.prototype.removeListener=function(n,f){this._events[n]=(this._events[n]||[]).filter(function(x){return x!==f});return this};" +
         "function require(n){if(n==='cheerio-without-node-native'||n==='cheerio')return __sd_cheerio;if(n==='crypto-js')return __sdCrypto;if(n==='util'||n==='util/types')return n==='util/types'?__sd_types:{types:__sd_types,inherits:function(c,p){c.prototype=Object.create(p.prototype);c.prototype.constructor=c},promisify:function(f){return function(){var a=[].slice.call(arguments);return new Promise(function(ok,no){a.push(function(e,v){e?no(e):ok(v)});f.apply(null,a)})}},inspect:function(v){try{return JSON.stringify(v)}catch(e){return String(v)}}};if(n==='events')return {EventEmitter:__sd_emitter};if(n==='querystring')return {escape:encodeURIComponent,unescape:decodeURIComponent,stringify:function(o){return Object.keys(o||{}).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(o[k])}).join('&')}};if(n==='url')return {URL:globalThis.URL,URLSearchParams:globalThis.URLSearchParams};throw new Error('Module not available in sandbox: '+n)};" +
         "globalThis.fetch=async function(u,o){o=o||{};var r=JSON.parse(__sd_fetch(String(u),String(o.method||\"GET\"),JSON.stringify(o.headers||{}),String(o.body||\"\")));return {ok:r.ok,status:r.status,url:r.url,headers:{get:function(n){return r.headers[String(n).toLowerCase()]||null}},text:function(){return Promise.resolve(r.body)},json:function(){return Promise.resolve(JSON.parse(r.body))}}};" +
-        "var module={exports:{}};var exports=module.exports;(function(){" + provider.code + "})();")
+        "var module={exports:{}};var exports=module.exports;(function(){" + provider.code + "})();"
+      // Compiling this ~5KB+ shim/boilerplate/provider-source blob to bytecode is the
+      // expensive part of each streams() call; cache it per provider so repeat requests
+      // (e.g. re-opening a detail page) only re-run the cheap per-call bytecode below.
+      val providerBytecode = providerBytecodeCache.getOrPut("${provider.id}:${provider.code.hashCode()}") {
+        compile(providerSource, "provider.js", false)
+      }
+      evaluate<Any?>(providerBytecode)
       val call = "(async function(){var f=module.exports.getStreams||globalThis.getStreams;if(typeof f!=='function')throw new Error('Plugin does not export getStreams');var r=await f(" +
         JSONObject.quote(id) + "," + JSONObject.quote(type) + "," + (season?.toString() ?: "undefined") + "," + (episode?.toString() ?: "undefined") +
         ");__capture_result(JSON.stringify(r||[]));})().catch(function(e){__capture_error(String(e&&e.stack||e));})"
@@ -292,14 +332,13 @@ class StreamDekPluginManager(context: Context) {
     val version = manifest.optString("version").trim()
     require(name.isNotEmpty() && version.isNotEmpty()) { "Invalid repository manifest." }
     val entries = manifest.optJSONArray("scrapers") ?: throw IllegalArgumentException("No providers in repository.")
-    val base = url.substringBefore('?').removeSuffix("/manifest.json").trimEnd('/')
     val providers = buildList {
       for (index in 0 until entries.length()) {
         val item = entries.optJSONObject(index) ?: continue
         val key = item.optString("id")
         val file = item.optString("filename")
         if (key.isBlank() || file.isBlank()) continue
-        val source = if (file.startsWith("http")) file else base + "/" + file.trimStart('/')
+        val source = resolvePluginProviderUrl(url, file)
         val providerId = url.lowercase() + ":" + key
         val types = item.optJSONArray("supportedTypes")
         add(PluginProvider(providerId, url, item.optString("name").ifBlank { key }, buildList {
@@ -312,19 +351,36 @@ class StreamDekPluginManager(context: Context) {
     return PluginRepo(url, name, version, manifest.optString("description").ifBlank { null }) to providers
   }
 
-  private fun text(url: String): String = http.newCall(Request.Builder().url(url).header("User-Agent", "StreamDek/1.0").build()).execute().use {
-    require(it.isSuccessful) { "Request failed: " + it.code }
-    it.body?.string() ?: throw IllegalStateException("Empty response.")
+  private fun fetchRepoWithFallback(url: String, previous: Map<String, PluginProvider>): Pair<PluginRepo, List<PluginProvider>> {
+    var lastFailure: Throwable? = null
+    for (candidate in pluginRepositoryUrlCandidates(url)) {
+      runCatching { fetchRepo(candidate, previous) }
+        .onSuccess { return it }
+        .onFailure { lastFailure = it }
+    }
+    throw lastFailure ?: IllegalArgumentException("Invalid repository URL.")
   }
 
-  private fun normalizeUrl(raw: String): String {
-    var value = raw.trim()
-    if (!value.startsWith("http")) value = "https://" + value
-    val uri = URI(value)
-    require(uri.scheme in setOf("http", "https") && !uri.host.isNullOrBlank()) { "Invalid repository URL." }
-    if (!uri.path.endsWith(".json")) value = value.trimEnd('/') + "/manifest.json"
-    return value
+  private fun text(url: String): String = try {
+    http.newCall(Request.Builder().url(url).header("User-Agent", "StreamDek/1.0").build()).execute().use {
+      require(it.isSuccessful) { "Request failed: " + it.code }
+      it.body?.string() ?: throw IllegalStateException("Empty response.")
+    }
+  } catch (e: java.io.IOException) {
+    val host = runCatching { URI(url).host }.getOrNull().orEmpty()
+    if (isLocalNetworkHost(host)) {
+      throw IllegalStateException(
+        "Could not reach $host from this phone. Localhost/private-network URLs are supported, " +
+          "but 127.0.0.1 always means \"this device\" — point it at your computer's LAN IP " +
+          "instead (e.g. 192.168.x.x), or run `adb reverse tcp:<port> tcp:<port>` and use " +
+          "127.0.0.1:<port> if the phone is connected over USB.",
+        e,
+      )
+    }
+    throw e
   }
+
+  private fun normalizeUrl(raw: String): String = normalizePluginRepositoryUrl(raw)
 
   private fun normalizeType(value: String) = if (value.lowercase() in setOf("series", "show")) "tv" else value.lowercase()
 

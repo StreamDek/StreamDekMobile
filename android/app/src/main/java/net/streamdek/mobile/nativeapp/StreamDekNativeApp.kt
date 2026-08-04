@@ -19,8 +19,11 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.scaleIn
@@ -43,6 +46,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
@@ -93,7 +97,10 @@ import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.CloudUpload
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Email
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
@@ -101,6 +108,7 @@ import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlayCircleOutline
@@ -141,6 +149,9 @@ import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Update
 import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.StarBorder
+import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.AlertDialog
@@ -178,6 +189,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -195,9 +207,14 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
@@ -299,7 +316,8 @@ private enum class AppAppearance { System, Dark, Light }
 private enum class AppThemePreset { Monochrome, Ocean, Emerald, Amber, Crimson, Rose, Violet, White }
 private enum class HeaderStyle { Classic, Modern }
 
-internal data class UserSubtitleSource(
+// Public because it appears in PlayerSession, which is public.
+data class UserSubtitleSource(
   val id: String,
   val name: String,
   val baseUrl: String,
@@ -310,8 +328,11 @@ internal object UserSubtitleSourceStore {
   private const val PREFS_NAME = "streamdek_subtitle_sources"
   private const val SOURCES_KEY = "sources"
 
-  fun load(context: Context): List<UserSubtitleSource> = runCatching {
-    val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(SOURCES_KEY, "[]").orEmpty()
+  private fun sourcesKey(ownerKey: String): String = "$SOURCES_KEY:$ownerKey"
+
+  fun load(context: Context, ownerKey: String): List<UserSubtitleSource> = runCatching {
+    val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(sourcesKey(ownerKey), null)
+      ?: context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(SOURCES_KEY, "[]").orEmpty()
     val array = JSONArray(raw)
     List(array.length()) { index ->
       val item = array.getJSONObject(index)
@@ -324,9 +345,9 @@ internal object UserSubtitleSourceStore {
     }
   }.getOrDefault(emptyList())
 
-  fun add(context: Context, rawUrl: String): Result<Unit> = runCatching {
+  fun add(context: Context, ownerKey: String, rawUrl: String): Result<Unit> = runCatching {
     val baseUrl = normalizeBaseUrl(rawUrl)
-    val sources = load(context)
+    val sources = load(context, ownerKey)
     require(sources.none { it.baseUrl.equals(baseUrl, true) }) { "That subtitle source is already added." }
     val host = Uri.parse(baseUrl).host.orEmpty().removePrefix("www.")
     val source = UserSubtitleSource(
@@ -334,24 +355,24 @@ internal object UserSubtitleSourceStore {
       name = host.ifBlank { "Custom subtitle source" },
       baseUrl = baseUrl,
     )
-    save(context, sources + source)
+    save(context, ownerKey, sources + source)
   }
 
-  fun setEnabled(context: Context, id: String, enabled: Boolean) {
-    save(context, load(context).map { if (it.id == id) it.copy(enabled = enabled) else it })
+  fun setEnabled(context: Context, ownerKey: String, id: String, enabled: Boolean) {
+    save(context, ownerKey, load(context, ownerKey).map { if (it.id == id) it.copy(enabled = enabled) else it })
   }
 
-  fun remove(context: Context, id: String) {
-    save(context, load(context).filterNot { it.id == id })
+  fun remove(context: Context, ownerKey: String, id: String) {
+    save(context, ownerKey, load(context, ownerKey).filterNot { it.id == id })
   }
 
-  private fun save(context: Context, sources: List<UserSubtitleSource>) {
+  private fun save(context: Context, ownerKey: String, sources: List<UserSubtitleSource>) {
     val array = JSONArray().apply {
       sources.forEach { source ->
         put(JSONObject().put("id", source.id).put("name", source.name).put("baseUrl", source.baseUrl).put("enabled", source.enabled))
       }
     }
-    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putString(SOURCES_KEY, array.toString()).apply()
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putString(sourcesKey(ownerKey), array.toString()).apply()
   }
 
   private fun normalizeBaseUrl(rawUrl: String): String {
@@ -363,7 +384,14 @@ internal object UserSubtitleSourceStore {
     return value
   }
 }
+private fun settingsOwnerKey(uiState: AppUiState): String {
+  val userId = uiState.session?.user?.uid
+  return if (userId == null) uiState.activeProfileId?.let { "guest:$it" } ?: GUEST_OWNER_KEY
+  else uiState.activeProfileId?.let { "$userId:$it" } ?: userId
+}
+
 private enum class MediaFilter { All, Movies, Series }
+private enum class BrowseSort { Original, TitleAscending, TitleDescending }
 private data class ResolvedPlayback(val url: String, val stream: AddonStream)
 private data class PendingStreamLoad(val detailId: String, val episode: EpisodeItem?)
 
@@ -372,7 +400,7 @@ private val PageTitleSize = 32.sp
 private val PageTitleLineHeight = 37.sp
 private val LocalStreamDekHazeState = compositionLocalOf<HazeState?> { null }
 
-private enum class SettingsRoute { GeneralPlayback, HomeAppearance, HomeLayout, DetailScreen, Streams, PlaybackAutomation, Subtitles, Addons, Plugins, Debrid, Trakt, ConnectTv, Ratings, Profiles, Account, AppUpdates }
+private enum class SettingsRoute { GeneralPlayback, HomeAppearance, HomeLayout, DetailScreen, Streams, PlaybackAutomation, Subtitles, Addons, M3uPlaylists, Downloads, Plugins, Debrid, Trakt, ConnectTv, Ratings, Profiles, Account, AppUpdates }
 private data class SearchYearOption(val label: String, val value: String?)
 private data class SearchSelectionOption(val label: String, val selected: Boolean, val onSelect: () -> Unit)
 
@@ -400,14 +428,23 @@ private data class AppUiState(
   val allHomeSections: List<MediaSection> = emptyList(),
   val homeSections: List<MediaSection> = emptyList(),
   val homeHeroTitleLogos: Map<String, String> = emptyMap(),
+  val addonCatalogRatings: Map<String, Double> = emptyMap(),
   val searchLoading: Boolean = false,
   val searchResults: List<MediaItem> = emptyList(),
   val searchResultQuery: String = "",
   val localContinueWatching: List<MediaItem> = emptyList(),
   val localResumeEntries: List<PlaybackMemoryEntry> = emptyList(),
+  // Browse navigation lives in the view model so it survives the player screen
+  // replacing the main scene — otherwise backing out of a detail page opened from
+  // a browse row would fall through to Home.
+  val browseRow: HomeRow? = null,
+  val browseLoadedItems: List<MediaItem> = emptyList(),
+  val browseReturnItemId: String? = null,
+  val networkBrowseItem: MediaItem? = null,
   val detailLoading: Boolean = false,
   val detail: MediaDetail? = null,
   val detailIsLive: Boolean = false,
+  val detailFallbackItem: MediaItem? = null,
   val personLoading: Boolean = false,
   val selectedPerson: PersonDetail? = null,
   val seasonLoading: Boolean = false,
@@ -426,6 +463,15 @@ private data class AppUiState(
   val activeProfileId: String? = null,
   val addonsLoading: Boolean = false,
   val addons: List<InstalledAddon> = emptyList(),
+  val m3uLoading: Boolean = false,
+  val m3uProgress: Float? = null,
+  val m3uStatusMessage: String? = null,
+  val m3uErrorMessage: String? = null,
+  val m3uSources: List<M3uPlaylistSource> = emptyList(),
+  val m3uChannels: List<MediaItem> = emptyList(),
+  val m3uVodItems: List<MediaItem> = emptyList(),
+  val downloadsEnabled: Boolean = false,
+  val downloads: List<DownloadEntry> = emptyList(),
   val debridLoading: Boolean = false,
   val debridAccounts: List<DebridAccount> = emptyList(),
   val traktLoading: Boolean = false,
@@ -435,21 +481,33 @@ private data class AppUiState(
   val traktRecommendations: List<TraktItem> = emptyList(),
   val traktTrending: List<TraktItem> = emptyList(),
   val mergedWatchlist: List<MediaItem> = emptyList(),
+  val favouriteChannels: List<MediaItem> = emptyList(),
+  val playerLiveChannels: List<MediaItem> = emptyList(),
+  val playerLiveChannelsLoading: Boolean = false,
   val pendingDeviceCode: DeviceCodeInfo? = null,
   val pinPromptProfileId: String? = null,
   val pinPromptProfileName: String? = null,
   val playerSession: PlayerSession? = null,
   val playerLaunching: Boolean = false,
   val playerLaunchingLabel: String? = null,
+  val liveChannelSwitching: Boolean = false,
+  val liveChannelSwitchingLabel: String? = null,
+  // Owner key of a guest identity with local data (watchlist/favourites/add-ons) found
+  // right before a successful registration - non-null while the merge-into-account prompt
+  // should be offered.
+  val pendingGuestMerge: String? = null,
   val returnToDetailAfterPlayer: Boolean = false,
   val playerReturnEpisodeId: String? = null,
   val showProfilePicker: Boolean = false,
   val appAppearance: AppAppearance = AppAppearance.System,
+  val appLanguage: String = "en",
   val themePreset: AppThemePreset = AppThemePreset.Monochrome,
   val headerStyle: HeaderStyle = HeaderStyle.Classic,
   val pictureInPictureEnabled: Boolean = false,
   val decoderMode: String = "HW+",
   val renderSurface: String = "Standard",
+  val playerEngine: String = "Auto",
+  val preferredAudioLanguage: String = "en",
   val detailPageStyle: DetailPageStyle = DetailPageStyle.Classic,
   val seasonTabStyle: SeasonTabStyle = SeasonTabStyle.Regular,
   val showNavLabels: Boolean = true,
@@ -460,8 +518,8 @@ private data class AppUiState(
   val heroTrailerResolution: Int = 720,
   val showHeroSynopsis: Boolean = true,
   val continueWatchingStyle: ContinueWatchingStyle = ContinueWatchingStyle.Glass,
-  val includeLiveInContinueWatching: Boolean = false,
   val liveLandscapeCards: Boolean = true,
+  val liveFavouriteDrawerCards: Boolean = false,
   val rememberLastSource: Boolean = true,
   val syncOnCellular: Boolean = false,
   val syncRefreshing: Boolean = false,
@@ -487,6 +545,7 @@ private data class AppUiState(
   val homeCatalogRows: List<HomeCatalogRow> = emptyList(),
   val fusionBadgesEnabled: Boolean = true,
   val showSizeBadges: Boolean = true,
+  val showAddonTmdbRatings: Boolean = false,
   val preferredQuality: String = "Auto",
   val maxFileSizeGb: Int = 0,
   val badgePosition: String = "Bottom",
@@ -549,6 +608,7 @@ private data class FusionBadgeSourceState(
 
 private const val DEFAULT_FUSION_BADGE_URL = "https://pastebin.com/raw/5xiu5fLL"
 private const val MAX_FUSION_BADGE_URLS = 3
+private fun Int.formattedItemCount(): String = String.format("%,d", this)
 private const val LANGUAGE_BADGE_GROUP_ID = "gl"
 private val DEFAULT_RATING_PROVIDER_ORDER = listOf("imdb", "tmdb", "tomatoes", "metacritic", "trakt", "letterboxd", "audience")
 private val DEFAULT_RATING_PROVIDER_IDS = DEFAULT_RATING_PROVIDER_ORDER.toSet()
@@ -611,7 +671,18 @@ private fun rankedStreams(streams: List<AddonStream>, hasDebrid: Boolean, prefer
         .thenBy { it.title ?: it.name ?: it.filename ?: "" },
     )
 
+private fun streamIdentity(stream: AddonStream): String =
+  listOf(stream.addonId, stream.url.orEmpty(), stream.infoHash.orEmpty(), stream.name.orEmpty(), stream.title.orEmpty()).joinToString("|")
+
 private val liveMediaTypes = setOf("sport", "sports", "channel", "live", "iptv", "events")
+
+/** Stable id for a Media3 download derived from the stream's URL, so re-downloading the
+ * same source resumes/reuses the same entry instead of creating a duplicate. */
+private fun downloadIdFor(stream: AddonStream): String = "dl:" + (stream.url ?: "").hashCode().toUInt().toString(16)
+
+// Manifest types that mean an add-on serves live TV. Per the Stremio protocol "tv"
+// is live channels; series add-ons declare "series".
+private val liveAddonTypes = setOf("tv", "channel", "live", "iptv", "sport", "sports", "events")
 
 // In the Stremio addon protocol, catalog type "tv" means Live TV channels
 // (series catalogs use type "series"). Some non-standard addons use "tv" for
@@ -634,8 +705,21 @@ private fun MediaItem.isLiveCatalogItem(): Boolean {
   val isLiveTvChannel = sourceCatalogType == "tv" && !looksLikeSeriesDatabaseId(id)
   return sourceCatalogType in liveMediaTypes ||
     isLiveTvChannel ||
-    directStreamUrl != null ||
+    (directStreamUrl != null && sourceCatalogType !in setOf("movie", "series", "vod")) ||
     listOf("live", "channel", "sport", "ultra max tv", "iptv").any { it in catalogText }
+}
+
+// Addons are installed dynamically by manifest URL, so there is no vendor flag
+// declaring "this addon proxies its streams" — instead we infer it: either the
+// stream URL resolves back to the addon's own host (rather than a third-party
+// origin/CDN), or the addon supplies custom request headers (Stremio
+// behaviorHints.proxyHeaders) needed to reach the real origin through it.
+private fun AddonStream.isLikelyProxied(addon: InstalledAddon?): Boolean {
+  val streamHost = url?.let { runCatching { java.net.URI(it).host }.getOrNull() }?.lowercase()
+  val addonHost = listOfNotNull(addon?.transportUrl, addon?.baseUrl, addon?.url)
+    .firstNotNullOfOrNull { runCatching { java.net.URI(it).host }.getOrNull() }
+    ?.lowercase()
+  return requestHeaders.isNotEmpty() || (streamHost != null && addonHost != null && streamHost == addonHost)
 }
 
 private fun streamMatchesSportsAddon(stream: AddonStream): Boolean {
@@ -662,6 +746,55 @@ private fun MediaDetail.withCatalogFallback(item: MediaItem?): MediaDetail {
   )
 }
 
+private fun LocalAddonMeta.seasonSummaries(): List<SeasonSummary> = episodes
+  .groupBy(EpisodeItem::seasonNumber)
+  .toSortedMap()
+  .map { (seasonNumber, seasonEpisodes) ->
+    SeasonSummary(
+      seasonNumber = seasonNumber,
+      name = "Season $seasonNumber",
+      episodeCount = seasonEpisodes.size,
+      poster = poster,
+    )
+  }
+
+private fun MediaDetail.withLocalAddonMeta(meta: LocalAddonMeta): MediaDetail {
+  val bridgeSeasons = meta.seasonSummaries()
+  return copy(
+    type = if (meta.episodes.isNotEmpty()) "tv" else type,
+    title = meta.title.ifBlank { title },
+    year = year ?: meta.year,
+    releaseDate = releaseDate ?: meta.releaseDate,
+    description = meta.description.ifBlank { description },
+    poster = poster ?: meta.poster,
+    backdrop = backdrop ?: meta.backdrop ?: meta.poster,
+    genres = genres.ifEmpty { meta.genres },
+    runtimeMinutes = runtimeMinutes ?: meta.runtimeMinutes,
+    seasonsCount = if (bridgeSeasons.isNotEmpty()) bridgeSeasons.size else seasonsCount,
+    imdbId = imdbId ?: meta.imdbId,
+    seasons = if (bridgeSeasons.isNotEmpty()) bridgeSeasons else seasons,
+    cast = cast.ifEmpty { meta.cast },
+  )
+}
+
+private fun LocalAddonMeta.toFallbackDetail(item: MediaItem): MediaDetail =
+  item.toFallbackDetail().copy(
+    id = id,
+    type = if (episodes.isNotEmpty()) "tv" else item.type,
+    title = title.ifBlank { item.title },
+    year = year ?: item.year,
+    releaseDate = releaseDate,
+    description = description.ifBlank { item.description.ifBlank { "No synopsis available." } },
+    poster = poster ?: item.poster,
+    backdrop = backdrop ?: item.backdrop ?: poster,
+    genres = genres.ifEmpty { item.genres },
+    runtimeMinutes = runtimeMinutes,
+    seasonsCount = seasonSummaries().size.takeIf { it > 0 },
+    imdbId = imdbId,
+    seasons = seasonSummaries(),
+    cast = cast,
+  )
+
 private fun MediaItem.toFallbackDetail(): MediaDetail =
   MediaDetail(
     id = id,
@@ -671,7 +804,7 @@ private fun MediaItem.toFallbackDetail(): MediaDetail =
     tagline = null,
     year = year,
     releaseDate = null,
-    description = description.ifBlank { "No synopsis available." },
+    description = if (isLiveCatalogItem()) description else description.ifBlank { "No synopsis available." },
     poster = poster,
     backdrop = backdrop,
     trailerUrl = null,
@@ -735,39 +868,77 @@ private class AuthEntryStore(context: Context) {
 }
 
 private class AppSettingsStore(context: Context) {
-  private val prefs = context.getSharedPreferences("streamdek_native_app_settings", Context.MODE_PRIVATE)
+  private val prefs = context.getSharedPreferences(APP_SETTINGS_PREFERENCES, Context.MODE_PRIVATE)
+  private val appContext = context.applicationContext
+  private var profilePrefs = prefs
+  private val profileSettingKeys = setOf(
+    "detail_page_style", "season_tab_style", "show_streams_list", "hero_trailer_autoplay", "hero_trailer_resolution",
+    "show_hero_synopsis", "continue_watching_style", "live_landscape_cards", "live_favourite_drawer_cards",
+    "remember_last_source", "skip_intro_enabled", "skip_segments_enabled", "skip_recap_enabled", "skip_ending_enabled",
+    "auto_play_next_episode", "prefer_binge_group", "auto_load_subtitles", "blur_unwatched_episodes",
+    "next_episode_threshold_mode", "next_episode_threshold_percent", "next_episode_threshold_minutes",
+    "ratings_enabled", "external_ratings_enabled", "enabled_rating_providers", "vivid_ambient", "ambient_tint_percent",
+    "default_app_catalogs_enabled", "home_catalog_rows", "fusion_badges", "show_size_badges", "show_addon_tmdb_ratings",
+    "preferred_quality", "max_file_size_gb", "badge_position", "fusion_badge_urls", "active_fusion_badge_url",
+  )
+
+  fun selectProfileStorage(ownerKey: String) {
+    val safeOwner = ownerKey.ifBlank { GUEST_OWNER_KEY }
+    profilePrefs = appContext.getSharedPreferences(
+      "streamdek_native_profile_settings_" + safeOwner.hashCode().toUInt().toString(16),
+      Context.MODE_PRIVATE,
+    )
+    if (profilePrefs.all.isEmpty()) {
+      val editor = profilePrefs.edit()
+      profileSettingKeys.forEach { key ->
+        when (val value = prefs.all[key]) {
+          is Boolean -> editor.putBoolean(key, value)
+          is Int -> editor.putInt(key, value)
+          is Long -> editor.putLong(key, value)
+          is Float -> editor.putFloat(key, value)
+          is String -> editor.putString(key, value)
+          is Set<*> -> @Suppress("UNCHECKED_CAST") editor.putStringSet(key, value as Set<String>)
+        }
+      }
+      editor.apply()
+    }
+  }
 
   fun applyTo(state: AppUiState): AppUiState = state.copy(
     appAppearance = runCatching { AppAppearance.valueOf(prefs.getString("app_appearance", AppAppearance.System.name) ?: AppAppearance.System.name) }.getOrDefault(AppAppearance.System),
+    appLanguage = normalizeAppLanguage(prefs.getString(APP_LANGUAGE_PREFERENCE, "en")),
     themePreset = runCatching { AppThemePreset.valueOf(prefs.getString("theme_preset", AppThemePreset.Monochrome.name) ?: AppThemePreset.Monochrome.name) }.getOrDefault(AppThemePreset.Monochrome),
     headerStyle = runCatching { HeaderStyle.valueOf(prefs.getString("header_style", HeaderStyle.Classic.name) ?: HeaderStyle.Classic.name) }.getOrDefault(HeaderStyle.Classic),
     pictureInPictureEnabled = prefs.getBoolean("pip_enabled", false),
     decoderMode = normalizeDecoderModeSetting(prefs.getString("decoder_mode", "HW+") ?: "HW+"),
     renderSurface = normalizeRenderSurfaceSetting(prefs.getString("render_surface", "Standard") ?: "Standard"),
-    detailPageStyle = runCatching { DetailPageStyle.valueOf(prefs.getString("detail_page_style", DetailPageStyle.Classic.name) ?: DetailPageStyle.Classic.name) }.getOrDefault(DetailPageStyle.Classic),
-    seasonTabStyle = runCatching { SeasonTabStyle.valueOf(prefs.getString("season_tab_style", SeasonTabStyle.Regular.name) ?: SeasonTabStyle.Regular.name) }.getOrDefault(SeasonTabStyle.Regular),
+    playerEngine = normalizePlayerEngineSetting(prefs.getString("player_engine", "Auto") ?: "Auto"),
+    preferredAudioLanguage = normalizePreferredAudioLanguage(prefs.getString("preferred_audio_language", "en")),
+    detailPageStyle = runCatching { DetailPageStyle.valueOf(profilePrefs.getString("detail_page_style", DetailPageStyle.Classic.name) ?: DetailPageStyle.Classic.name) }.getOrDefault(DetailPageStyle.Classic),
+    seasonTabStyle = runCatching { SeasonTabStyle.valueOf(profilePrefs.getString("season_tab_style", SeasonTabStyle.Regular.name) ?: SeasonTabStyle.Regular.name) }.getOrDefault(SeasonTabStyle.Regular),
     showNavLabels = prefs.getBoolean("show_nav_labels", true),
     collapsibleNavigationEnabled = prefs.getBoolean("collapsible_navigation_enabled", false),
+    downloadsEnabled = prefs.getBoolean("downloads_enabled", false),
     navigationAutoCollapseSeconds = prefs.getInt("navigation_auto_collapse_seconds", 5).coerceIn(2, 15),
-    showStreamsList = prefs.getBoolean("show_streams_list", true),
-    heroTrailerAutoplay = prefs.getBoolean("hero_trailer_autoplay", true),
-    heroTrailerResolution = prefs.getInt("hero_trailer_resolution", 720).coerceIn(360, 1080),
-    showHeroSynopsis = prefs.getBoolean("show_hero_synopsis", true),
-    continueWatchingStyle = runCatching { ContinueWatchingStyle.valueOf(prefs.getString("continue_watching_style", ContinueWatchingStyle.Glass.name) ?: ContinueWatchingStyle.Glass.name) }.getOrDefault(ContinueWatchingStyle.Glass),
-    includeLiveInContinueWatching = prefs.getBoolean("include_live_continue_watching", false),
-    liveLandscapeCards = prefs.getBoolean("live_landscape_cards", true),
-    rememberLastSource = prefs.getBoolean("remember_last_source", true),
+    showStreamsList = profilePrefs.getBoolean("show_streams_list", true),
+    heroTrailerAutoplay = profilePrefs.getBoolean("hero_trailer_autoplay", true),
+    heroTrailerResolution = profilePrefs.getInt("hero_trailer_resolution", 720).coerceIn(360, 2160),
+    showHeroSynopsis = profilePrefs.getBoolean("show_hero_synopsis", true),
+    continueWatchingStyle = runCatching { ContinueWatchingStyle.valueOf(profilePrefs.getString("continue_watching_style", ContinueWatchingStyle.Glass.name) ?: ContinueWatchingStyle.Glass.name) }.getOrDefault(ContinueWatchingStyle.Glass),
+    liveLandscapeCards = profilePrefs.getBoolean("live_landscape_cards", true),
+    liveFavouriteDrawerCards = profilePrefs.getBoolean("live_favourite_drawer_cards", false),
+    rememberLastSource = profilePrefs.getBoolean("remember_last_source", true),
     syncOnCellular = prefs.getBoolean("sync_on_cellular", false),
-    skipIntroEnabled = prefs.getBoolean("skip_intro_enabled", prefs.getBoolean("skip_segments_enabled", true)),
-    skipRecapEnabled = prefs.getBoolean("skip_recap_enabled", true),
-    skipEndingEnabled = prefs.getBoolean("skip_ending_enabled", true),
-    autoPlayNextEpisode = prefs.getBoolean("auto_play_next_episode", true),
-    preferBingeGroup = prefs.getBoolean("prefer_binge_group", true),
-    autoLoadSubtitles = prefs.getBoolean("auto_load_subtitles", true),
-    blurUnwatchedEpisodes = prefs.getBoolean("blur_unwatched_episodes", true),
-    nextEpisodeThresholdMode = prefs.getString("next_episode_threshold_mode", "minutes") ?: "minutes",
-    nextEpisodeThresholdPercent = prefs.getInt("next_episode_threshold_percent", 95).coerceIn(50, 99),
-    nextEpisodeThresholdMinutes = prefs.getInt("next_episode_threshold_minutes", 2).coerceIn(1, 15),
+    skipIntroEnabled = profilePrefs.getBoolean("skip_intro_enabled", profilePrefs.getBoolean("skip_segments_enabled", true)),
+    skipRecapEnabled = profilePrefs.getBoolean("skip_recap_enabled", true),
+    skipEndingEnabled = profilePrefs.getBoolean("skip_ending_enabled", true),
+    autoPlayNextEpisode = profilePrefs.getBoolean("auto_play_next_episode", true),
+    preferBingeGroup = profilePrefs.getBoolean("prefer_binge_group", true),
+    autoLoadSubtitles = profilePrefs.getBoolean("auto_load_subtitles", true),
+    blurUnwatchedEpisodes = profilePrefs.getBoolean("blur_unwatched_episodes", true),
+    nextEpisodeThresholdMode = profilePrefs.getString("next_episode_threshold_mode", "minutes") ?: "minutes",
+    nextEpisodeThresholdPercent = profilePrefs.getInt("next_episode_threshold_percent", 95).coerceIn(50, 99),
+    nextEpisodeThresholdMinutes = profilePrefs.getInt("next_episode_threshold_minutes", 2).coerceIn(1, 15),
     torrentServerSettings = TorrentServerSettings(
       enabled = prefs.getBoolean("torrent_enabled", true),
       streamingMode = prefs.getString("torrent_streaming_mode", "server") ?: "server",
@@ -776,55 +947,60 @@ private class AppSettingsStore(context: Context) {
       port = prefs.getInt("torrent_port", 11100),
       runAsForegroundService = prefs.getBoolean("torrent_run_foreground", false),
     ),
-    ratingsEnabled = prefs.getBoolean("ratings_enabled", true),
-    externalRatingsEnabled = prefs.getBoolean("external_ratings_enabled", true),
-    enabledRatingProviders = parseRatingProviderIds(prefs.getString("enabled_rating_providers", null)),
+    ratingsEnabled = profilePrefs.getBoolean("ratings_enabled", true),
+    externalRatingsEnabled = profilePrefs.getBoolean("external_ratings_enabled", true),
+    enabledRatingProviders = parseRatingProviderIds(profilePrefs.getString("enabled_rating_providers", null)),
     mdblistApiKey = prefs.getString("mdblist_api_key", "") ?: "",
-    vividAmbient = prefs.getBoolean("vivid_ambient", true),
-    ambientTintPercent = prefs.getInt("ambient_tint_percent", 100).coerceIn(20, 100),
-    defaultAppCatalogsEnabled = prefs.getBoolean("default_app_catalogs_enabled", true),
-    homeCatalogRows = parseHomeCatalogRows(prefs.getString("home_catalog_rows", null)),
-    fusionBadgesEnabled = prefs.getBoolean("fusion_badges", true),
-    showSizeBadges = prefs.getBoolean("show_size_badges", true),
-    preferredQuality = prefs.getString("preferred_quality", "Auto") ?: "Auto",
-    maxFileSizeGb = prefs.getInt("max_file_size_gb", 0),
-    badgePosition = prefs.getString("badge_position", "Bottom") ?: "Bottom",
-    fusionBadgeUrls = parseFusionBadgeUrls(prefs.getString("fusion_badge_urls", null)),
-    activeFusionBadgeUrl = prefs.getString("active_fusion_badge_url", null),
+    vividAmbient = profilePrefs.getBoolean("vivid_ambient", true),
+    ambientTintPercent = profilePrefs.getInt("ambient_tint_percent", 100).coerceIn(20, 100),
+    defaultAppCatalogsEnabled = profilePrefs.getBoolean("default_app_catalogs_enabled", true),
+    homeCatalogRows = parseHomeCatalogRows(profilePrefs.getString("home_catalog_rows", null)),
+    fusionBadgesEnabled = profilePrefs.getBoolean("fusion_badges", true),
+    showSizeBadges = profilePrefs.getBoolean("show_size_badges", true),
+    showAddonTmdbRatings = profilePrefs.getBoolean("show_addon_tmdb_ratings", false),
+    preferredQuality = profilePrefs.getString("preferred_quality", "Auto") ?: "Auto",
+    maxFileSizeGb = profilePrefs.getInt("max_file_size_gb", 0),
+    badgePosition = profilePrefs.getString("badge_position", "Bottom") ?: "Bottom",
+    fusionBadgeUrls = parseFusionBadgeUrls(profilePrefs.getString("fusion_badge_urls", null)),
+    activeFusionBadgeUrl = profilePrefs.getString("active_fusion_badge_url", null),
     autoUpdateChecksEnabled = prefs.getBoolean("auto_update_checks", true),
   )
 
   fun saveAutoUpdateChecks(value: Boolean) { prefs.edit().putBoolean("auto_update_checks", value).apply() }
   fun saveAppAppearance(value: AppAppearance) { prefs.edit().putString("app_appearance", value.name).apply() }
+  fun saveAppLanguage(value: String) { prefs.edit().putString(APP_LANGUAGE_PREFERENCE, normalizeAppLanguage(value)).apply() }
   fun saveThemePreset(value: AppThemePreset) { prefs.edit().putString("theme_preset", value.name).apply() }
   fun saveHeaderStyle(value: HeaderStyle) { prefs.edit().putString("header_style", value.name).apply() }
   fun savePictureInPictureEnabled(value: Boolean) { prefs.edit().putBoolean("pip_enabled", value).apply() }
   fun saveDecoderMode(value: String) { prefs.edit().putString("decoder_mode", normalizeDecoderModeSetting(value)).apply() }
   fun saveRenderSurface(value: String) { prefs.edit().putString("render_surface", normalizeRenderSurfaceSetting(value)).apply() }
-  fun saveDetailPageStyle(value: DetailPageStyle) { prefs.edit().putString("detail_page_style", value.name).apply() }
-  fun saveSeasonTabStyle(value: SeasonTabStyle) { prefs.edit().putString("season_tab_style", value.name).apply() }
+  fun savePlayerEngine(value: String) { prefs.edit().putString("player_engine", normalizePlayerEngineSetting(value)).apply() }
+  fun savePreferredAudioLanguage(value: String) { prefs.edit().putString("preferred_audio_language", normalizePreferredAudioLanguage(value)).apply() }
+  fun saveDetailPageStyle(value: DetailPageStyle) { profilePrefs.edit().putString("detail_page_style", value.name).apply() }
+  fun saveSeasonTabStyle(value: SeasonTabStyle) { profilePrefs.edit().putString("season_tab_style", value.name).apply() }
   fun saveShowNavLabels(value: Boolean) { prefs.edit().putBoolean("show_nav_labels", value).apply() }
   fun saveCollapsibleNavigationEnabled(value: Boolean) { prefs.edit().putBoolean("collapsible_navigation_enabled", value).apply() }
+  fun saveDownloadsEnabled(value: Boolean) { prefs.edit().putBoolean("downloads_enabled", value).apply() }
   fun saveNavigationAutoCollapseSeconds(value: Int) { prefs.edit().putInt("navigation_auto_collapse_seconds", value.coerceIn(2, 15)).apply() }
-  fun saveShowStreamsList(value: Boolean) { prefs.edit().putBoolean("show_streams_list", value).apply() }
-  fun saveHeroTrailerAutoplay(value: Boolean) { prefs.edit().putBoolean("hero_trailer_autoplay", value).apply() }
-  fun saveHeroTrailerResolution(value: Int) { prefs.edit().putInt("hero_trailer_resolution", value.coerceIn(360, 1080)).apply() }
-  fun saveShowHeroSynopsis(value: Boolean) { prefs.edit().putBoolean("show_hero_synopsis", value).apply() }
-  fun saveContinueWatchingStyle(value: ContinueWatchingStyle) { prefs.edit().putString("continue_watching_style", value.name).apply() }
-  fun saveIncludeLiveInContinueWatching(value: Boolean) { prefs.edit().putBoolean("include_live_continue_watching", value).apply() }
-  fun saveLiveLandscapeCards(value: Boolean) { prefs.edit().putBoolean("live_landscape_cards", value).apply() }
-  fun saveRememberLastSource(value: Boolean) { prefs.edit().putBoolean("remember_last_source", value).apply() }
+  fun saveShowStreamsList(value: Boolean) { profilePrefs.edit().putBoolean("show_streams_list", value).apply() }
+  fun saveHeroTrailerAutoplay(value: Boolean) { profilePrefs.edit().putBoolean("hero_trailer_autoplay", value).apply() }
+  fun saveHeroTrailerResolution(value: Int) { profilePrefs.edit().putInt("hero_trailer_resolution", value.coerceIn(360, 2160)).apply() }
+  fun saveShowHeroSynopsis(value: Boolean) { profilePrefs.edit().putBoolean("show_hero_synopsis", value).apply() }
+  fun saveContinueWatchingStyle(value: ContinueWatchingStyle) { profilePrefs.edit().putString("continue_watching_style", value.name).apply() }
+  fun saveLiveLandscapeCards(value: Boolean) { profilePrefs.edit().putBoolean("live_landscape_cards", value).apply() }
+  fun saveLiveFavouriteDrawerCards(value: Boolean) { profilePrefs.edit().putBoolean("live_favourite_drawer_cards", value).apply() }
+  fun saveRememberLastSource(value: Boolean) { profilePrefs.edit().putBoolean("remember_last_source", value).apply() }
   fun saveSyncOnCellular(value: Boolean) { prefs.edit().putBoolean("sync_on_cellular", value).apply() }
-  fun saveSkipIntroEnabled(value: Boolean) { prefs.edit().putBoolean("skip_intro_enabled", value).putBoolean("skip_segments_enabled", value).apply() }
-  fun saveSkipRecapEnabled(value: Boolean) { prefs.edit().putBoolean("skip_recap_enabled", value).apply() }
-  fun saveSkipEndingEnabled(value: Boolean) { prefs.edit().putBoolean("skip_ending_enabled", value).apply() }
-  fun saveAutoPlayNextEpisode(value: Boolean) { prefs.edit().putBoolean("auto_play_next_episode", value).apply() }
-  fun savePreferBingeGroup(value: Boolean) { prefs.edit().putBoolean("prefer_binge_group", value).apply() }
-  fun saveAutoLoadSubtitles(value: Boolean) { prefs.edit().putBoolean("auto_load_subtitles", value).apply() }
-  fun saveBlurUnwatchedEpisodes(value: Boolean) { prefs.edit().putBoolean("blur_unwatched_episodes", value).apply() }
-  fun saveNextEpisodeThresholdMode(value: String) { prefs.edit().putString("next_episode_threshold_mode", value).apply() }
-  fun saveNextEpisodeThresholdPercent(value: Int) { prefs.edit().putInt("next_episode_threshold_percent", value.coerceIn(50, 99)).apply() }
-  fun saveNextEpisodeThresholdMinutes(value: Int) { prefs.edit().putInt("next_episode_threshold_minutes", value.coerceIn(1, 15)).apply() }
+  fun saveSkipIntroEnabled(value: Boolean) { profilePrefs.edit().putBoolean("skip_intro_enabled", value).putBoolean("skip_segments_enabled", value).apply() }
+  fun saveSkipRecapEnabled(value: Boolean) { profilePrefs.edit().putBoolean("skip_recap_enabled", value).apply() }
+  fun saveSkipEndingEnabled(value: Boolean) { profilePrefs.edit().putBoolean("skip_ending_enabled", value).apply() }
+  fun saveAutoPlayNextEpisode(value: Boolean) { profilePrefs.edit().putBoolean("auto_play_next_episode", value).apply() }
+  fun savePreferBingeGroup(value: Boolean) { profilePrefs.edit().putBoolean("prefer_binge_group", value).apply() }
+  fun saveAutoLoadSubtitles(value: Boolean) { profilePrefs.edit().putBoolean("auto_load_subtitles", value).apply() }
+  fun saveBlurUnwatchedEpisodes(value: Boolean) { profilePrefs.edit().putBoolean("blur_unwatched_episodes", value).apply() }
+  fun saveNextEpisodeThresholdMode(value: String) { profilePrefs.edit().putString("next_episode_threshold_mode", value).apply() }
+  fun saveNextEpisodeThresholdPercent(value: Int) { profilePrefs.edit().putInt("next_episode_threshold_percent", value.coerceIn(50, 99)).apply() }
+  fun saveNextEpisodeThresholdMinutes(value: Int) { profilePrefs.edit().putInt("next_episode_threshold_minutes", value.coerceIn(1, 15)).apply() }
   fun saveTorrentServerSettings(value: TorrentServerSettings) {
     prefs.edit()
       .putBoolean("torrent_enabled", value.enabled)
@@ -835,21 +1011,22 @@ private class AppSettingsStore(context: Context) {
       .putBoolean("torrent_run_foreground", value.runAsForegroundService)
       .apply()
   }
-  fun saveRatingsEnabled(value: Boolean) { prefs.edit().putBoolean("ratings_enabled", value).apply() }
-  fun saveExternalRatingsEnabled(value: Boolean) { prefs.edit().putBoolean("external_ratings_enabled", value).apply() }
-  fun saveEnabledRatingProviders(value: Set<String>) { prefs.edit().putString("enabled_rating_providers", JSONArray(value.toList()).toString()).apply() }
+  fun saveRatingsEnabled(value: Boolean) { profilePrefs.edit().putBoolean("ratings_enabled", value).apply() }
+  fun saveExternalRatingsEnabled(value: Boolean) { profilePrefs.edit().putBoolean("external_ratings_enabled", value).apply() }
+  fun saveEnabledRatingProviders(value: Set<String>) { profilePrefs.edit().putString("enabled_rating_providers", JSONArray(value.toList()).toString()).apply() }
   fun saveMdblistApiKey(value: String) { prefs.edit().putString("mdblist_api_key", value.trim()).apply() }
-  fun saveVividAmbient(value: Boolean) { prefs.edit().putBoolean("vivid_ambient", value).apply() }
-  fun saveAmbientTintPercent(value: Int) { prefs.edit().putInt("ambient_tint_percent", value.coerceIn(20, 100)).apply() }
-  fun saveDefaultAppCatalogsEnabled(value: Boolean) { prefs.edit().putBoolean("default_app_catalogs_enabled", value).apply() }
-  fun saveHomeCatalogRows(rows: List<HomeCatalogRow>) { prefs.edit().putString("home_catalog_rows", serializeHomeCatalogRows(rows)).apply() }
-  fun saveFusionBadges(value: Boolean) { prefs.edit().putBoolean("fusion_badges", value).apply() }
-  fun saveShowSizeBadges(value: Boolean) { prefs.edit().putBoolean("show_size_badges", value).apply() }
-  fun savePreferredQuality(value: String) { prefs.edit().putString("preferred_quality", value).apply() }
-  fun saveMaxFileSizeGb(value: Int) { prefs.edit().putInt("max_file_size_gb", value).apply() }
-  fun saveBadgePosition(value: String) { prefs.edit().putString("badge_position", value).apply() }
+  fun saveVividAmbient(value: Boolean) { profilePrefs.edit().putBoolean("vivid_ambient", value).apply() }
+  fun saveAmbientTintPercent(value: Int) { profilePrefs.edit().putInt("ambient_tint_percent", value.coerceIn(20, 100)).apply() }
+  fun saveDefaultAppCatalogsEnabled(value: Boolean) { profilePrefs.edit().putBoolean("default_app_catalogs_enabled", value).apply() }
+  fun saveHomeCatalogRows(rows: List<HomeCatalogRow>) { profilePrefs.edit().putString("home_catalog_rows", serializeHomeCatalogRows(rows)).apply() }
+  fun saveFusionBadges(value: Boolean) { profilePrefs.edit().putBoolean("fusion_badges", value).apply() }
+  fun saveShowSizeBadges(value: Boolean) { profilePrefs.edit().putBoolean("show_size_badges", value).apply() }
+  fun saveShowAddonTmdbRatings(value: Boolean) { profilePrefs.edit().putBoolean("show_addon_tmdb_ratings", value).apply() }
+  fun savePreferredQuality(value: String) { profilePrefs.edit().putString("preferred_quality", value).apply() }
+  fun saveMaxFileSizeGb(value: Int) { profilePrefs.edit().putInt("max_file_size_gb", value).apply() }
+  fun saveBadgePosition(value: String) { profilePrefs.edit().putString("badge_position", value).apply() }
   fun saveFusionBadgeUrls(urls: List<String>, activeUrl: String?) {
-    prefs.edit()
+    profilePrefs.edit()
       .putString("fusion_badge_urls", JSONArray(urls).toString())
       .putString("active_fusion_badge_url", activeUrl)
       .apply()
@@ -892,6 +1069,12 @@ private fun normalizeRenderSurfaceSetting(raw: String): String = when (raw.trim(
   "Texture", "Standard" -> "Standard"
   "Compatibility" -> "Compatibility"
   else -> "Standard"
+}
+
+internal fun normalizePlayerEngineSetting(raw: String): String = when (raw.trim().lowercase(Locale.US)) {
+  "media3", "exo", "exoplayer" -> "Media3"
+  "mpv" -> "MPV"
+  else -> "Auto"
 }
 
 private fun TorrentServerSettings.toServiceConfig(): TorrentServerConfig = TorrentServerConfig(
@@ -1194,7 +1377,7 @@ internal fun completedEpisodeWatchedIds(existing: List<String>, watchedKey: Stri
 private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): String {
   val userId = session?.user?.uid
   return when {
-    userId.isNullOrBlank() -> GUEST_OWNER_KEY
+    userId.isNullOrBlank() -> activeProfileId?.let { "guest:$it" } ?: GUEST_OWNER_KEY
     activeProfileId.isNullOrBlank() -> userId
     else -> "$userId:$activeProfileId"
   }
@@ -1233,7 +1416,8 @@ private fun builtinHomeCatalogCandidates(): List<HomeCatalogRow> = listOf(
 )
 
 private fun addonHomeCatalogTitle(addonName: String, catalogName: String, type: String, needsDifferentiator: Boolean): String {
-  val base = if (catalogName.contains(addonName, ignoreCase = true)) catalogName else "$addonName - $catalogName"
+  val cleaned = cleanAddonCatalogLabel(catalogName, addonName)
+  val base = cleaned.ifBlank { cleanAddonCatalogLabel(addonName).ifBlank { addonName } }
   return if (!needsDifferentiator) base else "$base ${
     when (type) {
       "movie" -> "Movies"
@@ -1407,14 +1591,27 @@ private fun fusionBadgeSourceSummary(uiState: AppUiState): String {
   val activeSource = uiState.fusionBadgeSources[active]?.source
   val count = activeSource?.filters?.count { it.isEnabled } ?: loaded.sumOf { it.filters.count { filter -> filter.isEnabled } }
   val groups = activeSource?.filters?.map { it.groupId }?.distinct()?.size ?: loaded.flatMap { it.filters.map { filter -> filter.groupId } }.distinct().size
-  return "${uiState.fusionBadgeUrls.size}/$MAX_FUSION_BADGE_URLS URLs, $count active Fusion badges\nActive Badge Source: ${active.ifBlank { "None" }}${if (groups > 0) "\n$groups groups" else ""}"
+  return if (count > 0) "$count badge styles ready${if (groups > 0) " in $groups groups" else ""}" else "No badge styles selected"
 }
+
+private data class LiveChannelSwitchSnapshot(
+  val detail: MediaDetail?,
+  val detailIsLive: Boolean,
+  val fallbackItem: MediaItem?,
+  val selectedEpisode: EpisodeItem?,
+  val availableStreams: List<AddonStream>,
+  val sourceAddonId: String?,
+  val sourceCatalogType: String?,
+  val directStream: AddonStream?,
+  val playerSession: PlayerSession?,
+)
 
 private class NativeAppViewModel(application: Application) : AndroidViewModel(application) {
   private val sessionStore = SessionStore(application.applicationContext)
   private val profileSelectionStore = ProfileSelectionStore(application.applicationContext)
   private val guestProfileStore = GuestProfileStore(application.applicationContext)
   private val watchlistStore = WatchlistStore(application.applicationContext)
+  private val favouriteChannelStore = FavouriteChannelStore(application.applicationContext)
   private val authEntryStore = AuthEntryStore(application.applicationContext)
   private val appSettingsStore = AppSettingsStore(application.applicationContext)
   private val playbackResumeStore = PlaybackResumeStore(application.applicationContext)
@@ -1428,11 +1625,32 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private var searchRequestGeneration: Long = 0L
   private var streamRequestGeneration: Long = 0L
   private var playbackRequestGeneration: Long = 0L
+  private var liveChannelCatalogGeneration: Long = 0L
+  private var m3uLoadGeneration: Long = 0L
+  private var liveChannelSwitchSnapshot: LiveChannelSwitchSnapshot? = null
   private var pendingStreamLoad: PendingStreamLoad? = null
+  private var pendingDirectContinueEntry: PlaybackMemoryEntry? = null
+  private var pendingDirectContinueFallback: (() -> Unit)? = null
   private val pendingHomeHeroLogoKeys = mutableSetOf<String>()
+  private val pendingAddonRatingKeys = mutableSetOf<String>()
+  // Items whose fetchDetails() call already came back empty/failed once (e.g. a bridge item
+  // with a placeholder title and an id TMDB can never resolve). Without this, resolveAddonCatalogRatings
+  // re-fetches these same doomed items on every retrigger of its LaunchedEffect (which itself
+  // fires again each time addonCatalogRatings.size changes from a *different* item succeeding),
+  // producing a burst of repeated identical failing requests (e.g. /tmdb/search?query=_) instead
+  // of one failed attempt per item.
+  private val heroLogoFailedKeys = mutableSetOf<String>()
+  private val addonRatingFailedKeys = mutableSetOf<String>()
   private var detailSourceAddonId: String? = null
   private var detailSourceCatalogType: String? = null
   private var detailDirectStream: AddonStream? = null
+  // For a local add-on item, detail.id needs to stay the TMDB id so season/rating/Trakt
+  // follow-up calls keep working once TMDB enrichment succeeds -- but the add-on's own
+  // /stream endpoint needs its OWN canonical id (from resolveLocalAddonStreamId), which is
+  // often not the same value at all. Kept as a separate field rather than overloading detail.id
+  // for this one case. Null whenever the open detail isn't a local add-on item.
+  private var detailLocalStreamId: String? = null
+  private var detailLocalEpisodes: List<EpisodeItem> = emptyList()
   private var routeAfterProfileRefresh = false
 
   private val restoredSession = sessionStore.load()
@@ -1456,12 +1674,26 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         } else {
           emptyList()
         },
+        favouriteChannels = if (restoredSession == null) {
+          favouriteChannelStore.load(restoredGuestProfile?.id?.let { "guest:$it" } ?: GUEST_OWNER_KEY)
+        } else {
+          emptyList()
+        },
       ),
     ),
   )
     private set
 
   init {
+    DisplayNameOverrides.initialize(application.applicationContext)
+    LocalAddonManager.initialize(application.applicationContext)
+    M3uPlaylistManager.initialize(application.applicationContext)
+    StreamDekDownloads.initialize(application.applicationContext)
+    val initialOwnerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
+    LocalAddonManager.selectProfileStorage(initialOwnerKey)
+    M3uPlaylistManager.selectProfileStorage(initialOwnerKey)
+    appSettingsStore.selectProfileStorage(initialOwnerKey)
+    uiState = appSettingsStore.applyTo(uiState)
     StreamDekPlugins.initialize(application.applicationContext)
     StreamDekPlugins.manager.onStateChanged = { raw -> syncActiveProfilePlugins(raw) }
     StreamDekPlugins.manager.selectProfileStorage(activeOwnerKey() ?: GUEST_OWNER_KEY)
@@ -1478,7 +1710,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   fun signOut() {
     sessionStore.clear()
-    uiState = appSettingsStore.applyTo(AppUiState(booting = false, rememberedEmail = authEntryStore.loadEmail(), mergedWatchlist = watchlistStore.load(GUEST_OWNER_KEY)))
+    uiState = appSettingsStore.applyTo(AppUiState(booting = false, rememberedEmail = authEntryStore.loadEmail(), mergedWatchlist = watchlistStore.load(GUEST_OWNER_KEY), favouriteChannels = favouriteChannelStore.load(GUEST_OWNER_KEY)))
     bootstrapAfterAuth(forceHome = true)
   }
 
@@ -1489,8 +1721,17 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   fun signUp(email: String, password: String, rememberSession: Boolean) {
     rememberAuthEmail(email)
-    submitAuth { apiClient.register(email, password) }
+    // Capture the guest identity being left behind *before* auth changes activeOwnerKey().
+    val guestKey = if (uiState.session == null) activeOwnerKey() else null
+    val mergeSourceKey = guestKey?.takeIf(::hasGuestDataFor)
+    submitAuth(guestDataOwnerKey = mergeSourceKey) { apiClient.register(email, password) }
   }
+
+  private fun hasGuestDataFor(ownerKey: String): Boolean =
+    watchlistStore.load(ownerKey).isNotEmpty() ||
+      favouriteChannelStore.load(ownerKey).isNotEmpty() ||
+      playbackResumeStore.loadAll(ownerKey).isNotEmpty() ||
+      LocalAddonManager.list().isNotEmpty()
 
   fun requestPasswordReset(email: String) {
     launchWork(
@@ -1509,17 +1750,139 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   fun dismissPlayer(progressPercent: Double? = null) {
+    liveChannelSwitchSnapshot = null
     progressPercent?.let {
       saveCurrentPlaybackSnapshot(it)
       scrobbleCurrentPlayer("pause", it)
     }
     uiState = uiState.copy(playerSession = null, playerLaunching = false, playerLaunchingLabel = null, streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null)
+    stopOnDemandTorrentServer()
   }
 
   fun cancelPlayerLaunch() {
     playbackRequestGeneration += 1
     uiState = uiState.copy(playerLaunching = false, playerLaunchingLabel = null, streamLoading = false, returnToDetailAfterPlayer = false, playerReturnEpisodeId = null)
   }
+
+  fun setBrowseRow(row: HomeRow?) {
+    uiState = if (row == null) {
+      uiState.copy(browseRow = null, browseLoadedItems = emptyList(), browseReturnItemId = null)
+    } else {
+      uiState.copy(browseRow = row, browseLoadedItems = row.items, browseReturnItemId = null)
+    }
+  }
+
+  fun rememberBrowseReturnItem(item: MediaItem) {
+    uiState = uiState.copy(browseReturnItemId = item.id)
+  }
+
+  fun playLiveChannel(item: MediaItem) {
+    if (!item.isLiveCatalogItem() || uiState.liveChannelSwitching) return
+    liveChannelSwitchSnapshot = LiveChannelSwitchSnapshot(
+      detail = uiState.detail,
+      detailIsLive = uiState.detailIsLive,
+      fallbackItem = uiState.detailFallbackItem,
+      selectedEpisode = uiState.selectedEpisode,
+      availableStreams = uiState.availableStreams,
+      sourceAddonId = detailSourceAddonId,
+      sourceCatalogType = detailSourceCatalogType,
+      directStream = detailDirectStream,
+      playerSession = uiState.playerSession,
+    )
+    uiState = uiState.copy(liveChannelSwitching = true, liveChannelSwitchingLabel = item.title, errorMessage = null)
+    loadDetail(item.type, item.id, item)
+    playBestStream()
+  }
+
+  fun hasLiveChannelFallback(): Boolean = liveChannelSwitchSnapshot?.playerSession != null
+
+  fun cancelLiveChannelSwitch() {
+    val snapshot = liveChannelSwitchSnapshot ?: return
+    playbackRequestGeneration += 1
+    streamRequestGeneration += 1
+    detailSourceAddonId = snapshot.sourceAddonId
+    detailSourceCatalogType = snapshot.sourceCatalogType
+    detailDirectStream = snapshot.directStream
+    uiState = uiState.copy(
+      detail = snapshot.detail, detailIsLive = snapshot.detailIsLive, detailFallbackItem = snapshot.fallbackItem,
+      selectedEpisode = snapshot.selectedEpisode, availableStreams = snapshot.availableStreams, playerSession = snapshot.playerSession,
+      streamLoading = false, playerLaunching = false, playerLaunchingLabel = null,
+      liveChannelSwitching = false, liveChannelSwitchingLabel = null, errorMessage = null,
+    )
+    liveChannelSwitchSnapshot = null
+  }
+
+  private fun loadPlayerLiveChannels(anchor: MediaItem) {
+    val addonId = anchor.sourceAddonId ?: return
+    val catalogType = anchor.sourceCatalogType ?: return
+    val catalogId = anchor.sourceCatalogId ?: return
+    val matchesCatalog: (MediaItem) -> Boolean = {
+      // Match cheap source fields first. Calling isLiveCatalogItem() for every entry compiles
+      // regexes and was especially costly when a large enabled M3U playlist leaked into a
+      // different add-on's card click.
+      it.sourceAddonId == addonId && it.sourceCatalogType == catalogType &&
+        it.sourceCatalogId == catalogId && it.sourceCatalogGenre == anchor.sourceCatalogGenre
+    }
+    val generation = ++liveChannelCatalogGeneration
+    val sourceLists = if (M3uPlaylistManager.isM3uSourceId(addonId)) {
+      listOf(uiState.m3uChannels)
+    } else {
+      // Keep M3U channels out of other add-ons' player catalogs. Any previously selected M3U
+      // catalog may still be present in playerLiveChannels, so source-field filtering remains
+      // mandatory even though the explicit m3uChannels list is not included here.
+      listOf(
+        uiState.playerLiveChannels,
+        uiState.browseLoadedItems,
+        *uiState.allHomeSections.map { it.items }.toTypedArray(),
+        *uiState.homeSections.map { it.items }.toTypedArray(),
+      )
+    }
+    // A live-card tap must only do constant work on the main thread. Enabled IPTV playlists can
+    // contain tens of thousands of channels; concatenating, filtering, regex-checking and
+    // de-duplicating those lists synchronously caused the observed five-second input ANR.
+    uiState = uiState.copy(playerLiveChannels = listOf(anchor), playerLiveChannelsLoading = true)
+    viewModelScope.launch {
+      var loaded = withContext(Dispatchers.Default) {
+        sequence {
+          sourceLists.forEach { list -> yieldAll(list) }
+          yield(anchor)
+        }.filter(matchesCatalog).distinctBy { "${it.type}-${it.id}" }.toList()
+          .ifEmpty { listOf(anchor) }
+      }
+      if (generation != liveChannelCatalogGeneration) return@launch
+      uiState = uiState.copy(playerLiveChannels = loaded)
+      if (M3uPlaylistManager.isM3uSourceId(addonId)) {
+        uiState = uiState.copy(playerLiveChannelsLoading = false)
+        return@launch
+      }
+      val addon = uiState.addons.firstOrNull { it.id == addonId && it.enabled }
+      if (addon == null) {
+        uiState = uiState.copy(playerLiveChannelsLoading = false)
+        return@launch
+      }
+      var pages = 0
+      while (pages++ < 250 && loaded.size < 5_000) {
+        val page = apiClient.fetchMoreCatalogItems(
+          uiState.session, addon, catalogType, catalogId, anchor.sourceCatalogName ?: catalogType,
+          anchor.sourceCatalogGenre, loaded.size, uiState.activeProfileId,
+        ).getOrElse { emptyList() }.filter(matchesCatalog)
+        if (generation != liveChannelCatalogGeneration) return@launch
+        val merged = withContext(Dispatchers.Default) {
+          (loaded.asSequence() + page.asSequence()).distinctBy { "${it.type}-${it.id}" }.toList()
+        }
+        if (merged.size == loaded.size) break
+        loaded = merged
+        uiState = uiState.copy(playerLiveChannels = loaded)
+      }
+      if (generation == liveChannelCatalogGeneration) {
+        uiState = uiState.copy(playerLiveChannels = loaded, playerLiveChannelsLoading = false)
+      }
+    }
+  }
+
+  fun setNetworkBrowseItem(item: MediaItem?) { uiState = uiState.copy(networkBrowseItem = item) }
+
+  fun clearBrowseNavigation() { uiState = uiState.copy(browseRow = null, networkBrowseItem = null) }
 
   fun clearPlayerReturnTarget() {
     uiState = uiState.copy(returnToDetailAfterPlayer = false, playerReturnEpisodeId = null)
@@ -1643,7 +2006,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     if (uiState.homeSections.isNotEmpty() && !force) return
     launchWork(
       onStart = { uiState = uiState.copy(homeLoading = true, errorMessage = null) },
-      block = { apiClient.fetchHomeSections(uiState.session, uiState.addons) },
+      block = { apiClient.fetchHomeSections(uiState.session, uiState.addons, uiState.activeProfileId) },
       onSuccess = { sections ->
         val mergedRows = mergeHomeCatalogRows(uiState.homeCatalogRows, uiState.addons)
         uiState = uiState.copy(
@@ -1664,6 +2027,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       .filter { it.titleLogo.isNullOrBlank() }
       .distinctBy(::homeHeroMediaKey)
       .filter { homeHeroMediaKey(it) !in uiState.homeHeroTitleLogos }
+      .filter { homeHeroMediaKey(it) !in heroLogoFailedKeys }
       .filter { pendingHomeHeroLogoKeys.add(homeHeroMediaKey(it)) }
       .take(12)
       .toList()
@@ -1674,13 +2038,50 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           requests.map { item ->
             async {
               val logo = apiClient.fetchDetails(item.type, item.id, item.title, item.year).getOrNull()?.titleLogo?.takeIf { it.isNotBlank() }
-              logo?.let { homeHeroMediaKey(item) to it }
+              homeHeroMediaKey(item) to logo
             }
-          }.awaitAll().filterNotNull().toMap()
+          }.awaitAll().toMap()
         }
-        if (resolved.isNotEmpty()) uiState = uiState.copy(homeHeroTitleLogos = uiState.homeHeroTitleLogos + resolved)
+        val succeeded = resolved.filterValues { !it.isNullOrBlank() }.mapValues { it.value!! }
+        if (succeeded.isNotEmpty()) uiState = uiState.copy(homeHeroTitleLogos = uiState.homeHeroTitleLogos + succeeded)
+        resolved.keys.filter { it !in succeeded }.forEach { heroLogoFailedKeys.add(it) }
       } finally {
         requests.forEach { pendingHomeHeroLogoKeys.remove(homeHeroMediaKey(it)) }
+      }
+    }
+  }
+
+  // Third-party addon catalogs rarely carry ratings, so resolve TMDB scores for
+  // their items on demand (same batched/cached approach as hero title logos).
+  fun resolveAddonCatalogRatings(items: List<MediaItem>) {
+    if (!uiState.showAddonTmdbRatings) return
+    val requests = items
+      .asSequence()
+      .filter { it.sourceAddonId != null && it.rating == null && !it.isLiveCatalogItem() }
+      .distinctBy(::homeHeroMediaKey)
+      .filter { homeHeroMediaKey(it) !in uiState.addonCatalogRatings }
+      .filter { homeHeroMediaKey(it) !in addonRatingFailedKeys }
+      .filter { pendingAddonRatingKeys.add(homeHeroMediaKey(it)) }
+      .take(12)
+      .toList()
+    if (requests.isEmpty()) return
+    viewModelScope.launch {
+      try {
+        val resolved = supervisorScope {
+          requests.map { item ->
+            async {
+              val rating = apiClient.fetchDetails(item.type, item.id, item.title, item.year).getOrNull()
+                ?.let { it.tmdbRating ?: it.rating }
+                ?.takeIf { it > 0.0 }
+              homeHeroMediaKey(item) to rating
+            }
+          }.awaitAll().toMap()
+        }
+        val succeeded = resolved.filterValues { it != null }.mapValues { it.value!! }
+        if (succeeded.isNotEmpty()) uiState = uiState.copy(addonCatalogRatings = uiState.addonCatalogRatings + succeeded)
+        resolved.keys.filter { it !in succeeded }.forEach { addonRatingFailedKeys.add(it) }
+      } finally {
+        requests.forEach { pendingAddonRatingKeys.remove(homeHeroMediaKey(it)) }
       }
     }
   }
@@ -1705,15 +2106,108 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
   }
 
-  fun loadDetail(type: String, id: String, fallbackItem: MediaItem? = null) {
+  /**
+   * Pages in more items for a "View All" row. For add-on catalog rows, [anchorItem] carries
+   * sourceAddonId/sourceCatalogType/sourceCatalogId/sourceCatalogGenre identifying which add-on
+   * catalog to re-query, and [skip] is the number of items already shown for it (Stremio-style
+   * item offset). Built-in TMDB rows (New Movies, Trending, ...) don't have an add-on source —
+   * those items carry no sourceAddonId — so they're identified by [rowId] instead and paged by
+   * TMDB page number (TMDB's default page size is 20, which is exactly why "View All" used to
+   * cap at 20 items with no way to load more).
+   * Returns an empty list (never throws) when the row has no re-queryable source at all (e.g.
+   * Continue Watching, Watchlist, Trakt recommendations) or the add-on is no longer
+   * installed/enabled.
+   */
+  suspend fun loadMoreRowItems(rowId: String, anchorItem: MediaItem?, skip: Int): List<MediaItem> {
+    val addonId = anchorItem?.sourceAddonId
+    val fetched = if (addonId != null) {
+      val addon = uiState.addons.firstOrNull { it.id == addonId && it.enabled }
+      if (addon == null) {
+        android.util.Log.d("StreamDekPaging", "loadMoreRowItems row=$rowId: addon $addonId not found/enabled")
+        emptyList()
+      } else {
+        val catalogType = anchorItem.sourceCatalogType
+        val catalogId = anchorItem.sourceCatalogId
+        if (catalogType == null || catalogId == null) {
+          android.util.Log.d("StreamDekPaging", "loadMoreRowItems row=$rowId: missing catalogType/catalogId on anchor")
+          emptyList()
+        } else {
+          val catalogName = anchorItem.sourceCatalogName ?: catalogType
+          android.util.Log.d("StreamDekPaging", "loadMoreRowItems row=$rowId: addon-catalog path addon=$addonId type=$catalogType catalogId=$catalogId genre=${anchorItem.sourceCatalogGenre} skip=$skip")
+          apiClient.fetchMoreCatalogItems(uiState.session, addon, catalogType, catalogId, catalogName, anchorItem.sourceCatalogGenre, skip, uiState.activeProfileId)
+            .onFailure { android.util.Log.w("StreamDekPaging", "fetchMoreCatalogItems failed row=$rowId", it) }
+            .onSuccess { android.util.Log.d("StreamDekPaging", "fetchMoreCatalogItems row=$rowId returned ${it.size}") }
+            .getOrDefault(emptyList())
+        }
+      }
+    } else {
+      val page = (skip / 20) + 1
+      android.util.Log.d("StreamDekPaging", "loadMoreRowItems row=$rowId: built-in path page=$page skip=$skip")
+      apiClient.fetchMoreBuiltInSection(rowId, page)
+        .onFailure { android.util.Log.w("StreamDekPaging", "fetchMoreBuiltInSection failed row=$rowId", it) }
+        .onSuccess { android.util.Log.d("StreamDekPaging", "fetchMoreBuiltInSection row=$rowId page=$page returned ${it.size}") }
+        .getOrDefault(emptyList())
+    }
+    if (uiState.browseRow?.id == rowId && fetched.isNotEmpty()) {
+      uiState = uiState.copy(browseLoadedItems = (uiState.browseLoadedItems + fetched).distinctBy { "${it.type}-${it.id}" })
+    }
+    return fetched
+  }
+  fun resumeContinueWatching(item: MediaItem, onUnavailable: () -> Unit): Boolean {
+    val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
+    val entry = playbackResumeStore.loadAll(ownerKey)
+      .filter { it.mediaId == item.id && normalizedMediaType(it.mediaType) == normalizedMediaType(item.type) && !it.isLive }
+      .maxByOrNull { it.updatedAt }
+      ?.takeIf { remembered ->
+        remembered.stream?.let { stream ->
+          !stream.url.isNullOrBlank() || !stream.infoHash.isNullOrBlank()
+        } == true
+      }
+      ?: return false
+    pendingDirectContinueEntry = entry
+    pendingDirectContinueFallback = onUnavailable
+    loadDetail(item.type, item.id, item, preservePendingContinue = true)
+    return true
+  }
+
+  private fun playPendingContinue(detail: MediaDetail, episode: EpisodeItem?): Boolean {
+    val entry = pendingDirectContinueEntry?.takeIf {
+      (it.mediaId == detail.id || it.mediaId == uiState.detailFallbackItem?.id) && normalizedMediaType(it.mediaType) == normalizedMediaType(detail.type)
+    } ?: return false
+    val stream = entry.stream ?: return false
+    pendingDirectContinueEntry = null
+    playStream(stream, episode, entry.progressPercent)
+    return true
+  }
+
+  private fun continueFallbackEpisode(item: MediaItem?): EpisodeItem? {
+    val season = item?.resumeSeasonNumber ?: return null
+    val episode = item.resumeEpisodeNumber ?: return null
+    return EpisodeItem(
+      id = "${item.id}:$season:$episode",
+      episodeNumber = episode,
+      seasonNumber = season,
+      name = "Episode $episode",
+      overview = "",
+      still = null,
+      runtime = null,
+    )
+  }
+  fun loadDetail(type: String, id: String, fallbackItem: MediaItem? = null, preservePendingContinue: Boolean = false) {
+    if (!preservePendingContinue) {
+      pendingDirectContinueEntry = null
+      pendingDirectContinueFallback = null
+    }
     val detailIsLive = fallbackItem?.isLiveCatalogItem() == true
     detailSourceAddonId = fallbackItem?.sourceAddonId
     detailSourceCatalogType = fallbackItem?.sourceCatalogType
+    detailLocalStreamId = null
+    detailLocalEpisodes = emptyList()
     detailDirectStream = fallbackItem?.directStreamUrl?.let { url ->
       val addon = uiState.addons.firstOrNull { it.id == fallbackItem.sourceAddonId }
       AddonStream(
         addonId = fallbackItem.sourceAddonId.orEmpty(),
-        addonName = addon?.manifest?.name ?: "Sports source",
+        addonName = addon?.manifest?.name ?: fallbackItem.sourceAddonName ?: if (detailIsLive) "Live source" else "M3U Playlist",
         name = fallbackItem.title,
         title = fallbackItem.title,
         description = fallbackItem.description.ifBlank { null },
@@ -1728,17 +2222,92 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       )
     }
     if (detailIsLive && fallbackItem != null) {
+      loadPlayerLiveChannels(fallbackItem)
       val fallback = fallbackItem.toFallbackDetail()
       uiState = uiState.copy(
-        detailLoading = false, detail = fallback, detailIsLive = true, selectedPerson = null, personLoading = false,
+        detailLoading = false, detail = fallback, detailIsLive = true, detailFallbackItem = fallbackItem, selectedPerson = null, personLoading = false,
         selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null,
         detailSelectedTab = null, pendingStreamSources = 0, availableStreams = emptyList(), errorMessage = null,
       )
       loadStreamsForCurrentDetail(null)
       return
     }
+    if (fallbackItem != null && fallbackItem.sourceAddonId?.let(M3uPlaylistManager::isM3uSourceId) == true) {
+      // M3U VOD entries already contain their final playable URL. Avoid sending their local
+      // playlist IDs to TMDB/backend detail endpoints; show the playlist metadata immediately
+      // and expose the direct stream through the normal source/player UI.
+      val fallback = fallbackItem.toFallbackDetail()
+      uiState = uiState.copy(
+        detailLoading = false, detail = fallback, detailIsLive = false, detailFallbackItem = fallbackItem, selectedPerson = null, personLoading = false,
+        selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null,
+        detailSelectedTab = null, pendingStreamSources = 0, availableStreams = emptyList(), errorMessage = null,
+      )
+      loadStreamsForCurrentDetail(null)
+      return
+    }
+    val localAddonId = fallbackItem?.sourceAddonId?.takeIf { LocalAddonManager.isLocalAddonId(it) }
+    if (localAddonId != null && fallbackItem != null) {
+      // CNCVerse-style catalogs intentionally keep previews tiny (and sometimes use "_" as
+      // the preview title). The canonical /meta response is the source of truth for the real
+      // title, synopsis, year and opaque episode ids; TMDB enrichment is layered on top of it.
+      launchWork(
+        onStart = { uiState = uiState.copy(detailLoading = true, detail = null, detailIsLive = false, detailFallbackItem = fallbackItem, selectedPerson = null, personLoading = false, selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null, detailSelectedTab = null, pendingStreamSources = 0, availableStreams = emptyList(), errorMessage = null) },
+        block = {
+          val addon = uiState.addons.firstOrNull { it.id == localAddonId }
+            ?: return@launchWork Result.failure(IllegalStateException("The local add-on is no longer installed."))
+          val bridgeMeta = apiClient.fetchLocalAddonMeta(addon, type, id).getOrThrow()
+          val lookupId = bridgeMeta.imdbId ?: bridgeMeta.id
+          val typeGuesses = when {
+            bridgeMeta.episodes.isNotEmpty() || bridgeMeta.type in setOf("tv", "series", "show") -> listOf("tv", "movie")
+            bridgeMeta.type == "movie" -> listOf("movie", "tv")
+            else -> listOf("movie", "tv")
+          }
+          val enriched = coroutineScope {
+            val guessResults = typeGuesses.map { guess ->
+              async { apiClient.fetchDetails(guess, lookupId, bridgeMeta.title, bridgeMeta.year).getOrNull() }
+            }.awaitAll()
+            guessResults.firstNotNullOfOrNull { it }
+          }
+          android.util.Log.d("StreamDekDetail", "local addon detail addon=$localAddonId rawType=$type bridgeId=${bridgeMeta.id} title=${bridgeMeta.title} episodes=${bridgeMeta.episodes.size} enriched=${enriched != null}")
+          Result.success(bridgeMeta to enriched)
+        },
+        onSuccess = { (bridgeMeta, enriched) ->
+          detailLocalStreamId = bridgeMeta.id
+          detailLocalEpisodes = bridgeMeta.episodes
+          val resolvedDetail = (enriched?.withLocalAddonMeta(bridgeMeta) ?: bridgeMeta.toFallbackDetail(fallbackItem)).withCatalogFallback(fallbackItem)
+          val unreleasedMovie = resolvedDetail.type == "movie" && isFutureReleaseDate(resolvedDetail.releaseDate)
+          uiState = uiState.copy(
+            detailLoading = false,
+            detail = resolvedDetail,
+            detailIsLive = false,
+            streamLoading = false,
+            pendingStreamSources = 0,
+            errorMessage = null,
+            availableStreams = if (unreleasedMovie) emptyList() else uiState.availableStreams,
+          )
+          if (enriched != null) {
+            refreshExternalRatings(resolvedDetail)
+            refreshTraktComments(resolvedDetail)
+          }
+          if (resolvedDetail.type == "tv" && resolvedDetail.seasons.isNotEmpty()) {
+            val restartSeason = resolvedDetail.seasons.firstOrNull { it.seasonNumber == fallbackItem.resumeSeasonNumber } ?: resolvedDetail.seasons.first()
+            loadSeason(resolvedDetail.id, restartSeason.seasonNumber, fallbackItem.resumeEpisodeNumber, resumeKnownSource = pendingDirectContinueEntry != null)
+          } else if (!unreleasedMovie) {
+            if (!playPendingContinue(resolvedDetail, continueFallbackEpisode(fallbackItem))) loadStreamsForCurrentDetail(null)
+          }
+        },
+        onFailure = {
+          detailLocalStreamId = id
+          detailLocalEpisodes = emptyList()
+          val fallback = fallbackItem.toFallbackDetail()
+          uiState = uiState.copy(detailLoading = false, detail = fallback, detailIsLive = false, errorMessage = null)
+          if (!playPendingContinue(fallback, continueFallbackEpisode(fallbackItem))) loadStreamsForCurrentDetail(null)
+        },
+      )
+      return
+    }
     launchWork(
-      onStart = { uiState = uiState.copy(detailLoading = true, detail = null, detailIsLive = detailIsLive, selectedPerson = null, personLoading = false, selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null, detailSelectedTab = null, pendingStreamSources = 0, availableStreams = emptyList(), errorMessage = null) },
+      onStart = { uiState = uiState.copy(detailLoading = true, detail = null, detailIsLive = detailIsLive, detailFallbackItem = fallbackItem, selectedPerson = null, personLoading = false, selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null, detailSelectedTab = null, pendingStreamSources = 0, availableStreams = emptyList(), errorMessage = null) },
       block = { apiClient.fetchDetails(type, id, fallbackItem?.title, fallbackItem?.year) },
       onSuccess = { detail ->
         val resolvedDetail = detail.withCatalogFallback(fallbackItem)
@@ -1754,16 +2323,17 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         refreshExternalRatings(resolvedDetail)
         refreshTraktComments(resolvedDetail)
         if (resolvedDetail.type == "tv" && resolvedDetail.seasons.isNotEmpty()) {
-          loadSeason(resolvedDetail.id, resolvedDetail.seasons.first().seasonNumber)
+          val restartSeason = resolvedDetail.seasons.firstOrNull { it.seasonNumber == fallbackItem?.resumeSeasonNumber } ?: resolvedDetail.seasons.first()
+          loadSeason(resolvedDetail.id, restartSeason.seasonNumber, fallbackItem?.resumeEpisodeNumber, resumeKnownSource = pendingDirectContinueEntry != null)
         } else if (!unreleasedMovie) {
-          loadStreamsForCurrentDetail(null)
+          if (!playPendingContinue(resolvedDetail, continueFallbackEpisode(fallbackItem))) loadStreamsForCurrentDetail(null)
         }
       },
       onFailure = { message ->
         val fallback = fallbackItem?.toFallbackDetail()
         if (fallback != null) {
           uiState = uiState.copy(detailLoading = false, detail = fallback, detailIsLive = detailIsLive, errorMessage = null)
-          loadStreamsForCurrentDetail(null)
+          if (!playPendingContinue(fallback, continueFallbackEpisode(fallbackItem))) loadStreamsForCurrentDetail(null)
         } else {
           uiState = uiState.copy(detailLoading = false, errorMessage = message)
         }
@@ -1808,19 +2378,33 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   fun closePerson() { uiState = uiState.copy(selectedPerson = null, personLoading = false) }
-  fun loadSeason(tvId: String, seasonNumber: Int) {
+  fun loadSeason(tvId: String, seasonNumber: Int, preferredEpisodeNumber: Int? = null, resumeKnownSource: Boolean = false) {
+    if (detailLocalEpisodes.isNotEmpty()) {
+      val episodes = detailLocalEpisodes.filter { it.seasonNumber == seasonNumber }.sortedBy(EpisodeItem::episodeNumber)
+      uiState = uiState.copy(seasonLoading = false, selectedSeasonEpisodes = episodes, selectedSeasonNumber = seasonNumber, errorMessage = null)
+      (episodes.firstOrNull { it.episodeNumber == preferredEpisodeNumber } ?: episodes.firstOrNull())?.let { episode ->
+        if (!resumeKnownSource || !playPendingContinue(uiState.detail ?: return@let, episode)) loadStreamsForCurrentDetail(episode)
+      }
+      return
+    }
     launchWork(
       onStart = { uiState = uiState.copy(seasonLoading = true, selectedSeasonNumber = seasonNumber, errorMessage = null) },
       block = { apiClient.fetchSeason(tvId, seasonNumber) },
       onSuccess = { episodes ->
         uiState = uiState.copy(seasonLoading = false, selectedSeasonEpisodes = episodes, selectedSeasonNumber = seasonNumber)
-        episodes.firstOrNull()?.let { loadStreamsForCurrentDetail(it) }
+        (episodes.firstOrNull { it.episodeNumber == preferredEpisodeNumber } ?: episodes.firstOrNull())?.let { episode ->
+          if (!resumeKnownSource || !playPendingContinue(uiState.detail ?: return@let, episode)) loadStreamsForCurrentDetail(episode)
+        }
       },
       onFailure = { message -> uiState = uiState.copy(seasonLoading = false, errorMessage = message) },
     )
   }
 
   private fun streamLookupIds(detail: MediaDetail): List<String> {
+    // Local add-on items keep detail.id as the TMDB id (for season/rating/Trakt calls) once
+    // enrichment succeeds, but the add-on's own /stream endpoint needs its own canonical id --
+    // tracked separately since it can differ completely from whatever TMDB resolved to.
+    detailLocalStreamId?.takeIf { it.isNotBlank() }?.let { return listOf(it) }
     val imdbId = detail.imdbId?.let { Regex("tt\\d+", RegexOption.IGNORE_CASE).find(it)?.value }
     return listOfNotNull(imdbId ?: detail.id.takeIf(String::isNotBlank))
   }
@@ -1846,17 +2430,25 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val ids: List<String>
     when {
       detail.type == "tv" && episode != null -> {
-        type = "series"
-        ids = streamLookupIds(detail)
-          .distinct()
-          .map { "${it}:${episode.seasonNumber}:${episode.episodeNumber}" }
+        val bridgeEpisodeId = episode.sourceStreamId?.takeIf { it.isNotBlank() }
+        type = if (bridgeEpisodeId != null) detailSourceCatalogType ?: "series" else "series"
+        ids = if (bridgeEpisodeId != null) {
+          listOf(bridgeEpisodeId)
+        } else {
+          streamLookupIds(detail)
+            .distinct()
+            .map { "${it}:${episode.seasonNumber}:${episode.episodeNumber}" }
+        }
       }
       detail.type == "tv" && !uiState.detailIsLive -> {
         uiState = uiState.copy(streamLoading = false, pendingStreamSources = 0, errorMessage = "Choose an episode first.")
         return
       }
       else -> {
-        type = if (uiState.detailIsLive) detailSourceCatalogType ?: detail.type else detail.type
+        val localBridgeType = detailSourceAddonId
+          ?.takeIf(LocalAddonManager::isLocalAddonId)
+          ?.let { detailSourceCatalogType }
+        type = if (uiState.detailIsLive) detailSourceCatalogType ?: detail.type else localBridgeType ?: detail.type
         ids = streamLookupIds(detail).distinct()
       }
     }
@@ -1871,9 +2463,17 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
 
     val enabledAddons = uiState.addons
-      .filter { it.enabled && (addonSupportsStreamType(it, type) || (uiState.detailIsLive && it.id == detailSourceAddonId)) }
+      .filter { addon ->
+        if (!addon.enabled) return@filter false
+        if (uiState.detailIsLive) {
+          // Prefer the add-on the channel came from; otherwise only ask add-ons that
+          // actually serve live TV. Movie/series add-ons are never queried here.
+          if (detailSourceAddonId != null) addon.id == detailSourceAddonId else addonSupportsLiveStreams(addon)
+        } else {
+          addonSupportsStreamType(addon, type)
+        }
+      }
       .sortedBy { it.position }
-      .filter { !uiState.detailIsLive || detailSourceAddonId == null || it.id == detailSourceAddonId }
     val pluginState = StreamDekPlugins.manager.state
     val enabledPluginRepos = pluginState.repos.filter { it.enabled }.mapTo(mutableSetOf()) { it.url }
     val pluginSourceCount = if (!uiState.detailIsLive && pluginState.enabled && pluginState.providers.any { it.enabled && it.repoUrl in enabledPluginRepos }) 1 else 0
@@ -1884,9 +2484,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     var completedSources = 0
     var lastError: Throwable? = null
 
-    fun streamKey(stream: AddonStream): String =
-      listOf(stream.addonId, stream.addonName, stream.source, stream.name, stream.title, stream.infoHash, stream.url, stream.filename, stream.quality, stream.size)
-        .joinToString("|")
+    fun streamKey(stream: AddonStream): String = addonStreamPlaybackIdentity(stream)
 
     fun publish() {
       if (generation != streamRequestGeneration) return
@@ -1934,10 +2532,12 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }.invokeOnCompletion {
       if (generation != streamRequestGeneration) return@invokeOnCompletion
       viewModelScope.launch {
-        if (merged.isEmpty()) {
+        // The aggregate endpoint fans out across every installed add-on, so it is
+        // skipped for live channels — those are served only by live-capable add-ons.
+        if (merged.isEmpty() && !uiState.detailIsLive) {
           val fallback = mutableListOf<AddonStream>()
           for (id in candidates) {
-            apiClient.fetchStreams(uiState.session, type, id)
+            apiClient.fetchStreams(uiState.session, type, id, uiState.activeProfileId)
               .onSuccess { fallback += it }
               .onFailure { lastError = it }
           }
@@ -1968,15 +2568,20 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       listOf(requestedType)
     }
     var lastError: Throwable? = null
-    for (candidateType in typeCandidates) {
-      apiClient.fetchStreamsFromAddon(uiState.session, addon.id, candidateType, id)
-        .onSuccess { if (it.isNotEmpty()) return Result.success(it) }
-        .onFailure { lastError = it }
+    val isLocalAddon = LocalAddonManager.isLocalAddonId(addon.id)
+    if (!isLocalAddon) {
+      for (candidateType in typeCandidates) {
+        apiClient.fetchStreamsFromAddon(uiState.session, addon.id, candidateType, id, uiState.activeProfileId)
+          .onSuccess { if (it.isNotEmpty()) return Result.success(it) }
+          .onFailure { lastError = it }
+      }
     }
     val baseId = id.substringBefore(":")
     val requiresImdbId = !uiState.detailIsLive && (requestedType == "movie" || requestedType == "series" || requestedType == "tv")
-    if (!requiresImdbId || baseId.matches(Regex("^tt\\d+$", RegexOption.IGNORE_CASE))) {
-      delay(180L)
+    // Local add-ons only ever fetch directly from the device (there's no backend copy to try
+    // first), so they always go straight to the on-device fetch below.
+    if (isLocalAddon || !requiresImdbId || baseId.matches(Regex("^tt\\d+$", RegexOption.IGNORE_CASE))) {
+      if (!isLocalAddon) delay(180L)
       for (candidateType in typeCandidates.take(3)) {
         apiClient.fetchFreshStreamsFromAddon(addon, candidateType, id)
           .onSuccess { if (it.isNotEmpty()) return Result.success(it) }
@@ -1990,8 +2595,11 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val merged = mutableListOf<AddonStream>()
     var lastError: Throwable? = null
     val candidates = ids.filter { it.isNotBlank() }.distinct()
+    val live = uiState.detailIsLive
     val enabledAddons = uiState.addons
-      .filter { it.enabled && addonSupportsStreamType(it, type) }
+      .filter { addon ->
+        addon.enabled && if (live) addonSupportsLiveStreams(addon) else addonSupportsStreamType(addon, type)
+      }
       .sortedBy { it.position }
 
     for (id in candidates) {
@@ -2001,20 +2609,38 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           .onFailure { lastError = it }
       }
 
-      if (merged.isEmpty()) {
-        apiClient.fetchStreams(uiState.session, type, id)
+      // The aggregate endpoint spans every add-on, so live channels never use it.
+      if (merged.isEmpty() && !live) {
+        apiClient.fetchStreams(uiState.session, type, id, uiState.activeProfileId)
           .onSuccess { streams -> merged += streams }
           .onFailure { lastError = it }
       }
     }
 
-    val pluginType = if (type == "series") "tv" else type
-    val pluginCandidate = candidates.firstOrNull()?.substringBefore(":").orEmpty()
-    val pluginId = apiClient.resolvePluginMediaId(pluginType, pluginCandidate)
-    merged += StreamDekPlugins.manager.streams(pluginId, pluginType, null, null)
+    // Plugin providers are movie/series scrapers — not a source for live channels.
+    if (!live) {
+      val pluginType = if (type == "series") "tv" else type
+      val pluginCandidate = candidates.firstOrNull()?.substringBefore(":").orEmpty()
+      val pluginId = apiClient.resolvePluginMediaId(pluginType, pluginCandidate)
+      merged += StreamDekPlugins.manager.streams(pluginId, pluginType, null, null)
+    }
 
-    val unique = merged.distinctBy { listOf(it.addonId, it.name, it.title, it.infoHash, it.url, it.filename).joinToString("|") }
+    val unique = merged.distinctBy(::addonStreamPlaybackIdentity)
     return lastError.let { error -> if (unique.isNotEmpty() || error == null) Result.success(unique) else Result.failure(error) }
+  }
+
+  /**
+   * Live channels must only ever be resolved by add-ons that actually serve live TV.
+   * [addonSupportsStreamType] maps "tv" onto "series", which would otherwise match
+   * every movie/series debrid add-on and waste a request per channel on sources that
+   * can never answer.
+   */
+  private fun addonSupportsLiveStreams(addon: InstalledAddon): Boolean {
+    val resources = addon.manifest.resources.map { it.trim().lowercase() }
+    if (resources.isNotEmpty() && resources.none { it == "stream" || it == "streams" }) return false
+    val types = addon.manifest.types.map { it.trim().lowercase() }
+    // An add-on with no declared types is ambiguous — never assume it serves live TV.
+    return types.any { it in liveAddonTypes }
   }
 
   private fun addonSupportsStreamType(addon: InstalledAddon, type: String): Boolean {
@@ -2052,7 +2678,15 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private suspend fun resolvePlayback(stream: AddonStream, detail: MediaDetail, episode: EpisodeItem?): Result<ResolvedPlayback> = runCatching {
     val playbackStream = refreshStreamForPlayback(stream, detail, episode)
     val directUrl = playbackStream.url?.takeIf { it.isNotBlank() && !it.startsWith("magnet:", ignoreCase = true) }
-    if (directUrl != null) return@runCatching ResolvedPlayback(directUrl, playbackStream)
+    if (directUrl != null) {
+      val shouldPrepareBridgeHls = detailLocalStreamId != null && playbackStream.requestHeaders.isNotEmpty()
+      val preparedUrl = if (shouldPrepareBridgeHls) {
+        apiClient.prepareHlsForPlayback(directUrl, playbackStream.requestHeaders).getOrDefault(directUrl)
+      } else {
+        directUrl
+      }
+      return@runCatching ResolvedPlayback(preparedUrl, playbackStream)
+    }
 
     val infoHash = playbackStream.infoHash?.takeIf { it.isNotBlank() }
       ?: throw IllegalStateException("This source does not contain a playable URL or torrent hash.")
@@ -2117,20 +2751,103 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       onSuccess = success@ { playback ->
         if (requestGeneration != playbackRequestGeneration) return@success
         val resumePercent = resumePercentOverride ?: loadPlaybackMemoryEntry(detail, selectedEpisode)?.progressPercent ?: 0.0
+        pendingDirectContinueFallback = null
+        val builtSession = buildPlayerSession(playback.url, detail, buildSourceLabel(playback.stream), selectedEpisode, playback.stream, resumePercent)
+
+        // Switching channels while one is already playing: swap the session straight over.
+        // The old content stays visibly playing until the new source is actually ready -
+        // ExoPlaybackView prepares the next source in the background and swaps in place
+        // (see prepareSourceInBackground/promotePendingPlayer), and mpv's `loadfile ...
+        // replace` does the same natively - so there's no need to pre-verify reachability
+        // with a separate probe first. channelSwitchLoading stays true until the player
+        // itself confirms the new channel is decoding (onChannelSwitchPlaybackStarted).
         uiState = uiState.copy(
           streamLoading = false,
           nextEpisodeLoading = false,
           nextEpisodeLoadingLabel = null,
-          playerSession = buildPlayerSession(playback.url, detail, buildSourceLabel(playback.stream), selectedEpisode, playback.stream, resumePercent),
+          playerSession = builtSession,
           playerLaunching = false,
           playerLaunchingLabel = null,
+          liveChannelSwitching = liveChannelSwitchSnapshot != null,
+          liveChannelSwitchingLabel = uiState.liveChannelSwitchingLabel,
         )
       },
       onFailure = failure@ { message ->
         if (requestGeneration != playbackRequestGeneration) return@failure
+        // Live channels commonly carry dead mirrors — roll on to the next source
+        // instead of stopping at the first failure.
+        if (uiState.detailIsLive && playNextLiveSource(stream, episode)) return@failure
+        pendingDirectContinueFallback?.let { showDetails ->
+          pendingDirectContinueFallback = null
+          pendingDirectContinueEntry = null
+          uiState = uiState.copy(playerLaunching = false, playerLaunchingLabel = null, streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null, errorMessage = null)
+          showDetails()
+          return@failure
+        }
+        if (uiState.liveChannelSwitching) {
+          val failedChannel = uiState.liveChannelSwitchingLabel
+          cancelLiveChannelSwitch()
+          uiState = uiState.copy(infoMessage = failedChannel?.let { "Could not load $it. Kept the current channel playing." } ?: message)
+          return@failure
+        }
         uiState = uiState.copy(playerLaunching = false, playerLaunchingLabel = null, streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null, errorMessage = message)
       },
     )
+  }
+
+  /**
+   * Advances to the next live source after [failedStream]. Returns false when the
+   * list is exhausted so the caller can surface the original error.
+   */
+  private fun playNextLiveSource(failedStream: AddonStream, episode: EpisodeItem?): Boolean {
+    val detail = uiState.detail ?: return false
+    val streams = uiState.availableStreams
+    val failedKey = streamIdentity(failedStream)
+    val index = streams.indexOfFirst { streamIdentity(it) == failedKey }
+    val next = streams.drop((index + 1).coerceAtLeast(0)).firstOrNull { streamIdentity(it) != failedKey }
+    if (next != null) {
+      uiState = uiState.copy(playerLaunchingLabel = buildSourceLabel(next) ?: next.addonName)
+      playStream(next, episode)
+      return true
+    }
+    // The remembered source failed before the full list was loaded — forget it and
+    // start a fresh search so the channel still plays.
+    if (index < 0 && loadPlaybackMemoryEntry(detail, null)?.stream != null) {
+      playbackResumeStore.removeTitle(activeOwnerKey() ?: GUEST_OWNER_KEY, detail.id, if (detail.type == "series") "tv" else detail.type)
+      uiState = uiState.copy(localResumeEntries = loadResumeEntries())
+      playBestStream(episode)
+      return true
+    }
+    return false
+  }
+
+  fun confirmLiveChannelSwitchStarted() {
+    if (!uiState.liveChannelSwitching) return
+    val detail = uiState.detail
+    val stream = uiState.playerSession?.currentStream
+    if (detail != null && stream != null && uiState.detailIsLive) rememberLiveSource(detail, stream)
+    // Keep the previous working session snapshot available. If this new feed later
+    // errors or stalls, Back can still restore it instead of leaving the player.
+    uiState = uiState.copy(liveChannelSwitching = false, liveChannelSwitchingLabel = null)
+  }
+  private fun rememberLiveSource(detail: MediaDetail, stream: AddonStream) {
+    if (!uiState.rememberLastSource) return
+    val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
+    playbackResumeStore.save(
+      ownerKey,
+      PlaybackMemoryEntry(
+        mediaId = detail.id,
+        mediaType = if (detail.type == "series") "tv" else detail.type,
+        title = detail.title,
+        year = detail.year,
+        poster = detail.poster,
+        backdrop = detail.backdrop,
+        progressPercent = 0.0,
+        isLive = true,
+        stream = stream,
+      ),
+    )
+    uiState = uiState.copy(localResumeEntries = loadResumeEntries())
   }
 
   fun playBestStream(episode: EpisodeItem? = null) {
@@ -2143,7 +2860,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     // last watched so the "Continue S#-E#" CTA plays exactly where they left off.
     val selectedEpisode = episode ?: uiState.selectedEpisode ?: rememberedEpisodeFor(detail)
     val remembered = loadPlaybackMemoryEntry(detail, selectedEpisode)
-    if (uiState.rememberLastSource && remembered?.stream != null && (remembered.progressPercent > 0.0 || !remembered.stream.url.isNullOrBlank() || !remembered.stream.infoHash.isNullOrBlank())) {
+    if (!uiState.detailIsLive && uiState.rememberLastSource && remembered?.stream != null && (remembered.progressPercent > 0.0 || !remembered.stream.url.isNullOrBlank() || !remembered.stream.infoHash.isNullOrBlank())) {
       playStream(remembered.stream, selectedEpisode, remembered.progressPercent)
       return
     }
@@ -2164,20 +2881,41 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
             fetchAddonStreamsWithRetry(addon, detailSourceCatalogType ?: detail.type, mediaId)
           }
           detail.type == "tv" && !uiState.detailIsLive && selectedEpisode != null -> {
-            val ids = streamLookupIds(detail).distinct()
-            fetchStreamsForPlayback("series", ids.map { "${it}:${selectedEpisode.seasonNumber}:${selectedEpisode.episodeNumber}" })
+            val bridgeEpisodeId = selectedEpisode.sourceStreamId?.takeIf { it.isNotBlank() }
+            if (bridgeEpisodeId != null) {
+              fetchStreamsForPlayback(detailSourceCatalogType ?: "series", listOf(bridgeEpisodeId))
+            } else {
+              val ids = streamLookupIds(detail).distinct()
+              fetchStreamsForPlayback("series", ids.map { "${it}:${selectedEpisode.seasonNumber}:${selectedEpisode.episodeNumber}" })
+            }
           }
           detail.type == "tv" && !uiState.detailIsLive -> Result.failure(IllegalStateException("Choose an episode first."))
+          uiState.detailIsLive -> {
+            // Source add-on unknown — still restrict the search to live TV add-ons.
+            fetchStreamsForPlayback(detailSourceCatalogType ?: detail.type, listOf(detail.id))
+          }
           else -> {
             val ids = streamLookupIds(detail).distinct()
-            fetchStreamsForPlayback(detail.type, ids)
+            val localBridgeType = detailSourceAddonId
+              ?.takeIf(LocalAddonManager::isLocalAddonId)
+              ?.let { detailSourceCatalogType }
+            fetchStreamsForPlayback(localBridgeType ?: detail.type, ids)
           }
         }
       },
       onSuccess = { streams ->
         val ranked = rankedStreams(mediaStreamsOnly(streams, detail), uiState.debridAccounts.isNotEmpty(), uiState.preferredQuality, uiState.maxFileSizeGb)
         uiState = uiState.copy(streamLoading = false, availableStreams = ranked, selectedEpisode = selectedEpisode)
-        ranked.firstOrNull()?.let { playStream(it, selectedEpisode) } ?: run {
+        val preferred = remembered?.stream?.takeIf { uiState.detailIsLive && uiState.rememberLastSource }?.let { saved ->
+          ranked.firstOrNull { candidate ->
+            streamIdentity(candidate) == streamIdentity(saved) ||
+              addonStreamPlaybackIdentity(candidate) == addonStreamPlaybackIdentity(saved) ||
+              (candidate.addonId == saved.addonId && listOf(candidate.source, candidate.name, candidate.title).any { label ->
+                !label.isNullOrBlank() && listOf(saved.source, saved.name, saved.title).any { rememberedLabel -> label.equals(rememberedLabel, ignoreCase = true) }
+              })
+          }
+        } ?: ranked.firstOrNull()
+        preferred?.let { playStream(it, selectedEpisode) } ?: run {
           uiState = uiState.copy(errorMessage = "No playable streams were found.")
         }
       },
@@ -2347,16 +3085,28 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
     launchWork(onStart = { uiState = uiState.copy(profilesLoading = true) }, block = { apiClient.setProfilePin(session, profileId, pin) }, onSuccess = { refreshProfiles() })
   }
+  // Local add-ons (installed from a localhost/LAN manifest, see LocalAddonManager) live entirely
+  // on-device and have no backend counterpart. They're appended after the backend-managed list
+  // and renumbered into one continuous `position` sequence so the rest of the app (home rows,
+  // stream fan-out ordering, up/down arrows) can keep treating `uiState.addons` as a single list.
+  private fun mergeWithLocalAddons(backendAddons: List<InstalledAddon>): List<InstalledAddon> =
+    (backendAddons.sortedBy { it.position } + LocalAddonManager.list()).mapIndexed { index, addon -> addon.copy(position = index) }
+
   fun refreshAddons() {
     launchWork(
       onStart = { uiState = uiState.copy(addonsLoading = true, errorMessage = null) },
-      block = { apiClient.fetchAddons(uiState.session) },
+      block = {
+        // Local add-ons have no server keeping their manifest fresh, so "refresh" re-fetches
+        // each one directly from the device before merging in the backend-managed list.
+        LocalAddonManager.list().forEach { local -> runCatching { LocalAddonManager.refresh(local.id) } }
+        apiClient.fetchAddons(uiState.session, uiState.activeProfileId)
+      },
       onSuccess = { addons ->
-        val sorted = addons.sortedBy { it.position }
-        val mergedRows = mergeHomeCatalogRows(uiState.homeCatalogRows, sorted)
+        val merged = mergeWithLocalAddons(addons)
+        val mergedRows = mergeHomeCatalogRows(uiState.homeCatalogRows, merged)
         uiState = uiState.copy(
           addonsLoading = false,
-          addons = sorted,
+          addons = merged,
           homeCatalogRows = mergedRows,
           homeSections = applyHomeCatalogLayout(uiState.allHomeSections, mergedRows, uiState.defaultAppCatalogsEnabled),
         )
@@ -2369,7 +3119,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         }
       },
       onFailure = { message ->
-        uiState = uiState.copy(addonsLoading = false, errorMessage = message)
+        // Even if the backend call fails (e.g. offline), keep showing whatever backend add-ons
+        // we already had plus a freshly re-read local add-on list.
+        val previousBackend = uiState.addons.filterNot { LocalAddonManager.isLocalAddonId(it.id) }
+        uiState = uiState.copy(addonsLoading = false, errorMessage = message, addons = mergeWithLocalAddons(previousBackend))
         pendingStreamLoad?.let { pending ->
           if (uiState.detail?.id == pending.detailId) loadStreamsForCurrentDetail(pending.episode)
           else pendingStreamLoad = null
@@ -2384,27 +3137,235 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       uiState = uiState.copy(errorMessage = "Enter a valid Stremio add-on manifest URL.")
       return
     }
+    // A manifest hosted on localhost/LAN can only ever be fetched by this device — the regular
+    // backend-install flow would send the URL to StreamDek's server, where 127.0.0.1 means
+    // something completely different. Install and serve those add-ons directly instead.
+    if (isLocalNetworkUrl(manifestUrl)) {
+      launchWork(
+        onStart = { uiState = uiState.copy(addonsLoading = true, errorMessage = null) },
+        block = { LocalAddonManager.install(manifestUrl) },
+        onSuccess = {
+          uiState = uiState.copy(infoMessage = "Add-on installed from your network.")
+          refreshAddons()
+        },
+      )
+      return
+    }
     launchWork(
       onStart = { uiState = uiState.copy(addonsLoading = true, errorMessage = null) },
-      block = { apiClient.installAddon(uiState.session, manifestUrl) },
+      block = { apiClient.installAddon(uiState.session, manifestUrl, uiState.activeProfileId) },
       onSuccess = {
         uiState = uiState.copy(infoMessage = "Add-on installed.")
         refreshAddons()
       },
     )
   }
-  fun toggleAddon(addon: InstalledAddon, enabled: Boolean) { launchWork(onStart = {}, block = { apiClient.toggleAddon(uiState.session, addon.id, enabled) }, onSuccess = { refreshAddons() }) }
-  fun uninstallAddon(addonId: String) { launchWork(onStart = {}, block = { apiClient.uninstallAddon(uiState.session, addonId) }, onSuccess = { refreshAddons() }) }
+  fun toggleAddon(addon: InstalledAddon, enabled: Boolean) {
+    if (LocalAddonManager.isLocalAddonId(addon.id)) {
+      LocalAddonManager.setEnabled(addon.id, enabled)
+      refreshAddons()
+      return
+    }
+    launchWork(onStart = {}, block = { apiClient.toggleAddon(uiState.session, addon.id, enabled, uiState.activeProfileId) }, onSuccess = { refreshAddons() })
+  }
+  fun uninstallAddon(addonId: String) {
+    if (LocalAddonManager.isLocalAddonId(addonId)) {
+      LocalAddonManager.remove(addonId)
+      refreshAddons()
+      return
+    }
+    launchWork(onStart = {}, block = { apiClient.uninstallAddon(uiState.session, addonId, uiState.activeProfileId) }, onSuccess = { refreshAddons() })
+  }
   fun moveAddon(addonId: String, delta: Int) {
-    val current = uiState.addons.sortedBy { it.position }.toMutableList()
+    val current = uiState.addons.sortedBy { it.position }
     val index = current.indexOfFirst { it.id == addonId }
-    val target = (index + delta).coerceIn(0, current.lastIndex)
-    if (index < 0 || index == target) return
-    val item = current.removeAt(index)
-    current.add(target, item)
-    val reordered = current.mapIndexed { position, addon -> addon.copy(position = position) }
-    uiState = uiState.copy(addons = reordered)
-    launchWork(onStart = {}, block = { apiClient.reorderAddons(uiState.session, reordered.map { it.id }) }, onSuccess = { refreshAddons() })
+    if (index < 0) return
+    val target = index + delta
+    if (target < 0 || target >= current.size) return
+    val movingLocal = LocalAddonManager.isLocalAddonId(addonId)
+    // Local and backend add-ons are reordered within their own group only — they're persisted
+    // in two different places, so there's no single ordering call that could move one across
+    // the other's boundary.
+    if (movingLocal != LocalAddonManager.isLocalAddonId(current[target].id)) return
+    if (movingLocal) {
+      LocalAddonManager.move(addonId, delta)
+      refreshAddons()
+      return
+    }
+    val backendList = current.filterNot { LocalAddonManager.isLocalAddonId(it.id) }.toMutableList()
+    val backendIndex = backendList.indexOfFirst { it.id == addonId }
+    val backendTarget = (backendIndex + delta).coerceIn(0, backendList.lastIndex)
+    if (backendIndex < 0 || backendIndex == backendTarget) return
+    val item = backendList.removeAt(backendIndex)
+    backendList.add(backendTarget, item)
+    val reordered = backendList.mapIndexed { position, addon -> addon.copy(position = position) }
+    uiState = uiState.copy(addons = mergeWithLocalAddons(reordered))
+    launchWork(onStart = {}, block = { apiClient.reorderAddons(uiState.session, reordered.map { it.id }, uiState.activeProfileId) }, onSuccess = { refreshAddons() })
+  }
+
+  private fun publishM3uProgress(generation: Long, progress: M3uLoadProgress, aggregateFraction: Float? = progress.fraction) {
+    viewModelScope.launch(Dispatchers.Main.immediate) {
+      if (generation != m3uLoadGeneration) return@launch
+      uiState = uiState.copy(
+        m3uProgress = aggregateFraction?.coerceIn(0f, 1f),
+        m3uStatusMessage = progress.message,
+        m3uErrorMessage = null,
+      )
+    }
+  }
+
+  fun loadM3uPlaylists() {
+    val sources = M3uPlaylistManager.list()
+    val enabledSources = sources.filter { it.enabled }
+    val generation = ++m3uLoadGeneration
+    uiState = uiState.copy(m3uSources = sources)
+    if (enabledSources.isEmpty()) {
+      uiState = uiState.copy(
+        m3uLoading = false,
+        m3uProgress = null,
+        m3uStatusMessage = null,
+        m3uErrorMessage = null,
+        m3uChannels = emptyList(),
+        m3uVodItems = emptyList(),
+      )
+      return
+    }
+    uiState = uiState.copy(
+      m3uLoading = true,
+      m3uProgress = 0f,
+      m3uStatusMessage = "Preparing ${enabledSources.size} playlist(s)…",
+      m3uErrorMessage = null,
+    )
+    viewModelScope.launch {
+      val liveChannels = mutableListOf<MediaItem>()
+      val vodItems = mutableListOf<MediaItem>()
+      val failures = mutableListOf<String>()
+      enabledSources.forEachIndexed { index, source ->
+        M3uPlaylistManager.fetchItems(source) { progress ->
+          val aggregate = progress.fraction?.let { (index + it) / enabledSources.size.toFloat() }
+          publishM3uProgress(
+            generation,
+            progress.copy(message = "Playlist ${index + 1} of ${enabledSources.size} • ${progress.message}"),
+            aggregate,
+          )
+        }.onSuccess { content ->
+          liveChannels += content.liveChannels
+          vodItems += content.vodItems
+          M3uPlaylistManager.updateContentSummary(source.id, content)
+        }.onFailure { error ->
+          failures += "${source.name}: ${error.message ?: "Unable to load"}"
+        }
+      }
+      if (generation != m3uLoadGeneration) return@launch
+      uiState = uiState.copy(
+        m3uLoading = false,
+        m3uProgress = null,
+        m3uStatusMessage = null,
+        m3uErrorMessage = failures.takeIf { it.isNotEmpty() }?.joinToString("\n"),
+        m3uSources = M3uPlaylistManager.list(),
+        m3uChannels = liveChannels,
+        m3uVodItems = vodItems,
+      )
+    }
+  }
+
+  fun addM3uPlaylist(url: String, name: String) {
+    val generation = ++m3uLoadGeneration
+    uiState = uiState.copy(
+      m3uLoading = true,
+      m3uProgress = 0f,
+      m3uStatusMessage = "Connecting to playlist…",
+      m3uErrorMessage = null,
+      errorMessage = null,
+    )
+    viewModelScope.launch {
+      M3uPlaylistManager.add(url, name) { progress -> publishM3uProgress(generation, progress) }
+        .onSuccess { result ->
+          if (generation != m3uLoadGeneration) return@onSuccess
+          uiState = uiState.copy(
+            m3uLoading = false,
+            m3uProgress = null,
+            m3uStatusMessage = null,
+            m3uErrorMessage = null,
+            m3uSources = M3uPlaylistManager.list(),
+            m3uChannels = uiState.m3uChannels + result.content.liveChannels,
+            m3uVodItems = uiState.m3uVodItems + result.content.vodItems,
+          )
+        }
+        .onFailure { error ->
+          if (generation != m3uLoadGeneration) return@onFailure
+          uiState = uiState.copy(
+            m3uLoading = false,
+            m3uProgress = null,
+            m3uStatusMessage = null,
+            m3uErrorMessage = error.message ?: "Unable to add that playlist.",
+          )
+        }
+    }
+  }
+
+  fun removeM3uPlaylist(id: String) {
+    M3uPlaylistManager.remove(id)
+    loadM3uPlaylists()
+  }
+
+  fun setM3uPlaylistEnabled(id: String, enabled: Boolean) {
+    M3uPlaylistManager.setEnabled(id, enabled)
+    loadM3uPlaylists()
+  }
+
+  fun moveM3uPlaylist(id: String, delta: Int) {
+    M3uPlaylistManager.move(id, delta)
+    uiState = uiState.copy(m3uSources = M3uPlaylistManager.list())
+  }
+  fun setDownloadsEnabled(value: Boolean) {
+    appSettingsStore.saveDownloadsEnabled(value)
+    uiState = uiState.copy(downloadsEnabled = value)
+    if (value) refreshDownloads()
+  }
+
+  fun refreshDownloads() {
+    uiState = uiState.copy(downloads = StreamDekDownloads.currentDownloadEntries())
+  }
+
+  /** Only streams playable through Media3 with a plain HTTP(S) URL can be downloaded - no
+   * torrent-only (`infoHash`) streams, and never live channels (there's no finite file). */
+  fun isDownloadEligible(stream: AddonStream, isLive: Boolean): Boolean =
+    uiState.downloadsEnabled && !isLive && stream.infoHash.isNullOrBlank() && !stream.url.isNullOrBlank() &&
+      (stream.url.startsWith("http://", ignoreCase = true) || stream.url.startsWith("https://", ignoreCase = true))
+
+  fun downloadStream(stream: AddonStream, title: String) {
+    val url = stream.url ?: return
+    if (!isDownloadEligible(stream, isLive = false)) return
+    val id = downloadIdFor(stream)
+    StreamDekDownloads.startDownload(id, url, title, null)
+    uiState = uiState.copy(infoMessage = "Downloading \"$title\"…")
+    refreshDownloads()
+  }
+
+  fun removeDownload(id: String) {
+    StreamDekDownloads.removeDownload(id)
+    refreshDownloads()
+  }
+
+  /** Plays a completed download back through the regular player. Forces the Media3 engine
+   * (not "Auto", which could fall back to mpv) since only Media3's data source chain knows how
+   * to read from the shared download cache - mpv has no idea it exists. */
+  fun playDownload(entry: DownloadEntry) {
+    if (entry.state != DownloadState.COMPLETED) return
+    uiState = uiState.copy(
+      returnToDetailAfterPlayer = false,
+      playerSession = PlayerSession(
+        url = entry.url,
+        title = entry.title,
+        subtitle = null,
+        sourceLabel = "Downloaded",
+        mediaId = entry.id,
+        mediaType = "movie",
+        isLive = false,
+        playerEngine = "Media3",
+      ),
+    )
   }
 
   fun refreshDebridAccounts() {
@@ -2460,7 +3421,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       onStart = { uiState = uiState.copy(syncRefreshing = true, errorMessage = null, infoMessage = null) },
       block = {
         coroutineScope {
-          val preferences = async { apiClient.fetchCloudPlaybackPreferences(session) }
+          val preferences = async { apiClient.fetchCloudPlaybackPreferences(session, uiState.activeProfileId) }
           val minimumAnimation = async { delay(500) }
           minimumAnimation.await()
           preferences.await()
@@ -2488,9 +3449,12 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val seasonTabStyle = preferences.seasonTabStyle?.let { runCatching { SeasonTabStyle.valueOf(it) }.getOrNull() }
     val decoderMode = preferences.decoderMode?.let(::normalizeDecoderModeSetting)
     val renderSurface = preferences.renderSurface?.let(::normalizeRenderSurfaceSetting)
+    val playerEngine = preferences.playerEngine?.let(::normalizePlayerEngineSetting)
+    val preferredAudioLanguage = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }?.audioLanguage?.takeIf { it.isNotBlank() }?.let(::normalizePreferredAudioLanguage) ?: preferences.preferredAudioLanguage?.let(::normalizePreferredAudioLanguage)
     val ratingProviders = preferences.enabledRatingProviders?.map { it.trim().lowercase() }?.filter(String::isNotBlank)?.toSet()
     val fusionBadgeUrls = preferences.fusionBadgeUrls?.distinct()?.take(MAX_FUSION_BADGE_URLS)
     val activeFusionBadgeUrl = preferences.activeFusionBadgeUrl?.takeIf { it in (fusionBadgeUrls ?: uiState.fusionBadgeUrls) }
+    val homeCatalogRows = preferences.homeCatalogRowsJson?.let(::parseHomeCatalogRows)
 
     appAppearance?.let(appSettingsStore::saveAppAppearance)
     themePreset?.let(appSettingsStore::saveThemePreset)
@@ -2501,12 +3465,13 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     preferences.syncOnCellular?.let(appSettingsStore::saveSyncOnCellular)
     detailPageStyle?.let(appSettingsStore::saveDetailPageStyle)
     continueWatchingStyle?.let(appSettingsStore::saveContinueWatchingStyle)
-    preferences.includeLiveInContinueWatching?.let(appSettingsStore::saveIncludeLiveInContinueWatching)
     preferences.liveLandscapeCards?.let(appSettingsStore::saveLiveLandscapeCards)
+    preferences.liveFavouriteDrawerCards?.let(appSettingsStore::saveLiveFavouriteDrawerCards)
     preferences.showHeroSynopsis?.let(appSettingsStore::saveShowHeroSynopsis)
     preferences.vividAmbient?.let(appSettingsStore::saveVividAmbient)
     preferences.ambientTintPercent?.let(appSettingsStore::saveAmbientTintPercent)
     preferences.defaultAppCatalogsEnabled?.let(appSettingsStore::saveDefaultAppCatalogsEnabled)
+    homeCatalogRows?.let(appSettingsStore::saveHomeCatalogRows)
     seasonTabStyle?.let(appSettingsStore::saveSeasonTabStyle)
     preferences.heroTrailerAutoplay?.let(appSettingsStore::saveHeroTrailerAutoplay)
     preferences.heroTrailerResolution?.let(appSettingsStore::saveHeroTrailerResolution)
@@ -2517,6 +3482,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     preferences.pictureInPictureEnabled?.let(appSettingsStore::savePictureInPictureEnabled)
     decoderMode?.let(appSettingsStore::saveDecoderMode)
     renderSurface?.let(appSettingsStore::saveRenderSurface)
+    playerEngine?.let(appSettingsStore::savePlayerEngine)
+    preferredAudioLanguage?.let(appSettingsStore::savePreferredAudioLanguage)
     preferences.skipIntroEnabled?.let(appSettingsStore::saveSkipIntroEnabled)
     preferences.skipRecapEnabled?.let(appSettingsStore::saveSkipRecapEnabled)
     preferences.skipEndingEnabled?.let(appSettingsStore::saveSkipEndingEnabled)
@@ -2531,6 +3498,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     preferences.blurUnwatchedEpisodes?.let(appSettingsStore::saveBlurUnwatchedEpisodes)
     preferences.fusionBadgesEnabled?.let(appSettingsStore::saveFusionBadges)
     preferences.showSizeBadges?.let(appSettingsStore::saveShowSizeBadges)
+    preferences.showAddonTmdbRatings?.let(appSettingsStore::saveShowAddonTmdbRatings)
     preferences.preferredQuality?.let(appSettingsStore::savePreferredQuality)
     preferences.maxFileSizeGb?.let(appSettingsStore::saveMaxFileSizeGb)
     preferences.badgePosition?.let(appSettingsStore::saveBadgePosition)
@@ -2547,15 +3515,16 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       syncOnCellular = preferences.syncOnCellular ?: uiState.syncOnCellular,
       detailPageStyle = detailPageStyle ?: uiState.detailPageStyle,
       continueWatchingStyle = continueWatchingStyle ?: uiState.continueWatchingStyle,
-      includeLiveInContinueWatching = preferences.includeLiveInContinueWatching ?: uiState.includeLiveInContinueWatching,
       liveLandscapeCards = preferences.liveLandscapeCards ?: uiState.liveLandscapeCards,
+      liveFavouriteDrawerCards = preferences.liveFavouriteDrawerCards ?: uiState.liveFavouriteDrawerCards,
       showHeroSynopsis = preferences.showHeroSynopsis ?: uiState.showHeroSynopsis,
       vividAmbient = preferences.vividAmbient ?: uiState.vividAmbient,
       ambientTintPercent = (preferences.ambientTintPercent ?: uiState.ambientTintPercent).coerceIn(20, 100),
       defaultAppCatalogsEnabled = preferences.defaultAppCatalogsEnabled ?: uiState.defaultAppCatalogsEnabled,
+      homeCatalogRows = homeCatalogRows ?: uiState.homeCatalogRows,
       seasonTabStyle = seasonTabStyle ?: uiState.seasonTabStyle,
       heroTrailerAutoplay = preferences.heroTrailerAutoplay ?: uiState.heroTrailerAutoplay,
-      heroTrailerResolution = preferences.heroTrailerResolution?.coerceIn(360, 1080) ?: uiState.heroTrailerResolution,
+      heroTrailerResolution = preferences.heroTrailerResolution?.coerceIn(360, 2160) ?: uiState.heroTrailerResolution,
       ratingsEnabled = preferences.ratingsEnabled ?: uiState.ratingsEnabled,
       externalRatingsEnabled = preferences.externalRatingsEnabled ?: uiState.externalRatingsEnabled,
       enabledRatingProviders = ratingProviders ?: uiState.enabledRatingProviders,
@@ -2563,6 +3532,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       pictureInPictureEnabled = preferences.pictureInPictureEnabled ?: uiState.pictureInPictureEnabled,
       decoderMode = decoderMode ?: uiState.decoderMode,
       renderSurface = renderSurface ?: uiState.renderSurface,
+      playerEngine = playerEngine ?: uiState.playerEngine,
+      preferredAudioLanguage = preferredAudioLanguage ?: uiState.preferredAudioLanguage,
       skipIntroEnabled = preferences.skipIntroEnabled ?: uiState.skipIntroEnabled,
       skipRecapEnabled = preferences.skipRecapEnabled ?: uiState.skipRecapEnabled,
       skipEndingEnabled = preferences.skipEndingEnabled ?: uiState.skipEndingEnabled,
@@ -2577,6 +3548,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       blurUnwatchedEpisodes = preferences.blurUnwatchedEpisodes ?: uiState.blurUnwatchedEpisodes,
       fusionBadgesEnabled = preferences.fusionBadgesEnabled ?: uiState.fusionBadgesEnabled,
       showSizeBadges = preferences.showSizeBadges ?: uiState.showSizeBadges,
+      showAddonTmdbRatings = preferences.showAddonTmdbRatings ?: uiState.showAddonTmdbRatings,
       preferredQuality = preferences.preferredQuality ?: uiState.preferredQuality,
       maxFileSizeGb = preferences.maxFileSizeGb ?: uiState.maxFileSizeGb,
       badgePosition = preferences.badgePosition ?: uiState.badgePosition,
@@ -2584,6 +3556,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       activeFusionBadgeUrl = if (fusionBadgeUrls != null) activeFusionBadgeUrl else uiState.activeFusionBadgeUrl,
       autoUpdateChecksEnabled = preferences.autoUpdateChecksEnabled ?: uiState.autoUpdateChecksEnabled,
     )
+    if (homeCatalogRows != null) uiState = uiState.copy(homeSections = applyHomeCatalogLayout(uiState.allHomeSections, homeCatalogRows, uiState.defaultAppCatalogsEnabled))
     if (fusionBadgeUrls != null) refreshFusionBadgeSources()
     uiState.detail?.let(::refreshExternalRatings)
   }
@@ -2636,6 +3609,40 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
   }
 
+  fun toggleFavouriteChannel(item: MediaItem) {
+    if (!item.isLiveCatalogItem()) return
+    val ownerKey = activeOwnerKey() ?: return
+    val current = loadLocalFavouriteChannels().toMutableList()
+    val index = current.indexOfFirst { it.id == item.id }
+    if (index >= 0) current.removeAt(index) else current.add(0, item.copy(addedAt = item.addedAt ?: System.currentTimeMillis()))
+    favouriteChannelStore.save(ownerKey, current)
+    uiState = uiState.copy(favouriteChannels = current)
+  }
+
+  fun clearFavouriteChannels() {
+    val ownerKey = activeOwnerKey() ?: return
+    favouriteChannelStore.clear(ownerKey)
+    uiState = uiState.copy(favouriteChannels = emptyList())
+  }
+
+  fun toggleFavouriteChannelForCurrentSession() {
+    val session = uiState.playerSession ?: return
+    if (!session.isLive) return
+    val item = uiState.detailFallbackItem?.takeIf { it.id == session.mediaId } ?: MediaItem(
+      id = session.mediaId,
+      type = session.mediaType,
+      title = session.title,
+      year = session.year?.toString(),
+      poster = session.poster,
+      backdrop = session.backdrop,
+      rating = null,
+      description = session.synopsis.orEmpty(),
+      sourceAddonId = session.currentStream?.addonId,
+      sourceAddonName = session.currentStream?.addonName,
+    )
+    toggleFavouriteChannel(item)
+  }
+
   fun markWatched(item: MediaItem) {
     val ownerKey = activeOwnerKey() ?: return
     watchedTitleStore.add(ownerKey, item)
@@ -2667,6 +3674,18 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
   }
 
+  fun restartFromBeginning(item: MediaItem) {
+    val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
+    playbackResumeStore.removeTitle(ownerKey, item.id, item.type)
+    uiState = uiState.copy(
+      localContinueWatching = loadLocalContinueWatching(),
+      localResumeEntries = loadResumeEntries(),
+      traktContinueWatching = uiState.traktContinueWatching.filterNot {
+        (it.tmdbId?.toString() ?: it.id) == item.id && normalizedMediaType(it.type) == normalizedMediaType(item.type)
+      },
+      infoMessage = "${item.title} will start from the beginning.",
+    )
+  }
   fun setAutoUpdateChecks(enabled: Boolean) {
     appSettingsStore.saveAutoUpdateChecks(enabled)
     uiState = uiState.copy(autoUpdateChecksEnabled = enabled)
@@ -2680,9 +3699,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       onStart = { uiState = uiState.copy(updateChecking = true, updateErrorMessage = null, updateStatusMessage = if (manual) "Checking for updates..." else null) },
       block = { apiClient.fetchLatestMobileUpdate() },
       onSuccess = { release ->
-        val available = release.versionCode > BuildConfig.VERSION_CODE
+        val available = release.versionCode > BuildConfig.VERSION_CODE || compareSemanticVersions(release.versionName, BuildConfig.VERSION_NAME) > 0
         val mandatory = release.required || (release.minSupportedVersionCode?.let { BuildConfig.VERSION_CODE < it } == true)
-        uiState = uiState.copy(updateChecking = false, availableUpdate = release.takeIf { available }, updatePromptVisible = available && (manual || uiState.autoUpdateChecksEnabled || mandatory), updateStatusMessage = if (available) "Version ${release.versionName} is available." else if (manual) "You are already on the latest version." else null, updateErrorMessage = null)
+        uiState = uiState.copy(updateChecking = false, availableUpdate = release.takeIf { available }, updatePromptVisible = available && (manual || uiState.autoUpdateChecksEnabled || mandatory), updateStatusMessage = if (!available && manual) "You are already on the latest version." else null, updateErrorMessage = null)
       },
       onFailure = { message -> uiState = uiState.copy(updateChecking = false, updateStatusMessage = null, updateErrorMessage = message) },
     )
@@ -2706,7 +3725,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val safeName = release.assetName?.replace(Regex("[^a-zA-Z0-9._-]"), "-") ?: "streamdek-${release.versionCode}.apk"
     val destination = java.io.File(context.cacheDir, "updates/$safeName")
     launchWork(
-      onStart = { uiState = uiState.copy(updateDownloading = true, updateProgress = 0f, updateErrorMessage = null, updateStatusMessage = "Downloading version ${release.versionName}...") },
+      onStart = { uiState = uiState.copy(updateDownloading = true, updateProgress = 0f, updatePromptVisible = false, updateErrorMessage = null, updateStatusMessage = "Downloading version ${release.versionName}...") },
       block = { apiClient.downloadUpdate(release, destination) { downloaded, total ->
         val progress = total?.takeIf { it > 0L }?.let { (downloaded.toDouble() / it.toDouble()).toFloat().coerceIn(0f, 1f) }
         viewModelScope.launch(Dispatchers.Main) { uiState = uiState.copy(updateProgress = progress) }
@@ -2733,7 +3752,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): String {
   val userId = session?.user?.uid
   return when {
-    userId.isNullOrBlank() -> GUEST_OWNER_KEY
+    userId.isNullOrBlank() -> activeProfileId?.let { "guest:$it" } ?: GUEST_OWNER_KEY
     activeProfileId.isNullOrBlank() -> userId
     else -> "$userId:$activeProfileId"
   }
@@ -2752,12 +3771,13 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       syncOnCellular = uiState.syncOnCellular,
       detailPageStyle = uiState.detailPageStyle.name,
       continueWatchingStyle = uiState.continueWatchingStyle.name,
-      includeLiveInContinueWatching = uiState.includeLiveInContinueWatching,
       liveLandscapeCards = uiState.liveLandscapeCards,
+      liveFavouriteDrawerCards = uiState.liveFavouriteDrawerCards,
       showHeroSynopsis = uiState.showHeroSynopsis,
       vividAmbient = uiState.vividAmbient,
       ambientTintPercent = uiState.ambientTintPercent,
       defaultAppCatalogsEnabled = uiState.defaultAppCatalogsEnabled,
+      homeCatalogRowsJson = serializeHomeCatalogRows(uiState.homeCatalogRows),
       seasonTabStyle = uiState.seasonTabStyle.name,
       heroTrailerAutoplay = uiState.heroTrailerAutoplay,
       heroTrailerResolution = uiState.heroTrailerResolution,
@@ -2768,6 +3788,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       pictureInPictureEnabled = uiState.pictureInPictureEnabled,
       decoderMode = uiState.decoderMode,
       renderSurface = uiState.renderSurface,
+      playerEngine = uiState.playerEngine,
+      preferredAudioLanguage = uiState.preferredAudioLanguage,
       skipIntroEnabled = uiState.skipIntroEnabled,
       skipRecapEnabled = uiState.skipRecapEnabled,
       skipEndingEnabled = uiState.skipEndingEnabled,
@@ -2782,6 +3804,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       blurUnwatchedEpisodes = uiState.blurUnwatchedEpisodes,
       fusionBadgesEnabled = uiState.fusionBadgesEnabled,
       showSizeBadges = uiState.showSizeBadges,
+      showAddonTmdbRatings = uiState.showAddonTmdbRatings,
       preferredQuality = uiState.preferredQuality,
       maxFileSizeGb = uiState.maxFileSizeGb,
       badgePosition = uiState.badgePosition,
@@ -2789,14 +3812,41 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       activeFusionBadgeUrl = uiState.activeFusionBadgeUrl,
       autoUpdateChecksEnabled = uiState.autoUpdateChecksEnabled,
     )
-    viewModelScope.launch { apiClient.patchCloudPreferences(session, preferences) }
+    viewModelScope.launch { apiClient.patchCloudPreferences(session, preferences, uiState.activeProfileId) }
   }
   fun setAppAppearance(value: AppAppearance) { appSettingsStore.saveAppAppearance(value); uiState = uiState.copy(appAppearance = value); syncCloudPreferences() }
+  fun setAppLanguage(value: String) {
+    val normalized = normalizeAppLanguage(value)
+    appSettingsStore.saveAppLanguage(normalized)
+    uiState = uiState.copy(appLanguage = normalized)
+  }
   fun setThemePreset(value: AppThemePreset) { appSettingsStore.saveThemePreset(value); uiState = uiState.copy(themePreset = value); syncCloudPreferences() }
   fun setHeaderStyle(value: HeaderStyle) { appSettingsStore.saveHeaderStyle(value); uiState = uiState.copy(headerStyle = value); syncCloudPreferences() }
   fun setPictureInPictureEnabled(value: Boolean) { appSettingsStore.savePictureInPictureEnabled(value); uiState = uiState.copy(pictureInPictureEnabled = value); syncCloudPreferences() }
   fun setDecoderMode(value: String) { appSettingsStore.saveDecoderMode(value); uiState = uiState.copy(decoderMode = value); syncCloudPreferences() }
   fun setRenderSurface(value: String) { appSettingsStore.saveRenderSurface(value); uiState = uiState.copy(renderSurface = value); syncCloudPreferences() }
+  fun setPlayerEngine(value: String) { val normalized = normalizePlayerEngineSetting(value); appSettingsStore.savePlayerEngine(normalized); uiState = uiState.copy(playerEngine = normalized); syncCloudPreferences() }
+  fun setPreferredAudioLanguage(value: String) {
+    val normalized = normalizePreferredAudioLanguage(value)
+    val profileId = uiState.activeProfileId
+    val updatedProfiles = if (profileId == null) uiState.profiles else uiState.profiles.map { profile ->
+      if (profile.id == profileId) profile.copy(audioLanguage = normalized) else profile
+    }
+    uiState = uiState.copy(preferredAudioLanguage = normalized, profiles = updatedProfiles)
+    val session = uiState.session
+    if (profileId != null && session == null) {
+      guestProfileStore.save(updatedProfiles)
+    } else if (profileId != null && session != null) {
+      viewModelScope.launch {
+        apiClient.updateProfileAudioLanguage(session, profileId, normalized).onFailure { error ->
+          uiState = uiState.copy(errorMessage = error.message ?: "Could not save the profile audio language.")
+        }
+      }
+    } else {
+      appSettingsStore.savePreferredAudioLanguage(normalized)
+      syncCloudPreferences()
+    }
+  }
   fun setDetailPageStyle(style: DetailPageStyle) { appSettingsStore.saveDetailPageStyle(style); uiState = uiState.copy(detailPageStyle = style); syncCloudPreferences() }
   fun setSeasonTabStyle(style: SeasonTabStyle) { appSettingsStore.saveSeasonTabStyle(style); uiState = uiState.copy(seasonTabStyle = style); syncCloudPreferences() }
   fun setShowNavLabels(value: Boolean) { appSettingsStore.saveShowNavLabels(value); uiState = uiState.copy(showNavLabels = value); syncCloudPreferences() }
@@ -2812,18 +3862,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setHeroTrailerResolution(value: Int) { appSettingsStore.saveHeroTrailerResolution(value); uiState = uiState.copy(heroTrailerResolution = value); syncCloudPreferences() }
   fun setShowHeroSynopsis(value: Boolean) { appSettingsStore.saveShowHeroSynopsis(value); uiState = uiState.copy(showHeroSynopsis = value); syncCloudPreferences() }
   fun setContinueWatchingStyle(style: ContinueWatchingStyle) { appSettingsStore.saveContinueWatchingStyle(style); uiState = uiState.copy(continueWatchingStyle = style); syncCloudPreferences() }
-  fun setIncludeLiveInContinueWatching(value: Boolean) {
-    appSettingsStore.saveIncludeLiveInContinueWatching(value)
-    uiState = uiState.copy(includeLiveInContinueWatching = value)
-    if (!value) {
-      uiState.playerSession?.takeIf { it.isLive }?.let { player ->
-        playbackResumeStore.remove(activeOwnerKey() ?: GUEST_OWNER_KEY, player.mediaId, player.mediaType, player.seasonNumber, player.episodeNumber)
-      }
-    }
-    uiState = uiState.copy(localContinueWatching = loadLocalContinueWatching(), localResumeEntries = loadResumeEntries())
-    syncCloudPreferences()
-  }
   fun setLiveLandscapeCards(value: Boolean) { appSettingsStore.saveLiveLandscapeCards(value); uiState = uiState.copy(liveLandscapeCards = value); syncCloudPreferences() }
+  fun setLiveFavouriteDrawerCards(value: Boolean) { appSettingsStore.saveLiveFavouriteDrawerCards(value); uiState = uiState.copy(liveFavouriteDrawerCards = value); syncCloudPreferences() }
   fun setRememberLastSource(value: Boolean) { appSettingsStore.saveRememberLastSource(value); uiState = uiState.copy(rememberLastSource = value); syncCloudPreferences() }
   fun setSyncOnCellular(value: Boolean) { appSettingsStore.saveSyncOnCellular(value); uiState = uiState.copy(syncOnCellular = value); syncCloudPreferences(force = true) }
   fun setSkipIntroEnabled(value: Boolean) { appSettingsStore.saveSkipIntroEnabled(value); uiState = uiState.copy(skipIntroEnabled = value); syncCloudPreferences() }
@@ -2869,6 +3909,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     val rows = uiState.homeCatalogRows.map { if (it.id == rowId) it.copy(enabled = enabled) else it }
     appSettingsStore.saveHomeCatalogRows(rows)
     uiState = uiState.copy(homeCatalogRows = rows, homeSections = applyHomeCatalogLayout(uiState.allHomeSections, rows, uiState.defaultAppCatalogsEnabled))
+    syncCloudPreferences()
   }
   fun moveHomeCatalogRow(rowId: String, delta: Int) {
     val current = uiState.homeCatalogRows.toMutableList()
@@ -2879,9 +3920,11 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     current.add(target, item)
     appSettingsStore.saveHomeCatalogRows(current)
     uiState = uiState.copy(homeCatalogRows = current, homeSections = applyHomeCatalogLayout(uiState.allHomeSections, current, uiState.defaultAppCatalogsEnabled))
+    syncCloudPreferences()
   }
   fun setFusionBadgesEnabled(value: Boolean) { appSettingsStore.saveFusionBadges(value); uiState = uiState.copy(fusionBadgesEnabled = value); syncCloudPreferences() }
   fun setShowSizeBadges(value: Boolean) { appSettingsStore.saveShowSizeBadges(value); uiState = uiState.copy(showSizeBadges = value); syncCloudPreferences() }
+  fun setShowAddonTmdbRatings(value: Boolean) { appSettingsStore.saveShowAddonTmdbRatings(value); uiState = uiState.copy(showAddonTmdbRatings = value); syncCloudPreferences() }
   fun setPreferredQuality(value: String) { appSettingsStore.savePreferredQuality(value); uiState = uiState.copy(preferredQuality = value); syncCloudPreferences() }
   fun setMaxFileSizeGb(value: Int) { appSettingsStore.saveMaxFileSizeGb(value); uiState = uiState.copy(maxFileSizeGb = value); syncCloudPreferences() }
   fun setBadgePosition(value: String) { appSettingsStore.saveBadgePosition(value); uiState = uiState.copy(badgePosition = value); syncCloudPreferences() }
@@ -2964,7 +4007,9 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   private fun syncTorrentServer() {
     val app = getApplication<Application>()
     val config = uiState.torrentServerSettings.toServiceConfig()
-    if (config.enabled && config.streamingMode == "server") {
+    val shouldRun = config.enabled && config.streamingMode == "server" &&
+      (config.runAsForegroundService || (uiState.playerSession != null && TorrentServerService.isOnline))
+    if (shouldRun) {
       val intent = TorrentServerService.createIntent(app, config)
       val notificationsAllowed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         ContextCompat.checkSelfPermission(app, android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -2981,6 +4026,16 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       runCatching { app.stopService(TorrentServerService.createIntent(app, config)) }
       TorrentServerService.markStopped()
     }
+    refreshTorrentServerStatus()
+  }
+
+  private fun stopOnDemandTorrentServer() {
+    val config = uiState.torrentServerSettings.toServiceConfig()
+    if (config.runAsForegroundService) return
+    torrentStatusRefreshJob?.cancel()
+    val app = getApplication<Application>()
+    runCatching { app.stopService(TorrentServerService.createIntent(app, config)) }
+    TorrentServerService.markStopped()
     refreshTorrentServerStatus()
   }
 
@@ -3072,41 +4127,64 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
         if (session == null) {
           val profiles = guestProfileStore.load()
           val selected = profiles.firstOrNull { it.id == profileSelectionStore.load(GUEST_OWNER_KEY) } ?: profiles.firstOrNull { it.isDefault } ?: profiles.firstOrNull()
-          uiState = appSettingsStore.applyTo(uiState.copy(booting = false, session = null, profilesLoading = false, profiles = profiles, activeProfileId = selected?.id, showProfilePicker = profiles.size > 1, mergedWatchlist = watchlistStore.load(selected?.id?.let { "guest:$it" } ?: GUEST_OWNER_KEY)))
+          uiState = appSettingsStore.applyTo(uiState.copy(booting = false, session = null, profilesLoading = false, profiles = profiles, activeProfileId = selected?.id, showProfilePicker = profiles.size > 1, mergedWatchlist = watchlistStore.load(selected?.id?.let { "guest:$it" } ?: GUEST_OWNER_KEY), favouriteChannels = favouriteChannelStore.load(selected?.id?.let { "guest:$it" } ?: GUEST_OWNER_KEY)))
         } else {
           routeAfterProfileRefresh = true
-          uiState = appSettingsStore.applyTo(uiState.copy(booting = false, session = session, profilesLoading = true, showProfilePicker = true, mergedWatchlist = watchlistStore.load(activeOwnerKey() ?: GUEST_OWNER_KEY)))
+          uiState = appSettingsStore.applyTo(uiState.copy(booting = false, session = session, profilesLoading = true, showProfilePicker = true, mergedWatchlist = watchlistStore.load(activeOwnerKey() ?: GUEST_OWNER_KEY), favouriteChannels = favouriteChannelStore.load(activeOwnerKey() ?: GUEST_OWNER_KEY)))
         }
         bootstrapAfterAuth()
       },
       onFailure = {
         val profiles = guestProfileStore.load()
         val selected = profiles.firstOrNull { it.id == profileSelectionStore.load(GUEST_OWNER_KEY) } ?: profiles.firstOrNull { it.isDefault } ?: profiles.firstOrNull()
-        uiState = appSettingsStore.applyTo(uiState.copy(booting = false, session = null, profilesLoading = false, profiles = profiles, activeProfileId = selected?.id, showProfilePicker = profiles.size > 1, errorMessage = null, mergedWatchlist = watchlistStore.load(selected?.id?.let { "guest:$it" } ?: GUEST_OWNER_KEY)))
+        uiState = appSettingsStore.applyTo(uiState.copy(booting = false, session = null, profilesLoading = false, profiles = profiles, activeProfileId = selected?.id, showProfilePicker = profiles.size > 1, errorMessage = null, mergedWatchlist = watchlistStore.load(selected?.id?.let { "guest:$it" } ?: GUEST_OWNER_KEY), favouriteChannels = favouriteChannelStore.load(selected?.id?.let { "guest:$it" } ?: GUEST_OWNER_KEY)))
         bootstrapAfterAuth()
       },
     )
   }
 
-  private fun submitAuth(block: suspend () -> Result<AuthSession>) {
+  private fun submitAuth(guestDataOwnerKey: String? = null, block: suspend () -> Result<AuthSession>) {
     launchWork(
       onStart = { uiState = uiState.copy(booting = true, errorMessage = null, infoMessage = null) },
       block = block,
       onSuccess = { session ->
         sessionStore.save(session)
         routeAfterProfileRefresh = true
-        uiState = appSettingsStore.applyTo(uiState.copy(booting = false, session = session, profilesLoading = true, showProfilePicker = true))
+        uiState = appSettingsStore.applyTo(uiState.copy(booting = false, session = session, profilesLoading = true, showProfilePicker = true, pendingGuestMerge = guestDataOwnerKey))
         bootstrapAfterAuth(forceHome = true)
       },
       onFailure = { message -> uiState = uiState.copy(booting = false, errorMessage = message) },
     )
   }
 
+  fun dismissGuestMergePrompt() {
+    uiState = uiState.copy(pendingGuestMerge = null)
+  }
+
+  /** Moves a just-left-behind guest identity's watchlist, favourites, continue-watching
+   * progress, and locally-added add-ons into the profile the user just registered/landed
+   * on. General app settings need no migration - most of them already live in a single
+   * shared preferences file rather than being keyed per owner. */
+  fun mergeGuestDataIntoAccount() {
+    val sourceKey = uiState.pendingGuestMerge ?: return
+    uiState = uiState.copy(pendingGuestMerge = null)
+    val targetKey = activeOwnerKey() ?: return
+    if (targetKey == sourceKey) return
+    val mergedWatchlist = (watchlistStore.load(targetKey) + watchlistStore.load(sourceKey)).distinctBy { "${it.type}:${it.id}" }
+    watchlistStore.save(targetKey, mergedWatchlist)
+    val mergedFavourites = (favouriteChannelStore.load(targetKey) + favouriteChannelStore.load(sourceKey)).distinctBy { "${it.type}:${it.id}" }
+    favouriteChannelStore.save(targetKey, mergedFavourites)
+    playbackResumeStore.loadAll(sourceKey).forEach { entry -> playbackResumeStore.save(targetKey, entry) }
+    LocalAddonManager.copyProfileStorageTo(sourceKey, targetKey)
+    refreshProfileScopedData()
+    uiState = uiState.copy(infoMessage = "Your favourites, watchlist, and add-ons were moved into your new account.")
+  }
+
   private fun bootstrapAfterAuth(forceHome: Boolean = false) {
     syncTorrentServer()
     uiState.session?.let { session ->
       viewModelScope.launch {
-        apiClient.fetchCloudPlaybackPreferences(session).onSuccess { preferences ->
+        apiClient.fetchCloudPlaybackPreferences(session, uiState.activeProfileId).onSuccess { preferences ->
           applyCloudPlaybackPreferences(preferences)
           loadHome(force = true)
         }
@@ -3115,8 +4193,9 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     refreshFusionBadgeSources()
     loadHome(force = forceHome)
     refreshAddons()
+    if (uiState.session == null) loadM3uPlaylists()
     refreshTraktData()
-    uiState = uiState.copy(mergedWatchlist = loadLocalWatchlist(), localContinueWatching = loadLocalContinueWatching(), localResumeEntries = loadResumeEntries())
+    uiState = uiState.copy(mergedWatchlist = loadLocalWatchlist(), favouriteChannels = loadLocalFavouriteChannels(), localContinueWatching = loadLocalContinueWatching(), localResumeEntries = loadResumeEntries())
     if (uiState.session != null) {
       refreshProfiles()
       refreshDebridAccounts()
@@ -3125,9 +4204,35 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   }
 
   private fun refreshProfileScopedData() {
+    val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
+    appSettingsStore.selectProfileStorage(ownerKey)
+    LocalAddonManager.selectProfileStorage(ownerKey)
+    M3uPlaylistManager.selectProfileStorage(ownerKey)
+    loadM3uPlaylists()
+    val activeProfile = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }
     refreshTraktData()
     refreshProfilePlugins()
-    uiState = uiState.copy(mergedWatchlist = loadLocalWatchlist(), localContinueWatching = loadLocalContinueWatching(), localResumeEntries = loadResumeEntries())
+    uiState = appSettingsStore.applyTo(uiState.copy(
+      mergedWatchlist = loadLocalWatchlist(),
+      favouriteChannels = loadLocalFavouriteChannels(),
+      localContinueWatching = loadLocalContinueWatching(),
+      localResumeEntries = loadResumeEntries(),
+      preferredAudioLanguage = normalizePreferredAudioLanguage(activeProfile?.audioLanguage?.takeIf { it.isNotBlank() } ?: "en"),
+    ))
+    refreshAddons()
+    val session = uiState.session
+    val profileId = uiState.activeProfileId
+    if (session != null && profileId != null) {
+      viewModelScope.launch {
+        apiClient.fetchCloudPlaybackPreferences(session, profileId).onSuccess { preferences ->
+          if (uiState.activeProfileId == profileId) {
+            applyCloudPlaybackPreferences(preferences)
+            syncCloudPreferences(force = true)
+            loadHome(force = true)
+          }
+        }
+      }
+    }
   }
 
   private fun refreshProfilePlugins() {
@@ -3183,12 +4288,14 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
 
   private fun loadLocalWatchlist(): List<MediaItem> = watchlistStore.load(activeOwnerKey() ?: GUEST_OWNER_KEY)
 
+  private fun loadLocalFavouriteChannels(): List<MediaItem> = favouriteChannelStore.load(activeOwnerKey() ?: GUEST_OWNER_KEY)
+
   private fun loadLocalContinueWatching(): List<MediaItem> {
     val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
     val watchedTitles = watchedTitleStore.load(ownerKey)
     return playbackResumeStore.loadAll(ownerKey)
       .filterNot { entry -> watchedTitleKey(entry.mediaType, entry.mediaId) in watchedTitles }
-      .filter { entry -> uiState.includeLiveInContinueWatching || (!entry.isLive && entry.mediaType.lowercase() !in setOf("live", "channel", "sports", "sport")) }
+      .filter { entry -> !entry.isLive && entry.mediaType.lowercase() !in setOf("live", "channel", "sports", "sport") }
       .map { entry ->
         MediaItem(
           id = entry.mediaId,
@@ -3201,6 +4308,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
           description = "",
           progress = entry.progressPercent,
           updatedAt = entry.updatedAt,
+          resumeSeasonNumber = entry.seasonNumber,
+          resumeEpisodeNumber = entry.episodeNumber,
         )
       }
   }
@@ -3241,8 +4350,28 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
     val player = uiState.playerSession ?: return
     val normalizedProgress = progressPercent.coerceIn(0.0, 100.0)
-    if (player.isLive && !uiState.includeLiveInContinueWatching) {
-      playbackResumeStore.remove(ownerKey, player.mediaId, player.mediaType, player.seasonNumber, player.episodeNumber)
+    if (player.isLive) {
+      // Live has no meaningful resume position, but the entry is still worth keeping
+      // as a record of the source that worked. Continue Watching filters live entries
+      // out on load, so this never shows up there.
+      if (uiState.rememberLastSource) {
+        playbackResumeStore.save(
+          ownerKey,
+          PlaybackMemoryEntry(
+            mediaId = player.mediaId,
+            mediaType = player.mediaType,
+            title = player.title,
+            year = player.year?.toString(),
+            poster = player.poster,
+            backdrop = player.backdrop,
+            progressPercent = 0.0,
+            isLive = true,
+            stream = if (uiState.rememberLastSource) player.currentStream else null,
+          ),
+        )
+      } else {
+        playbackResumeStore.remove(ownerKey, player.mediaId, player.mediaType, player.seasonNumber, player.episodeNumber)
+      }
       uiState = uiState.copy(localContinueWatching = loadLocalContinueWatching(), localResumeEntries = loadResumeEntries())
       return
     }
@@ -3285,6 +4414,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
         poster = item.poster ?: existing.poster,
         backdrop = item.backdrop ?: existing.backdrop,
         progress = maxOf(existing.progress ?: 0.0, item.progress ?: 0.0),
+        resumeSeasonNumber = item.resumeSeasonNumber ?: existing.resumeSeasonNumber,
+        resumeEpisodeNumber = item.resumeEpisodeNumber ?: existing.resumeEpisodeNumber,
       )
     }
     return merged.values.sortedByDescending { it.progress ?: 0.0 }
@@ -3354,28 +4485,31 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
 
   private fun buildPlayerSession(url: String, detail: MediaDetail, sourceLabel: String?, episode: EpisodeItem?, stream: AddonStream, resumePercent: Double = 0.0): PlayerSession = PlayerSession(
     url = url,
-    title = detail.title,
-    subtitle = episode?.let { "S${it.seasonNumber} E${it.episodeNumber}" } ?: detail.year,
-    sourceLabel = sourceLabel,
+    title = sanitizeDisplayText(detail.title).orEmpty(),
+    subtitle = sanitizeDisplayText(episode?.let { "S${it.seasonNumber} E${it.episodeNumber}" } ?: detail.year),
+    sourceLabel = sanitizeDisplayText(sourceLabel),
     qualityLabel = stream.quality,
     sizeLabel = stream.size,
     backdrop = episode?.still ?: detail.backdrop ?: detail.poster,
     poster = detail.poster,
     titleLogo = detail.titleLogo,
-    synopsis = episode?.overview?.ifBlank { detail.description } ?: detail.description,
+    // Live channels have no synopsis — keep it null so the player omits the block.
+    synopsis = sanitizeDisplayText(if (uiState.detailIsLive) null else episode?.overview?.ifBlank { detail.description } ?: detail.description),
     mediaId = detail.id,
     mediaType = detail.type,
     year = detail.year?.toIntOrNull(),
     seasonNumber = episode?.seasonNumber,
     episodeNumber = episode?.episodeNumber,
-    episodeTitle = episode?.name,
+    episodeTitle = sanitizeDisplayText(episode?.name),
     pictureInPictureEnabled = uiState.pictureInPictureEnabled,
     decoderMode = uiState.decoderMode,
     renderSurface = uiState.renderSurface,
+    playerEngine = uiState.playerEngine,
+    preferredAudioLanguage = uiState.preferredAudioLanguage,
     resumePercent = resumePercent,
     currentStream = stream,
     imdbId = detail.imdbId ?: detail.id.takeIf { it.startsWith("tt") },
-    subtitleLanguage = "en",
+    subtitleLanguage = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }?.subtitleLanguage?.takeIf { it.isNotBlank() } ?: "en",
     autoLoadSubtitles = uiState.autoLoadSubtitles,
     skipIntroEnabled = uiState.skipIntroEnabled,
     skipRecapEnabled = uiState.skipRecapEnabled,
@@ -3388,7 +4522,27 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     requestHeaders = stream.requestHeaders,
     isLive = uiState.detailIsLive,
     runtimeMinutes = episode?.runtime ?: detail.runtimeMinutes,
+    addonSubtitleSources = addonSubtitleSources(),
+    userSubtitleSources = UserSubtitleSourceStore.load(getApplication<Application>().applicationContext, activeOwnerKey() ?: GUEST_OWNER_KEY),
+    isProxied = stream.isLikelyProxied(uiState.addons.firstOrNull { it.id == stream.addonId }),
   )
+
+  // Installed, enabled addons that advertise the Stremio "subtitles" resource are
+  // queried alongside the user's manual subtitle sources.
+  private fun addonSubtitleSources(): List<UserSubtitleSource> = uiState.addons
+    .filter { addon ->
+      addon.enabled && addon.manifest.resources.any { it.trim().equals("subtitles", ignoreCase = true) }
+    }
+    .mapNotNull { addon ->
+      val manifestUrl = addon.transportUrl ?: addon.manifestUrl ?: addon.url ?: addon.baseUrl ?: return@mapNotNull null
+      val baseUrl = manifestUrl.substringBeforeLast("/manifest.json", missingDelimiterValue = manifestUrl).trimEnd('/')
+      if (baseUrl.isBlank()) return@mapNotNull null
+      UserSubtitleSource(
+        id = "addon:${addon.id}",
+        name = addon.manifest.name.ifBlank { addon.id },
+        baseUrl = baseUrl,
+      )
+    }
 
   private fun buildSourceLabel(stream: AddonStream): String? = listOfNotNull(stream.addonName.takeIf { it.isNotBlank() }, stream.source?.takeIf { it.isNotBlank() }, stream.quality, stream.size?.takeIf { it.isNotBlank() }?.let { "[$it]" }).distinct().joinToString(" \u2022 ").ifBlank { stream.name }
 }
@@ -3471,6 +4625,9 @@ fun StreamDekNativeApp(
             )
           },
         ) { padding ->
+          // The player replaces the whole main scene, so hold the main scene's
+          // saveable state (scroll positions, browse page state) while it is away.
+          val rootStateHolder = rememberSaveableStateHolder()
           AnimatedContent(
             modifier = Modifier.fillMaxSize(),
             targetState = Pair(uiState.booting, uiState.playerSession != null || uiState.playerLaunching),
@@ -3483,7 +4640,7 @@ fun StreamDekNativeApp(
             when {
               state.first -> SplashScene()
               state.second && uiState.playerSession == null -> PlayerLaunchScreen(uiState.playerLaunchingLabel, viewModel::cancelPlayerLaunch)
-              state.second && uiState.playerSession != null -> NativePlayerScreen(
+              state.second && uiState.playerSession != null -> { NativePlayerScreen(
                 session = uiState.playerSession,
                 availableStreams = uiState.availableStreams,
                 onBack = viewModel::dismissPlayer,
@@ -3496,8 +4653,27 @@ fun StreamDekNativeApp(
                 nextEpisodeLoadingLabel = uiState.nextEpisodeLoadingLabel,
                 onPreviousEpisode = { viewModel.playAdjacentEpisode(-1) },
                 onNextEpisode = { viewModel.playAdjacentEpisode(1) },
+                isFavourite = uiState.favouriteChannels.any { it.id == uiState.playerSession.mediaId },
+                onToggleFavourite = viewModel::toggleFavouriteChannelForCurrentSession,
+                liveChannels = uiState.playerLiveChannels,
+                liveChannelsLoading = uiState.playerLiveChannelsLoading,
+                channelSwitchLoading = uiState.liveChannelSwitching,
+                channelSwitchLoadingLabel = uiState.liveChannelSwitchingLabel,
+                onCancelChannelSwitch = viewModel::cancelLiveChannelSwitch,
+                onChannelSwitchPlaybackStarted = viewModel::confirmLiveChannelSwitchStarted,
+                channelSwitchFallbackAvailable = uiState.playerSession?.isLive == true && viewModel.hasLiveChannelFallback(),
+                favouriteChannels = uiState.favouriteChannels,
+                favouriteDrawerCards = uiState.liveFavouriteDrawerCards,
+                onSelectLiveChannel = viewModel::playLiveChannel,
+                onToggleFavouriteDrawerCards = viewModel::setLiveFavouriteDrawerCards,
+                onClearFavourites = viewModel::clearFavouriteChannels,
+                downloadsEnabled = uiState.downloadsEnabled,
+                onDownloadStream = { stream -> viewModel.downloadStream(stream, uiState.detail?.title ?: uiState.playerSession?.title ?: "Download") },
               )
-              else -> MainScene(viewModel, pendingAddonManifestUrl, onAddonManifestConsumed)
+              }
+              else -> rootStateHolder.SaveableStateProvider("main_scene") {
+                MainScene(viewModel, pendingAddonManifestUrl, onAddonManifestConsumed)
+              }
             }
           }
         }
@@ -3760,7 +4936,7 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
       OutlinedTextField(
         value = form.email,
         onValueChange = { form = form.copy(email = it); viewModel.rememberAuthEmail(it) },
-        placeholder = { Text("Email") },
+        placeholder = { InputGuideText("Email") },
         leadingIcon = { Icon(Icons.Rounded.Email, contentDescription = null) },
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
@@ -3774,7 +4950,7 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
         OutlinedTextField(
           value = form.password,
           onValueChange = { form = form.copy(password = it) },
-          placeholder = { Text(if (mode == "signup") "Create password" else "Password") },
+          placeholder = { InputGuideText(if (mode == "signup") "Create password" else "Password") },
           leadingIcon = { Icon(Icons.Rounded.Lock, contentDescription = null) },
           trailingIcon = {
             IconButton(onClick = { showPassword = !showPassword }) {
@@ -3792,7 +4968,7 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
         OutlinedTextField(
           value = form.resetCode,
           onValueChange = { form = form.copy(resetCode = it) },
-          placeholder = { Text("Reset code") },
+          placeholder = { InputGuideText("Reset code") },
           modifier = Modifier.fillMaxWidth(),
           shape = RoundedCornerShape(18.dp),
           singleLine = true,
@@ -3802,7 +4978,7 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
         OutlinedTextField(
           value = form.newPassword,
           onValueChange = { form = form.copy(newPassword = it) },
-          placeholder = { Text("New password") },
+          placeholder = { InputGuideText("New password") },
           leadingIcon = { Icon(Icons.Rounded.Lock, contentDescription = null) },
           visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
           modifier = Modifier.fillMaxWidth(),
@@ -3953,9 +5129,27 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
   var selectedTab by rememberSaveable { mutableStateOf(MainTab.Home) }
   var previousTab by rememberSaveable { mutableStateOf(MainTab.Home) }
   var openDetail by rememberSaveable { mutableStateOf(uiState.detail?.let { it.type to it.id }) }
-  var browseRow by remember { mutableStateOf<HomeRow?>(null) }
-  var networkBrowse by remember { mutableStateOf<MediaItem?>(null) }
-  var settingsRoute by rememberSaveable { mutableStateOf<SettingsRoute?>(null) }
+  val browseRow = uiState.browseRow
+  val networkBrowse = uiState.networkBrowseItem
+  // Settings keeps a history stack so backing out of a nested page returns to the
+  // page it was opened from instead of jumping to the settings home.
+  var settingsStackRaw by rememberSaveable { mutableStateOf("") }
+  val settingsStack = remember(settingsStackRaw) {
+    settingsStackRaw.split('|').filter { it.isNotBlank() }.mapNotNull { name -> runCatching { SettingsRoute.valueOf(name) }.getOrNull() }
+  }
+  val settingsRoute = settingsStack.lastOrNull()
+  fun setSettingsRoute(route: SettingsRoute?) {
+    settingsStackRaw = when {
+      route == null -> ""
+      settingsStack.lastOrNull() == route -> settingsStackRaw
+      // Re-entering a page already in the history rewinds to it rather than looping.
+      settingsStack.contains(route) -> settingsStack.subList(0, settingsStack.indexOf(route) + 1).joinToString("|") { it.name }
+      else -> (settingsStack + route).joinToString("|") { it.name }
+    }
+  }
+  fun popSettingsRoute() {
+    settingsStackRaw = settingsStack.dropLast(1).joinToString("|") { it.name }
+  }
   var detailReturnFromSettings by rememberSaveable { mutableStateOf<Pair<String, String>?>(null) }
   var showExitPrompt by rememberSaveable { mutableStateOf(false) }
   var showAuth by rememberSaveable { mutableStateOf(false) }
@@ -3967,6 +5161,9 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
   var navigationActivityKey by remember { mutableIntStateOf(0) }
   var showNavigationCaret by remember { mutableStateOf(false) }
   val showProfilePicker = uiState.showProfilePicker && openDetail == null && browseRow == null && networkBrowse == null
+  val updatePromptRouteEligible = !showAuth && !requireGuestProfile && !showProfilePicker &&
+    !uiState.profileTransitioning && uiState.pinPromptProfileId == null
+  var delayedUpdatePromptVisible by remember { mutableStateOf(false) }
   val activity = LocalContext.current as? Activity
 
   LaunchedEffect(Unit) {
@@ -3977,10 +5174,25 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
     navigationExpanded = !uiState.collapsibleNavigationEnabled
   }
 
-  LaunchedEffect(uiState.collapsibleNavigationEnabled, uiState.navigationAutoCollapseSeconds, navigationExpanded, navigationActivityKey) {
-    if (uiState.collapsibleNavigationEnabled && navigationExpanded) {
+  LaunchedEffect(uiState.collapsibleNavigationEnabled, uiState.navigationAutoCollapseSeconds, navigationExpanded, navigationActivityKey, uiState.updateDownloading) {
+    if (uiState.collapsibleNavigationEnabled && navigationExpanded && !uiState.updateDownloading) {
       delay(uiState.navigationAutoCollapseSeconds * 1_000L)
       navigationExpanded = false
+    }
+  }
+
+  LaunchedEffect(uiState.updateDownloading) {
+    if (uiState.updateDownloading && uiState.collapsibleNavigationEnabled) {
+      navigationActivityKey += 1
+      navigationExpanded = true
+    }
+  }
+
+  LaunchedEffect(uiState.updatePromptVisible, updatePromptRouteEligible, uiState.availableUpdate?.versionCode) {
+    delayedUpdatePromptVisible = false
+    if (uiState.updatePromptVisible && updatePromptRouteEligible && uiState.availableUpdate != null) {
+      delay(3_000L)
+      delayedUpdatePromptVisible = true
     }
   }
 
@@ -4000,7 +5212,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
     if (!showAuth && !requireGuestProfile && !showProfilePicker && !uiState.profileTransitioning) {
       if (selectedTab != MainTab.Settings) previousTab = selectedTab
       selectedTab = MainTab.Settings
-      settingsRoute = SettingsRoute.Addons
+      setSettingsRoute(SettingsRoute.Addons)
       addonInstallPromptUrl = manifestUrl
       onAddonManifestConsumed()
     }
@@ -4024,7 +5236,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
     if (requireGuestProfile && uiState.session == null && uiState.profiles.size > guestProfileCountAtEntry) {
       requireGuestProfile = false
       guestProfileCountAtEntry = -1
-      settingsRoute = null
+      settingsStackRaw = ""
       selectedTab = MainTab.Home
       previousTab = MainTab.Home
     }
@@ -4034,10 +5246,9 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
     if (uiState.profileTransitioning) {
       selectedTab = MainTab.Home
       previousTab = MainTab.Home
-      settingsRoute = null
+      settingsStackRaw = ""
       openDetail = null
-      browseRow = null
-      networkBrowse = null
+      viewModel.clearBrowseNavigation()
       detailReturnFromSettings = null
     }
   }
@@ -4052,16 +5263,16 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
       requireGuestProfile -> {
         requireGuestProfile = false
         guestProfileCountAtEntry = -1
-        settingsRoute = null
+        settingsStackRaw = ""
         showAuth = true
       }
       openDetail != null -> {
         openDetail = null
         viewModel.clearPlayerReturnTarget()
       }
-      networkBrowse != null -> networkBrowse = null
-      browseRow != null -> browseRow = null
-      settingsRoute != null -> settingsRoute = null
+      networkBrowse != null -> viewModel.setNetworkBrowseItem(null)
+      browseRow != null -> viewModel.setBrowseRow(null)
+      settingsRoute != null -> popSettingsRoute()
       selectedTab == MainTab.Settings && detailReturnFromSettings != null -> {
         val returnDetail = detailReturnFromSettings
         detailReturnFromSettings = null
@@ -4109,8 +5320,19 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
     )
   }
 
-  if (uiState.updatePromptVisible && uiState.availableUpdate != null) {
+  if (delayedUpdatePromptVisible && uiState.updatePromptVisible && uiState.availableUpdate != null) {
     UpdatePromptDialog(uiState = uiState, onUpdate = viewModel::startUpdate, onDismiss = viewModel::dismissUpdatePrompt)
+  }
+
+  if (uiState.pendingGuestMerge != null && !uiState.profilesLoading) {
+    AlertDialog(
+      onDismissRequest = viewModel::dismissGuestMergePrompt,
+      icon = { Icon(Icons.Rounded.CloudUpload, contentDescription = null) },
+      title = { Text("Move your data to this account?") },
+      text = { Text("You had favourites, a watchlist, or add-ons set up before signing in. Move them into your new account? Nothing already on this account will be overwritten.") },
+      confirmButton = { Button(onClick = viewModel::mergeGuestDataIntoAccount) { Text("Move my data") } },
+      dismissButton = { TextButton(onClick = viewModel::dismissGuestMergePrompt) { Text("Not now") } },
+    )
   }
 
   val hazeState = rememberHazeState()
@@ -4145,8 +5367,26 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
               label = "floating_navigation_corner",
             )
 
+            if (uiState.updateDownloading) {
+              Box(
+                modifier = Modifier
+                  .width(navigationWidth)
+                  .height(74.dp)
+                  .blur(18.dp)
+                  .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.42f), RoundedCornerShape(navigationCornerRadius)),
+              )
+            }
             FrostedGlassSurface(
-              modifier = Modifier.width(navigationWidth).height(74.dp),
+              modifier = Modifier
+                .width(navigationWidth)
+                .height(74.dp)
+                .then(
+                  if (uiState.updateDownloading) {
+                    Modifier.border(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.72f), RoundedCornerShape(navigationCornerRadius))
+                  } else {
+                    Modifier
+                  },
+                ),
               shape = RoundedCornerShape(navigationCornerRadius),
               hazeStateOverride = hazeState,
               blurRadius = 68f,
@@ -4167,7 +5407,35 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
                 },
                 label = "floating_navigation_content",
               ) { showExpandedContent ->
-                if (showExpandedContent) {
+                if (showExpandedContent && uiState.updateDownloading) {
+                  Row(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                  ) {
+                    CircularProgressIndicator(
+                      progress = { uiState.updateProgress ?: 0f },
+                      modifier = Modifier.size(26.dp),
+                      strokeWidth = 2.5.dp,
+                      color = MaterialTheme.colorScheme.onSurface,
+                      trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f),
+                    )
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                      Text("Updating StreamDek", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
+                      LinearProgressIndicator(
+                        progress = { uiState.updateProgress ?: 0f },
+                        modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(999.dp)),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f),
+                      )
+                    }
+                    Text(
+                      uiState.updateProgress?.let { "${(it * 100).toInt()}%" } ?: "…",
+                      style = MaterialTheme.typography.labelSmall,
+                      color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+                    )
+                  }
+                } else if (showExpandedContent) {
                   Row(
                     modifier = Modifier.fillMaxSize(),
                     horizontalArrangement = Arrangement.SpaceEvenly,
@@ -4195,9 +5463,8 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
                               detailReturnFromSettings = null
                             }
                             openDetail = null
-                            browseRow = null
-                            networkBrowse = null
-                            settingsRoute = null
+                            viewModel.clearBrowseNavigation()
+                            setSettingsRoute(null)
                             if (tab == MainTab.Home && selectedTab == MainTab.Home) homeScrollToTopSignal += 1
                             if (selectedTab != tab) previousTab = selectedTab
                             selectedTab = tab
@@ -4237,6 +5504,15 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
                       },
                     contentAlignment = Alignment.Center,
                   ) {
+                    if (uiState.updateDownloading) {
+                      CircularProgressIndicator(
+                        progress = { uiState.updateProgress ?: 0f },
+                        modifier = Modifier.fillMaxSize().padding(6.dp),
+                        strokeWidth = 2.5.dp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f),
+                      )
+                    }
                     if (activeProfile != null) {
                       Box(
                         modifier = Modifier.fillMaxSize().clip(CircleShape).background(profileAvatarColor(activeProfile.avatarIndex)),
@@ -4269,7 +5545,13 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
     val browseStateHolder = rememberSaveableStateHolder()
     AnimatedContent(
       targetState = openDetail,
-      modifier = Modifier.fillMaxSize().hazeSource(hazeState),
+      modifier = Modifier
+        .fillMaxSize()
+        .hazeSource(hazeState)
+        .drawWithContent {
+          drawContent()
+          if (uiState.updateDownloading) drawRect(Color.Black.copy(alpha = 0.62f))
+        },
       transitionSpec = {
         when {
           // Opening a detail page: gentle rise from 96% scale with a fade.
@@ -4296,7 +5578,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
             showAuth = false
             previousTab = selectedTab
             selectedTab = MainTab.Settings
-            settingsRoute = SettingsRoute.Profiles
+            setSettingsRoute(SettingsRoute.Profiles)
           },
         )
       } else if (showProfilePicker) {
@@ -4309,23 +5591,23 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
             viewModel.dismissProfilePicker()
             previousTab = selectedTab
             selectedTab = MainTab.Settings
-            settingsRoute = SettingsRoute.Profiles
+            setSettingsRoute(SettingsRoute.Profiles)
           },
           onOpenProfileManager = {
             viewModel.dismissProfilePicker()
             previousTab = selectedTab
             selectedTab = MainTab.Settings
-            settingsRoute = SettingsRoute.Profiles
+            setSettingsRoute(SettingsRoute.Profiles)
           },
         )
       } else if (detail == null) {
         if (networkBrowse != null) {
           browseStateHolder.SaveableStateProvider("network_browse") {
-            NetworkBrowseScreen(network = networkBrowse!!, headerStyle = uiState.headerStyle, onBack = { networkBrowse = null }, onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })
+            NetworkBrowseScreen(network = networkBrowse, headerStyle = uiState.headerStyle, onBack = { viewModel.setNetworkBrowseItem(null) }, onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })
           }
         } else if (browseRow != null) {
-          browseStateHolder.SaveableStateProvider("browse_row_${browseRow?.id}") {
-            BrowseSectionScreen(row = browseRow!!, headerStyle = uiState.headerStyle, liveLandscapeCards = uiState.liveLandscapeCards, watchlistItems = uiState.mergedWatchlist, onBack = { browseRow = null }, onOpen = { item -> if (item.type == "network") networkBrowse = item else { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched)
+          browseStateHolder.SaveableStateProvider("browse_row_${browseRow.id}") {
+            BrowseSectionScreen(row = browseRow, loadedItems = uiState.browseLoadedItems, returnItemId = uiState.browseReturnItemId, headerStyle = uiState.headerStyle, liveLandscapeCards = uiState.liveLandscapeCards, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, onBack = { viewModel.setBrowseRow(null) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { viewModel.rememberBrowseReturnItem(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onToggleWatchlist = viewModel::toggleWatchlist, onToggleFavourite = viewModel::toggleFavouriteChannel, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, onMarkWatched = viewModel::markWatched, onLoadMore = viewModel::loadMoreRowItems)
           }
         } else {
           AnimatedContent(
@@ -4342,13 +5624,13 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
           ) { tab ->
           when (tab) {
             MainTab.Home -> browseStateHolder.SaveableStateProvider("tab_home") {
-              HomeTab(uiState = uiState, scrollToTopSignal = homeScrollToTopSignal, onReload = { viewModel.loadHome(force = true) }, onOpen = { item -> if (item.type == "network") networkBrowse = item else { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onViewAll = { row -> if (row.id == "continue") selectedTab = MainTab.Continue else browseRow = row }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onResolveHeroTitleLogos = viewModel::resolveHomeHeroTitleLogos)
+              HomeTab(uiState = uiState, scrollToTopSignal = homeScrollToTopSignal, onReload = { viewModel.loadHome(force = true) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onPlayContinueWatching = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onViewAll = { row -> if (row.id == "continue") selectedTab = MainTab.Continue else viewModel.setBrowseRow(when (row.id) { "m3u_playlists_live" -> row.copy(items = uiState.m3uChannels); "m3u_playlists_vod" -> row.copy(items = uiState.m3uVodItems); else -> row }) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onResolveHeroTitleLogos = viewModel::resolveHomeHeroTitleLogos, onResolveAddonRatings = viewModel::resolveAddonCatalogRatings, onToggleFavourite = viewModel::toggleFavouriteChannel, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) })
             }
             MainTab.Search -> browseStateHolder.SaveableStateProvider("tab_search") {
-              SearchTab(uiState = uiState, onSearch = viewModel::search, onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched)
+              SearchTab(uiState = uiState, ownerKey = watchedOwnerKey(uiState.session, uiState.activeProfileId), onSearch = viewModel::search, onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched)
             }
             MainTab.Continue -> browseStateHolder.SaveableStateProvider("tab_continue") {
-              ContinueTab(uiState = uiState, onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched)
+              ContinueTab(uiState = uiState, onOpen = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onOpenDetails = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })
             }
             MainTab.Watchlist -> browseStateHolder.SaveableStateProvider("tab_watchlist") {
               WatchlistTab(uiState = uiState, onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched)
@@ -4357,18 +5639,18 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
               uiState = uiState,
               route = settingsRoute,
               apiBaseUrl = viewModel.apiBaseUrl(),
-              onRouteChange = { settingsRoute = it },
+              onRouteChange = { setSettingsRoute(it) },
               onSubmitProfilePin = viewModel::submitProfilePin,
               onCancelProfilePin = viewModel::cancelProfilePinPrompt,
               onBack = {
                 if (requireGuestProfile) {
                   requireGuestProfile = false
                   guestProfileCountAtEntry = -1
-                  settingsRoute = null
+                  setSettingsRoute(null)
                   showAuth = true
-                } else settingsRoute = null
+                } else popSettingsRoute()
               },
-              onSwitchProfile = { if (uiState.session == null) settingsRoute = SettingsRoute.Profiles else { settingsRoute = null; viewModel.showProfilePicker() } },
+              onSwitchProfile = { if (uiState.session == null) setSettingsRoute(SettingsRoute.Profiles) else { setSettingsRoute(null); viewModel.showProfilePicker() } },
               onSelectProfile = viewModel::selectProfile,
               onCreateProfile = viewModel::createProfile,
               onUpdateProfile = viewModel::updateProfile,
@@ -4378,11 +5660,17 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
               onSignOut = viewModel::signOut,
               onSignIn = { showAuth = true },
               onAppAppearanceChange = viewModel::setAppAppearance,
+              onAppLanguageChange = { language ->
+                viewModel.setAppLanguage(language)
+                activity?.recreate()
+              },
               onThemePresetChange = viewModel::setThemePreset,
               onHeaderStyleChange = viewModel::setHeaderStyle,
               onPictureInPictureEnabledChange = viewModel::setPictureInPictureEnabled,
               onDecoderModeChange = viewModel::setDecoderMode,
               onRenderSurfaceChange = viewModel::setRenderSurface,
+              onPlayerEngineChange = viewModel::setPlayerEngine,
+              onPreferredAudioLanguageChange = viewModel::setPreferredAudioLanguage,
               onDetailPageStyleChange = viewModel::setDetailPageStyle,
               onSeasonTabStyleChange = viewModel::setSeasonTabStyle,
               onShowNavLabelsChange = viewModel::setShowNavLabels,
@@ -4403,8 +5691,8 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
               onHeroTrailerResolutionChange = viewModel::setHeroTrailerResolution,
               onShowHeroSynopsisChange = viewModel::setShowHeroSynopsis,
               onContinueWatchingStyleChange = viewModel::setContinueWatchingStyle,
-              onIncludeLiveInContinueWatchingChange = viewModel::setIncludeLiveInContinueWatching,
               onLiveLandscapeCardsChange = viewModel::setLiveLandscapeCards,
+              onLiveFavouriteDrawerCardsChange = viewModel::setLiveFavouriteDrawerCards,
               onRememberLastSourceChange = viewModel::setRememberLastSource,
               onBlurUnwatchedEpisodesChange = viewModel::setBlurUnwatchedEpisodes,
               onRatingsEnabledChange = viewModel::setRatingsEnabled,
@@ -4415,6 +5703,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
               onAmbientTintPercentChange = viewModel::setAmbientTintPercent,
               onFusionBadgesChange = viewModel::setFusionBadgesEnabled,
               onShowSizeBadgesChange = viewModel::setShowSizeBadges,
+              onShowAddonTmdbRatingsChange = viewModel::setShowAddonTmdbRatings,
               onPreferredQualityChange = viewModel::setPreferredQuality,
               onMaxFileSizeChange = viewModel::setMaxFileSizeGb,
               onBadgePositionChange = viewModel::setBadgePosition,
@@ -4432,6 +5721,15 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
               onToggleAddon = viewModel::toggleAddon,
               onUninstallAddon = viewModel::uninstallAddon,
               onMoveAddon = viewModel::moveAddon,
+              onAddM3uPlaylist = viewModel::addM3uPlaylist,
+              onRemoveM3uPlaylist = viewModel::removeM3uPlaylist,
+              onSetM3uPlaylistEnabled = viewModel::setM3uPlaylistEnabled,
+              onMoveM3uPlaylist = viewModel::moveM3uPlaylist,
+              onRefreshM3uPlaylists = viewModel::loadM3uPlaylists,
+              onDownloadsEnabledChange = viewModel::setDownloadsEnabled,
+              onRefreshDownloads = viewModel::refreshDownloads,
+              onRemoveDownload = viewModel::removeDownload,
+              onPlayDownload = viewModel::playDownload,
               onRefreshDebrid = viewModel::refreshDebridAccounts,
               onAddDebrid = viewModel::addDebridAccount,
               onRemoveDebrid = viewModel::removeDebridAccount,
@@ -4443,7 +5741,6 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
               onRefreshSync = viewModel::refreshConnectedServices,
               onAutoUpdateChecksChange = viewModel::setAutoUpdateChecks,
               onCheckForUpdates = { viewModel.checkForUpdates(manual = true) },
-              onStartUpdate = viewModel::startUpdate,
             )
           }
         }
@@ -4463,9 +5760,12 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
           onPlayBestStream = viewModel::playBestStream,
           onLoadSeason = viewModel::loadSeason,
           onToggleWatchlist = viewModel::toggleWatchlist,
+          onToggleFavourite = viewModel::toggleFavouriteChannel,
           onOpenPerson = viewModel::openPerson,
           onClosePerson = viewModel::closePerson,
           onOpenRelated = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) },
+          onDownloadStream = { stream, title -> viewModel.downloadStream(stream, title) },
+          isStreamDownloadEligible = { stream -> viewModel.isDownloadEligible(stream, uiState.detailIsLive) },
         )
       }
     }
@@ -5062,7 +6362,7 @@ private fun mixedHeroItems(sections: List<MediaSection>, continueWatching: List<
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () -> Unit, onOpen: (MediaItem) -> Unit, onViewAll: (HomeRow) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onMarkWatched: (MediaItem) -> Unit, onResolveHeroTitleLogos: (List<MediaItem>) -> Unit) {
+private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () -> Unit, onOpen: (MediaItem) -> Unit, onPlayContinueWatching: (MediaItem) -> Unit, onViewAll: (HomeRow) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onMarkWatched: (MediaItem) -> Unit, onRestartFromBeginning: (MediaItem) -> Unit, onResolveHeroTitleLogos: (List<MediaItem>) -> Unit, onResolveAddonRatings: (List<MediaItem>) -> Unit = {}, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}) {
   if (uiState.homeLoading && uiState.homeSections.isEmpty()) {
     SplashScene()
     return
@@ -5073,6 +6373,9 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
     mixedHeroItems(uiState.homeSections, continueWatching, uiState.mergedWatchlist)
   }
   LaunchedEffect(rawHeroItems) { onResolveHeroTitleLogos(rawHeroItems) }
+  LaunchedEffect(uiState.homeSections, uiState.showAddonTmdbRatings, uiState.addonCatalogRatings.size) {
+    if (uiState.showAddonTmdbRatings) onResolveAddonRatings(uiState.homeSections.flatMap { it.items })
+  }
   val heroItems = remember(rawHeroItems, uiState.homeHeroTitleLogos) {
     rawHeroItems.map { item ->
       val resolvedLogo = uiState.homeHeroTitleLogos[homeHeroMediaKey(item)]
@@ -5118,11 +6421,20 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
       )
     }
   }
-  val rows = remember(uiState.homeSections, continueWatching, recommendations, trending, uiState.mergedWatchlist) {
+  val rows = remember(uiState.homeSections, continueWatching, recommendations, trending, uiState.mergedWatchlist, uiState.favouriteChannels, uiState.m3uChannels, uiState.m3uVodItems, uiState.addonCatalogRatings, uiState.showAddonTmdbRatings) {
     buildList {
       if (continueWatching.isNotEmpty()) add(HomeRow("continue", "Continue Watching", continueWatching))
+      if (uiState.favouriteChannels.isNotEmpty()) add(HomeRow("favourites", "Live TV Favourites", uiState.favouriteChannels))
+      // Home only needs a small preview. View All receives the complete list separately, which
+      // keeps composition and card clicks bounded even for very large IPTV playlists.
+      if (uiState.m3uChannels.isNotEmpty()) add(HomeRow("m3u_playlists_live", "Playlist Live TV", uiState.m3uChannels.take(30)))
+      if (uiState.m3uVodItems.isNotEmpty()) add(HomeRow("m3u_playlists_vod", "Playlist VOD", uiState.m3uVodItems.take(30)))
       uiState.homeSections.forEach { section ->
-        if (section.items.isNotEmpty()) add(HomeRow(section.id, section.title, section.items))
+        if (section.items.isEmpty()) return@forEach
+        val items = if (!uiState.showAddonTmdbRatings) section.items else section.items.map { item ->
+          if (item.rating != null) item else uiState.addonCatalogRatings[homeHeroMediaKey(item)]?.let { item.copy(rating = it) } ?: item
+        }
+        add(HomeRow(section.id, section.title, items))
       }
       if (recommendations.isNotEmpty()) add(HomeRow("recommended", "Recommended For You", recommendations))
       if (trending.isNotEmpty()) add(HomeRow("trending", "Trending On Trakt", trending))
@@ -5192,7 +6504,7 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
       itemsIndexed(rows, key = { _, row -> row.id }) { index, row ->
         Column {
           if (heroItems.isNotEmpty() && index > 0) Spacer(modifier = Modifier.height(14.dp))
-          HomeStrip(rowId = row.id, title = row.title, items = row.items, continueWatchingStyle = uiState.continueWatchingStyle, liveLandscapeCards = uiState.liveLandscapeCards, watchlistItems = uiState.mergedWatchlist, onOpen = onOpen, onViewAll = { onViewAll(row) }, onToggleWatchlist = onToggleWatchlist, onMarkWatched = onMarkWatched)
+          HomeStrip(rowId = row.id, title = row.title, items = row.items, continueWatchingStyle = uiState.continueWatchingStyle, liveLandscapeCards = uiState.liveLandscapeCards, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, onOpen = onOpen, onViewAll = { onViewAll(row) }, onToggleWatchlist = onToggleWatchlist, onToggleFavourite = onToggleFavourite, onEnableAddon = onEnableAddon, onMarkWatched = onMarkWatched, onRestartFromBeginning = onRestartFromBeginning, onPlayContinueWatching = onPlayContinueWatching)
         }
       }
     }
@@ -5209,7 +6521,14 @@ private data class HomeHeroLayer(
 private fun homeHeroPageOffset(
   pagerState: androidx.compose.foundation.pager.PagerState,
   page: Int,
-): Float = (pagerState.currentPage - page) + pagerState.currentPageOffsetFraction
+): Float {
+  val fraction = pagerState.currentPageOffsetFraction
+  // A freshly measured pager can briefly report a stale/NaN fraction. The hero layer
+  // multiplies this by 22x the hero width, so even a tiny residual would push the
+  // image clean off screen — treat anything near zero as settled.
+  val safeFraction = if (fraction.isNaN() || kotlin.math.abs(fraction) < 0.001f) 0f else fraction
+  return (pagerState.currentPage - page) + safeFraction
+}
 
 private fun homeHeroPageVisibility(
   pagerState: androidx.compose.foundation.pager.PagerState,
@@ -5294,15 +6613,23 @@ private fun HomeHeroCarousel(
     val heroWidthPx = maxWidth.value
     val heroItemSpacing = if (maxWidth < 390.dp) 4.dp else if (showSynopsis) 8.dp else 6.dp
     val heroCtaSpacing = if (maxWidth < 390.dp || !showSynopsis) 4.dp else 7.dp
-    val visiblePages = listOf(
-      currentPage,
-      (currentPage - 1).coerceAtLeast(0),
-      (currentPage + 1).coerceAtMost(items.lastIndex),
-    ).distinct().mapNotNull { index ->
-      val offset = homeHeroPageOffset(pagerState, index)
-      val visibility = homeHeroPageVisibility(pagerState, index)
-      if (visibility <= 0f) null else HomeHeroLayer(index, visibility, offset)
-    }.sortedBy { it.visibility }
+    // While settled, draw the current page dead centre at full opacity. Anything else
+    // risks a mis-measured offset hiding the hero until the user swipes it back.
+    val visiblePages = if (!pagerState.isScrollInProgress) {
+      listOf(HomeHeroLayer(currentPage, 1f, 0f))
+    } else {
+      listOf(
+        currentPage,
+        (currentPage - 1).coerceAtLeast(0),
+        (currentPage + 1).coerceAtMost(items.lastIndex),
+      ).distinct().mapNotNull { index ->
+        val offset = homeHeroPageOffset(pagerState, index)
+        val visibility = homeHeroPageVisibility(pagerState, index)
+        if (visibility <= 0f) null else HomeHeroLayer(index, visibility, offset)
+      }.sortedBy { it.visibility }
+        // Never end up with nothing to draw.
+        .ifEmpty { listOf(HomeHeroLayer(currentPage, 1f, 0f)) }
+    }
 
     Box(modifier = Modifier.fillMaxWidth().height(heroHeight + heroDotsLaneHeight)) {
       HorizontalPager(
@@ -5659,7 +6986,7 @@ private fun NetworkCatalogHeaderContent(
       value = query,
       onValueChange = onQueryChange,
       modifier = Modifier.fillMaxWidth(),
-      placeholder = { Text("Search within this network") },
+      placeholder = { InputGuideText("Search within this network") },
       leadingIcon = { Icon(Icons.Rounded.Search, null) },
       trailingIcon = if (query.isNotBlank()) ({ IconButton(onClick = { onQueryChange("") }) { Icon(Icons.Rounded.Close, "Clear") } }) else null,
       singleLine = true,
@@ -5751,29 +7078,137 @@ private fun AdaptivePageTitle(
   )
 }
 
+private val builtInPageableRowIds = setOf("new_movies", "new_series", "trending_movies", "trending_series")
+
 @Composable
-private fun BrowseSectionScreen(row: HomeRow, headerStyle: HeaderStyle, liveLandscapeCards: Boolean, watchlistItems: List<MediaItem>, onBack: () -> Unit, onOpen: (MediaItem) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onMarkWatched: (MediaItem) -> Unit) {
+private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, returnItemId: String?, headerStyle: HeaderStyle, liveLandscapeCards: Boolean, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), onBack: () -> Unit, onOpen: (MediaItem) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, onLoadMore: (suspend (String, MediaItem?, Int) -> List<MediaItem>)? = null) {
+  fun isFavourite(item: MediaItem): Boolean = favouriteItems.any { it.id == item.id && it.type == item.type }
   var filter by rememberSaveable(row.id) { mutableStateOf(MediaFilter.All) }
   var columns by rememberSaveable(row.id) { mutableStateOf(3) }
   var actionItem by remember { mutableStateOf<MediaItem?>(null) }
+  var disabledAddonPrompt by remember { mutableStateOf<InstalledAddon?>(null) }
+  val isFavouritesRow = row.id == "favourites"
+  fun addonFor(item: MediaItem): InstalledAddon? = item.sourceAddonId?.let { id -> addons.firstOrNull { it.id == id } }
+  fun handleOpen(item: MediaItem) {
+    val addon = if (isFavouritesRow) addonFor(item) else null
+    if (addon != null && !addon.enabled) disabledAddonPrompt = addon else onOpen(item)
+  }
   val browseHazeState = rememberHazeState()
   val modernHeader = headerStyle == HeaderStyle.Modern
-  val isLiveRow = row.title.contains("live", true) || row.title.contains("sport", true) || row.items.any(MediaItem::isLiveCatalogItem)
-  val isNetworkRow = row.id == "streaming_networks" || row.items.any { it.type == "network" }
+  val isM3uRow = row.id.startsWith("m3u_playlists_")
+  val isLiveRow = row.id == "m3u_playlists_live" || row.title.contains("live", true) || row.title.contains("sport", true) || row.items.any(MediaItem::isLiveCatalogItem)
+  val isNetworkRow = row.id == "streaming_networks" || (!isM3uRow && row.items.any { it.type == "network" })
   val usesLandscapeCards = (isLiveRow && liveLandscapeCards) || isNetworkRow
-  val uniqueItems = remember(row.id, row.items) { row.items.distinctBy { "${it.type}-${it.id}" } }
-  val hasMovies = remember(uniqueItems) { uniqueItems.any { it.type.equals("movie", true) } }
-  val hasSeries = remember(uniqueItems) { uniqueItems.any { it.type.equals("tv", true) || it.type.equals("series", true) } }
+  var query by rememberSaveable(row.id) { mutableStateOf("") }
+  var browseSort by rememberSaveable(row.id) { mutableStateOf(BrowseSort.Original) }
+  // "View All" starts from whatever the home row already fetched, then pages in more from the
+  // same add-on catalog as the user scrolls — most add-on catalogs only return a handful of
+  // items per request so large add-on catalogs are fetched incrementally.
+  var isLoadingMore by remember(row.id) { mutableStateOf(false) }
+  var canLoadMore by remember(row.id) {
+    mutableStateOf(
+      onLoadMore != null && !isM3uRow && row.items.isNotEmpty() &&
+        (
+          row.items.last().let { it.sourceAddonId != null && it.sourceCatalogType != null && it.sourceCatalogId != null } ||
+            row.id in builtInPageableRowIds
+        ),
+    )
+  }
+  // M3U parser IDs are already unique; do not allocate another full list just to deduplicate a
+  // potentially huge playlist. Other rows keep their existing defensive de-duplication.
+  val uniqueItems = remember(row.id, loadedItems) { if (isM3uRow) loadedItems else loadedItems.distinctBy { "${it.type}-${it.id}" } }
+  val hasMovies = remember(uniqueItems, isM3uRow) { !isM3uRow && uniqueItems.any { it.type.equals("movie", true) } }
+  val hasSeries = remember(uniqueItems, isM3uRow) { !isM3uRow && uniqueItems.any { it.type.equals("tv", true) || it.type.equals("series", true) } }
   val showsTypeFilters = hasMovies && hasSeries
-  val filteredItems = remember(uniqueItems, filter, showsTypeFilters) { if (showsTypeFilters) uniqueItems.filteredBy(filter) else uniqueItems }
+  // Live TV / sports rows hold long channel lists, so they get local search. Filtering and
+  // sorting run on Default rather than the UI thread so very large IPTV lists remain responsive.
+  val showSearch = isLiveRow || uniqueItems.size >= 24
+  var filteredItems by remember(row.id) { mutableStateOf<List<MediaItem>>(emptyList()) }
+  LaunchedEffect(uniqueItems, filter, showsTypeFilters, query, browseSort) {
+    filteredItems = withContext(Dispatchers.Default) {
+      val typeFiltered = if (showsTypeFilters) uniqueItems.filteredBy(filter) else uniqueItems
+      val normalizedQuery = query.trim()
+      val searched = if (normalizedQuery.isBlank()) typeFiltered else typeFiltered.filter {
+        it.title.contains(normalizedQuery, ignoreCase = true) || it.description.contains(normalizedQuery, ignoreCase = true)
+      }
+      when (browseSort) {
+        BrowseSort.Original -> searched
+        BrowseSort.TitleAscending -> searched.sortedWith(compareBy<MediaItem> { it.title.lowercase() })
+        BrowseSort.TitleDescending -> searched.sortedWith(compareByDescending<MediaItem> { it.title.lowercase() })
+      }
+    }
+  }
   val showHeaderFilters = !isNetworkRow && showsTypeFilters
-  val modernHeaderHeight = if (showHeaderFilters) 164.dp else 124.dp
-  val modernContentTop = if (showHeaderFilters) 234.dp else 194.dp
-  val classicContentTop = if (showHeaderFilters) 202.dp else 152.dp
+  val searchExtra = if (showSearch) 72.dp else 0.dp
+  val modernHeaderHeight = (if (showHeaderFilters) 164.dp else 124.dp) + searchExtra
+  val modernContentTop = (if (showHeaderFilters) 234.dp else 194.dp) + searchExtra
+  val classicContentTop = (if (showHeaderFilters) 202.dp else 152.dp) + searchExtra
   BackHandler(onBack = onBack)
+
+  val gridState = rememberLazyGridState()
+  LaunchedEffect(returnItemId, filteredItems.size, query, browseSort) {
+    val targetId = returnItemId ?: return@LaunchedEffect
+    val targetIndex = withContext(Dispatchers.Default) { filteredItems.indexOfFirst { it.id == targetId } }
+    if (targetIndex >= 0) gridState.scrollToItem(targetIndex)
+  }
+  // Only auto-page while the user is looking at the unfiltered list: once "skip" no longer
+  // lines up with what's on screen (a search/type filter is active), fetching more would just
+  // silently re-request items already loaded.
+  val canAutoPage = canLoadMore && filter == MediaFilter.All && query.isBlank() && browseSort == BrowseSort.Original
+  // Deliberately NOT info.totalItemsCount: the loading-spinner row below is itself one more
+  // grid item while isLoadingMore is true, so totalItemsCount ticks up the instant a fetch
+  // starts. That shifted this threshold just enough to flip nearEnd back to false one frame
+  // later, restarting this effect's LaunchedEffect (nearEnd is one of its keys) and cancelling
+  // the fetch coroutine mid-flight — logs showed the backend request succeeding with a full
+  // page of items that then got thrown away as a cancellation. filteredItems.size is the count
+  // of actual content tiles, unaffected by the spinner, so it doesn't move under the request.
+  // Keyed on filteredItems.size so the derivedStateOf's closure picks up the current count —
+  // remember with no keys would otherwise freeze this on the very first composition's count.
+  val nearEnd by remember(filteredItems.size) {
+    derivedStateOf {
+      val info = gridState.layoutInfo
+      val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+      filteredItems.isNotEmpty() && lastVisible >= filteredItems.size - 6
+    }
+  }
+  // isLoadingMore is intentionally NOT a key here: it's mutated inside this same effect, and a
+  // LaunchedEffect cancels-and-relaunches itself the instant one of its own keys changes. With
+  // it listed as a key, setting it to true immediately restarted this effect, which cancelled
+  // the in-flight fetch before it could ever finish and left loading stuck forever — the exact
+  // "never loads more" bug. It only needs to be checked (as a re-entrancy guard), not restarted on.
+  LaunchedEffect(row.id, nearEnd, canAutoPage) {
+    android.util.Log.d("StreamDekPaging", "effect check row=${row.id} nearEnd=$nearEnd canAutoPage=$canAutoPage isLoadingMore=$isLoadingMore canLoadMore=$canLoadMore items=${uniqueItems.size}")
+    if (!nearEnd || !canAutoPage || isLoadingMore) return@LaunchedEffect
+    val anchor = row.items.lastOrNull() ?: return@LaunchedEffect
+    val loader = onLoadMore ?: return@LaunchedEffect
+    isLoadingMore = true
+    val skip = uniqueItems.size
+    android.util.Log.d("StreamDekPaging", "fetching more row=${row.id} skip=$skip anchorAddon=${anchor.sourceAddonId} anchorCatalog=${anchor.sourceCatalogType}/${anchor.sourceCatalogId}")
+    // runCatching catches EVERYTHING, including CancellationException — and this effect gets
+    // legitimately cancelled-and-relaunched whenever nearEnd flips (that's the whole point of
+    // listing it as a key). Swallowing that cancellation instead of rethrowing it made an
+    // in-flight fetch that was cancelled right as it succeeded look identical to "the add-on
+    // returned nothing", which is what was permanently disabling further loading after exactly
+    // one page. Cancellation must propagate, not be treated as a normal failure.
+    val fetched = try {
+      loader(row.id, anchor, skip)
+    } catch (e: kotlinx.coroutines.CancellationException) {
+      isLoadingMore = false
+      throw e
+    } catch (e: Throwable) {
+      android.util.Log.w("StreamDekPaging", "loadMore threw for row=${row.id}", e)
+      emptyList()
+    }
+    val existingKeys = uniqueItems.mapTo(mutableSetOf()) { "${it.type}-${it.id}" }
+    val newOnes = fetched.filter { "${it.type}-${it.id}" !in existingKeys }
+    android.util.Log.d("StreamDekPaging", "result row=${row.id} fetched=${fetched.size} new=${newOnes.size}")
+    if (newOnes.isEmpty()) canLoadMore = false
+    isLoadingMore = false
+  }
 
   Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
     LazyVerticalGrid(
+      state = gridState,
       columns = GridCells.Fixed(if (usesLandscapeCards) 2 else columns),
       modifier = Modifier
         .fillMaxSize()
@@ -5789,10 +7224,18 @@ private fun BrowseSectionScreen(row: HomeRow, headerStyle: HeaderStyle, liveLand
         }
       } else {
         gridItems(filteredItems, key = { "${it.type}-${it.id}" }) { item ->
+          val disabled = isFavouritesRow && addonFor(item)?.enabled == false
           when {
-            isLiveRow && liveLandscapeCards -> NetworkHomeCard(item = item, sports = true, modifier = Modifier.fillMaxWidth(), onClick = { onOpen(item) })
-            isNetworkRow -> NetworkHomeCard(item = item, sports = false, modifier = Modifier.fillMaxWidth(), onClick = { onOpen(item) })
-            else -> LibraryPosterTile(item = item, showMeta = false, onClick = { onOpen(item) }, onLongPress = { actionItem = item })
+            isLiveRow && liveLandscapeCards -> NetworkHomeCard(item = item, sports = true, modifier = Modifier.fillMaxWidth(), dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) })
+            isNetworkRow -> NetworkHomeCard(item = item, sports = false, modifier = Modifier.fillMaxWidth(), dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) })
+            else -> LibraryPosterTile(item = item, modifier = Modifier.alpha(if (disabled) 0.4f else 1f), showMeta = false, onClick = { handleOpen(item) }, onLongPress = { actionItem = item })
+          }
+        }
+        if (isLoadingMore) {
+          item(span = { GridItemSpan(maxLineSpan) }) {
+            Box(modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp), contentAlignment = Alignment.Center) {
+              CircularProgressIndicator(modifier = Modifier.size(28.dp), color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), strokeWidth = 2.5.dp)
+            }
           }
         }
       }
@@ -5822,13 +7265,33 @@ private fun BrowseSectionScreen(row: HomeRow, headerStyle: HeaderStyle, liveLand
         ) {
           BrowseSectionHeaderContent(
             title = row.title,
-            countLabel = if (isNetworkRow) "${filteredItems.size} networks" else "${filteredItems.size} titles",
+            countLabel = when {
+              isNetworkRow -> "${filteredItems.size} networks"
+              isLiveRow -> "${filteredItems.size} channels"
+              else -> "${filteredItems.size} titles"
+            },
             columns = columns,
             showColumnToggle = !usesLandscapeCards,
             onToggleColumns = { columns = if (columns == 3) 2 else 3 },
             selectedFilter = filter,
             showFilters = showHeaderFilters,
             onFilterChange = { filter = it },
+            query = query,
+            showSearch = showSearch,
+            onQueryChange = { query = it },
+            showSort = isM3uRow,
+            sortLabel = when (browseSort) {
+              BrowseSort.Original -> "Playlist order"
+              BrowseSort.TitleAscending -> "A-Z"
+              BrowseSort.TitleDescending -> "Z-A"
+            },
+            onToggleSort = {
+              browseSort = when (browseSort) {
+                BrowseSort.Original -> BrowseSort.TitleAscending
+                BrowseSort.TitleAscending -> BrowseSort.TitleDescending
+                BrowseSort.TitleDescending -> BrowseSort.Original
+              }
+            },
           )
         }
       }
@@ -5844,26 +7307,65 @@ private fun BrowseSectionScreen(row: HomeRow, headerStyle: HeaderStyle, liveLand
       ) {
         BrowseSectionHeaderContent(
           title = row.title,
-          countLabel = if (isNetworkRow) "${filteredItems.size} networks" else "${filteredItems.size} titles",
+          countLabel = when {
+            isNetworkRow -> "${filteredItems.size} networks"
+            isLiveRow -> "${filteredItems.size} channels"
+            else -> "${filteredItems.size} titles"
+          },
           columns = columns,
           showColumnToggle = !usesLandscapeCards,
           onToggleColumns = { columns = if (columns == 3) 2 else 3 },
           selectedFilter = filter,
           showFilters = showHeaderFilters,
           onFilterChange = { filter = it },
+          query = query,
+          showSearch = showSearch,
+          onQueryChange = { query = it },
+          showSort = isM3uRow,
+          sortLabel = when (browseSort) {
+            BrowseSort.Original -> "Playlist order"
+            BrowseSort.TitleAscending -> "A-Z"
+            BrowseSort.TitleDescending -> "Z-A"
+          },
+          onToggleSort = {
+            browseSort = when (browseSort) {
+              BrowseSort.Original -> BrowseSort.TitleAscending
+              BrowseSort.TitleAscending -> BrowseSort.TitleDescending
+              BrowseSort.TitleDescending -> BrowseSort.Original
+            }
+          },
         )
       }
     }
   }
   actionItem?.let { item ->
-    MediaCardActionsDialog(
-      item = item,
-      inWatchlist = watchlistItems.any { it.id == item.id && it.type == item.type },
-      includeRemoveAction = true,
-      onAddToWatchlist = { onToggleWatchlist(item) },
-      onRemoveFromWatchlist = { onToggleWatchlist(item) },
-      onMarkWatched = { onMarkWatched(item) },
-      onDismiss = { actionItem = null },
+    if (isFavouritesRow) {
+      FavouriteChannelActionsDialog(
+        item = item,
+        onRemoveFromFavourites = { onToggleFavourite(item) },
+        onDismiss = { actionItem = null },
+      )
+    } else {
+      MediaCardActionsDialog(
+        item = item,
+        inWatchlist = watchlistItems.any { it.id == item.id && it.type == item.type },
+        includeRemoveAction = true,
+        onAddToWatchlist = { onToggleWatchlist(item) },
+        onRemoveFromWatchlist = { onToggleWatchlist(item) },
+        onMarkWatched = { onMarkWatched(item) },
+        onDismiss = { actionItem = null },
+      )
+    }
+  }
+  disabledAddonPrompt?.let { addon ->
+    AlertDialog(
+      onDismissRequest = { disabledAddonPrompt = null },
+      title = { Text("Add-on disabled") },
+      text = { Text("${addon.manifest.name} is currently turned off. Enable it to watch this channel?") },
+      confirmButton = {
+        Button(onClick = { onEnableAddon(addon); disabledAddonPrompt = null }) { Text("Enable") }
+      },
+      dismissButton = { TextButton(onClick = { disabledAddonPrompt = null }) { Text("Cancel") } },
     )
   }
 }
@@ -5878,6 +7380,12 @@ private fun BrowseSectionHeaderContent(
   selectedFilter: MediaFilter,
   showFilters: Boolean,
   onFilterChange: (MediaFilter) -> Unit,
+  query: String = "",
+  showSearch: Boolean = false,
+  onQueryChange: (String) -> Unit = {},
+  showSort: Boolean = false,
+  sortLabel: String = "",
+  onToggleSort: () -> Unit = {},
 ) {
   Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -5885,11 +7393,28 @@ private fun BrowseSectionHeaderContent(
         AdaptivePageTitle(title = title, maxLines = 2)
         Text(countLabel, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.60f), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
       }
+      if (showSort) {
+        TextButton(onClick = onToggleSort) {
+          Text(sortLabel, fontWeight = FontWeight.Bold)
+        }
+      }
       if (showColumnToggle) {
         GlassCircleButton(onClick = onToggleColumns) {
           Icon(if (columns == 3) Icons.Rounded.ViewAgenda else Icons.Rounded.ViewModule, contentDescription = "Change grid size", tint = MaterialTheme.colorScheme.onBackground)
         }
       }
+    }
+    if (showSearch) {
+      OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        modifier = Modifier.fillMaxWidth(),
+        placeholder = { InputGuideText("Search this list") },
+        leadingIcon = { Icon(Icons.Rounded.Search, null) },
+        trailingIcon = if (query.isNotBlank()) ({ IconButton(onClick = { onQueryChange("") }) { Icon(Icons.Rounded.Close, "Clear") } }) else null,
+        singleLine = true,
+        shape = RoundedCornerShape(18.dp),
+      )
     }
     if (showFilters) {
       Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -5901,9 +7426,9 @@ private fun BrowseSectionHeaderContent(
   }
 }
 @Composable
-private fun NetworkHomeCard(item: MediaItem, sports: Boolean = false, modifier: Modifier = Modifier.width(176.dp), onClick: () -> Unit) {
+private fun NetworkHomeCard(item: MediaItem, sports: Boolean = false, modifier: Modifier = Modifier.width(176.dp), dimmed: Boolean = false, favourite: Boolean = false, onClick: () -> Unit) {
   Column(
-    modifier = modifier,
+    modifier = modifier.alpha(if (dimmed) 0.4f else 1f),
     horizontalAlignment = Alignment.CenterHorizontally,
     verticalArrangement = Arrangement.spacedBy(9.dp),
   ) {
@@ -5924,6 +7449,24 @@ private fun NetworkHomeCard(item: MediaItem, sports: Boolean = false, modifier: 
         modifier = Modifier.fillMaxSize(),
         contentScale = if (sports) ContentScale.Crop else ContentScale.Fit,
       )
+      if (favourite) {
+        Box(
+          modifier = Modifier
+            .align(Alignment.TopEnd)
+            .padding(7.dp)
+            .size(23.dp)
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = 0.55f)),
+          contentAlignment = Alignment.Center,
+        ) {
+          Icon(
+            Icons.Rounded.Star,
+            contentDescription = "Favourite channel",
+            tint = Color(0xFFFACC15),
+            modifier = Modifier.size(14.dp),
+          )
+        }
+      }
     }
     Text(
       item.title,
@@ -5939,10 +7482,22 @@ private fun NetworkHomeCard(item: MediaItem, sports: Boolean = false, modifier: 
 }
 
 @Composable
-private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, continueWatchingStyle: ContinueWatchingStyle, liveLandscapeCards: Boolean, watchlistItems: List<MediaItem>, onOpen: (MediaItem) -> Unit, onViewAll: () -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onMarkWatched: (MediaItem) -> Unit) {
+private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, continueWatchingStyle: ContinueWatchingStyle, liveLandscapeCards: Boolean, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), onOpen: (MediaItem) -> Unit, onViewAll: () -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, onRestartFromBeginning: (MediaItem) -> Unit, onPlayContinueWatching: (MediaItem) -> Unit) {
+  fun isFavourite(item: MediaItem): Boolean = favouriteItems.any { it.id == item.id && it.type == item.type }
   val isAddonRow = rowId.startsWith("addon:")
+  val isFavouritesRow = rowId == "favourites"
   val isSportsRow = title.contains("sport", ignoreCase = true) || title.contains("live", ignoreCase = true) || items.any(MediaItem::isLiveCatalogItem)
   var actionItem by remember { mutableStateOf<MediaItem?>(null) }
+  var disabledAddonPrompt by remember { mutableStateOf<InstalledAddon?>(null) }
+  fun addonFor(item: MediaItem): InstalledAddon? = item.sourceAddonId?.let { id -> addons.firstOrNull { it.id == id } }
+  fun handleOpen(item: MediaItem) {
+    val addon = if (isFavouritesRow) addonFor(item) else null
+    if (addon != null && !addon.enabled) {
+      disabledAddonPrompt = addon
+    } else {
+      onOpen(item)
+    }
+  }
   Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
     Column(
       modifier = Modifier.padding(horizontal = 16.dp),
@@ -5965,25 +7520,55 @@ private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, cont
       horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
       items(items, key = { "${it.type}-${it.id}" }) { item ->
+        val disabled = isFavouritesRow && addonFor(item)?.enabled == false
         if (rowId == "continue") {
-          ContinueWatchingCard(item = item, style = continueWatchingStyle, onClick = { onOpen(item) }, onLongPress = { actionItem = item })
+          ContinueWatchingCard(item = item, style = continueWatchingStyle, onClick = { onPlayContinueWatching(item) }, onLongPress = { actionItem = item })
         } else if (rowId == "streaming_networks" || (isSportsRow && liveLandscapeCards)) {
-          NetworkHomeCard(item = item, sports = isSportsRow, onClick = { onOpen(item) })
+          NetworkHomeCard(item = item, sports = isSportsRow, dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) })
         } else {
-          PosterCard(item = item, onClick = { onOpen(item) }, onLongPress = { actionItem = item })
+          PosterCard(item = item, dimmed = disabled, onClick = { handleOpen(item) }, onLongPress = { actionItem = item })
         }
       }
     }
   }
   actionItem?.let { item ->
-    MediaCardActionsDialog(
-      item = item,
-      inWatchlist = watchlistItems.any { it.id == item.id && it.type == item.type },
-      includeRemoveAction = false,
-      onAddToWatchlist = { onToggleWatchlist(item) },
-      onRemoveFromWatchlist = { onToggleWatchlist(item) },
-      onMarkWatched = { onMarkWatched(item) },
-      onDismiss = { actionItem = null },
+    if (isFavouritesRow) {
+      FavouriteChannelActionsDialog(
+        item = item,
+        onRemoveFromFavourites = { onToggleFavourite(item) },
+        onDismiss = { actionItem = null },
+      )
+    } else if (rowId == "continue") {
+      ContinueWatchingActionsDialog(
+        item = item,
+        inWatchlist = watchlistItems.any { it.id == item.id && it.type == item.type },
+        onRestartFromBeginning = { onRestartFromBeginning(item) },
+        onOpenDetails = { onOpen(item) },
+        onAddToWatchlist = { onToggleWatchlist(item) },
+        onMarkWatched = { onMarkWatched(item) },
+        onDismiss = { actionItem = null },
+      )
+    } else {
+      MediaCardActionsDialog(
+        item = item,
+        inWatchlist = watchlistItems.any { it.id == item.id && it.type == item.type },
+        includeRemoveAction = false,
+        onAddToWatchlist = { onToggleWatchlist(item) },
+        onRemoveFromWatchlist = { onToggleWatchlist(item) },
+        onMarkWatched = { onMarkWatched(item) },
+        onDismiss = { actionItem = null },
+      )
+    }
+  }
+  disabledAddonPrompt?.let { addon ->
+    AlertDialog(
+      onDismissRequest = { disabledAddonPrompt = null },
+      title = { Text("Add-on disabled") },
+      text = { Text("${addon.manifest.name} is currently turned off. Enable it to watch this channel?") },
+      confirmButton = {
+        Button(onClick = { onEnableAddon(addon); disabledAddonPrompt = null }) { Text("Enable") }
+      },
+      dismissButton = { TextButton(onClick = { disabledAddonPrompt = null }) { Text("Cancel") } },
     )
   }
 }
@@ -6026,7 +7611,7 @@ private fun LibraryHeaderPanel(
         value = searchQuery,
         onValueChange = onSearchQueryChange,
         modifier = Modifier.fillMaxWidth(),
-        placeholder = { Text("Search movies & TV series...") },
+        placeholder = { InputGuideText("Search movies & TV series...") },
         leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
         singleLine = true,
         shape = RoundedCornerShape(22.dp),
@@ -6090,65 +7675,197 @@ private fun MediaCardActionsDialog(
   onDismiss: () -> Unit,
 ) {
   val context = LocalContext.current
-  Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-    Box(
-      modifier = Modifier
-        .fillMaxSize()
-        .background(Color.Black.copy(alpha = 0.58f))
-        .clickable(onClick = onDismiss),
-      contentAlignment = Alignment.BottomCenter,
-    ) {
-      Surface(
-        modifier = Modifier
-          .fillMaxWidth()
-          .clickable(enabled = false, onClick = {}),
-        color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.12f)),
-      ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-          Text(item.title, color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-          if (!inWatchlist || !includeRemoveAction) {
-            SettingsActionButton("Add to Watchlist") {
-              if (!inWatchlist) onAddToWatchlist()
-              onDismiss()
-            }
-          }
-          if (includeRemoveAction && inWatchlist) {
-            SettingsActionButton("Remove from Watchlist") {
-              onRemoveFromWatchlist()
-              onDismiss()
-            }
-          }
-          SettingsActionButton("Mark as Watched") {
-            onMarkWatched()
-            onDismiss()
-          }
-          SettingsActionButton("Share") {
-            val shareIntent = Intent(Intent.ACTION_SEND).apply {
-              type = "text/plain"
-              putExtra(Intent.EXTRA_TEXT, item.title)
-            }
-            context.startActivity(Intent.createChooser(shareIntent, item.title))
-            onDismiss()
-          }
+  Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    CardActionsAmbientScaffold(item = item, onDismiss = onDismiss) {
+      if (!inWatchlist || !includeRemoveAction) {
+        AmbientActionRow("Add to Watchlist", icon = Icons.Rounded.Bookmark) {
+          if (!inWatchlist) onAddToWatchlist()
+          onDismiss()
         }
+      }
+      if (includeRemoveAction && inWatchlist) {
+        AmbientActionRow("Remove from Watchlist", icon = Icons.Rounded.Close) {
+          onRemoveFromWatchlist()
+          onDismiss()
+        }
+      }
+      AmbientActionRow("Mark as Watched", icon = Icons.Rounded.CheckCircle) {
+        onMarkWatched()
+        onDismiss()
+      }
+      AmbientActionRow("Share", icon = Icons.Rounded.Share) {
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+          type = "text/plain"
+          putExtra(Intent.EXTRA_TEXT, item.title)
+        }
+        context.startActivity(Intent.createChooser(shareIntent, item.title))
+        onDismiss()
       }
     }
   }
 }
 
 @Composable
-private fun SettingsActionButton(label: String, onClick: () -> Unit) {
-  OutlinedButton(
-    onClick = onClick,
-    modifier = Modifier.fillMaxWidth(),
-    shape = RoundedCornerShape(18.dp),
-    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onBackground),
-  ) {
-    Text(label, fontWeight = FontWeight.Bold)
+private fun ContinueWatchingActionsDialog(
+  item: MediaItem,
+  inWatchlist: Boolean,
+  onRestartFromBeginning: () -> Unit,
+  onOpenDetails: () -> Unit,
+  onAddToWatchlist: () -> Unit,
+  onMarkWatched: () -> Unit,
+  onDismiss: () -> Unit,
+) {
+  val context = LocalContext.current
+  Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    CardActionsAmbientScaffold(item = item, onDismiss = onDismiss) {
+      AmbientActionRow("Restart from Beginning", icon = Icons.Rounded.Replay) {
+        onDismiss()
+        onRestartFromBeginning()
+      }
+      AmbientActionRow("Details", icon = Icons.Rounded.Info) {
+        onDismiss()
+        onOpenDetails()
+      }
+      if (!inWatchlist) {
+        AmbientActionRow("Add to Watchlist", icon = Icons.Rounded.Bookmark) {
+          onAddToWatchlist()
+          onDismiss()
+        }
+      }
+      AmbientActionRow("Mark as Watched", icon = Icons.Rounded.CheckCircle) {
+        onMarkWatched()
+        onDismiss()
+      }
+      AmbientActionRow("Share", icon = Icons.Rounded.Share) {
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+          type = "text/plain"
+          putExtra(Intent.EXTRA_TEXT, item.title)
+        }
+        context.startActivity(Intent.createChooser(shareIntent, item.title))
+        onDismiss()
+      }
+    }
   }
 }
+@Composable
+private fun FavouriteChannelActionsDialog(item: MediaItem, onRemoveFromFavourites: () -> Unit, onDismiss: () -> Unit) {
+  val context = LocalContext.current
+  Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    CardActionsAmbientScaffold(item = item, onDismiss = onDismiss) {
+      AmbientActionRow("Remove from Favourites", icon = Icons.Rounded.Close) {
+        onRemoveFromFavourites()
+        onDismiss()
+      }
+      AmbientActionRow("Share", icon = Icons.Rounded.Share) {
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+          type = "text/plain"
+          putExtra(Intent.EXTRA_TEXT, item.title)
+        }
+        context.startActivity(Intent.createChooser(shareIntent, item.title))
+        onDismiss()
+      }
+    }
+  }
+}
+
+// Long-press preview: an ambient, blurred-up version of the card's own art covers the whole
+// window edge-to-edge — including behind the status bar, whose icons stay visible on top since
+// the Dialog is edge-to-edge (decorFitsSystemWindows = false) rather than inset below it. The
+// actions render directly on the page (no separate bottom sheet/card), anchored toward the
+// bottom under the enlarged poster.
+@Composable
+private fun CardActionsAmbientScaffold(
+  item: MediaItem,
+  onDismiss: () -> Unit,
+  actions: @Composable ColumnScope.() -> Unit,
+) {
+  val ambientArt = item.backdrop ?: item.poster
+  Box(
+    modifier = Modifier
+      .fillMaxSize()
+      .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }, onClick = onDismiss),
+    contentAlignment = Alignment.BottomCenter,
+  ) {
+    if (ambientArt != null) {
+      AsyncImage(
+        model = ambientArt,
+        contentDescription = null,
+        modifier = Modifier.fillMaxSize().blur(60.dp),
+        contentScale = ContentScale.Crop,
+      )
+    }
+    Box(
+      modifier = Modifier.fillMaxSize().background(
+        Brush.verticalGradient(
+          colorStops = arrayOf(
+            0.00f to Color.Black.copy(alpha = 0.46f),
+            0.40f to Color.Black.copy(alpha = 0.36f),
+            0.72f to Color.Black.copy(alpha = 0.68f),
+            1.00f to Color.Black.copy(alpha = 0.92f),
+          ),
+        ),
+      ),
+    )
+    Column(
+      modifier = Modifier.fillMaxSize().statusBarsPadding().padding(top = 24.dp, bottom = 24.dp),
+      horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+      Spacer(modifier = Modifier.weight(1f))
+      Surface(
+        modifier = Modifier
+          .width(196.dp)
+          .aspectRatio(2f / 3f)
+          .clickable(enabled = false, onClick = {}),
+        shape = RoundedCornerShape(20.dp),
+        shadowElevation = 24.dp,
+        color = MaterialTheme.colorScheme.surface,
+      ) {
+        AsyncImage(
+          model = item.poster ?: item.backdrop,
+          contentDescription = item.title,
+          modifier = Modifier.fillMaxSize(),
+          contentScale = ContentScale.Crop,
+        )
+      }
+      Spacer(modifier = Modifier.height(16.dp))
+      Text(
+        item.title,
+        color = Color.White,
+        style = MaterialTheme.typography.titleLarge,
+        fontWeight = FontWeight.Bold,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.padding(horizontal = 32.dp),
+      )
+      item.year?.let { year ->
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(year, color = Color.White.copy(alpha = 0.66f), style = MaterialTheme.typography.bodyMedium)
+      }
+      Spacer(modifier = Modifier.height(22.dp))
+      Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp).clickable(enabled = false, onClick = {}),
+        content = actions,
+      )
+    }
+  }
+}
+
+@Composable
+private fun AmbientActionRow(label: String, icon: ImageVector, onClick: () -> Unit) {
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .clip(RoundedCornerShape(14.dp))
+      .clickable(onClick = onClick)
+      .padding(vertical = 14.dp, horizontal = 12.dp),
+    horizontalArrangement = Arrangement.SpaceBetween,
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Text(label, color = Color.White, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+    Icon(icon, contentDescription = null, tint = Color.White.copy(alpha = 0.85f))
+  }
+}
+
 @Composable
 private fun MediaGrid(
   items: List<MediaItem>,
@@ -6159,6 +7876,9 @@ private fun MediaGrid(
   watchlistItems: List<MediaItem> = emptyList(),
   includeRemoveAction: Boolean = false,
   onMarkWatched: ((MediaItem) -> Unit)? = null,
+  continueWatchingActions: Boolean = false,
+  onRestartFromBeginning: ((MediaItem) -> Unit)? = null,
+  onOpenDetails: ((MediaItem) -> Unit)? = null,
 ) {
   var actionItem by remember { mutableStateOf<MediaItem?>(null) }
   Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -6172,15 +7892,27 @@ private fun MediaGrid(
     }
   }
   actionItem?.let { item ->
-    MediaCardActionsDialog(
-      item = item,
-      inWatchlist = watchlistItems.any { it.id == item.id && it.type == item.type },
-      includeRemoveAction = includeRemoveAction,
-      onAddToWatchlist = { onToggleWatchlist?.invoke(item) },
-      onRemoveFromWatchlist = { onToggleWatchlist?.invoke(item) },
-      onMarkWatched = { onMarkWatched?.invoke(item) },
-      onDismiss = { actionItem = null },
-    )
+    if (continueWatchingActions && onRestartFromBeginning != null) {
+      ContinueWatchingActionsDialog(
+        item = item,
+        inWatchlist = watchlistItems.any { it.id == item.id && it.type == item.type },
+        onRestartFromBeginning = { onRestartFromBeginning(item) },
+        onOpenDetails = { (onOpenDetails ?: onOpen)(item) },
+        onAddToWatchlist = { onToggleWatchlist?.invoke(item) },
+        onMarkWatched = { onMarkWatched?.invoke(item) },
+        onDismiss = { actionItem = null },
+      )
+    } else {
+      MediaCardActionsDialog(
+        item = item,
+        inWatchlist = watchlistItems.any { it.id == item.id && it.type == item.type },
+        includeRemoveAction = includeRemoveAction,
+        onAddToWatchlist = { onToggleWatchlist?.invoke(item) },
+        onRemoveFromWatchlist = { onToggleWatchlist?.invoke(item) },
+        onMarkWatched = { onMarkWatched?.invoke(item) },
+        onDismiss = { actionItem = null },
+      )
+    }
   }
 }
 
@@ -6281,7 +8013,7 @@ private fun LibraryStreamDekHeader(
 }
 
 @Composable
-private fun ContinueTab(uiState: AppUiState, onOpen: (MediaItem) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onMarkWatched: (MediaItem) -> Unit) {
+private fun ContinueTab(uiState: AppUiState, onOpen: (MediaItem) -> Unit, onOpenDetails: (MediaItem) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onMarkWatched: (MediaItem) -> Unit, onRestartFromBeginning: (MediaItem) -> Unit) {
   var filter by rememberSaveable { mutableStateOf(MediaFilter.All) }
   var columns by rememberSaveable { mutableStateOf(3) }
   val items = remember(uiState.traktContinueWatching, uiState.localContinueWatching, filter) { combinedContinueWatching(uiState).filteredBy(filter) }
@@ -6311,7 +8043,7 @@ private fun ContinueTab(uiState: AppUiState, onOpen: (MediaItem) -> Unit, onTogg
       if (items.isEmpty()) {
         item { LibraryEmptyState(icon = { Icon(Icons.Rounded.PlayCircleOutline, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.76f), modifier = Modifier.size(54.dp)) }, title = "Nothing here yet", subtitle = "Start watching something - your in-progress titles will appear here automatically.") }
       } else {
-        item { MediaGrid(items, onOpen, columns = columns, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched) }
+        item { MediaGrid(items, onOpen, columns = columns, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched, continueWatchingActions = true, onRestartFromBeginning = onRestartFromBeginning, onOpenDetails = onOpenDetails) }
       }
     }
     if (modernHeader) {
@@ -6387,7 +8119,7 @@ private fun WatchlistTab(uiState: AppUiState, onOpen: (MediaItem) -> Unit, onTog
 }
 
 @Composable
-private fun SearchTab(uiState: AppUiState, onSearch: (String) -> Unit, onOpen: (MediaItem) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onMarkWatched: (MediaItem) -> Unit) {
+private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) -> Unit, onOpen: (MediaItem) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onMarkWatched: (MediaItem) -> Unit) {
 
   val listState = rememberLazyListState()
   var query by rememberSaveable { mutableStateOf("") }
@@ -6395,9 +8127,10 @@ private fun SearchTab(uiState: AppUiState, onSearch: (String) -> Unit, onOpen: (
   var columns by rememberSaveable { mutableStateOf(3) }
   val searchContext = LocalContext.current
   val searchPrefs = remember(searchContext) { searchContext.getSharedPreferences("streamdek_native_search", Context.MODE_PRIVATE) }
-  var recentSearches by rememberSaveable {
+  val recentSearchesKey = remember(ownerKey) { "recent_searches:$ownerKey" }
+  var recentSearches by rememberSaveable(ownerKey) {
     mutableStateOf<List<String>>(runCatching {
-      val stored = JSONArray(searchPrefs.getString("recent_searches", "[]"))
+      val stored = JSONArray(searchPrefs.getString(recentSearchesKey, "[]"))
       List(stored.length()) { index -> stored.optString(index) }.filter { it.isNotBlank() }.take(3)
     }.getOrDefault(emptyList()))
   }
@@ -6470,7 +8203,7 @@ private fun SearchTab(uiState: AppUiState, onSearch: (String) -> Unit, onOpen: (
     val normalized = query.trim()
     if (normalized.length > 1 && uiState.searchResultQuery == normalized && !uiState.searchLoading && uiState.searchResults.isNotEmpty()) {
       recentSearches = listOf(normalized, *recentSearches.filterNot { it.equals(normalized, ignoreCase = true) }.toTypedArray()).take(3)
-      searchPrefs.edit().putString("recent_searches", JSONArray(recentSearches).toString()).apply()
+      searchPrefs.edit().putString(recentSearchesKey, JSONArray(recentSearches).toString()).apply()
     }
   }
 
@@ -6590,7 +8323,7 @@ private fun SearchTab(uiState: AppUiState, onSearch: (String) -> Unit, onOpen: (
             onSearchPress = { query = it },
             onRemoveSearch = { recent ->
               recentSearches = recentSearches.filterNot { it == recent }
-              searchPrefs.edit().putString("recent_searches", JSONArray(recentSearches).toString()).apply()
+              searchPrefs.edit().putString(recentSearchesKey, JSONArray(recentSearches).toString()).apply()
             },
           )
         }
@@ -6863,7 +8596,7 @@ private fun SearchHeader(
       onValueChange = onQueryChange,
       modifier = Modifier.fillMaxWidth(),
       singleLine = true,
-      placeholder = { Text("Search movies, TV and catalogs") },
+      placeholder = { InputGuideText("Search movies, TV and catalogs") },
       leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
       trailingIcon = if (query.isNotBlank()) ({ IconButton(onClick = onClear) { Icon(Icons.Rounded.Close, contentDescription = "Clear") } }) else null,
       shape = RoundedCornerShape(20.dp),
@@ -7343,6 +9076,11 @@ private fun RoundedInput(
 }
 
 @Composable
+private fun InputGuideText(text: String) {
+  Text(text, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.50f))
+}
+
+@Composable
 private fun FusionBadgeUrlsDialog(
   uiState: AppUiState,
   onDismiss: () -> Unit,
@@ -7369,7 +9107,7 @@ private fun FusionBadgeUrlsDialog(
           value = newUrl,
           onValueChange = { newUrl = it },
           modifier = Modifier.fillMaxWidth(),
-          placeholder = { Text("Paste a badge collection link") },
+          placeholder = { InputGuideText("Paste a badge collection link") },
         )
         Button(
           onClick = { onImport(newUrl); newUrl = "" },
@@ -7468,11 +9206,14 @@ private fun SettingsTab(
   onSignOut: () -> Unit,
   onSignIn: () -> Unit,
   onAppAppearanceChange: (AppAppearance) -> Unit,
+  onAppLanguageChange: (String) -> Unit,
   onThemePresetChange: (AppThemePreset) -> Unit,
   onHeaderStyleChange: (HeaderStyle) -> Unit,
   onPictureInPictureEnabledChange: (Boolean) -> Unit,
   onDecoderModeChange: (String) -> Unit,
   onRenderSurfaceChange: (String) -> Unit,
+  onPlayerEngineChange: (String) -> Unit,
+  onPreferredAudioLanguageChange: (String) -> Unit,
   onDetailPageStyleChange: (DetailPageStyle) -> Unit,
   onSeasonTabStyleChange: (SeasonTabStyle) -> Unit,
   onShowNavLabelsChange: (Boolean) -> Unit,
@@ -7493,8 +9234,8 @@ private fun SettingsTab(
   onHeroTrailerResolutionChange: (Int) -> Unit,
   onShowHeroSynopsisChange: (Boolean) -> Unit,
   onContinueWatchingStyleChange: (ContinueWatchingStyle) -> Unit,
-  onIncludeLiveInContinueWatchingChange: (Boolean) -> Unit,
   onLiveLandscapeCardsChange: (Boolean) -> Unit,
+  onLiveFavouriteDrawerCardsChange: (Boolean) -> Unit,
   onRememberLastSourceChange: (Boolean) -> Unit,
   onBlurUnwatchedEpisodesChange: (Boolean) -> Unit,
   onRatingsEnabledChange: (Boolean) -> Unit,
@@ -7505,6 +9246,7 @@ private fun SettingsTab(
   onAmbientTintPercentChange: (Int) -> Unit,
   onFusionBadgesChange: (Boolean) -> Unit,
   onShowSizeBadgesChange: (Boolean) -> Unit,
+  onShowAddonTmdbRatingsChange: (Boolean) -> Unit,
   onPreferredQualityChange: (String) -> Unit,
   onMaxFileSizeChange: (Int) -> Unit,
   onBadgePositionChange: (String) -> Unit,
@@ -7522,6 +9264,15 @@ private fun SettingsTab(
   onToggleAddon: (InstalledAddon, Boolean) -> Unit,
   onUninstallAddon: (String) -> Unit,
   onMoveAddon: (String, Int) -> Unit,
+  onAddM3uPlaylist: (String, String) -> Unit,
+  onRemoveM3uPlaylist: (String) -> Unit,
+  onSetM3uPlaylistEnabled: (String, Boolean) -> Unit,
+  onMoveM3uPlaylist: (String, Int) -> Unit,
+  onRefreshM3uPlaylists: () -> Unit,
+  onDownloadsEnabledChange: (Boolean) -> Unit,
+  onRefreshDownloads: () -> Unit,
+  onRemoveDownload: (String) -> Unit,
+  onPlayDownload: (DownloadEntry) -> Unit,
   onRefreshDebrid: () -> Unit,
   onAddDebrid: (String, String) -> Unit,
   onRemoveDebrid: (String) -> Unit,
@@ -7533,10 +9284,66 @@ private fun SettingsTab(
   onRefreshSync: () -> Unit,
   onAutoUpdateChecksChange: (Boolean) -> Unit,
   onCheckForUpdates: () -> Unit,
-  onStartUpdate: () -> Unit,
 ) {
   var settingsRefreshing by remember { mutableStateOf(false) }
+  var settingsSearchVisible by rememberSaveable { mutableStateOf(false) }
+  var settingsSearchQuery by rememberSaveable { mutableStateOf("") }
+  var settingsSearchRevealedAtMs by remember { mutableStateOf(0L) }
+  var settingsPullDistance by remember { mutableFloatStateOf(0f) }
+  val settingsListStates = remember { mutableMapOf<String, androidx.compose.foundation.lazy.LazyListState>() }
+  // Consumes the first ~28dp of a downward pull on the settings home list to reveal
+  // search, via onPreScroll - which runs before PullToRefreshBox's own nested-scroll
+  // handling sees anything - so that small "reveal search" swipe never reaches
+  // PullToRefreshBox's drag detector and never shows/starts its refresh indicator. Once
+  // that budget is used (search already visible), scroll passes through untouched, so a
+  // deliberate, larger continued pull still refreshes normally.
+  val settingsSearchPullConnection = remember(route) {
+    object : NestedScrollConnection {
+      override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+        if (route == null && !settingsSearchVisible && available.y > 0f) {
+          val remainingToReveal = (28f - settingsPullDistance).coerceAtLeast(0f)
+          val consumedY = available.y.coerceAtMost(remainingToReveal)
+          settingsPullDistance += consumedY
+          if (settingsPullDistance >= 28f) {
+            settingsSearchVisible = true
+            settingsSearchRevealedAtMs = android.os.SystemClock.elapsedRealtime()
+          }
+          return Offset(0f, consumedY)
+        }
+        if (available.y <= 0f) settingsPullDistance = 0f
+        return Offset.Zero
+      }
+    }
+  }
   val settingsRefreshScope = rememberCoroutineScope()
+  val settingsSearchEntries = remember {
+    listOf(
+      SettingsRoute.Account to "account sign in sign out email sync services",
+      SettingsRoute.Profiles to "profile switch kids pin default avatar family",
+      SettingsRoute.GeneralPlayback to "language theme colour color dark light header navigation cellular",
+      SettingsRoute.HomeAppearance to "home appearance rows catalog layout cards live channel",
+      SettingsRoute.DetailScreen to "detail hero trailer autoplay synopsis ratings badges ambient",
+      SettingsRoute.Streams to "streams source quality size player audio pip torrent peer magnet cache storage download",
+      SettingsRoute.PlaybackAutomation to "autoplay skip intro recap ending next episode binge",
+      SettingsRoute.Subtitles to "subtitle subtitles caption captions language source",
+      SettingsRoute.Addons to "addon add-on catalog channel provider install configure source",
+      SettingsRoute.Plugins to "plugin scraper provider repository javascript",
+      SettingsRoute.Debrid to "premium debrid real debrid alldebrid torbox account",
+      SettingsRoute.Trakt to "trakt scrobble watchlist history sync",
+      SettingsRoute.ConnectTv to "tv television pair pairing code connect",
+      SettingsRoute.Ratings to "rating imdb tmdb mdblist badge score",
+      SettingsRoute.AppUpdates to "update version apk install release",
+    )
+  }
+  val settingsSearchResults = remember(settingsSearchQuery) {
+    val stopWords = setOf("a", "an", "and", "can", "do", "for", "how", "i", "in", "is", "my", "of", "the", "to", "want", "where")
+    val query = settingsSearchQuery.trim().lowercase()
+    val tokens = query.split(Regex("[^a-z0-9]+"), limit = 0).filter { it.length > 1 && it !in stopWords }
+    if (query.isBlank()) emptyList() else settingsSearchEntries.map { (destination, keywords) ->
+      val haystack = "${settingsRouteTitle(destination)} ${settingsRouteSubtitle(destination)} $keywords".lowercase()
+      destination to ((if (haystack.contains(query)) 20 else 0) + tokens.count(haystack::contains))
+    }.filter { it.second > 0 }.sortedByDescending { it.second }.map { it.first }
+  }
   var fullScreenProfilePin by rememberSaveable(uiState.pinPromptProfileId) { mutableStateOf("") }
   var showFusionBadgeUrls by rememberSaveable { mutableStateOf(false) }
   var previewFusionSource by remember { mutableStateOf<FusionBadgeSource?>(null) }
@@ -7577,13 +9384,22 @@ private fun SettingsTab(
     PullToRefreshBox(
       isRefreshing = settingsRefreshing,
       onRefresh = {
-        settingsRefreshing = true
-        onRefreshSync()
-        settingsRefreshScope.launch { delay(900); settingsRefreshing = false }
+        val justRevealedSearch = route == null && android.os.SystemClock.elapsedRealtime() - settingsSearchRevealedAtMs < 700L
+        if (route == null && (!settingsSearchVisible || justRevealedSearch)) {
+          settingsSearchVisible = true
+          settingsSearchRevealedAtMs = android.os.SystemClock.elapsedRealtime()
+        } else {
+          settingsRefreshing = true
+          onRefreshSync()
+          settingsRefreshScope.launch { delay(900); settingsRefreshing = false }
+        }
       },
-      modifier = Modifier.fillMaxSize(),
+      modifier = Modifier.fillMaxSize().nestedScroll(settingsSearchPullConnection),
     ) {
-      val settingsListState = rememberLazyListState()
+      val settingsRouteKey = route?.name ?: "settings-home"
+      val settingsListState = remember(settingsRouteKey) {
+        settingsListStates.getOrPut(settingsRouteKey) { androidx.compose.foundation.lazy.LazyListState() }
+      }
       LazyColumn(
         state = settingsListState,
         modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
@@ -7592,11 +9408,53 @@ private fun SettingsTab(
       ) {
     if (route == null) {
       item {
-        AdaptivePageTitle(title = "Settings", maxLines = 1, color = MaterialTheme.colorScheme.onSurface)
+        Column {
+          AdaptivePageTitle(title = "Settings", maxLines = 1, color = MaterialTheme.colorScheme.onSurface)
+          AnimatedVisibility(
+            visible = settingsSearchVisible,
+            enter = expandVertically(expandFrom = Alignment.Top, animationSpec = tween(280)) + fadeIn(tween(180)),
+            exit = shrinkVertically(shrinkTowards = Alignment.Top, animationSpec = tween(220)) + fadeOut(tween(140)),
+          ) {
+            Column(modifier = Modifier.padding(top = 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+              OutlinedTextField(
+                value = settingsSearchQuery,
+                onValueChange = { settingsSearchQuery = it },
+                modifier = Modifier.fillMaxWidth(),
+                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                trailingIcon = {
+                  IconButton(onClick = { settingsSearchQuery = ""; settingsSearchVisible = false }) {
+                    Icon(Icons.Rounded.Close, contentDescription = "Close settings search")
+                  }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(20.dp),
+                colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                  focusedContainerColor = MaterialTheme.colorScheme.surface,
+                  unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                  disabledContainerColor = MaterialTheme.colorScheme.surface,
+                ),
+              )
+              if (settingsSearchQuery.isNotBlank()) {
+                SettingsSection(if (settingsSearchResults.isEmpty()) "No matching settings" else "Results") {
+                  settingsSearchResults.forEachIndexed { index, destination ->
+                    if (index > 0) SettingsDivider()
+                    SettingsNavRow(
+                      "GO", MaterialTheme.colorScheme.primary, settingsRouteTitle(destination),
+                      settingsRouteSubtitle(destination), onClick = { settingsSearchQuery = ""; onRouteChange(destination) },
+                    )
+                  }
+                  if (settingsSearchResults.isEmpty()) {
+                    Text("Try another phrase, such as change subtitle language or install an add-on.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f))
+                  }
+                }
+              }
+            }
+          }
+        }
       }
       item {
         SettingsSection("Account & Profiles") {
-          SettingsNavRow(uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }?.name?.trim()?.firstOrNull()?.uppercase() ?: "?", Color(0xFFE5E7EB), "Account and Services", uiState.session?.user?.email ?: "Signed out", onClick = { onRouteChange(SettingsRoute.Account) })
+          SettingsNavRow(uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }?.name?.trim()?.firstOrNull()?.uppercase() ?: "?", Color(0xFFE5E7EB), "Account", uiState.session?.user?.email ?: "Signed out", onClick = { onRouteChange(SettingsRoute.Account) })
           SettingsDivider()
           SettingsProfileRow(uiState = uiState, onClick = onSwitchProfile)
         }
@@ -7620,6 +9478,8 @@ private fun SettingsTab(
         SettingsSection("Services") {
           SettingsNavRow("+", Color(0xFF22C55E), "Add-ons", "${uiState.addons.count { it.enabled }} on - ${uiState.addons.sumOf { supportedHomeCatalogCount(it) }} Home rows", onClick = { onRouteChange(SettingsRoute.Addons) })
           SettingsDivider()
+          SettingsNavRow("M3U", Color(0xFFEC4899), "M3U Playlists", if (uiState.m3uSources.isEmpty()) "Add an IPTV playlist URL" else "${uiState.m3uSources.count { it.enabled }} of ${uiState.m3uSources.size} playlists on", onClick = { onRouteChange(SettingsRoute.M3uPlaylists) })
+          SettingsDivider()
           SettingsNavRow("JS", Color(0xFFF59E0B), "Plugins", "${StreamDekPlugins.manager.state.let { state -> val enabledRepos = state.repos.filter { it.enabled }.map { it.url }.toSet(); state.providers.count { it.enabled && it.repoUrl in enabledRepos } }} streaming sources on", onClick = { onRouteChange(SettingsRoute.Plugins) })
           SettingsDivider()
           SettingsNavRow("DB", Color(0xFF38BDF8), "Premium Services", if (uiState.debridAccounts.isEmpty()) "Connect a supported premium service" else "${uiState.debridAccounts.size} services connected", onClick = { onRouteChange(SettingsRoute.Debrid) })
@@ -7629,25 +9489,28 @@ private fun SettingsTab(
           SettingsNavRow("TV", Color(0xFF38BDF8), "Connect to TV", "Scan or enter a pairing code and manage linked TVs.", onClick = { onRouteChange(SettingsRoute.ConnectTv) })
         }
       }
-
+      item {
+        SettingsSection("Downloads") {
+          SettingsSwitchRow("DL", Color(0xFF22C55E), "Allow Downloads", "Let StreamDek save eligible movies and episodes for offline playback.", uiState.downloadsEnabled, onDownloadsEnabledChange)
+          if (uiState.downloadsEnabled) {
+            SettingsDivider()
+            SettingsNavRow("DL", Color(0xFF22C55E), "Manage Downloads", "${uiState.downloads.size} download(s) on this device", onClick = { onRouteChange(SettingsRoute.Downloads) })
+          }
+        }
+      }
       item {
         SettingsSection("About") {
-          SettingsNavRow("UP", Color(0xFF22C55E), "App Updates", uiState.availableUpdate?.let { "Version ${it.versionName} available" } ?: "Version ${BuildConfig.VERSION_NAME}", onClick = { onRouteChange(SettingsRoute.AppUpdates) })
+          SettingsNavRow("UP", Color(0xFF22C55E), "App Updates", "Version ${BuildConfig.VERSION_NAME}", onClick = { onRouteChange(SettingsRoute.AppUpdates) })
         }
       }
-      item {
-        Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-          Text("Made with love by Henryneo", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.64f))
-          Text("Version ${BuildConfig.VERSION_NAME}", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.64f))
-        }
-      }
+
     } else {
       item { SettingsDetailHeader(route = route) }
       when (route) {
         SettingsRoute.GeneralPlayback -> {
           item {
             SettingsSection("General") {
-              SettingsNavRow("XA", Color(0xFFA78BFA), "Language", "Choose the language used for the app interface.", value = "English", onClick = {})
+              SettingsChoiceRow("XA", Color(0xFFA78BFA), "Language", "Choose the language used for the app interface.", supportedAppLanguages.keys.toList(), uiState.appLanguage, onAppLanguageChange)
               SettingsDivider()
               SettingsChoiceRow("MO", Color(0xFF64748B), "Appearance", "Choose the app color scheme.", AppAppearance.values().map { it.name }, uiState.appAppearance.name) { selected ->
                 onAppAppearanceChange(AppAppearance.valueOf(selected))
@@ -7700,7 +9563,7 @@ private fun SettingsTab(
               SettingsSwitchRow("SUB", Color(0xFFA78BFA), "Auto-Load Subtitles", "Automatically choose matching subtitles when playback starts.", uiState.autoLoadSubtitles, onAutoLoadSubtitlesChange)
             }
           }
-          item { SubtitleSourcesSettings() }
+          item { SubtitleSourcesSettings(ownerKey = settingsOwnerKey(uiState)) }
         }
         SettingsRoute.ConnectTv -> {
           item { ConnectToTvSettings(uiState = uiState) }
@@ -7718,9 +9581,9 @@ private fun SettingsTab(
                 onContinueWatchingStyleChange(ContinueWatchingStyle.valueOf(selected))
               }
               SettingsDivider()
-              SettingsSwitchRow("LIVE", Color(0xFFE11D48), "Live Channels in Continue Watching", "Keep live channels you have played in Continue Watching.", uiState.includeLiveInContinueWatching, onIncludeLiveInContinueWatchingChange)
+              SettingsSwitchRow("TV", Color(0xFFF97316), "Landscape Live TV Cards", "Show live TV channels as wide landscape cards.", uiState.liveLandscapeCards, onLiveLandscapeCardsChange)
               SettingsDivider()
-              SettingsSwitchRow("TV", Color(0xFFF97316), "Landscape Live TV Cards", "Show live TV addon channels as wide landscape cards.", uiState.liveLandscapeCards, onLiveLandscapeCardsChange)
+              SettingsSwitchRow("FAV", Color(0xFFFACC15), "Card-style Player Favourites", "Show channel artwork in the live-player favourites drawer. Off uses the compact text list.", uiState.liveFavouriteDrawerCards, onLiveFavouriteDrawerCardsChange)
               SettingsDivider()
               SettingsSwitchRow("DOC", Color(0xFF94A3B8), "Show Hero Synopsis", "Show the story summary in the Home spotlight.", uiState.showHeroSynopsis, onShowHeroSynopsisChange)
               SettingsDivider()
@@ -7736,7 +9599,7 @@ private fun SettingsTab(
             SettingsSection("Detail Screen") {
               SettingsSwitchRow("TRL", Color(0xFF22C55E), "Hero trailer autoplay", "Play a trailer automatically at the top of a media page when one is available.", uiState.heroTrailerAutoplay, onHeroTrailerAutoplayChange)
               SettingsDivider()
-              SettingsChoiceRow("HD", Color(0xFF38BDF8), "Trailer resolution", "Choose the best video quality trailers may use.", listOf("360p", "720p", "1080p"), "${uiState.heroTrailerResolution}p") { selected -> onHeroTrailerResolutionChange(selected.removeSuffix("p").toInt()) }
+              SettingsChoiceRow("HD", Color(0xFF38BDF8), "Trailer resolution", "Choose the best video quality trailers may use.", listOf("360p", "720p", "1080p", "2160p"), "${uiState.heroTrailerResolution}p") { selected -> onHeroTrailerResolutionChange(selected.removeSuffix("p").toInt()) }
               SettingsDivider()
               SettingsNavRow("MDB", Color(0xFFF5C518), "Ratings", "Turn ratings on and choose which rating services appear.", value = if (uiState.ratingsEnabled) "Enabled" else "Off", onClick = { onRouteChange(SettingsRoute.Ratings) })
               SettingsDivider()
@@ -7755,6 +9618,11 @@ private fun SettingsTab(
               onRatingProviderEnabledChange = onRatingProviderEnabledChange,
               onMdblistApiKeyChange = onMdblistApiKeyChange,
             )
+          }
+          item {
+            SettingsSection("Add-on Catalogues") {
+              SettingsSwitchRow("TMD", Color(0xFF22C55E), "TMDB Ratings on Add-on Rows", "Show TMDB ratings for titles from your installed add-ons.", uiState.showAddonTmdbRatings, onShowAddonTmdbRatingsChange)
+            }
           }
         }
         SettingsRoute.Streams -> {
@@ -7779,37 +9647,41 @@ private fun SettingsTab(
               SettingsDivider()
               SettingsChoiceRow("POS", Color(0xFF22D3EE), "Badge Position", "Choose whether stream labels appear at the top or bottom.", listOf("Top", "Bottom"), uiState.badgePosition, onBadgePositionChange)
               SettingsDivider()
-              SettingsNavRow("URL", Color(0xFFA78BFA), "Badge Collections", fusionBadgeSourceSummary(uiState), onClick = { showFusionBadgeUrls = true })
+              SettingsNavRow("TAG", Color(0xFFA78BFA), "Badge Styles", fusionBadgeSourceSummary(uiState), onClick = { showFusionBadgeUrls = true })
             }
           }
           item {
             SettingsSection("Playback") {
+              SettingsChoiceRow("PLY", Color(0xFF22C55E), "Default Player", "Automatic starts with Media3 and switches to mpv if a source cannot play.", listOf("Auto", "Media3", "MPV"), uiState.playerEngine, onPlayerEngineChange)
+              SettingsDivider()
+              SettingsChoiceRow("AUD", Color(0xFFF59E0B), "Default Audio", "Choose the spoken language StreamDek should prefer when a video offers more than one.", listOf("en", "original", "es", "fr", "de", "it", "pt", "ja", "ko", "hi", "ta", "zh", "vi"), uiState.preferredAudioLanguage, onPreferredAudioLanguageChange)
+              SettingsDivider()
               SettingsSwitchRow("PIP", Color(0xFF6366F1), "Floating Player", "Keep the video in a small window when you leave StreamDek.", uiState.pictureInPictureEnabled, onPictureInPictureEnabledChange)
               SettingsDivider()
-              SettingsChoiceRow("HW", Color(0xFFA78BFA), "Video Compatibility", "Choose Recommended for most videos. Try Device or Safe mode if a video will not play correctly.", listOf("HW+", "HW", "SW"), uiState.decoderMode, onDecoderModeChange)
+              SettingsChoiceRow("HW", Color(0xFFA78BFA), "mpv Video Compatibility", "Used when mpv is selected or Automatic switches to it. Recommended works for most videos.", listOf("HW+", "HW", "SW"), uiState.decoderMode, onDecoderModeChange)
               SettingsDivider()
-              SettingsChoiceRow("SF", Color(0xFF06B6D4), "Player Display", "Use Standard for most videos. Try Compatibility if the picture is missing or unstable.", listOf("Standard", "Compatibility"), uiState.renderSurface, onRenderSurfaceChange)
+              SettingsChoiceRow("SF", Color(0xFF06B6D4), "mpv Display", "Used when mpv is selected or Automatic switches to it. Try Compatibility if the picture is missing.", listOf("Standard", "Compatibility"), uiState.renderSurface, onRenderSurfaceChange)
             }
           }
           item {
-            SettingsSection("Torrent Playback") {
-              SettingsSwitchRow("TOR", Color(0xFF22C55E), "Play Torrent Sources", "Allow StreamDek to play torrent sources and keep temporary video data on this device.", uiState.torrentServerSettings.enabled, onCheckedChange = { enabled ->
+            SettingsSection("Peer-to-Peer Playback") {
+              SettingsSwitchRow("TOR", Color(0xFF22C55E), "Enable Peer-to-Peer Playback", "Play torrent or magnet sources through this phone when no direct web stream is available. Video data is temporary, not a saved download.", uiState.torrentServerSettings.enabled, onCheckedChange = { enabled ->
                 onUpdateTorrentServerSettings { current -> current.copy(enabled = enabled) }
               })
               SettingsDivider()
-              SettingsChoiceRow("SRV", Color(0xFF38BDF8), "How to Play", "Use On this device for torrent sources. Direct links only plays regular web links.", listOf("Local Server", "Direct HTTP"), if (uiState.torrentServerSettings.streamingMode == "server") "Local Server" else "Direct HTTP") {
-                onUpdateTorrentServerSettings { current -> current.copy(streamingMode = if (it == "Local Server") "server" else "regular_http") }
+              SettingsChoiceRow("SRV", Color(0xFF38BDF8), "Source Handling", "Built-in engine supports peer-to-peer sources. Web links only ignores torrent and magnet sources.", listOf("Built-in engine", "Web links only"), if (uiState.torrentServerSettings.streamingMode == "server") "Built-in engine" else "Web links only") {
+                onUpdateTorrentServerSettings { current -> current.copy(streamingMode = if (it == "Built-in engine") "server" else "regular_http") }
               }
               SettingsDivider()
-              SettingsChoiceRow("PRF", Color(0xFF22C55E), "Startup Speed", "Balanced works well for most people. Gentler uses less power; faster choices may use more battery and data.", listOf("default", "soft", "fast", "ultra_fast"), uiState.torrentServerSettings.profile) {
-                onUpdateTorrentServerSettings { current -> current.copy(profile = it) }
+              SettingsChoiceRow("PRF", Color(0xFF22C55E), "Startup Profile", "Balanced works well for most people. Battery saver uses less power; faster choices may use more battery and data.", listOf("Balanced", "Battery saver", "Fast", "Fastest"), when (uiState.torrentServerSettings.profile) { "soft" -> "Battery saver"; "fast" -> "Fast"; "ultra_fast" -> "Fastest"; else -> "Balanced" }) {
+                onUpdateTorrentServerSettings { current -> current.copy(profile = when (it) { "Battery saver" -> "soft"; "Fast" -> "fast"; "Fastest" -> "ultra_fast"; else -> "default" }) }
               }
               SettingsDivider()
-              SettingsChoiceRow("CCH", Color(0xFFF59E0B), "Storage Limit", "Choose how much device storage temporary video data may use.", listOf("2", "5", "10", "20"), uiState.torrentServerSettings.cacheSizeGb.toString()) {
+              SettingsChoiceRow("CCH", Color(0xFFF59E0B), "Temporary Storage Limit", "Choose how much device storage the playback cache may use. StreamDek removes old temporary data as needed.", listOf("2", "5", "10", "20"), uiState.torrentServerSettings.cacheSizeGb.toString()) {
                 onUpdateTorrentServerSettings { current -> current.copy(cacheSizeGb = it.toInt()) }
               }
               SettingsDivider()
-              SettingsSwitchRow("BG", Color(0xFFEC4899), "Run In Background", "Keep torrent playback ready while a video is playing in the background.", uiState.torrentServerSettings.runAsForegroundService, onCheckedChange = { enabled ->
+              SettingsSwitchRow("BG", Color(0xFFEC4899), "Keep Engine Ready", "Keep peer-to-peer playback ready while StreamDek is in the background.", uiState.torrentServerSettings.runAsForegroundService, onCheckedChange = { enabled ->
                 onUpdateTorrentServerSettings { current -> current.copy(runAsForegroundService = enabled) }
               })
               SettingsDivider()
@@ -7823,13 +9695,15 @@ private fun SettingsTab(
             }
           }
         }
-        SettingsRoute.Addons -> item { AddonsSettingsSummary(uiState, onRefreshAddons, onInstallAddon, onToggleAddon, onUninstallAddon, onMoveAddon) }
+        SettingsRoute.Addons -> item { AddonsSettingsSummary(uiState, onRefreshAddons, onInstallAddon, onToggleAddon, onUninstallAddon, onMoveAddon, dragScrollBy = { delta -> settingsListState.scrollBy(delta) }) }
+        SettingsRoute.M3uPlaylists -> item { M3uPlaylistsSettingsSummary(uiState, onAddM3uPlaylist, onRemoveM3uPlaylist, onSetM3uPlaylistEnabled, onMoveM3uPlaylist, onRefreshM3uPlaylists) }
+        SettingsRoute.Downloads -> item { DownloadsSettingsSummary(uiState, onRefreshDownloads, onRemoveDownload, onPlayDownload) }
         SettingsRoute.Plugins -> item { PluginsSettingsSummary() }
         SettingsRoute.Debrid -> item { DebridSettingsSummary(uiState, onRefreshDebrid, onAddDebrid, onRemoveDebrid, onMoveDebrid) }
         SettingsRoute.Trakt -> item { TraktSettingsSummary(uiState, onRequestTraktDeviceCode, onPollTraktAuthorization, onDisconnectTrakt, onRefreshTrakt) }
         SettingsRoute.Profiles -> item { ProfilesSettingsSummary(uiState, onSwitchProfile, onSelectProfile, onSubmitProfilePin, onCancelProfilePin, onCreateProfile, onUpdateProfile, onDeleteProfile, onMakeDefaultProfile, onUpdateProfilePin) }
         SettingsRoute.Account -> item { AccountSettingsSummary(uiState, onSignOut, onSignIn, onRefreshSync) }
-        SettingsRoute.AppUpdates -> item { AppUpdatesSettingsSummary(uiState, onAutoUpdateChecksChange, onCheckForUpdates, onStartUpdate) }
+        SettingsRoute.AppUpdates -> item { AppUpdatesSettingsSummary(uiState, onAutoUpdateChecksChange, onCheckForUpdates) }
       }
     }
   }
@@ -7857,15 +9731,22 @@ private fun ProfilesSettingsSummary(
   onMakeDefaultProfile: (String) -> Unit,
   onUpdateProfilePin: (String, String?) -> Unit,
 ) {
+  var createExpanded by rememberSaveable { mutableStateOf(false) }
   var profileName by rememberSaveable { mutableStateOf("") }
   var selectedAvatarIndex by rememberSaveable { mutableStateOf(0) }
+  var expandedProfileId by rememberSaveable { mutableStateOf(uiState.activeProfileId) }
   var editingProfileId by rememberSaveable { mutableStateOf<String?>(null) }
   var editingName by rememberSaveable(editingProfileId) { mutableStateOf("") }
   var editingAvatarIndex by rememberSaveable(editingProfileId) { mutableStateOf(0) }
   var editingPinProfileId by rememberSaveable { mutableStateOf<String?>(null) }
   var newPin by rememberSaveable(editingPinProfileId) { mutableStateOf("") }
   var confirmPin by rememberSaveable(editingPinProfileId) { mutableStateOf("") }
+  var deleteProfileId by rememberSaveable { mutableStateOf<String?>(null) }
   var pin by rememberSaveable(uiState.pinPromptProfileId) { mutableStateOf("") }
+
+  LaunchedEffect(uiState.activeProfileId, uiState.profiles.map(StreamProfile::id)) {
+    if (expandedProfileId !in uiState.profiles.map(StreamProfile::id)) expandedProfileId = uiState.activeProfileId
+  }
 
   uiState.pinPromptProfileId?.let { profileId ->
     val profile = uiState.profiles.firstOrNull { it.id == profileId }
@@ -7884,116 +9765,283 @@ private fun ProfilesSettingsSummary(
     return
   }
 
-  Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-    SettingsSection("Create Profile") {
-      OutlinedTextField(
-        value = profileName,
-        onValueChange = { profileName = it.take(32) },
-        modifier = Modifier.fillMaxWidth(),
-        label = { Text("Profile name") },
-        singleLine = true,
-      )
-      Spacer(modifier = Modifier.height(12.dp))
-      ProfileAvatarPicker(selectedAvatarIndex = selectedAvatarIndex, onSelect = { selectedAvatarIndex = it })
-      Spacer(modifier = Modifier.height(12.dp))
-      Button(
-        onClick = {
-          val name = profileName.trim()
-          if (name.isNotBlank()) {
-            onCreateProfile(name, selectedAvatarIndex)
-            profileName = ""
-            selectedAvatarIndex = (selectedAvatarIndex + 1).floorMod(12)
+  deleteProfileId?.let { profileId ->
+    val profile = uiState.profiles.firstOrNull { it.id == profileId }
+    AlertDialog(
+      onDismissRequest = { deleteProfileId = null },
+      icon = { Icon(Icons.Rounded.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+      title = { Text("Delete ${profile?.name ?: "profile"}?") },
+      text = { Text("This removes this profile from StreamDek. Other profiles and their viewing activity will stay untouched.") },
+      confirmButton = {
+        Button(
+          onClick = { onDeleteProfile(profileId); deleteProfileId = null },
+          colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError),
+        ) { Text("Delete profile") }
+      },
+      dismissButton = { TextButton(onClick = { deleteProfileId = null }) { Text("Keep profile") } },
+    )
+  }
+
+  val activeProfile = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }
+  Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+    activeProfile?.let { profile ->
+      Surface(
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+        shape = RoundedCornerShape(28.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.24f)),
+      ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+          Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+              modifier = Modifier.size(72.dp).clip(CircleShape).background(profileAvatarColor(profile.avatarIndex))
+                .border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.48f), CircleShape),
+            ) { ProfileAvatarImage(profile.avatarIndex, Modifier.fillMaxSize()) }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+              Text("CURRENT PROFILE", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black, letterSpacing = 1.1.sp)
+              Text(profile.name, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
+              Text(
+                listOfNotNull(if (profile.isDefault) "Default" else null, if (profile.hasPinSet) "PIN protected" else null).joinToString(" • ").ifBlank { "Ready to watch" },
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+                style = MaterialTheme.typography.bodySmall,
+              )
+            }
           }
-        },
-        enabled = profileName.trim().isNotBlank() && uiState.profiles.size < 3,
-        modifier = Modifier.fillMaxWidth(),
-      ) { Text(if (uiState.profiles.size >= 3) "Profile Limit Reached" else "Create Profile") }
+          if (uiState.session != null) {
+            OutlinedButton(onClick = onOpenSwitcher, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
+              Icon(Icons.Rounded.ManageAccounts, contentDescription = null, modifier = Modifier.size(19.dp))
+              Spacer(Modifier.width(8.dp))
+              Text("Open profile switcher", fontWeight = FontWeight.SemiBold)
+            }
+          }
+        }
+      }
     }
 
-    SettingsSection("Profiles") {
-      uiState.profiles.forEachIndexed { index, profile ->
-        if (index > 0) SettingsDivider()
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-          Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Box(
-              modifier = Modifier
-                .size(48.dp)
-                .clip(CircleShape)
-                .background(profileAvatarColor(profile.avatarIndex))
-                .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f), CircleShape),
-            ) {
-              ProfileAvatarImage(avatarIndex = profile.avatarIndex, modifier = Modifier.fillMaxSize())
-            }
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-              Text(profile.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-              Text(profileStatusLabel(profile, uiState.activeProfileId), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.66f), style = MaterialTheme.typography.bodySmall)
-            }
-            TextButton(
-              onClick = {
-                editingProfileId = profile.id
-                editingName = profile.name
-                editingAvatarIndex = profile.avatarIndex
-              },
-            ) { Text("Edit") }
-          }
-          if (editingProfileId == profile.id) {
-            OutlinedTextField(
-              value = editingName,
-              onValueChange = { editingName = it.take(32) },
-              modifier = Modifier.fillMaxWidth(),
-              label = { Text("Profile name") },
-              singleLine = true,
-            )
-            ProfileAvatarPicker(selectedAvatarIndex = editingAvatarIndex, onSelect = { editingAvatarIndex = it })
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-              Button(
-                onClick = {
-                  val name = editingName.trim()
-                  if (name.isNotBlank()) {
-                    onUpdateProfile(profile.id, name, editingAvatarIndex)
-                    editingProfileId = null
-                  }
-                },
-                enabled = editingName.trim().isNotBlank(),
-                modifier = Modifier.weight(1f),
-              ) { Text("Save") }
-              OutlinedButton(onClick = { editingProfileId = null }, modifier = Modifier.weight(1f)) { Text("Cancel") }
-            }
-          }
-          Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(onClick = { onSelectProfile(profile.id) }, enabled = profile.id != uiState.activeProfileId, modifier = Modifier.weight(1f)) { Text(if (profile.id == uiState.activeProfileId) "Active" else "Use") }
-            OutlinedButton(onClick = { onMakeDefaultProfile(profile.id) }, enabled = !profile.isDefault, modifier = Modifier.weight(1f)) { Text(if (profile.isDefault) "Default" else "Set Default") }
-          }
-          if (editingPinProfileId == profile.id) {
-            OutlinedTextField(value = newPin, onValueChange = { newPin = it.filter(Char::isDigit).take(4) }, modifier = Modifier.fillMaxWidth(), label = { Text(if (profile.hasPinSet) "New PIN" else "PIN") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), visualTransformation = PasswordVisualTransformation())
-            OutlinedTextField(value = confirmPin, onValueChange = { confirmPin = it.filter(Char::isDigit).take(4) }, modifier = Modifier.fillMaxWidth(), label = { Text("Confirm PIN") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), visualTransformation = PasswordVisualTransformation())
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-              Button(
-                onClick = {
-                  onUpdateProfilePin(profile.id, newPin)
-                  editingPinProfileId = null
-                  newPin = ""
-                  confirmPin = ""
-                },
-                enabled = newPin.length == 4 && newPin == confirmPin,
-                modifier = Modifier.weight(1f),
-              ) { Text(if (profile.hasPinSet) "Change PIN" else "Set PIN") }
-              if (profile.hasPinSet) {
-                OutlinedButton(
-                  onClick = {
-                    onUpdateProfilePin(profile.id, null)
-                    editingPinProfileId = null
-                    newPin = ""
-                    confirmPin = ""
-                  },
-                  modifier = Modifier.weight(1f),
-                ) { Text("Remove") }
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+      Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text("Your profiles", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
+        Text("${uiState.profiles.size} of 3 profiles", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f), style = MaterialTheme.typography.bodySmall)
+      }
+      Button(
+        onClick = { createExpanded = !createExpanded },
+        enabled = uiState.profiles.size < 3,
+        shape = RoundedCornerShape(16.dp),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+      ) {
+        Icon(if (createExpanded) Icons.Rounded.Close else Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(if (createExpanded) "Close" else "Add")
+      }
+    }
+
+    AnimatedVisibility(
+      visible = createExpanded,
+      enter = expandVertically(expandFrom = Alignment.Top, animationSpec = tween(240)) + fadeIn(tween(180)),
+      exit = shrinkVertically(shrinkTowards = Alignment.Top, animationSpec = tween(200)) + fadeOut(tween(140)),
+    ) {
+      Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(24.dp)) {
+        Column(modifier = Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+          Text("Create a profile", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
+          OutlinedTextField(
+            value = profileName,
+            onValueChange = { profileName = it.take(32) },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { InputGuideText("Profile name") },
+            singleLine = true,
+            shape = RoundedCornerShape(16.dp),
+          )
+          ProfileAvatarPicker(selectedAvatarIndex = selectedAvatarIndex, onSelect = { selectedAvatarIndex = it })
+          Button(
+            onClick = {
+              val name = profileName.trim()
+              if (name.isNotBlank()) {
+                onCreateProfile(name, selectedAvatarIndex)
+                profileName = ""
+                selectedAvatarIndex = (selectedAvatarIndex + 1).floorMod(12)
+                createExpanded = false
               }
+            },
+            enabled = profileName.trim().isNotBlank() && uiState.profiles.size < 3,
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+            shape = RoundedCornerShape(16.dp),
+          ) { Text("Create profile", fontWeight = FontWeight.Bold) }
+        }
+      }
+    }
+
+    uiState.profiles.forEach { profile ->
+      val expanded = expandedProfileId == profile.id
+      val active = profile.id == uiState.activeProfileId
+      Surface(
+        color = if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.065f) else MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(24.dp),
+        border = BorderStroke(1.dp, if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.26f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f)),
+        modifier = Modifier.fillMaxWidth().animateContentSize(),
+      ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+          Row(
+            modifier = Modifier.fillMaxWidth().clickable {
+              expandedProfileId = if (expanded) null else profile.id
+              if (expanded) {
+                editingProfileId = null
+                editingPinProfileId = null
+              }
+            }.padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Box(
+              modifier = Modifier.size(58.dp).clip(CircleShape).background(profileAvatarColor(profile.avatarIndex))
+                .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f), CircleShape),
+            ) { ProfileAvatarImage(profile.avatarIndex, Modifier.fillMaxSize()) }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+              Text(profile.name, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+              Text(profileStatusLabel(profile, uiState.activeProfileId), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-          } else {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-              OutlinedButton(onClick = { editingPinProfileId = profile.id }, modifier = Modifier.weight(1f)) { Text(if (profile.hasPinSet) "Manage PIN" else "Set PIN") }
-              OutlinedButton(onClick = { onDeleteProfile(profile.id) }, enabled = !profile.isDefault && uiState.profiles.size > 1, modifier = Modifier.weight(1f)) { Text("Delete") }
+            Icon(
+              if (expanded) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown,
+              contentDescription = if (expanded) "Collapse profile" else "Manage profile",
+              tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f),
+            )
+          }
+
+          AnimatedVisibility(
+            visible = expanded,
+            enter = expandVertically(expandFrom = Alignment.Top, animationSpec = tween(230)) + fadeIn(tween(170)),
+            exit = shrinkVertically(shrinkTowards = Alignment.Top, animationSpec = tween(190)) + fadeOut(tween(130)),
+          ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+              SettingsDivider()
+              when {
+                editingProfileId == profile.id -> {
+                  Text("Edit profile", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                  OutlinedTextField(
+                    value = editingName,
+                    onValueChange = { editingName = it.take(32) },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { InputGuideText("Profile name") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                  )
+                  ProfileAvatarPicker(selectedAvatarIndex = editingAvatarIndex, onSelect = { editingAvatarIndex = it })
+                  Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                      onClick = {
+                        val name = editingName.trim()
+                        if (name.isNotBlank()) {
+                          onUpdateProfile(profile.id, name, editingAvatarIndex)
+                          editingProfileId = null
+                        }
+                      },
+                      enabled = editingName.trim().isNotBlank(),
+                      modifier = Modifier.weight(1f),
+                      shape = RoundedCornerShape(14.dp),
+                    ) { Text("Save") }
+                    OutlinedButton(onClick = { editingProfileId = null }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(14.dp)) { Text("Cancel") }
+                  }
+                }
+                editingPinProfileId == profile.id -> {
+                  Text(if (profile.hasPinSet) "Change PIN" else "Protect with a PIN", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                  OutlinedTextField(
+                    value = newPin,
+                    onValueChange = { newPin = it.filter(Char::isDigit).take(4) },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { InputGuideText("New 4-digit PIN") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    visualTransformation = PasswordVisualTransformation(),
+                  )
+                  OutlinedTextField(
+                    value = confirmPin,
+                    onValueChange = { confirmPin = it.filter(Char::isDigit).take(4) },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { InputGuideText("Confirm PIN") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    visualTransformation = PasswordVisualTransformation(),
+                  )
+                  Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                      onClick = {
+                        onUpdateProfilePin(profile.id, newPin)
+                        editingPinProfileId = null
+                        newPin = ""
+                        confirmPin = ""
+                      },
+                      enabled = newPin.length == 4 && newPin == confirmPin,
+                      modifier = Modifier.weight(1f),
+                      shape = RoundedCornerShape(14.dp),
+                    ) { Text(if (profile.hasPinSet) "Change PIN" else "Set PIN") }
+                    OutlinedButton(
+                      onClick = { editingPinProfileId = null; newPin = ""; confirmPin = "" },
+                      modifier = Modifier.weight(1f),
+                      shape = RoundedCornerShape(14.dp),
+                    ) { Text("Cancel") }
+                  }
+                  if (profile.hasPinSet) {
+                    TextButton(
+                      onClick = { onUpdateProfilePin(profile.id, null); editingPinProfileId = null; newPin = ""; confirmPin = "" },
+                      modifier = Modifier.align(Alignment.End),
+                    ) { Text("Remove PIN", color = MaterialTheme.colorScheme.error) }
+                  }
+                }
+                else -> {
+                  Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                      onClick = { onSelectProfile(profile.id) },
+                      enabled = !active,
+                      modifier = Modifier.weight(1f),
+                      shape = RoundedCornerShape(14.dp),
+                    ) {
+                      Icon(Icons.Rounded.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                      Spacer(Modifier.width(6.dp))
+                      Text(if (active) "In use" else "Use profile")
+                    }
+                    OutlinedButton(
+                      onClick = { onMakeDefaultProfile(profile.id) },
+                      enabled = !profile.isDefault,
+                      modifier = Modifier.weight(1f),
+                      shape = RoundedCornerShape(14.dp),
+                    ) {
+                      Icon(Icons.Rounded.Star, contentDescription = null, modifier = Modifier.size(18.dp))
+                      Spacer(Modifier.width(6.dp))
+                      Text(if (profile.isDefault) "Default" else "Make default")
+                    }
+                  }
+                  Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                      onClick = {
+                        editingProfileId = profile.id
+                        editingPinProfileId = null
+                        editingName = profile.name
+                        editingAvatarIndex = profile.avatarIndex
+                      },
+                      modifier = Modifier.weight(1f),
+                      shape = RoundedCornerShape(14.dp),
+                    ) { Text("Edit") }
+                    OutlinedButton(
+                      onClick = { editingPinProfileId = profile.id; editingProfileId = null },
+                      modifier = Modifier.weight(1f),
+                      shape = RoundedCornerShape(14.dp),
+                    ) {
+                      Icon(Icons.Rounded.Lock, contentDescription = null, modifier = Modifier.size(17.dp))
+                      Spacer(Modifier.width(6.dp))
+                      Text(if (profile.hasPinSet) "Manage PIN" else "Add PIN")
+                    }
+                  }
+                  TextButton(
+                    onClick = { deleteProfileId = profile.id },
+                    enabled = !profile.isDefault && uiState.profiles.size > 1,
+                    modifier = Modifier.align(Alignment.End),
+                  ) {
+                    Icon(Icons.Rounded.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(17.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Delete profile", color = MaterialTheme.colorScheme.error)
+                  }
+                }
+              }
             }
           }
         }
@@ -8002,11 +10050,12 @@ private fun ProfilesSettingsSummary(
   }
 }
 
-private fun profileStatusLabel(profile: StreamProfile, activeProfileId: String?): String = buildString {
-  append(if (profile.id == activeProfileId) "Active" else "Tap Use to switch")
-  if (profile.isDefault) append(" \u2022 Default")
-  if (profile.hasPinSet) append(" \u2022 PIN set")
-}
+private fun profileStatusLabel(profile: StreamProfile, activeProfileId: String?): String = buildList {
+  if (profile.id == activeProfileId) add("In use")
+  if (profile.isDefault) add("Default")
+  if (profile.hasPinSet) add("PIN protected")
+  if (isEmpty()) add("Ready")
+}.joinToString(" • ")
 private fun normalizeTvCode(value: String): String {
   val cleaned = value.uppercase().filter(Char::isLetterOrDigit).take(8)
   return if (cleaned.length <= 4) cleaned else "${cleaned.take(4)}-${cleaned.drop(4)}"
@@ -8138,7 +10187,7 @@ private fun ConnectToTvSettings(uiState: AppUiState) {
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
         label = { Text("TV pairing code") },
-        placeholder = { Text("ABCD-1234") },
+        placeholder = { InputGuideText("ABCD-1234") },
       )
       Spacer(modifier = Modifier.height(12.dp))
       Button(onClick = { requestAuthorization(code) }, enabled = code.length == 9 && !busy, modifier = Modifier.fillMaxWidth()) {
@@ -8242,6 +10291,8 @@ private fun settingsRouteTitle(route: SettingsRoute): String = when (route) {
   SettingsRoute.DetailScreen -> "Detail Screen"
   SettingsRoute.Streams -> "Streams"
   SettingsRoute.Addons -> "Add-ons"
+  SettingsRoute.M3uPlaylists -> "M3U Playlists"
+  SettingsRoute.Downloads -> "Downloads"
   SettingsRoute.Plugins -> "Plugins"
   SettingsRoute.ConnectTv -> "Connect to TV"
   SettingsRoute.Debrid -> "Premium Services"
@@ -8261,6 +10312,8 @@ private fun settingsRouteSubtitle(route: SettingsRoute): String = when (route) {
   SettingsRoute.DetailScreen -> "Choose how trailers and title information appear."
   SettingsRoute.Streams -> "Choose how StreamDek sorts, labels, and shows streams."
   SettingsRoute.Addons -> "Add, arrange, turn on, or remove streaming sources."
+  SettingsRoute.M3uPlaylists -> "Add IPTV M3U playlist URLs and choose which ones are on."
+  SettingsRoute.Downloads -> "See, play, and remove titles saved for offline playback."
   SettingsRoute.Plugins -> "Add plugin collections and choose the streaming sources they provide."
   SettingsRoute.ConnectTv -> "Pair this phone with StreamDek TV and manage authorized televisions."
   SettingsRoute.Debrid -> "Connect premium services and choose which one StreamDek tries first."
@@ -8302,8 +10355,9 @@ private fun settingsGlyph(icon: String): ImageVector = when (icon) {
   "XA", "HI" -> Icons.Rounded.Language
   "MO", "TH" -> Icons.Rounded.Palette
   "FOL" -> Icons.Rounded.Folder
-  "SEA", "TV" -> Icons.Rounded.Tv
+  "SEA", "TV", "M3U" -> Icons.Rounded.Tv
   "LIVE" -> Icons.Rounded.Tv
+  "DL" -> Icons.Rounded.Download
   "MDB", "RAT" -> Icons.Rounded.Star
   else -> Icons.Rounded.Security
 }
@@ -8350,7 +10404,7 @@ private fun SettingsNavRow(icon: String, iconColor: Color, title: String, subtit
       Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), maxLines = 3, overflow = TextOverflow.Ellipsis)
     }
     value?.let {
-      Text(if (title == "Max File Size" && it == "0") "Unlimited" else if (it == "Auto") "Best Available" else it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+      Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodyMedium, maxLines = 1)
     }
     Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f))
   }
@@ -8396,10 +10450,10 @@ private fun TorrentServerStatusRow(status: TorrentServerStatus) {
   Row(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
     Box(modifier = Modifier.size(18.dp).clip(CircleShape).background(if (status.isOnline) Color(0xFF22C55E) else Color(0xFF64748B)))
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-      Text("Server Status", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
-      Text(if (status.isOnline) "Ready for torrent playback" else "Torrent playback is not ready", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+      Text("Playback Status", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+      Text(if (status.isOnline) "Ready to play" else "Needs attention before playback", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
-    Text(if (status.isOnline) "Online" else "Offline", color = if (status.isOnline) Color(0xFF22C55E) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+    Text(if (status.isOnline) "Ready" else "Not ready", color = if (status.isOnline) Color(0xFF22C55E) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
   }
 }
 
@@ -8438,7 +10492,7 @@ private fun ThemePresetPicker(selected: AppThemePreset, onSelected: (AppThemePre
 }
 
 @Composable
-private fun SettingsSwitchRow(icon: String, iconColor: Color, title: String, subtitle: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit, logoProvider: String? = null, enabled: Boolean = true) {
+private fun SettingsSwitchRow(icon: String?, iconColor: Color, title: String, subtitle: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit, logoProvider: String? = null, enabled: Boolean = true) {
   Row(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
     if (logoProvider != null) {
       Image(
@@ -8447,7 +10501,7 @@ private fun SettingsSwitchRow(icon: String, iconColor: Color, title: String, sub
         modifier = Modifier.size(22.dp),
         contentScale = ContentScale.Fit,
       )
-    } else {
+    } else if (icon != null) {
       SettingsIcon(icon, iconColor)
     }
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -8499,12 +10553,15 @@ private fun SettingsChoiceSheet(title: String, options: List<String>, selected: 
       contentAlignment = Alignment.BottomCenter,
     ) {
       Surface(
-        modifier = Modifier.fillMaxWidth().clickable(enabled = false, onClick = {}),
+        modifier = Modifier.fillMaxWidth().heightIn(max = 680.dp).clickable(enabled = false, onClick = {}),
         color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)),
       ) {
-        Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Column(
+          modifier = Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 28.dp),
+          verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
           Text(title, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
           if (title == "Continue Watching Style" || title == "Page Style") {
             options.chunked(2).forEach { rowOptions ->
@@ -8701,17 +10758,41 @@ private fun PageStyleSkeletonPreview(style: DetailPageStyle, selected: Boolean) 
 }
 
 private fun settingsOptionLabel(title: String, option: String): String = when {
+  title == "Trailer resolution" && option == "2160p" -> "4K"
+  title == "Language" -> supportedAppLanguages[normalizeAppLanguage(option)] ?: "English"
+  title == "Default Player" -> when (option) {
+    "Auto" -> "Auto"
+    "Media3" -> "ExoPlayer"
+    "MPV" -> "libmpv"
+    else -> option
+  }
+  title == "Default Audio" -> when (option) {
+    "en" -> "English"
+    "original" -> "Original / video default"
+    "es" -> "Spanish"
+    "fr" -> "French"
+    "de" -> "German"
+    "it" -> "Italian"
+    "pt" -> "Portuguese"
+    "ja" -> "Japanese"
+    "ko" -> "Korean"
+    "hi" -> "Hindi"
+    "ta" -> "Tamil"
+    "zh" -> "Chinese"
+    "vi" -> "Vietnamese"
+    else -> option
+  }
   title == "Max File Size" && option == "0" -> "Unlimited"
   title == "Max File Size" -> "$option GB"
   title == "Preferred Stream Quality" && option == "2160p" -> "4K"
   title == "Preferred Stream Quality" && option == "Auto" -> "Best Available"
-  title == "Video Compatibility" -> when (option) {
+  title == "mpv Video Compatibility" -> when (option) {
     "HW+" -> "Recommended"
     "HW" -> "Device"
     "SW" -> "Safe mode"
     else -> option
   }
-  title == "How to Play" -> when (option) {
+  title == "Playback Method" -> when (option) {
     "Local Server" -> "On this device"
     "Direct HTTP" -> "Direct links only"
     else -> option
@@ -8757,6 +10838,14 @@ private fun settingsOptionLabel(title: String, option: String): String = when {
 }
 
 private fun settingsOptionDescription(title: String, option: String): String? = when (title) {
+  "Language" -> when (normalizeAppLanguage(option)) {
+    "en" -> "English"
+    "es" -> "Español · Spanish"
+    "fr" -> "Français · French"
+    "it" -> "Italiano · Italian"
+    "nl" -> "Nederlands · Dutch"
+    else -> null
+  }
   "Preferred Stream Quality" -> when (option) {
     "2160p" -> "Prefer 4K streams first."
     "1080p" -> "Prefer Full HD streams first."
@@ -9055,60 +11144,230 @@ private fun AddonServiceCard(
   onToggleAddon: (InstalledAddon, Boolean) -> Unit,
   onUninstallAddon: (String) -> Unit,
   onMoveAddon: (String, Int) -> Unit,
+  dragScrollBy: suspend (Float) -> Float = { 0f },
 ) {
   val context = LocalContext.current
-  val configureUrl = remember(addon.id, addon.manifest.behaviorConfigurable, addon.manifest.baseUrl, addon.baseUrl, addon.manifest.manifestUrl, addon.manifest.url, addon.url, addon.manifest.transportUrl, addon.transportUrl) {
-    addonConfigureUrl(addon)
+  val configureUrl = remember(addon.id, addon.manifest.behaviorConfigurable, addon.manifest.baseUrl, addon.baseUrl, addon.manifest.manifestUrl, addon.manifest.url, addon.url, addon.manifest.transportUrl, addon.transportUrl) { addonConfigureUrl(addon) }
+  var expanded by rememberSaveable(addon.id) { mutableStateOf(false) }
+  var showDetails by remember { mutableStateOf(false) }
+  var displayNameVersion by remember { mutableStateOf(0) }
+  val displayName = remember(addon.id, addon.manifest.name, displayNameVersion) { DisplayNameOverrides.resolve(addon.id, addon.manifest.name) }
+  if (showDetails) AddonDetailsDialog(addon, displayName, { displayNameVersion++ }, { showDetails = false })
+
+  val latestOnMove by rememberUpdatedState { delta: Int -> onMoveAddon(addon.id, delta) }
+  var dragging by remember(addon.id) { mutableStateOf(false) }
+  var dragOffsetY by remember(addon.id) { mutableFloatStateOf(0f) }
+  var itemTopInRoot by remember(addon.id) { mutableFloatStateOf(0f) }
+  var autoScrollStep by remember(addon.id) { mutableFloatStateOf(0f) }
+  val density = LocalDensity.current
+  val configuration = LocalConfiguration.current
+  val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
+  val topEdgePx = with(density) { 172.dp.toPx() }
+  val bottomEdgePx = screenHeightPx - with(density) { 132.dp.toPx() }
+  val maxAutoScrollStepPx = with(density) { 9.dp.toPx() }
+  val reorderThresholdPx = with(density) { 74.dp.toPx() }
+
+  fun applyDragDelta(delta: Float) {
+    dragOffsetY += delta
+    while (dragOffsetY > reorderThresholdPx) {
+      dragOffsetY -= reorderThresholdPx
+      latestOnMove(1)
+    }
+    while (dragOffsetY < -reorderThresholdPx) {
+      dragOffsetY += reorderThresholdPx
+      latestOnMove(-1)
+    }
   }
-  val resourceCount = addon.manifest.resources.size
-  val catalogCount = addon.manifest.catalogs.size
-  val tags = buildList {
-    add(if (addon.enabled) "Active" else "Disabled")
-    if (resourceCount > 0) add("$resourceCount features")
-    if (catalogCount > 0) add("$catalogCount Home rows")
-    if (addon.manifest.behaviorConfigurable) add("Can be personalised")
+
+  LaunchedEffect(dragging) {
+    while (dragging) {
+      val step = autoScrollStep
+      if (step != 0f) {
+        val consumed = dragScrollBy(step)
+        if (consumed != 0f) applyDragDelta(consumed)
+      }
+      delay(16)
+    }
   }
-  Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(26.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))) {
-    Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-      Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.Top) {
-        AddonLogo(addon)
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-          Text(addon.manifest.name, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.headlineSmall.copy(fontSize = 22.sp), fontWeight = FontWeight.Black, maxLines = 2, overflow = TextOverflow.Ellipsis)
-          Text("Version ${addon.manifest.version}", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.54f), style = MaterialTheme.typography.bodyMedium)
+
+  Surface(
+    modifier = Modifier
+      .onGloballyPositioned { itemTopInRoot = it.positionInRoot().y }
+      .zIndex(if (dragging) 2f else 0f)
+      .graphicsLayer {
+        translationY = dragOffsetY
+        scaleX = if (dragging) 1.02f else 1f
+        scaleY = if (dragging) 1.02f else 1f
+        shadowElevation = if (dragging) 18f else 0f
+      },
+    color = MaterialTheme.colorScheme.surface,
+    shape = RoundedCornerShape(20.dp),
+    border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f)),
+  ) {
+    Column(modifier = Modifier.fillMaxWidth().animateContentSize()) {
+      Row(
+        modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(14.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Box(
+          modifier = Modifier.pointerInput(addon.id) {
+            detectDragGesturesAfterLongPress(
+              onDragStart = {
+                dragging = true
+                dragOffsetY = 0f
+                autoScrollStep = 0f
+              },
+              onDragEnd = {
+                dragging = false
+                dragOffsetY = 0f
+                autoScrollStep = 0f
+              },
+              onDragCancel = {
+                dragging = false
+                dragOffsetY = 0f
+                autoScrollStep = 0f
+              },
+              onDrag = { change, dragAmount ->
+                change.consume()
+                applyDragDelta(dragAmount.y)
+                val pointerRootY = itemTopInRoot + dragOffsetY + change.position.y
+                autoScrollStep = when {
+                  pointerRootY < topEdgePx -> -((topEdgePx - pointerRootY) / 6f).coerceIn(0f, maxAutoScrollStepPx)
+                  pointerRootY > bottomEdgePx -> ((pointerRootY - bottomEdgePx) / 6f).coerceIn(0f, maxAutoScrollStepPx)
+                  else -> 0f
+                }
+              },
+            )
+          },
+        ) {
+          AddonLogo(addon)
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+          Text(displayName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+          Text(
+            buildString {
+              append(if (addon.enabled) "Active" else "Off")
+              append("  •  ${addon.manifest.catalogs.size} Home rows")
+              if (addon.manifest.behaviorConfigurable) append("  •  Configurable")
+            },
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
         }
         Switch(checked = addon.enabled, onCheckedChange = { onToggleAddon(addon, it) })
+        Icon(
+          if (expanded) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown,
+          contentDescription = if (expanded) "Hide actions" else "Show actions",
+          tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
+        )
       }
-      Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.align(Alignment.End)) {
-        AddonIconButton(Icons.Rounded.KeyboardArrowUp, contentDescription = "Move up", enabled = index > 0) { onMoveAddon(addon.id, -1) }
-        AddonIconButton(Icons.Rounded.KeyboardArrowDown, contentDescription = "Move down", enabled = index < total - 1) { onMoveAddon(addon.id, 1) }
-        AddonIconButton(Icons.Rounded.Refresh, contentDescription = "Refresh addon") { onRefreshAddons() }
-        AddonIconButton(Icons.Rounded.Settings, contentDescription = "Configure addon", tint = Color(0xFFF0A7C8), enabled = configureUrl != null) {
-          configureUrl?.let { url ->
-            runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+      AnimatedVisibility(visible = expanded) {
+        Column(modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          SettingsDivider()
+          addon.manifest.description?.takeIf { it.isNotBlank() }?.let {
+            Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+          }
+          Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { showDetails = true }) { Icon(Icons.Rounded.Info, contentDescription = "Add-on details") }
+            if (configureUrl != null) IconButton(onClick = {
+              runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(configureUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            }) { Icon(Icons.Rounded.Settings, contentDescription = "Configure add-on") }
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = { onMoveAddon(addon.id, -1) }, enabled = index > 0) { Icon(Icons.Rounded.KeyboardArrowUp, "Move up") }
+            IconButton(onClick = { onMoveAddon(addon.id, 1) }, enabled = index < total - 1) { Icon(Icons.Rounded.KeyboardArrowDown, "Move down") }
+            IconButton(onClick = onRefreshAddons) { Icon(Icons.Rounded.Refresh, "Refresh") }
+            IconButton(onClick = { onUninstallAddon(addon.id) }) { Icon(Icons.Rounded.Delete, "Remove", tint = Color(0xFFEF476F)) }
           }
         }
-        IconButton(onClick = { onUninstallAddon(addon.id) }) { Icon(Icons.Rounded.Delete, contentDescription = "Remove", tint = Color(0xFFFF5D73)) }
       }
-      Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)))
-      LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(tags) { tag -> AddonTag(tag, active = tag == "Active") }
-      }
-      Text(addon.manifest.description ?: "Streaming add-on", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.60f), style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-      val typeLine = supportedHomeCatalogLabels(addon).joinToString(" / ").ifBlank { "Streaming source" }
-      Text(typeLine, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.52f), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
   }
 }
 
 @Composable
-private fun SubtitleSourcesSettings() {
+private fun DetailRow(label: String, value: String) {
+  Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f))
+    Text(value, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+  }
+}
+
+@Composable
+private fun AddonDetailsDialog(addon: InstalledAddon, displayName: String, onRenamed: () -> Unit, onDismiss: () -> Unit) {
+  var nameField by remember(addon.id) { mutableStateOf(displayName) }
+  Dialog(onDismissRequest = onDismiss) {
+    Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f))) {
+      Column(modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+          AddonLogo(addon)
+          Column(modifier = Modifier.weight(1f)) {
+            Text("Add-on details", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f))
+            Text(addon.manifest.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black, maxLines = 2, overflow = TextOverflow.Ellipsis)
+          }
+        }
+        if (LocalAddonManager.isLocalAddonId(addon.id)) {
+          Text(
+            "This add-on is available while your phone is connected to the same network as the device providing it.",
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+            style = MaterialTheme.typography.bodySmall,
+          )
+        }
+        SettingsDivider()
+        OutlinedTextField(
+          value = nameField,
+          onValueChange = { nameField = it },
+          label = { Text("Display name") },
+          singleLine = true,
+          modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+          Button(onClick = {
+            DisplayNameOverrides.set(addon.id, nameField.takeIf { it.isNotBlank() && it != addon.manifest.name })
+            onRenamed()
+          }, enabled = nameField.isNotBlank()) { Text("Save name") }
+          if (DisplayNameOverrides.get(addon.id) != null) {
+            TextButton(onClick = {
+              DisplayNameOverrides.clear(addon.id)
+              nameField = addon.manifest.name
+              onRenamed()
+            }) { Text("Reset to default") }
+          }
+        }
+        SettingsDivider()
+        DetailRow("Version", addon.manifest.version)
+        addon.manifest.description?.takeIf { it.isNotBlank() }?.let { DetailRow("About", it) }
+        DetailRow(
+          "Setup",
+          when {
+            addon.manifest.configurationRequired -> "Finish setup before using"
+            addon.manifest.behaviorConfigurable -> "Optional settings available"
+            else -> "Ready to use"
+          },
+        )
+        if (addon.manifest.catalogs.isNotEmpty()) {
+          Text("Home rows (${addon.manifest.catalogs.size})", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+          addon.manifest.catalogs.forEach { catalog ->
+            Text("• ${catalog.name.ifBlank { "Untitled row" }}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.70f))
+          }
+        }
+        TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("Close") }
+      }
+    }
+  }
+}
+
+@Composable
+private fun SubtitleSourcesSettings(ownerKey: String) {
   val context = LocalContext.current
   var sourceUrl by rememberSaveable { mutableStateOf("") }
-  var sources by remember { mutableStateOf(UserSubtitleSourceStore.load(context)) }
+  var sources by remember(ownerKey) { mutableStateOf(UserSubtitleSourceStore.load(context, ownerKey)) }
   var message by remember { mutableStateOf<String?>(null) }
 
   fun refreshSources() {
-    sources = UserSubtitleSourceStore.load(context)
+    sources = UserSubtitleSourceStore.load(context, ownerKey)
   }
 
   SettingsSection("Subtitle Sources") {
@@ -9119,17 +11378,17 @@ private fun SubtitleSourcesSettings() {
       Row(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
           Text(source.name, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
-          Text(source.baseUrl, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+          Text("Included in subtitle searches", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f), style = MaterialTheme.typography.bodySmall)
         }
         Switch(
           checked = source.enabled,
           onCheckedChange = { enabled ->
-            UserSubtitleSourceStore.setEnabled(context, source.id, enabled)
+            UserSubtitleSourceStore.setEnabled(context, ownerKey, source.id, enabled)
             refreshSources()
           },
         )
         IconButton(onClick = {
-          UserSubtitleSourceStore.remove(context, source.id)
+          UserSubtitleSourceStore.remove(context, ownerKey, source.id)
           refreshSources()
           message = "Subtitle source removed."
         }) {
@@ -9139,20 +11398,20 @@ private fun SubtitleSourcesSettings() {
     }
     Spacer(modifier = Modifier.height(12.dp))
     Text("Add your own", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
-    Text("Paste a Stremio-compatible subtitle add-on link. It will be searched alongside the built-in source.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.66f), style = MaterialTheme.typography.bodySmall)
+    Text("Paste the link supplied by your subtitle provider. StreamDek will search it alongside the built-in source.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.66f), style = MaterialTheme.typography.bodySmall)
     Spacer(modifier = Modifier.height(10.dp))
     OutlinedTextField(
       value = sourceUrl,
       onValueChange = { sourceUrl = it; message = null },
       modifier = Modifier.fillMaxWidth(),
-      placeholder = { Text("Paste subtitle add-on link") },
+      placeholder = { InputGuideText("Paste subtitle add-on link") },
       leadingIcon = { Icon(Icons.Rounded.Link, contentDescription = null) },
       singleLine = true,
     )
     Spacer(modifier = Modifier.height(10.dp))
     Button(
       onClick = {
-        UserSubtitleSourceStore.add(context, sourceUrl)
+        UserSubtitleSourceStore.add(context, ownerKey, sourceUrl)
           .onSuccess {
             sourceUrl = ""
             message = "Subtitle source added."
@@ -9175,9 +11434,22 @@ private fun PluginsSettingsSummary() {
   var busy by remember { mutableStateOf(false) }
   var message by remember { mutableStateOf<String?>(null) }
   var expandedPluginUrl by rememberSaveable { mutableStateOf<String?>(null) }
+  var detailsRepoUrl by rememberSaveable { mutableStateOf<String?>(null) }
+  var displayNameVersion by remember { mutableStateOf(0) }
 
   fun syncState() {
     pluginState = StreamDekPlugins.manager.state
+  }
+
+  detailsRepoUrl?.let { url ->
+    pluginState.repos.firstOrNull { it.url == url }?.let { repository ->
+      PluginRepoDetailsDialog(
+        repository = repository,
+        providers = pluginState.providers.filter { it.repoUrl == url },
+        onRenamed = { displayNameVersion++ },
+        onDismiss = { detailsRepoUrl = null },
+      )
+    }
   }
 
   Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -9189,14 +11461,9 @@ private fun PluginsSettingsSummary() {
         "Let installed plugins add more places to find streams.",
         pluginState.enabled,
         onCheckedChange = {
-        StreamDekPlugins.manager.enable(it)
-        syncState()
+          StreamDekPlugins.manager.enable(it)
+          syncState()
         },
-      )
-      Text(
-        "Plugins run separately from the rest of StreamDek and stop if they take too long. They cannot see your files, account, or other app information.",
-        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
-        style = MaterialTheme.typography.bodySmall,
       )
     }
 
@@ -9205,11 +11472,12 @@ private fun PluginsSettingsSummary() {
         value = repositoryUrl,
         onValueChange = { repositoryUrl = it },
         modifier = Modifier.fillMaxWidth(),
-        placeholder = { Text("Paste the plugin collection link", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f)) },
+        placeholder = { InputGuideText("Paste the plugin collection link") },
         leadingIcon = { Icon(Icons.Rounded.Link, contentDescription = null) },
         singleLine = true,
         enabled = !busy,
       )
+
       Button(
         onClick = {
           busy = true
@@ -9253,8 +11521,10 @@ private fun PluginsSettingsSummary() {
         ) {
           Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-              Text(repository.name, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-              Text(if (repository.enabled) "Plugin on" else "Plugin off", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall)
+              val repoDisplayName = remember(repository.url, repository.name, displayNameVersion) { DisplayNameOverrides.resolve("plugin:" + repository.url, repository.name) }
+              val sourceCount = pluginState.providers.count { it.repoUrl == repository.url }
+              Text(repoDisplayName, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+              Text("$sourceCount ${if (sourceCount == 1) "source" else "sources"}", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall)
             }
             Switch(
               checked = repository.enabled,
@@ -9264,9 +11534,9 @@ private fun PluginsSettingsSummary() {
               },
             )
           }
-          Text("Version " + repository.version, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall)
-          repository.description?.let { Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodySmall) }
+
           Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = { detailsRepoUrl = repository.url }) { Text("Details") }
             TextButton(
               onClick = {
                 busy = true
@@ -9304,9 +11574,10 @@ private fun PluginsSettingsSummary() {
           horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
           Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(repository.name, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
+            val repoDisplayName = remember(repository.url, repository.name, displayNameVersion) { DisplayNameOverrides.resolve("plugin:" + repository.url, repository.name) }
+            Text(repoDisplayName, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
             Text(
-              "${pluginSources.size} ${if (pluginSources.size == 1) "source" else "sources"} - ${if (repository.enabled) "plugin on" else "plugin off"}",
+              "${pluginSources.size} ${if (pluginSources.size == 1) "source" else "sources"}",
               color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.64f),
               style = MaterialTheme.typography.bodySmall,
             )
@@ -9335,7 +11606,7 @@ private fun PluginsSettingsSummary() {
                 else "Streams"
               }.distinct().joinToString(" / ")
               SettingsSwitchRow(
-                "P",
+                null,
                 Color(0xFF38BDF8),
                 provider.name,
                 "$supportedTypes - ${repository.name}",
@@ -9350,50 +11621,355 @@ private fun PluginsSettingsSummary() {
           }
         }
       }
-    }  }
+    }
+  }
 }
 
 @Composable
-private fun AddonsSettingsSummary(uiState: AppUiState, onRefreshAddons: () -> Unit, onInstallAddon: (String) -> Unit, onToggleAddon: (InstalledAddon, Boolean) -> Unit, onUninstallAddon: (String) -> Unit, onMoveAddon: (String, Int) -> Unit) {
-  var addonUrl by rememberSaveable { mutableStateOf("") }
-  val addons = uiState.addons.sortedBy { it.position }
-  val activeCount = addons.count { it.enabled }
-  val catalogCount = addons.sumOf { it.manifest.catalogs.size }
-  Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
-    Text("Overview", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), shape = RoundedCornerShape(26.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))) {
-      Row(modifier = Modifier.fillMaxWidth().padding(vertical = 22.dp), verticalAlignment = Alignment.CenterVertically) {
-        AddonMetric(addons.size.toString(), "Addons", Modifier.weight(1f))
-        Box(Modifier.width(1.dp).height(60.dp).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)))
-        AddonMetric(activeCount.toString(), "Active", Modifier.weight(1f))
-        Box(Modifier.width(1.dp).height(60.dp).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)))
-        AddonMetric(catalogCount.toString(), "Home Rows", Modifier.weight(1f))
+private fun PluginRepoDetailsDialog(repository: PluginRepo, providers: List<PluginProvider>, onRenamed: () -> Unit, onDismiss: () -> Unit) {
+  val overrideKey = "plugin:" + repository.url
+  var nameField by remember(repository.url) { mutableStateOf(DisplayNameOverrides.resolve(overrideKey, repository.name)) }
+  Dialog(onDismissRequest = onDismiss) {
+    Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f))) {
+      Column(modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text("Plugin collection details", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f))
+        Text(repository.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
+        SettingsDivider()
+        OutlinedTextField(
+          value = nameField,
+          onValueChange = { nameField = it },
+          label = { Text("Display name") },
+          singleLine = true,
+          modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+          Button(onClick = {
+            DisplayNameOverrides.set(overrideKey, nameField.takeIf { it.isNotBlank() && it != repository.name })
+            onRenamed()
+          }, enabled = nameField.isNotBlank()) { Text("Save name") }
+          if (DisplayNameOverrides.get(overrideKey) != null) {
+            TextButton(onClick = {
+              DisplayNameOverrides.clear(overrideKey)
+              nameField = repository.name
+              onRenamed()
+            }) { Text("Reset to default") }
+          }
+        }
+        SettingsDivider()
+
+        DetailRow("Version", repository.version)
+        repository.description?.takeIf { it.isNotBlank() }?.let { DetailRow("Description", it) }
+        DetailRow("Status", if (repository.enabled) "On" else "Off")
+        if (providers.isNotEmpty()) {
+          Text("Sources (${providers.size})", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+          providers.forEach { provider ->
+            Text(
+              "• ${provider.name} — ${provider.types.joinToString("/")}${if (!provider.enabled) " (off)" else ""}",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.70f),
+            )
+          }
+        }
+        TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("Close") }
       }
     }
-    Text("Add a Streaming Source", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), shape = RoundedCornerShape(26.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))) {
-      Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        RoundedInput(value = addonUrl, onValueChange = { addonUrl = it }, modifier = Modifier.fillMaxWidth(), placeholder = { Text("Paste the add-on link") })
-        Button(
-          onClick = { val trimmed = addonUrl.trim(); if (trimmed.isNotEmpty()) { onInstallAddon(trimmed); addonUrl = "" } },
-          enabled = addonUrl.isNotBlank() && !uiState.addonsLoading,
-          modifier = Modifier.fillMaxWidth().height(52.dp),
-          shape = RoundedCornerShape(18.dp),
-          colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = if (addonUrl.isBlank()) 0.46f else 0.92f), contentColor = MaterialTheme.colorScheme.surface),
-        ) { Text(if (uiState.addonsLoading) "Installing..." else "Add Source", fontWeight = FontWeight.Black) }
+  }
+}
+
+@Composable
+private fun M3uPlaylistsSettingsSummary(
+  uiState: AppUiState,
+  onAddM3uPlaylist: (String, String) -> Unit,
+  onRemoveM3uPlaylist: (String) -> Unit,
+  onSetM3uPlaylistEnabled: (String, Boolean) -> Unit,
+  onMoveM3uPlaylist: (String, Int) -> Unit,
+  onRefreshM3uPlaylists: () -> Unit,
+) {
+  var playlistUrl by rememberSaveable { mutableStateOf("") }
+  var playlistName by rememberSaveable { mutableStateOf("") }
+  var showAddField by rememberSaveable { mutableStateOf(false) }
+  var addingFromSourceCount by rememberSaveable { mutableIntStateOf(-1) }
+  val sources = uiState.m3uSources.sortedBy { it.position }
+  LaunchedEffect(sources.size, uiState.m3uLoading, addingFromSourceCount) {
+    if (!uiState.m3uLoading && addingFromSourceCount >= 0 && sources.size > addingFromSourceCount) {
+      playlistUrl = ""
+      playlistName = ""
+      showAddField = false
+      addingFromSourceCount = -1
+    }
+  }
+  Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    Surface(
+      color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+      shape = RoundedCornerShape(22.dp),
+      border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+    ) {
+      Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Box(modifier = Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
+          Text("+", color = MaterialTheme.colorScheme.primary, fontSize = 24.sp, fontWeight = FontWeight.Light)
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+          Text("M3U playlists", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+          Text("${(uiState.m3uChannels.size + uiState.m3uVodItems.size).formattedItemCount()} items (${uiState.m3uChannels.size.formattedItemCount()} live, ${uiState.m3uVodItems.size.formattedItemCount()} VOD) from ${sources.count { it.enabled }} playlist(s)", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.60f), style = MaterialTheme.typography.bodySmall)
+        }
+        IconButton(onClick = onRefreshM3uPlaylists, enabled = !uiState.m3uLoading) { Icon(Icons.Rounded.Refresh, "Refresh playlists") }
       }
     }
+
+    if (uiState.m3uLoading || uiState.m3uStatusMessage != null || uiState.m3uErrorMessage != null) {
+      Surface(
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.07f),
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
+      ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (uiState.m3uLoading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            Text(
+              uiState.m3uStatusMessage ?: if (uiState.m3uLoading) "Loading playlist…" else "Playlist loading finished",
+              modifier = Modifier.weight(1f),
+              color = MaterialTheme.colorScheme.onSurface,
+              fontWeight = FontWeight.SemiBold,
+            )
+          }
+          uiState.m3uProgress?.let { progress ->
+            LinearProgressIndicator(
+              progress = { progress.coerceIn(0f, 1f) },
+              modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(999.dp)),
+              color = MaterialTheme.colorScheme.primary,
+              trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+            )
+            Text("${(progress.coerceIn(0f, 1f) * 100).toInt()}%", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+          }
+          uiState.m3uErrorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+        }
+      }
+    }
+
+    AnimatedVisibility(visible = showAddField) {
+      Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))) {
+        Column(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+          OutlinedTextField(
+            value = playlistName, onValueChange = { playlistName = it }, modifier = Modifier.fillMaxWidth(),
+            placeholder = { InputGuideText("Playlist name (optional)") }, singleLine = true, shape = RoundedCornerShape(16.dp),
+          )
+          OutlinedTextField(
+            value = playlistUrl, onValueChange = { playlistUrl = it }, modifier = Modifier.fillMaxWidth(),
+            placeholder = { InputGuideText("Paste an M3U playlist link") }, leadingIcon = { Icon(Icons.Rounded.Link, null) },
+            singleLine = true, shape = RoundedCornerShape(16.dp),
+          )
+          Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = { showAddField = false; playlistUrl = ""; playlistName = ""; addingFromSourceCount = -1 }) { Text("Cancel") }
+            Button(onClick = {
+              playlistUrl.trim().takeIf { it.isNotEmpty() }?.let { addingFromSourceCount = sources.size; onAddM3uPlaylist(it, playlistName) }
+            }, enabled = playlistUrl.isNotBlank() && !uiState.m3uLoading, shape = RoundedCornerShape(14.dp)) {
+              Text(if (uiState.m3uLoading) "Adding…" else "Add")
+            }
+          }
+        }
+      }
+    }
+    if (!showAddField) {
+      OutlinedButton(onClick = { showAddField = true }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(16.dp)) {
+        Icon(Icons.Rounded.Add, contentDescription = null)
+        Spacer(Modifier.width(8.dp))
+        Text("Add a playlist", fontWeight = FontWeight.SemiBold)
+      }
+    }
+
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-      Text("Installed Sources", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
-      TextButton(onClick = onRefreshAddons) { Text("Refresh", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f), fontWeight = FontWeight.Bold) }
+      Text("Playlists", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+      Text("${sources.size}", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.48f), style = MaterialTheme.typography.labelLarge)
     }
-    if (addons.isEmpty()) {
-      Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(24.dp)) {
-        Text("No add-ons installed yet.", modifier = Modifier.padding(18.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f))
+    if (sources.isEmpty()) {
+      Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+        Text("No M3U playlists added yet.", modifier = Modifier.fillMaxWidth().padding(18.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), textAlign = TextAlign.Center)
       }
     } else {
+      sources.forEachIndexed { index, source ->
+        key(source.id) {
+          Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f))) {
+            Column(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+              Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                  Text(source.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                  Text(source.url, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                  val liveCount = source.liveItemCount
+                  val vodCount = source.vodItemCount
+                  if (liveCount != null || vodCount != null) {
+                    val live = liveCount ?: 0
+                    val vod = vodCount ?: 0
+                    val contentType = when {
+                      live > 0 && vod > 0 -> "Live + VOD"
+                      vod > 0 -> "VOD"
+                      else -> "Live"
+                    }
+                    Text(
+                      "${(live + vod).formattedItemCount()} items • $contentType",
+                      color = MaterialTheme.colorScheme.primary,
+                      style = MaterialTheme.typography.labelMedium,
+                      fontWeight = FontWeight.SemiBold,
+                    )
+                  }
+                }
+                Switch(checked = source.enabled, onCheckedChange = { onSetM3uPlaylistEnabled(source.id, it) })
+              }
+              Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = { onMoveM3uPlaylist(source.id, -1) }, enabled = index > 0) { Icon(Icons.Rounded.KeyboardArrowUp, "Move up") }
+                IconButton(onClick = { onMoveM3uPlaylist(source.id, 1) }, enabled = index < sources.size - 1) { Icon(Icons.Rounded.KeyboardArrowDown, "Move down") }
+                IconButton(onClick = { onRemoveM3uPlaylist(source.id) }) { Icon(Icons.Rounded.Delete, "Remove", tint = Color(0xFFEF476F)) }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun DownloadsSettingsSummary(uiState: AppUiState, onRefresh: () -> Unit, onRemove: (String) -> Unit, onPlay: (DownloadEntry) -> Unit) {
+  LaunchedEffect(Unit) {
+    while (true) {
+      onRefresh()
+      delay(2_000)
+    }
+  }
+  val downloads = uiState.downloads.sortedByDescending { it.startTimeMs }
+  Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    if (downloads.isEmpty()) {
+      Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+        Text("No downloads yet. Downloads started from the player's Sources list appear here.", modifier = Modifier.fillMaxWidth().padding(18.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), textAlign = TextAlign.Center)
+      }
+    } else {
+      downloads.forEach { download ->
+        key(download.id) {
+          Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f))) {
+            Column(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+              Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                  Text(download.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                  Text(
+                    when (download.state) {
+                      DownloadState.COMPLETED -> "Downloaded"
+                      DownloadState.FAILED -> "Failed"
+                      DownloadState.REMOVING -> "Removing…"
+                      DownloadState.QUEUED -> "Queued"
+                      DownloadState.PAUSED -> "Paused"
+                      DownloadState.DOWNLOADING -> "Downloading ${download.percentDownloaded.toInt()}%"
+                    },
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.60f),
+                    style = MaterialTheme.typography.bodySmall,
+                  )
+                }
+                if (download.state == DownloadState.COMPLETED) {
+                  IconButton(onClick = { onPlay(download) }) { Icon(Icons.Rounded.PlayArrow, "Play download", tint = MaterialTheme.colorScheme.primary) }
+                }
+                IconButton(onClick = { onRemove(download.id) }) { Icon(Icons.Rounded.Delete, "Remove download", tint = Color(0xFFEF476F)) }
+              }
+              if (download.state == DownloadState.DOWNLOADING) {
+                LinearProgressIndicator(
+                  progress = { (download.percentDownloaded / 100f).coerceIn(0f, 1f) },
+                  modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(999.dp)),
+                )
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun AddonsSettingsSummary(uiState: AppUiState, onRefreshAddons: () -> Unit, onInstallAddon: (String) -> Unit, onToggleAddon: (InstalledAddon, Boolean) -> Unit, onUninstallAddon: (String) -> Unit, onMoveAddon: (String, Int) -> Unit, dragScrollBy: suspend (Float) -> Float = { 0f }) {
+  var addonUrl by rememberSaveable { mutableStateOf("") }
+  var showAddField by rememberSaveable { mutableStateOf(false) }
+  val addons = uiState.addons.sortedBy { it.position }
+  val activeCount = addons.count { it.enabled }
+  val catalogCount = addons.sumOf { supportedHomeCatalogCount(it) }
+  val context = LocalContext.current
+  val reorderHintPrefs = remember { context.getSharedPreferences(APP_SETTINGS_PREFERENCES, Context.MODE_PRIVATE) }
+  var showReorderHint by remember { mutableStateOf(!reorderHintPrefs.getBoolean("addon_reorder_hint_dismissed", false)) }
+  Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    Surface(
+      color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+      shape = RoundedCornerShape(22.dp),
+      border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+    ) {
+      Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Box(modifier = Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
+          Text("+", color = MaterialTheme.colorScheme.primary, fontSize = 24.sp, fontWeight = FontWeight.Light)
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+          Text("Your add-ons", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+          Text("$activeCount of ${addons.size} active  •  $catalogCount Home rows", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.60f), style = MaterialTheme.typography.bodySmall)
+        }
+        IconButton(onClick = onRefreshAddons, enabled = !uiState.addonsLoading) { Icon(Icons.Rounded.Refresh, "Refresh add-ons") }
+      }
+    }
+
+    AnimatedVisibility(visible = showAddField) {
+      Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))) {
+        Column(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+          OutlinedTextField(
+            value = addonUrl, onValueChange = { addonUrl = it }, modifier = Modifier.fillMaxWidth(),
+            placeholder = { InputGuideText("Paste add-on manifest link") }, leadingIcon = { Icon(Icons.Rounded.Link, null) },
+            singleLine = true, shape = RoundedCornerShape(16.dp),
+          )
+          Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = { showAddField = false; addonUrl = "" }) { Text("Cancel") }
+            Button(onClick = {
+              addonUrl.trim().takeIf { it.isNotEmpty() }?.let { onInstallAddon(it); addonUrl = ""; showAddField = false }
+            }, enabled = addonUrl.isNotBlank() && !uiState.addonsLoading, shape = RoundedCornerShape(14.dp)) {
+              Text(if (uiState.addonsLoading) "Adding…" else "Add")
+            }
+          }
+        }
+      }
+    }
+    if (!showAddField) {
+      OutlinedButton(onClick = { showAddField = true }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(16.dp)) {
+        Icon(Icons.Rounded.Add, contentDescription = null)
+        Spacer(Modifier.width(8.dp))
+        Text("Add an add-on", fontWeight = FontWeight.SemiBold)
+      }
+    }
+
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+      Text("Installed", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+      Text("${addons.size}", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.48f), style = MaterialTheme.typography.labelLarge)
+    }
+    if (addons.isEmpty()) {
+      Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+        Text("No add-ons installed yet.", modifier = Modifier.fillMaxWidth().padding(18.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), textAlign = TextAlign.Center)
+      }
+    } else {
+      AnimatedVisibility(visible = showReorderHint) {
+        Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), shape = RoundedCornerShape(16.dp)) {
+          Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Icon(Icons.Rounded.DragHandle, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+            Text(
+              "Long-press and drag a logo to reorder your add-ons.",
+              modifier = Modifier.weight(1f),
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
+            )
+            IconButton(
+              onClick = {
+                showReorderHint = false
+                reorderHintPrefs.edit().putBoolean("addon_reorder_hint_dismissed", true).apply()
+              },
+              modifier = Modifier.size(24.dp),
+            ) { Icon(Icons.Rounded.Close, contentDescription = "Dismiss hint", modifier = Modifier.size(16.dp)) }
+          }
+        }
+      }
       addons.forEachIndexed { index, addon ->
-        AddonServiceCard(addon = addon, index = index, total = addons.size, onRefreshAddons = onRefreshAddons, onToggleAddon = onToggleAddon, onUninstallAddon = onUninstallAddon, onMoveAddon = onMoveAddon)
+        key(addon.id) {
+          AddonServiceCard(addon, index, addons.size, onRefreshAddons, onToggleAddon, onUninstallAddon, onMoveAddon, dragScrollBy)
+        }
       }
     }
   }
@@ -9439,7 +12015,7 @@ private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Un
           FilterChip(selected = provider.first == selectedProvider, onClick = { selectedProvider = provider.first }, label = { Text(provider.second) })
         }
       }
-      OutlinedTextField(value = apiKey, onValueChange = { apiKey = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("Access key") })
+      OutlinedTextField(value = apiKey, onValueChange = { apiKey = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, placeholder = { InputGuideText("Access key") })
       Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Button(onClick = { val trimmed = apiKey.trim(); if (trimmed.isNotEmpty()) { onAddDebrid(selectedProvider, trimmed); apiKey = "" } }, enabled = apiKey.isNotBlank() && !uiState.debridLoading, shape = RoundedCornerShape(999.dp)) { Text("Connect") }
         OutlinedButton(onClick = onRefreshDebrid, shape = RoundedCornerShape(999.dp)) { Text("Refresh") }
@@ -9506,7 +12082,7 @@ private fun RatingsSettingsSummary(
     SettingsSection("MDBList Connection") {
       Text("MDBList Access Key", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
       Text("Get an access key from mdblist.com/preferences to show ratings from other services.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.titleSmall)
-      OutlinedTextField(value = uiState.mdblistApiKey, onValueChange = onMdblistApiKeyChange, modifier = Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("Paste access key") })
+      OutlinedTextField(value = uiState.mdblistApiKey, onValueChange = onMdblistApiKeyChange, modifier = Modifier.fillMaxWidth(), singleLine = true, placeholder = { InputGuideText("Paste access key") })
       Spacer(modifier = Modifier.height(10.dp))
       Button(onClick = { onMdblistApiKeyChange(uiState.mdblistApiKey) }, modifier = Modifier.fillMaxWidth().height(54.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(999.dp)) {
         Text("Save", fontWeight = FontWeight.Black)
@@ -9582,8 +12158,7 @@ private fun RefreshSyncRow(refreshing: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun AppUpdatesSettingsSummary(uiState: AppUiState, onAutoCheckChange: (Boolean) -> Unit, onCheckNow: () -> Unit, onStartUpdate: () -> Unit) {
-  val release = uiState.availableUpdate
+private fun AppUpdatesSettingsSummary(uiState: AppUiState, onAutoCheckChange: (Boolean) -> Unit, onCheckNow: () -> Unit) {
   Column(verticalArrangement = Arrangement.spacedBy(24.dp)) {
     SettingsSection("App Updates") {
       SettingsSwitchRow("UP", Color(0xFF22C55E), "Check Automatically", "Let StreamDek notify you when a new version is available.", uiState.autoUpdateChecksEnabled, onAutoCheckChange)
@@ -9593,43 +12168,11 @@ private fun AppUpdatesSettingsSummary(uiState: AppUiState, onAutoCheckChange: (B
         Color(0xFF38BDF8),
         "Check for Updates",
         uiState.updateErrorMessage ?: uiState.updateStatusMessage ?: "Check the StreamDek update service now.",
-        value = when { uiState.updateChecking -> "Checking"; release != null -> "Available"; else -> "Current" },
+        value = if (uiState.updateChecking) "Checking" else "Current",
         onClick = onCheckNow,
       )
       SettingsDivider()
       SettingsStaticRow("APP", Color(0xFF94A3B8), "Current Version", BuildConfig.VERSION_NAME)
-    }
-    if (release != null) {
-      Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(28.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))) {
-        Column(modifier = Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-          Box(modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)).border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.38f), RoundedCornerShape(999.dp)).padding(horizontal = 14.dp, vertical = 8.dp)) {
-            Text(if (release.required) "Required update" else "Update available", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Black)
-          }
-          Text("StreamDek ${release.versionName}", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
-          release.fileSizeBytes?.let { Text("Download size ${formatBytesLabel(it).removeSuffix(" used")}", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f), fontWeight = FontWeight.Bold) }
-          if (release.releaseNotes.isNotBlank()) {
-            Text("What is new", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f), fontWeight = FontWeight.Black)
-            Text(release.releaseNotes, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f), style = MaterialTheme.typography.bodyLarge)
-          }
-          uiState.updateProgress?.let { progress ->
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-              Text("${(progress.coerceIn(0f, 1f) * 100).toInt()}% downloaded", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-              LinearProgressIndicator(
-                progress = { progress },
-                modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(999.dp)),
-                color = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-              )
-            }
-          }
-          uiState.updateStatusMessage?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
-          uiState.updateErrorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-          Button(onClick = onStartUpdate, enabled = !uiState.updateDownloading, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary), shape = RoundedCornerShape(999.dp)) {
-            if (uiState.updateDownloading) CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
-            else Text("Update Now", fontWeight = FontWeight.Black)
-          }
-        }
-      }
     }
   }
 }
@@ -9646,16 +12189,24 @@ private fun DetailScreen(
   onPlayBestStream: (EpisodeItem?) -> Unit,
   onLoadSeason: (String, Int) -> Unit,
   onToggleWatchlist: (MediaItem) -> Unit,
+  onToggleFavourite: (MediaItem) -> Unit,
   onOpenPerson: (CastMember) -> Unit,
   onClosePerson: () -> Unit,
   onOpenRelated: (MediaItem) -> Unit,
+  onDownloadStream: (AddonStream, String) -> Unit = { _, _ -> },
+  isStreamDownloadEligible: (AddonStream) -> Boolean = { false },
 ) {
   val detail = uiState.detail
   if (uiState.detailLoading || detail == null) {
     DetailSkeletonScene(style = uiState.detailPageStyle)
     return
   }
-  val defaultTab = if (detail.type == "tv" && detail.seasons.isNotEmpty()) DetailTab.Episodes.name else DetailTab.About.name
+  // Live channels have no synopsis worth reading — open straight on the sources list.
+  val defaultTab = when {
+    uiState.detailIsLive && uiState.showStreamsList -> DetailTab.Streams.name
+    detail.type == "tv" && detail.seasons.isNotEmpty() -> DetailTab.Episodes.name
+    else -> DetailTab.About.name
+  }
   var selectedTab by rememberSaveable(detail.id) { mutableStateOf(uiState.detailSelectedTab ?: defaultTab) }
   LaunchedEffect(detail.id) {
     val restoredTab = uiState.detailSelectedTab ?: defaultTab
@@ -9703,7 +12254,20 @@ private fun DetailScreen(
     rating = detail.rating,
     description = detail.description,
   )
+  val favouriteItem = uiState.detailFallbackItem?.takeIf { it.id == detail.id }?.copy(
+    title = detail.title,
+    poster = detail.poster ?: uiState.detailFallbackItem.poster,
+    backdrop = detail.backdrop ?: uiState.detailFallbackItem.backdrop,
+  ) ?: watchlistItem
   val inWatchlist = uiState.mergedWatchlist.any { it.id == detail.id && it.type == detail.type }
+  val isFavouriteChannel = uiState.favouriteChannels.any { it.id == detail.id }
+  val proxyStatus = if (uiState.detailIsLive) {
+    uiState.availableStreams.firstOrNull()?.let { stream ->
+      stream.isLikelyProxied(uiState.addons.firstOrNull { it.id == stream.addonId })
+    }
+  } else {
+    null
+  }
   val metadataLine = detail.genres
     .takeIf { it.isNotEmpty() }
     ?.take(4)
@@ -9739,7 +12303,9 @@ private fun DetailScreen(
     uiState.streamLoading && uiState.availableStreams.isEmpty() -> "Loading..."
     else -> "Play"
   }
-  val overview = detail.description.ifBlank { "No synopsis available." }
+  // Live channels carry no synopsis — leave it blank so the hero omits the block
+  // entirely rather than showing a placeholder.
+  val overview = if (uiState.detailIsLive) "" else detail.description.ifBlank { "No synopsis available." }
   var overviewExpanded by rememberSaveable(detail.id, "overview") { mutableStateOf(false) }
   var trailerPopupUrl by rememberSaveable(detail.id, "trailer") { mutableStateOf<String?>(null) }
   LaunchedEffect(episodePageId) {
@@ -9787,7 +12353,7 @@ private fun DetailScreen(
 
     LazyColumn(
       state = listState,
-      modifier = Modifier.fillMaxSize().hazeSource(detailHazeState),
+      modifier = Modifier.fillMaxSize(),
       contentPadding = PaddingValues(bottom = 132.dp),
       verticalArrangement = Arrangement.spacedBy(26.dp),
     ) {
@@ -9807,6 +12373,9 @@ private fun DetailScreen(
           showEpisodes = detail.type == "tv" && !uiState.detailIsLive,
           inWatchlist = inWatchlist,
           showMediaActions = !uiState.detailIsLive,
+          showFavouriteAction = uiState.detailIsLive,
+          isFavourite = isFavouriteChannel,
+          proxyStatus = proxyStatus,
           ratingsEnabled = uiState.ratingsEnabled,
           externalRatingsEnabled = uiState.externalRatingsEnabled,
           enabledRatingProviders = uiState.enabledRatingProviders,
@@ -9828,6 +12397,7 @@ private fun DetailScreen(
           },
           onEpisodes = { selectedTab = DetailTab.Episodes.name; onDetailTabChange(DetailTab.Episodes.name) },
           onSave = { onToggleWatchlist(watchlistItem) },
+          onToggleFavourite = { onToggleFavourite(favouriteItem) },
           onToggleWatched = { persistMovieWatched(!movieWatched) },
         )
       }
@@ -9927,7 +12497,14 @@ private fun DetailScreen(
                   Text(if (uiState.streamLoading) "Loading" else "Reload")
                 }
               }
-              StreamListContent(uiState = uiState, selectedEpisode = selectedEpisode, onPlayStream = onPlayStream, horizontalPadding = 24.dp)
+              StreamListContent(
+                uiState = uiState,
+                selectedEpisode = selectedEpisode,
+                onPlayStream = onPlayStream,
+                onDownloadStream = { stream -> onDownloadStream(stream, detail.title) },
+                isStreamDownloadEligible = isStreamDownloadEligible,
+                horizontalPadding = 24.dp,
+              )
             }
             }
           }
@@ -9985,6 +12562,8 @@ private fun DetailScreen(
           persistWatchedEpisodeIds(if (watchedKey in watchedEpisodeIds) watchedEpisodeIds - watchedKey else watchedEpisodeIds + watchedKey)
         },
         onPlayStream = onPlayEpisodeStream,
+        onDownloadStream = onDownloadStream,
+        isStreamDownloadEligible = isStreamDownloadEligible,
       )
     }
   }
@@ -10145,7 +12724,7 @@ private fun TrailerDialog(title: String, url: String, backdropUrl: String?, maxH
           }
           TrailerPlaybackView(
             url = url,
-            modifier = Modifier.fillMaxSize().graphicsLayer { alpha = if (trailerReady) 1f else 0f },
+            modifier = Modifier.fillMaxSize(),
             autoPlay = true,
             muted = false,
             maxHeight = maxHeight,
@@ -10291,9 +12870,11 @@ private fun TrailerPlaybackView(
     onReadyChanged(false)
     resolved = false
     val youtubeCookies = if (isYoutubeTrailer) android.webkit.CookieManager.getInstance().getCookie("https://www.youtube.com") else null
-    resolution = resolveTrailerPlaybackSource(url, maxHeight, youtubeCookies)
+    val result = resolveTrailerPlaybackSource(url, maxHeight, youtubeCookies)
+    resolution = result
     resolved = true
-    if (resolution?.youtubeLoginRequired == true && !youtubeLoginAttempted) youtubeLoginRequired = true
+    android.util.Log.d("TrailerPlayback", "resolved native=${result.source != null} requested=${maxHeight}p selected=${result.source?.height ?: 0}p separateAudio=${!result.source?.audioUrl.isNullOrBlank()} loginRequired=${result.youtubeLoginRequired}")
+    if (result.youtubeLoginRequired && !youtubeLoginAttempted) youtubeLoginRequired = true
   }
 
   val source = resolution?.source
@@ -10303,6 +12884,7 @@ private fun TrailerPlaybackView(
   val useYoutubeWebFallback = isYoutubeTrailer && resolved && !youtubeLoginRequired &&
     (nativePlaybackFailed || source == null)
   if (useYoutubeWebFallback) {
+    android.util.Log.w("TrailerPlayback", "Using WebView fallback requested=${maxHeight}p nativeFailed=$nativePlaybackFailed sourceMissing=${source == null}; iframe quality is controlled by YouTube")
     TrailerWebView(
       url = url,
       modifier = modifier,
@@ -10553,6 +13135,7 @@ private fun Media3TextureTrailerPlayer(
         if (playbackState == Player.STATE_ENDED) latestOnEnded.value()
       }
       override fun onVideoSizeChanged(videoSize: VideoSize) {
+        android.util.Log.d("TrailerPlayback", "decoded=${videoSize.width}x${videoSize.height} requestedMax=${maxHeight}p")
         attachedContainer?.setVideoSize(videoSize)
       }
       override fun onPlayerError(error: PlaybackException) {
@@ -10698,6 +13281,10 @@ private fun ClassicDetailHero(
   onEpisodes: () -> Unit,
   onSave: () -> Unit,
   onToggleWatched: () -> Unit,
+  showFavouriteAction: Boolean = false,
+  isFavourite: Boolean = false,
+  proxyStatus: Boolean? = null,
+  onToggleFavourite: () -> Unit = {},
 ) {
   BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
     val artworkHeight = (maxWidth * 1.18f).coerceIn(440.dp, 670.dp)
@@ -10721,37 +13308,32 @@ private fun ClassicDetailHero(
     }
     Column(modifier = Modifier.fillMaxWidth()) {
       Box(modifier = Modifier.fillMaxWidth().height(artworkHeight).clip(RectangleShape)) {
-        Box(
-          modifier = Modifier.fillMaxSize().graphicsLayer {
-            translationY = scrollOffset().toFloat() * 0.42f
-            scaleX = 1.04f
-            scaleY = 1.04f
-          },
-        ) {
+        Box(modifier = Modifier.fillMaxSize()) {
           AsyncImage(
             model = backdrop,
             contentDescription = detail.title,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().graphicsLayer {
+              translationY = scrollOffset().toFloat() * 0.42f
+              scaleX = 1.04f
+              scaleY = 1.04f
+            },
             contentScale = ContentScale.Crop,
             alignment = Alignment.TopCenter,
           )
           if (trailerPlaying && !detail.trailerUrl.isNullOrBlank()) {
             key(trailerPlaybackKey) {
+              // Keep the platform video view out of parallax/blur layers. Transforming an
+              // Android video surface while a LazyColumn scrolls can crash RenderThread on
+              // some OnePlus/GPU combinations.
               TrailerPlaybackView(
                 url = detail.trailerUrl,
-                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = if (trailerReady) 1f else 0f },
+                modifier = Modifier.fillMaxSize(),
                 autoPlay = true,
                 muted = trailerMuted,
                 maxHeight = trailerResolution,
                 onReadyChanged = { trailerReady = it },
-                onLoadFailed = {
-                  trailerFailed = true
-                  trailerPlaying = false
-                },
-                onEnded = {
-                  trailerPlaying = false
-                  trailerReady = false
-                },
+                onLoadFailed = { trailerFailed = true; trailerPlaying = false },
+                onEnded = { trailerPlaying = false; trailerReady = false },
               )
             }
           }
@@ -10918,19 +13500,33 @@ private fun ClassicDetailHero(
         Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
           DetailRatingBadges(detail, ratingsEnabled, externalRatingsEnabled, enabledRatingProviders)
         }
-        StreamDekDetailActions(streamCount, streamLoading, primaryPlayLabel, selectedTab, showEpisodes, showStreamsList, inWatchlist, showMediaActions, showWatchedAction, watched, autoPlayTrailer && !detail.trailerUrl.isNullOrBlank(), onPlay, showMediaActions && !detail.trailerUrl.isNullOrBlank(), onTrailer, onAbout, onStreams, onEpisodes, onSave, onToggleWatched)
-        Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-          Text(
-            overview,
-            color = foreground.copy(alpha = 0.76f),
-            style = MaterialTheme.typography.bodyMedium,
-            lineHeight = 23.sp,
-            maxLines = if (overviewExpanded) 8 else 4,
-            overflow = TextOverflow.Ellipsis,
-            onTextLayout = { if (!overviewExpanded) overviewCanExpand = it.hasVisualOverflow },
-          )
-          if (overviewCanExpand || overviewExpanded) {
-            Text(if (overviewExpanded) "Show less" else "Show more", color = foreground.copy(alpha = 0.62f), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, modifier = Modifier.clickable { onOverviewExpandedChange(!overviewExpanded) })
+        if (proxyStatus != null) {
+          Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            LiveProxyStatusBadge(proxied = proxyStatus)
+          }
+        }
+        StreamDekDetailActions(
+          streamCount = streamCount, streamLoading = streamLoading, primaryPlayLabel = primaryPlayLabel, selectedTab = selectedTab,
+          showEpisodes = showEpisodes, showStreamsList = showStreamsList, inWatchlist = inWatchlist, showMediaActions = showMediaActions,
+          showWatchedAction = showWatchedAction, watched = watched, autoPlayTrailer = autoPlayTrailer && !detail.trailerUrl.isNullOrBlank(),
+          onPlay = onPlay, hasTrailer = showMediaActions && !detail.trailerUrl.isNullOrBlank(), onTrailer = onTrailer, onAbout = onAbout,
+          onStreams = onStreams, onEpisodes = onEpisodes, onSave = onSave, onToggleWatched = onToggleWatched,
+          showFavouriteAction = showFavouriteAction, isFavourite = isFavourite, onToggleFavourite = onToggleFavourite,
+        )
+        if (overview.isNotBlank()) {
+          Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Text(
+              overview,
+              color = foreground.copy(alpha = 0.76f),
+              style = MaterialTheme.typography.bodyMedium,
+              lineHeight = 23.sp,
+              maxLines = if (overviewExpanded) 8 else 4,
+              overflow = TextOverflow.Ellipsis,
+              onTextLayout = { if (!overviewExpanded) overviewCanExpand = it.hasVisualOverflow },
+            )
+            if (overviewCanExpand || overviewExpanded) {
+              Text(if (overviewExpanded) "Show less" else "Show more", color = foreground.copy(alpha = 0.62f), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, modifier = Modifier.clickable { onOverviewExpandedChange(!overviewExpanded) })
+            }
           }
         }
       }
@@ -10971,10 +13567,15 @@ private fun DetailHero(
   onEpisodes: () -> Unit,
   onSave: () -> Unit,
   onToggleWatched: () -> Unit,
+  showFavouriteAction: Boolean = false,
+  isFavourite: Boolean = false,
+  proxyStatus: Boolean? = null,
+  onToggleFavourite: () -> Unit = {},
 ) {
   if (style == DetailPageStyle.Classic) {
     ClassicDetailHero(
       detail, backdrop, metadataLine, scrollOffset, autoPlayTrailer, trailerResolution, hazeState, streamCount, streamLoading, primaryPlayLabel, selectedTab, showEpisodes, showStreamsList, inWatchlist, showMediaActions, showWatchedAction, watched, ratingsEnabled, externalRatingsEnabled, enabledRatingProviders, overview, overviewExpanded, onOverviewExpandedChange, onPlay, onTrailer, onAbout, onStreams, onEpisodes, onSave, onToggleWatched,
+      showFavouriteAction = showFavouriteAction, isFavourite = isFavourite, proxyStatus = proxyStatus, onToggleFavourite = onToggleFavourite,
     )
     return
   }
@@ -11021,18 +13622,14 @@ private fun DetailHero(
           visible = trailerPlaying && !detail.trailerUrl.isNullOrBlank(),
           // Same parallax layer as the static hero image, so scrolling glides the
           // page content over the trailer while the video drifts at half speed.
-          modifier = Modifier.fillMaxSize().graphicsLayer {
-            translationY = scrollOffset().toFloat() * 0.5f
-            scaleX = 1.08f
-            scaleY = 1.08f
-          },
+          modifier = Modifier.fillMaxSize(),
           enter = fadeIn(animationSpec = tween(420)),
           exit = fadeOut(animationSpec = tween(520)),
         ) {
           key(trailerPlaybackKey) {
             TrailerPlaybackView(
               url = detail.trailerUrl.orEmpty(),
-              modifier = Modifier.fillMaxSize().graphicsLayer { alpha = if (trailerReady) 1f else 0f },
+              modifier = Modifier.fillMaxSize(),
               autoPlay = true,
               muted = trailerMuted,
               maxHeight = trailerResolution,
@@ -11175,6 +13772,9 @@ private fun DetailHero(
               overflow = TextOverflow.Ellipsis,
             )
           }
+          if (proxyStatus != null) {
+            LiveProxyStatusBadge(proxied = proxyStatus)
+          }
         }
       }
 
@@ -11214,29 +13814,34 @@ private fun DetailHero(
           showWatchedAction = showWatchedAction,
           watched = watched,
           onToggleWatched = onToggleWatched,
+          showFavouriteAction = showFavouriteAction,
+          isFavourite = isFavourite,
+          onToggleFavourite = onToggleFavourite,
           modifier = Modifier.padding(top = if (lightDetail && style == DetailPageStyle.Centered) 10.dp else 0.dp),
           actionSpacing = if (lightDetail && style == DetailPageStyle.Centered) 19.dp else 24.dp,
         )
-        Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-          Text(
-            overview,
-            color = detailForeground.copy(alpha = 0.76f),
-            style = MaterialTheme.typography.bodyMedium,
-            lineHeight = 23.sp,
-            maxLines = if (overviewExpanded) 8 else 4,
-            overflow = TextOverflow.Ellipsis,
-            onTextLayout = { layout ->
-              if (!overviewExpanded) overviewCanExpand = layout.hasVisualOverflow
-            },
-          )
-          if (overviewCanExpand || overviewExpanded) {
+        if (overview.isNotBlank()) {
+          Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Text(
-              if (overviewExpanded) "Show less" else "Show more",
-              color = detailForeground.copy(alpha = 0.58f),
+              overview,
+              color = detailForeground.copy(alpha = 0.76f),
               style = MaterialTheme.typography.bodyMedium,
-              fontWeight = FontWeight.Bold,
-              modifier = Modifier.clickable { onOverviewExpandedChange(!overviewExpanded) },
+              lineHeight = 23.sp,
+              maxLines = if (overviewExpanded) 8 else 4,
+              overflow = TextOverflow.Ellipsis,
+              onTextLayout = { layout ->
+                if (!overviewExpanded) overviewCanExpand = layout.hasVisualOverflow
+              },
             )
+            if (overviewCanExpand || overviewExpanded) {
+              Text(
+                if (overviewExpanded) "Show less" else "Show more",
+                color = detailForeground.copy(alpha = 0.58f),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.clickable { onOverviewExpandedChange(!overviewExpanded) },
+              )
+            }
           }
         }
       }
@@ -11284,6 +13889,9 @@ private fun StreamDekDetailActions(
   onToggleWatched: () -> Unit,
   modifier: Modifier = Modifier,
   actionSpacing: Dp = 24.dp,
+  showFavouriteAction: Boolean = false,
+  isFavourite: Boolean = false,
+  onToggleFavourite: () -> Unit = {},
 ) {
   val foreground = MaterialTheme.colorScheme.onBackground
   val background = MaterialTheme.colorScheme.background
@@ -11346,10 +13954,15 @@ private fun StreamDekDetailActions(
       if (showEpisodes) {
         DetailPillTab("Episodes", selectedTab == DetailTab.Episodes.name, onEpisodes, modifier = Modifier.weight(1.18f))
       } else if (showStreamsList) {
-        DetailPillTab("Streams ($streamCount)", selectedTab == DetailTab.Streams.name, onStreams, modifier = Modifier.weight(1.18f))
+        DetailPillTab("Streams ($streamCount)", selectedTab == DetailTab.Streams.name, onStreams, modifier = Modifier.weight(1.18f), loading = streamLoading)
       }
       if (showMediaActions) {
         DetailIconOnlyPill(if (inWatchlist) "Saved" else "Save", inWatchlist, onSave) { Icon(Icons.Rounded.Bookmark, contentDescription = null, modifier = Modifier.size(19.dp)) }
+      }
+      if (showFavouriteAction) {
+        DetailIconOnlyPill(if (isFavourite) "Favourited" else "Favourite", isFavourite, onToggleFavourite) {
+          Icon(if (isFavourite) Icons.Rounded.Star else Icons.Rounded.StarBorder, contentDescription = null, modifier = Modifier.size(19.dp))
+        }
       }
       if (showWatchedAction) {
         DetailIconOnlyPill(if (watched) "Watched" else "Seen", watched, onToggleWatched) {
@@ -11361,7 +13974,7 @@ private fun StreamDekDetailActions(
 }
 
 @Composable
-private fun DetailPillTab(label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun DetailPillTab(label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, loading: Boolean = false) {
   val foreground = MaterialTheme.colorScheme.onBackground
   OutlinedButton(
     modifier = modifier,
@@ -11374,6 +13987,14 @@ private fun DetailPillTab(label: String, selected: Boolean, onClick: () -> Unit,
     ),
     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp),
   ) {
+    if (loading) {
+      CircularProgressIndicator(
+        modifier = Modifier.size(13.dp),
+        strokeWidth = 1.7.dp,
+        color = foreground.copy(alpha = 0.86f),
+      )
+      Spacer(modifier = Modifier.width(7.dp))
+    }
     Text(label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
   }
 }
@@ -11740,6 +14361,8 @@ private fun StreamListContent(
   uiState: AppUiState,
   selectedEpisode: EpisodeItem?,
   onPlayStream: (AddonStream, EpisodeItem?) -> Unit,
+  onDownloadStream: (AddonStream) -> Unit = {},
+  isStreamDownloadEligible: (AddonStream) -> Boolean = { false },
   compact: Boolean = false,
   selectedProviderOverride: String? = null,
   onProviderSelectedOverride: ((String) -> Unit)? = null,
@@ -11749,6 +14372,28 @@ private fun StreamListContent(
   val streamLightMode = MaterialTheme.colorScheme.background.luminance() > 0.5f
   val streamForeground = MaterialTheme.colorScheme.onSurface
   val streamCardColor = if (streamLightMode) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.075f)
+  var longPressedStream by remember { mutableStateOf<AddonStream?>(null) }
+  longPressedStream?.let { stream ->
+    AlertDialog(
+      onDismissRequest = { longPressedStream = null },
+      title = { Text(stream.title?.takeIf { it.isNotBlank() } ?: stream.name?.takeIf { it.isNotBlank() } ?: "Stream options") },
+      text = {
+        Row(
+          modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable {
+            onDownloadStream(stream)
+            longPressedStream = null
+          }.padding(vertical = 12.dp, horizontal = 4.dp),
+          horizontalArrangement = Arrangement.spacedBy(12.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Icon(Icons.Rounded.Download, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+          Text("Download for offline playback")
+        }
+      },
+      confirmButton = {},
+      dismissButton = { TextButton(onClick = { longPressedStream = null }) { Text("Cancel") } },
+    )
+  }
   val providers = remember(uiState.availableStreams) { streamProviderNames(uiState.availableStreams) }
   var localProviderFilter by rememberSaveable(providers) { mutableStateOf("All") }
   val providerFilter = selectedProviderOverride ?: localProviderFilter
@@ -11809,7 +14454,12 @@ private fun StreamListContent(
         ?.takeIf { it.isNotBlank() && it != primaryText }
         ?: stream.filename?.takeIf { it.isNotBlank() && it != primaryText }
       Card(
-        modifier = Modifier.padding(horizontal = horizontalPadding).fillMaxWidth().clickable { onPlayStream(stream, selectedEpisode) },
+        modifier = Modifier.padding(horizontal = horizontalPadding).fillMaxWidth().pointerInput(stream) {
+          detectTapGestures(
+            onTap = { onPlayStream(stream, selectedEpisode) },
+            onLongPress = { if (isStreamDownloadEligible(stream)) longPressedStream = stream },
+          )
+        },
         colors = CardDefaults.cardColors(containerColor = streamCardColor),
         shape = RoundedCornerShape(22.dp),
       ) {
@@ -11825,14 +14475,23 @@ private fun StreamListContent(
               Text(primaryText, color = streamForeground, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Black, maxLines = 3, overflow = TextOverflow.Ellipsis)
               Text(listOfNotNull(stream.addonName.takeIf { it.isNotBlank() }, stream.source?.takeIf { it.isNotBlank() }).distinct().joinToString(" • ").ifBlank { "Tap to play" }, color = streamForeground.copy(alpha = 0.62f), style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            stream.size?.takeIf { it.isNotBlank() }?.let { size ->
-              Text(
-                "[${size.uppercase()}]",
-                color = MaterialTheme.colorScheme.primary,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Black,
-                maxLines = 1,
-              )
+            // Single size badge for the card — the duplicate that used to render
+            // inside the badge row below has been removed.
+            if (uiState.showSizeBadges) {
+              stream.size?.takeIf { it.isNotBlank() }?.let { size ->
+                Box(
+                  modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(oxbloodRed).padding(horizontal = 9.dp, vertical = 4.dp),
+                  contentAlignment = Alignment.Center,
+                ) {
+                  Text(
+                    size.uppercase(),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Black,
+                    maxLines = 1,
+                  )
+                }
+              }
             }
             if (stream.cachedBy.isNotEmpty()) {
               Box(modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(streamForeground).padding(horizontal = 10.dp, vertical = 5.dp)) {
@@ -11857,6 +14516,8 @@ private fun StreamListContent(
     }
   }
 }
+private val oxbloodRed = Color(0xFF5B1216)
+
 private fun ratingColor(rating: Double, lightMode: Boolean = false): Color = when {
   rating >= 7.0 -> if (lightMode) Color(0xFF087F3D) else Color(0xFF00E676)
   rating >= 5.0 -> if (lightMode) Color(0xFF9A6700) else Color(0xFFFFD740)
@@ -11978,6 +14639,23 @@ private fun RatingProviderBadge(
 }
 
 @Composable
+private fun LiveProxyStatusBadge(proxied: Boolean, modifier: Modifier = Modifier) {
+  val tint = if (proxied) Color(0xFF22C55E) else Color(0xFF94A3B8)
+  Row(
+    modifier = modifier
+      .clip(RoundedCornerShape(999.dp))
+      .background(tint.copy(alpha = 0.16f))
+      .border(1.dp, tint.copy(alpha = 0.38f), RoundedCornerShape(999.dp))
+      .padding(horizontal = 10.dp, vertical = 5.dp),
+    horizontalArrangement = Arrangement.spacedBy(5.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Icon(if (proxied) Icons.Rounded.Shield else Icons.Rounded.Public, contentDescription = null, tint = tint, modifier = Modifier.size(13.dp))
+    Text(if (proxied) "Proxied Stream" else "Direct Stream", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = tint)
+  }
+}
+
+@Composable
 private fun DetailRatingBadges(
   detail: MediaDetail,
   ratingsEnabled: Boolean,
@@ -12027,9 +14705,8 @@ private fun FusionBadgeRow(stream: AddonStream, uiState: AppUiState, modifier: M
   val badges = remember(stream, uiState.fusionBadgeSources, uiState.activeFusionBadgeUrl, uiState.fusionBadgeUrls) {
     matchFusionBadgeFilters(stream, activeFusionSources(uiState)).take(10)
   }
-  if (badges.isEmpty() && (!uiState.showSizeBadges || stream.size.isNullOrBlank())) return
+  if (badges.isEmpty()) return
   val context = LocalContext.current
-  val lightMode = MaterialTheme.colorScheme.background.luminance() > 0.5f
   val badgeShape = RoundedCornerShape(6.dp)
   Row(
     modifier = modifier,
@@ -12060,23 +14737,14 @@ private fun FusionBadgeRow(stream: AddonStream, uiState: AppUiState, modifier: M
         )
       }
     }
-    if (uiState.showSizeBadges) {
-      stream.size?.takeIf { it.isNotBlank() }?.let { size ->
-        Box(
-          modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(if (lightMode) Color.Transparent else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)).padding(horizontal = 7.dp, vertical = 3.dp),
-          contentAlignment = Alignment.Center,
-        ) {
-          Text("[${size.uppercase()}]", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black, maxLines = 1)
-        }
-      }
-    }
   }
 }
 @Composable
-private fun PosterCard(item: MediaItem, showMeta: Boolean = true, onClick: () -> Unit, onLongPress: () -> Unit = {}) {
+private fun PosterCard(item: MediaItem, showMeta: Boolean = true, dimmed: Boolean = false, onClick: () -> Unit, onLongPress: () -> Unit = {}) {
   Column(
     modifier = Modifier
       .width(138.dp)
+      .alpha(if (dimmed) 0.4f else 1f)
       .pointerInput(item.id, item.type) { detectTapGestures(onTap = { onClick() }, onLongPress = { onLongPress() }) },
     verticalArrangement = Arrangement.spacedBy(8.dp),
   ) {
@@ -12100,7 +14768,7 @@ private fun PosterCard(item: MediaItem, showMeta: Boolean = true, onClick: () ->
           ),
         ),
       )
-    
+
       CardImdbRatingBadge(rating = item.rating)
     }
     if (showMeta) {
@@ -12485,6 +15153,8 @@ private fun EpisodeStreamsPage(
   onReload: () -> Unit,
   onToggleWatched: () -> Unit,
   onPlayStream: (AddonStream, EpisodeItem?) -> Unit,
+  onDownloadStream: (AddonStream, String) -> Unit = { _, _ -> },
+  isStreamDownloadEligible: (AddonStream) -> Boolean = { false },
 ) {
   val heroImage = episode.still ?: detail.backdrop ?: detail.poster
   val providers = remember(uiState.availableStreams) { streamProviderNames(uiState.availableStreams) }
@@ -12580,6 +15250,8 @@ private fun EpisodeStreamsPage(
                 uiState = uiState,
                 selectedEpisode = episode,
                 onPlayStream = onPlayStream,
+                onDownloadStream = { stream -> onDownloadStream(stream, detail.title) },
+                isStreamDownloadEligible = isStreamDownloadEligible,
                 selectedProviderOverride = providerFilter,
                 onProviderSelectedOverride = { providerFilter = it },
                 showProviderFilters = false,

@@ -29,6 +29,10 @@ jobs:
           distribution: temurin
           java-version: "17"
           cache: gradle
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
       - name: Validate release tag
         id: version
@@ -47,7 +51,24 @@ jobs:
             exit 1
           fi
 
+          version_file="android/version.properties"
+          if [ ! -f "$version_file" ]; then
+            echo "Missing $version_file."
+            exit 1
+          fi
+          committed_version_name="$(sed -n 's/^VERSION_NAME=//p' "$version_file" | tail -n 1)"
+          version_code="$(sed -n 's/^VERSION_CODE=//p' "$version_file" | tail -n 1)"
+          if [ "$committed_version_name" != "$version_name" ]; then
+            echo "Release tag $tag_name does not match VERSION_NAME=$committed_version_name."
+            exit 1
+          fi
+          if [[ ! "$version_code" =~ ^[1-9][0-9]*$ ]]; then
+            echo "VERSION_CODE must be a positive integer."
+            exit 1
+          fi
+
           echo "version_name=$version_name" >> "$GITHUB_OUTPUT"
+          echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
 
       - name: Detect Android project
         id: android
@@ -84,6 +105,7 @@ jobs:
         run: |
           set -Eeuo pipefail
 
+          api_url="${STREAMDEK_API_URL_VAR:-$STREAMDEK_API_URL_SECRET}"
 
           if [ -z "$api_url" ]; then
             echo "STREAMDEK_API_URL repository variable or secret is required."
@@ -121,7 +143,7 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           STREAMDEK_VERSION_NAME: ${{ steps.version.outputs.version_name }}
-          STREAMDEK_VERSION_CODE: ${{ github.run_number }}
+          STREAMDEK_VERSION_CODE: ${{ steps.version.outputs.version_code }}
         run: |
           set -Eeuo pipefail
           ./gradlew --no-daemon clean assembleRelease
@@ -177,3 +199,64 @@ jobs:
           files: ${{ steps.apk.outputs.apk_path }}
           generate_release_notes: true
           fail_on_unmatched_files: true
+      - name: Read published release metadata
+        id: release_meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh release view "${GITHUB_REF_NAME}" --json body --jq '.body // ""' > dist/release-notes.txt
+          published_at="$(gh release view "${GITHUB_REF_NAME}" --json publishedAt --jq '.publishedAt // ""')"
+          echo "notes_path=dist/release-notes.txt" >> "$GITHUB_OUTPUT"
+          echo "published_at=$published_at" >> "$GITHUB_OUTPUT"
+
+      - name: Generate update manifest
+        shell: bash
+        env:
+          UPDATE_PLATFORM: android-mobile
+          UPDATE_PACKAGE_NAME: net.streamdek.mobile
+          UPDATE_VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          UPDATE_VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          UPDATE_ASSET_NAME: streamdek-${{ github.ref_name }}.apk
+          UPDATE_APK_PATH: ${{ steps.apk.outputs.apk_path }}
+          UPDATE_APK_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/streamdek-${{ github.ref_name }}.apk
+          UPDATE_MANIFEST_OUTPUT_PATH: dist/latest.json
+          UPDATE_REQUIRED: "false"
+          UPDATE_RELEASE_NOTES_FILE: ${{ steps.release_meta.outputs.notes_path }}
+          UPDATE_PUBLISHED_AT: ${{ steps.release_meta.outputs.published_at }}
+        run: node scripts/generate-update-manifest.js
+
+      - name: Upload update manifest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamdek-${{ github.ref_name }}-update-manifest
+          path: dist/latest.json
+          if-no-files-found: error
+
+      - name: Prepare remote manifest directory
+        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: DEPLOY_PATH
+          script_stop: true
+          script: |
+            set -Eeuo pipefail
+            test -n "${DEPLOY_PATH:-}"
+            mkdir -p "$DEPLOY_PATH/release-manifests/android-mobile"
+
+      - name: Upload update manifest to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: dist/latest.json
+          target: ${{ secrets.DEPLOY_PATH }}/release-manifests/android-mobile
+          strip_components: 1

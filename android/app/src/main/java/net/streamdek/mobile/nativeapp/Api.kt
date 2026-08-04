@@ -2,6 +2,7 @@ package net.streamdek.mobile.nativeapp
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.Uri
 import net.streamdek.mobile.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -31,8 +32,10 @@ private const val SESSION_USER_JSON_KEY = "user_json"
 private const val PROFILE_PREFS = "streamdek_native_profiles"
 private const val GUEST_PROFILE_PREFS = "streamdek_native_guest_profiles"
 private const val WATCHLIST_PREFS = "streamdek_native_watchlist"
+private const val FAVOURITE_CHANNELS_PREFS = "streamdek_native_favourite_channels"
 private const val CLIENT_IDENTITY_PREFS = "streamdek_native_client_identity"
 private const val CLIENT_DEVICE_ID_KEY = "device_id"
+private const val HOME_CATALOG_PREVIEW_LIMIT = 20
 
 private data class ClientIdentity(
   val deviceId: String,
@@ -162,6 +165,74 @@ class WatchlistStore(context: Context) {
   }
 }
 
+class FavouriteChannelStore(context: Context) {
+  private val prefs = context.getSharedPreferences(FAVOURITE_CHANNELS_PREFS, Context.MODE_PRIVATE)
+
+  fun load(ownerKey: String): List<MediaItem> {
+    val raw = prefs.getString(ownerKey, null) ?: return emptyList()
+    return runCatching {
+      val source = JSONArray(raw)
+      buildList {
+        for (index in 0 until source.length()) {
+          val item = source.optJSONObject(index) ?: continue
+          add(parseFavouriteChannel(item))
+        }
+      }
+    }.getOrDefault(emptyList())
+  }
+
+  fun save(ownerKey: String, items: List<MediaItem>) {
+    val array = JSONArray()
+    items.forEach { item ->
+      array.put(
+        JSONObject()
+          .put("id", item.id)
+          .put("type", item.type)
+          .put("title", item.title)
+          .put("year", item.year)
+          .put("poster", item.poster)
+          .put("backdrop", item.backdrop)
+          .put("rating", item.rating)
+          .put("description", item.description)
+          .put("genres", JSONArray(item.genres))
+          .put("addedAt", item.addedAt)
+          .put("updatedAt", item.updatedAt)
+          .put("sourceAddonId", item.sourceAddonId)
+          .put("sourceAddonName", item.sourceAddonName)
+          .put("sourceCatalogType", item.sourceCatalogType)
+          .put("sourceCatalogId", item.sourceCatalogId)
+          .put("sourceCatalogName", item.sourceCatalogName)
+          .put("directStreamUrl", item.directStreamUrl),
+      )
+    }
+    prefs.edit().putString(ownerKey, array.toString()).apply()
+  }
+
+  fun clear(ownerKey: String) {
+    prefs.edit().remove(ownerKey).apply()
+  }
+}
+
+private fun parseFavouriteChannel(item: JSONObject): MediaItem = MediaItem(
+  id = item.optString("id"),
+  type = item.optString("type").ifBlank { "tv" },
+  title = item.optString("title"),
+  year = item.optString("year").takeIf { it.isNotBlank() && it != "null" },
+  poster = item.optString("poster").takeIf { it.isNotBlank() },
+  backdrop = item.optString("backdrop").takeIf { it.isNotBlank() },
+  rating = parseRatingValue(item),
+  description = item.optString("description"),
+  genres = parseGenreNames(item),
+  addedAt = parseFlexibleTimestamp(item, "addedAt"),
+  updatedAt = parseFlexibleTimestamp(item, "updatedAt"),
+  sourceAddonId = item.optString("sourceAddonId").takeIf { it.isNotBlank() && it != "null" },
+  sourceAddonName = item.optString("sourceAddonName").takeIf { it.isNotBlank() && it != "null" },
+  sourceCatalogType = item.optString("sourceCatalogType").takeIf { it.isNotBlank() && it != "null" },
+  sourceCatalogId = item.optString("sourceCatalogId").takeIf { it.isNotBlank() && it != "null" },
+  sourceCatalogName = item.optString("sourceCatalogName").takeIf { it.isNotBlank() && it != "null" },
+  directStreamUrl = item.optString("directStreamUrl").takeIf { it.isNotBlank() && it != "null" },
+)
+
 data class TraktScrobblePayload(
   val mediaId: String,
   val mediaType: String,
@@ -184,8 +255,20 @@ data class DiscoverPage(
   val totalPages: Int,
 )
 
+internal fun compareSemanticVersions(left: String, right: String): Int {
+  fun parts(value: String): List<Int> = value.trim().removePrefix("v").substringBefore('-').split('.').map { it.toIntOrNull() ?: 0 }
+  val leftParts = parts(left)
+  val rightParts = parts(right)
+  repeat(maxOf(leftParts.size, rightParts.size)) { index ->
+    val comparison = (leftParts.getOrNull(index) ?: 0).compareTo(rightParts.getOrNull(index) ?: 0)
+    if (comparison != 0) return comparison
+  }
+  return 0
+}
+
 class StreamDekApiClient(context: Context? = null) {
-  private val clientIdentity = context?.applicationContext?.let { ClientIdentityStore(it).load() }
+  private val appContext = context?.applicationContext
+  private val clientIdentity = appContext?.let { ClientIdentityStore(it).load() }
   private val client = OkHttpClient()
   private val directStreamClient = client.newBuilder()
     .connectTimeout(15, TimeUnit.SECONDS)
@@ -242,7 +325,7 @@ class StreamDekApiClient(context: Context? = null) {
       }
     }
 
-  suspend fun fetchHomeSections(session: AuthSession?, addons: List<InstalledAddon> = emptyList()): Result<List<MediaSection>> = withContext(Dispatchers.IO) {
+  suspend fun fetchHomeSections(session: AuthSession?, addons: List<InstalledAddon> = emptyList(), profileId: String? = null): Result<List<MediaSection>> = withContext(Dispatchers.IO) {
     runCatching {
       val builtInRequests = listOf(
         Triple("new_movies", "New Movies", "/tmdb/discover?type=movie&sort_by=primary_release_date.desc"),
@@ -254,7 +337,7 @@ class StreamDekApiClient(context: Context? = null) {
       val sections = supervisorScope {
         builtInRequests.map { (id, title, path) -> async { MediaSection(id, title, fetchMediaList(path)) } }.awaitAll().toMutableList()
       }
-      sections += fetchAddonHomeSections(session, addons)
+      sections += fetchAddonHomeSections(session, addons, profileId)
       sections
     }
   }
@@ -384,10 +467,18 @@ class StreamDekApiClient(context: Context? = null) {
       }
 
       val title = fallbackTitle?.trim().orEmpty()
-      if (title.isNotBlank()) {
+      // Some bridge catalogs hand out placeholder titles (a bare "_", "-", "?" or similar) for
+      // items they don't actually have metadata for yet. Querying TMDB search with that junk
+      // string never resolves anything (and previously fired repeatedly whenever the retry loop
+      // above re-triggered), so bail out before spending a request on it.
+      val isRealTitle = title.isNotBlank() && title.any { it.isLetterOrDigit() }
+      if (isRealTitle) {
         val queries = listOf(title, cleanSearchTitle(title)).filter { it.isNotBlank() }.distinctBy { it.lowercase() }
         for (query in queries) {
-          val searchItems = fetchMediaList("/tmdb/search?query=${encodeQuery(query)}")
+          val encoded = encodeQuery(query)
+          val searchItems = listOf("/tmdb/search?q=$encoded", "/tmdb/search?query=$encoded")
+            .firstNotNullOfOrNull { path -> runCatching { fetchMediaList(path) }.getOrNull()?.takeIf { it.isNotEmpty() } }
+            .orEmpty()
           val resolved = searchItems
             .filter { normalizeMediaType(it.type) == normalizedType }
             .sortedWith(
@@ -594,13 +685,26 @@ class StreamDekApiClient(context: Context? = null) {
       }
     }
 
+  suspend fun updateProfileAudioLanguage(session: AuthSession, profileId: String, audioLanguage: String): Result<StreamProfile> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val request = Request.Builder()
+          .url("$apiBaseUrl/profiles/$profileId")
+          .patch(JSONObject().put("audioLanguage", audioLanguage).toString().toRequestBody(jsonMediaType))
+          .headers(authHeaders(session))
+          .build()
+        val response = execute(request)
+        ensureOk(response, "Failed to update profile audio language")
+        parseProfile(response.json.optJSONObject("profile") ?: response.json)
+      }
+    }
   suspend fun deleteProfile(session: AuthSession, profileId: String): Result<Unit> = withContext(Dispatchers.IO) {
     runCatching {
       val response = execute(
         Request.Builder()
           .url("$apiBaseUrl/profiles/$profileId")
           .delete()
-          .headers(authHeaders(session))
+          .headers(authHeaders(session, includeContentType = false))
           .build(),
       )
       ensureOk(response, "Failed to delete profile")
@@ -641,11 +745,11 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
 
-  suspend fun fetchAddons(session: AuthSession?): Result<List<InstalledAddon>> = withContext(Dispatchers.IO) {
+  suspend fun fetchAddons(session: AuthSession?, profileId: String? = null): Result<List<InstalledAddon>> = withContext(Dispatchers.IO) {
     runCatching {
       val request = Request.Builder()
         .url("$apiBaseUrl/addons/manifests")
-        .headers(authHeaders(session, includeContentType = false))
+        .headers(authHeaders(session, includeContentType = false, profileId = profileId))
         .build()
       val response = execute(request)
       ensureOk(response, "Failed to load add-ons")
@@ -662,54 +766,57 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
 
-  suspend fun installAddon(session: AuthSession?, url: String): Result<Unit> = withContext(Dispatchers.IO) {
+  suspend fun installAddon(session: AuthSession?, url: String, profileId: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
     runCatching {
       val response = executeJson(
         "/addons/install",
         JSONObject().put("url", url),
         session = session,
+        profileId = profileId,
       )
       ensureOk(response, "Failed to install add-on")
     }
   }
 
-  suspend fun toggleAddon(session: AuthSession?, addonId: String, enabled: Boolean): Result<Unit> =
+  suspend fun toggleAddon(session: AuthSession?, addonId: String, enabled: Boolean, profileId: String? = null): Result<Unit> =
     withContext(Dispatchers.IO) {
       runCatching {
         val response = executeJson(
           "/addons/toggle",
           JSONObject().put("id", addonId).put("enabled", enabled),
           session = session,
+          profileId = profileId,
         )
         ensureOk(response, "Failed to update add-on")
       }
     }
 
-  suspend fun uninstallAddon(session: AuthSession?, addonId: String): Result<Unit> = withContext(Dispatchers.IO) {
+  suspend fun uninstallAddon(session: AuthSession?, addonId: String, profileId: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
     runCatching {
       val request = Request.Builder()
         .url("$apiBaseUrl/addons/uninstall")
         .delete(JSONObject().put("id", addonId).toString().toRequestBody(jsonMediaType))
-        .headers(authHeaders(session))
+        .headers(authHeaders(session, profileId = profileId))
         .build()
       val response = execute(request)
       ensureOk(response, "Failed to uninstall add-on")
     }
   }
 
-  suspend fun reorderAddons(session: AuthSession?, orderedIds: List<String>): Result<Unit> = withContext(Dispatchers.IO) {
+  suspend fun reorderAddons(session: AuthSession?, orderedIds: List<String>, profileId: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
     runCatching {
       val response = executeJson(
         "/addons/reorder",
         JSONObject().put("order", JSONArray(orderedIds)),
         session = session,
+        profileId = profileId,
       )
       ensureOk(response, "Failed to reorder add-ons")
     }
   }
 
 
-  private suspend fun fetchAddonHomeSections(session: AuthSession?, addons: List<InstalledAddon>): List<MediaSection> {
+  private suspend fun fetchAddonHomeSections(session: AuthSession?, addons: List<InstalledAddon>, profileId: String?): List<MediaSection> {
     val enabledAddons = addons.filter { it.enabled }.sortedBy { it.position }
     if (enabledAddons.isEmpty()) return emptyList()
 
@@ -726,7 +833,15 @@ class StreamDekApiClient(context: Context? = null) {
         addon.manifest.catalogs.mapIndexedNotNull { index, catalog ->
           val mappedType = mapHomeCatalogType(catalog.type) ?: return@mapIndexedNotNull null
           async {
-            val items = catalogGate.withPermit { runCatching { fetchAddonCatalog(addon.id, addon.manifest.name, catalog.type, catalog.id, catalog.name, session) }.getOrDefault(emptyList()) }
+            val items = catalogGate.withPermit {
+              runCatching {
+                if (LocalAddonManager.isLocalAddonId(addon.id)) {
+                  fetchLocalAddonCatalog(addon, catalog.type, catalog.id, catalog.name)
+                } else {
+                  fetchAddonCatalog(addon.id, addon.manifest.name, catalog.type, catalog.id, catalog.name, session, profileId)
+                }
+              }.getOrDefault(emptyList()).take(HOME_CATALOG_PREVIEW_LIMIT)
+            }
             Triple(addon to catalog, index, mappedType to items)
           }
         }
@@ -754,10 +869,15 @@ class StreamDekApiClient(context: Context? = null) {
     return sections
   }
 
-  private suspend fun fetchAddonCatalog(addonId: String, addonName: String, rawType: String, catalogId: String, catalogName: String, session: AuthSession?): List<MediaItem> {
+  private suspend fun fetchAddonCatalog(addonId: String, addonName: String, rawType: String, catalogId: String, catalogName: String, session: AuthSession?, profileId: String?, genre: String? = null, skip: Int = 0): List<MediaItem> {
+    val queryParams = buildList {
+      genre?.takeIf { it.isNotBlank() }?.let { add("genre=" + encodeQuery(it)) }
+      if (skip > 0) add("skip=$skip")
+    }
+    val query = queryParams.takeIf { it.isNotEmpty() }?.joinToString("&", prefix = "?").orEmpty()
     val request = Request.Builder()
-      .url("$apiBaseUrl/addons/${encodeQuery(addonId)}/catalog/${encodeQuery(rawType)}/${encodeQuery(catalogId)}")
-      .headers(authHeaders(session, includeContentType = false))
+      .url("$apiBaseUrl/addons/${encodeQuery(addonId)}/catalog/${encodeQuery(rawType)}/${encodeQuery(catalogId)}$query")
+      .headers(authHeaders(session, includeContentType = false, profileId = profileId))
       .build()
     val response = execute(request)
     ensureOk(response, "Failed to load add-on catalog")
@@ -782,10 +902,146 @@ class StreamDekApiClient(context: Context? = null) {
           sourceCatalogType = normalizedCatalogType,
           sourceCatalogId = catalogId,
           sourceCatalogName = catalogName,
+          sourceCatalogGenre = genre,
           directStreamUrl = parseDirectMediaUrl(item),
           requestHeaders = parseStringMap(item.optJSONObject("headers")) + parseStringMap(item.optJSONObject("behaviorHints")?.optJSONObject("proxyHeaders")?.optJSONObject("request")),
         )
         if (mediaItem.id.isNotBlank()) add(mediaItem)
+      }
+    }
+  }
+
+  // Local add-ons (installed from a localhost/LAN manifest via LocalAddonManager) have no
+  // meaning to the backend, which can't reach a URL like http://127.0.0.1:11470 on the phone's
+  // own network. Their catalogs are instead fetched directly from the addon, on-device, exactly
+  // like fetchFreshStreamsFromAddon already does for streams.
+  private suspend fun fetchLocalAddonCatalog(addon: InstalledAddon, rawType: String, catalogId: String, catalogName: String, genre: String? = null, skip: Int = 0): List<MediaItem> {
+    val base = (addon.transportUrl ?: addon.baseUrl ?: addon.manifestUrl?.substringBeforeLast("/manifest.json"))?.trimEnd('/')
+      ?: return emptyList()
+    // Stremio's catalog protocol takes "extra" properties (genre, skip, search) as one more
+    // path segment before .json, e.g. /catalog/other/{id}/genre=Comedy&skip=100.json — not a
+    // query string. Some catalogs (see the manifest that prompted this) only return meaningful,
+    // distinct results once a genre is picked; without it every such catalog can come back
+    // with the same generic/default response. "skip" is what lets "View All" page in more
+    // results past whatever the home row already fetched.
+    //
+    // This talks directly to a third-party HTTP server (not StreamDek's own backend), so this
+    // needs real percent-encoding (Uri.encode: spaces -> %20) rather than encodeQuery's
+    // form-encoding (spaces -> "+"), which most servers won't turn back into a space when
+    // decoding a path segment — that mismatch alone would make every catalog with a space in
+    // its id (e.g. "cnc_CNC Verse_Netflix_other") fail to match its own route and fall through
+    // to whatever default the server returns, which looks exactly like "every catalog returns
+    // the same thing".
+    fun pathSegment(value: String) = Uri.encode(value)
+    val extraParams = buildList {
+      genre?.takeIf { it.isNotBlank() }?.let { add("genre=" + pathSegment(it)) }
+      if (skip > 0) add("skip=$skip")
+    }
+    val extraSegment = extraParams.takeIf { it.isNotEmpty() }?.joinToString("&", prefix = "/").orEmpty()
+    val request = Request.Builder()
+      .url("$base/catalog/${pathSegment(rawType)}/${pathSegment(catalogId)}$extraSegment.json")
+      .header("User-Agent", "Stremio/4.4.168")
+      .build()
+    val response = execute(request, directStreamClient)
+    ensureOk(response, "Failed to load add-on catalog")
+    val body = response.json
+    val items = body.optJSONArray("metas")
+      ?: body.optJSONArray("results")
+      ?: body.optJSONArray("items")
+      ?: body.optJSONArray("data")
+      ?: body.optJSONArray("__array")
+      ?: JSONArray()
+    return buildList {
+      for (index in 0 until items.length()) {
+        val item = items.optJSONObject(index) ?: continue
+        val normalizedCatalogType = rawType.trim().lowercase()
+        val mediaItem = parseMediaItem(item).copy(
+          type = when (normalizedCatalogType) {
+            "series", "show" -> "tv"
+            else -> normalizedCatalogType
+          },
+          sourceAddonId = addon.id,
+          sourceAddonName = addon.manifest.name,
+          sourceCatalogType = normalizedCatalogType,
+          sourceCatalogId = catalogId,
+          sourceCatalogName = catalogName,
+          sourceCatalogGenre = genre,
+          directStreamUrl = parseDirectMediaUrl(item),
+          requestHeaders = parseStringMap(item.optJSONObject("headers")) + parseStringMap(item.optJSONObject("behaviorHints")?.optJSONObject("proxyHeaders")?.optJSONObject("request")),
+        )
+        if (mediaItem.id.isNotBlank()) add(mediaItem)
+      }
+    }
+  }
+
+  /**
+   * Resolves the id an add-on's own /stream endpoint actually expects, by asking its
+   * /meta/{type}/{id}.json first — the same round-trip every working Stremio client makes
+   * before requesting streams. A self-hosted bridge (like a local CNCVerse-style server) can
+   * use one id for browsing a catalog and a different canonical one (often the real IMDb id)
+   * once you look the item up individually; StreamDek used to skip straight from the catalog
+   * id to /stream, which is fine for addons where those ids match but returns nothing for
+   * addons where they don't. Falls back to the original [id] on any failure or when the
+   * response has nothing more specific, so this never behaves worse than before.
+   */
+  suspend fun resolveLocalAddonStreamId(addon: InstalledAddon, rawType: String, id: String): Result<String> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val base = (addon.transportUrl ?: addon.baseUrl ?: addon.manifestUrl?.substringBeforeLast("/manifest.json"))?.trimEnd('/')
+          ?: return@runCatching id
+        fun pathSegment(value: String) = Uri.encode(value)
+        val request = Request.Builder()
+          .url("$base/meta/${pathSegment(rawType.trim().lowercase())}/${pathSegment(id)}.json")
+          .header("User-Agent", "Stremio/4.4.168")
+          .build()
+        val response = execute(request, directStreamClient)
+        if (!response.ok) return@runCatching id
+        val meta = response.json.optJSONObject("meta") ?: return@runCatching id
+        meta.optString("imdb_id").takeIf { it.isNotBlank() }
+          ?: meta.optString("id").takeIf { it.isNotBlank() }
+          ?: id
+      }
+    }
+
+  /** Fetches the add-on's canonical meta before TMDB enrichment or stream lookup. */
+  suspend fun fetchLocalAddonMeta(addon: InstalledAddon, rawType: String, id: String): Result<LocalAddonMeta> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val base = (addon.transportUrl ?: addon.baseUrl ?: addon.manifestUrl?.substringBeforeLast("/manifest.json"))?.trimEnd('/')
+          ?: error("Addon transport URL is unavailable")
+        val response = execute(
+          Request.Builder()
+            .url("$base/meta/${Uri.encode(rawType.trim().lowercase())}/${Uri.encode(id)}.json")
+            .header("User-Agent", "Stremio/4.4.168")
+            .build(),
+          directStreamClient,
+        )
+        ensureOk(response, "Failed to load add-on details")
+        parseLocalAddonMetaResponse(response.json, rawType, id)
+      }
+    }
+
+  /**
+   * Pages in more items for a single already-loaded add-on/catalog combo — what backs "View
+   * All"'s infinite scroll. [skip] is the number of items already shown for this exact
+   * catalog+genre combo; add-ons that don't support paging simply keep returning the same page,
+   * so callers should stop once a page comes back with nothing new.
+   */
+  suspend fun fetchMoreCatalogItems(
+    session: AuthSession?,
+    addon: InstalledAddon,
+    catalogType: String,
+    catalogId: String,
+    catalogName: String,
+    genre: String?,
+    skip: Int,
+    profileId: String? = null,
+  ): Result<List<MediaItem>> = withContext(Dispatchers.IO) {
+    runCatching {
+      if (LocalAddonManager.isLocalAddonId(addon.id)) {
+        fetchLocalAddonCatalog(addon, catalogType, catalogId, catalogName, genre, skip)
+      } else {
+        fetchAddonCatalog(addon.id, addon.manifest.name, catalogType, catalogId, catalogName, session, profileId, genre, skip)
       }
     }
   }
@@ -823,6 +1079,7 @@ class StreamDekApiClient(context: Context? = null) {
   suspend fun patchCloudPreferences(
     session: AuthSession,
     preferences: CloudPlaybackPreferences,
+    profileId: String? = null,
   ): Result<Unit> = withContext(Dispatchers.IO) {
     runCatching {
       val app = JSONObject()
@@ -836,12 +1093,13 @@ class StreamDekApiClient(context: Context? = null) {
       val home = JSONObject()
         .put("detailPageStyle", preferences.detailPageStyle)
         .put("continueWatchingStyle", preferences.continueWatchingStyle)
-        .put("includeLiveInContinueWatching", preferences.includeLiveInContinueWatching)
         .put("liveLandscapeCards", preferences.liveLandscapeCards)
+        .put("liveFavouriteDrawerCards", preferences.liveFavouriteDrawerCards)
         .put("showHeroSynopsis", preferences.showHeroSynopsis)
         .put("vividAmbient", preferences.vividAmbient)
         .put("ambientTintPercent", preferences.ambientTintPercent)
         .put("defaultAppCatalogsEnabled", preferences.defaultAppCatalogsEnabled)
+        .put("homeCatalogRows", preferences.homeCatalogRowsJson?.let(::JSONArray))
       val detail = JSONObject()
         .put("seasonTabStyle", preferences.seasonTabStyle)
         .put("heroTrailerAutoplay", preferences.heroTrailerAutoplay)
@@ -854,6 +1112,8 @@ class StreamDekApiClient(context: Context? = null) {
         .put("pictureInPictureEnabled", preferences.pictureInPictureEnabled)
         .put("decoderMode", preferences.decoderMode)
         .put("renderSurface", preferences.renderSurface)
+        .put("playerEngine", preferences.playerEngine)
+        .put("preferredAudioLanguage", preferences.preferredAudioLanguage)
         .put("preferredQuality", preferences.preferredQuality)
         .put("maxFileSizeGB", preferences.maxFileSizeGb)
         .put("skipSegmentsEnabled", preferences.skipIntroEnabled == true || preferences.skipRecapEnabled == true || preferences.skipEndingEnabled == true)
@@ -873,6 +1133,7 @@ class StreamDekApiClient(context: Context? = null) {
         .put("blurUnwatchedEpisodes", preferences.blurUnwatchedEpisodes)
         .put("fusionBadgesEnabled", preferences.fusionBadgesEnabled)
         .put("showSizeBadges", preferences.showSizeBadges)
+        .put("showAddonTmdbRatings", preferences.showAddonTmdbRatings)
         .put("badgePosition", preferences.badgePosition)
         .put("fusionBadgeUrls", preferences.fusionBadgeUrls?.let(::JSONArray))
         .put("activeFusionBadgeUrl", preferences.activeFusionBadgeUrl)
@@ -890,20 +1151,70 @@ class StreamDekApiClient(context: Context? = null) {
         .headers(authHeaders(session))
         .build()
       ensureOk(execute(request), "Failed to sync app preferences")
+      if (!profileId.isNullOrBlank()) {
+        val profileDetail = JSONObject(detail.toString()).apply { remove("mdblistApiKey") }
+        val profilePlayback = JSONObject()
+          .put("preferredQuality", preferences.preferredQuality)
+          .put("maxFileSizeGB", preferences.maxFileSizeGb)
+          .put("skipSegmentsEnabled", preferences.skipIntroEnabled == true || preferences.skipRecapEnabled == true || preferences.skipEndingEnabled == true)
+          .put("skipIntroEnabled", preferences.skipIntroEnabled)
+          .put("skipRecapEnabled", preferences.skipRecapEnabled)
+          .put("skipEndingEnabled", preferences.skipEndingEnabled)
+          .put("autoPlayNextEpisodeEnabled", preferences.autoPlayNextEpisode)
+          .put("autoplayNextEpisode", preferences.autoPlayNextEpisode)
+          .put("preferBingeGroupNextEpisode", preferences.preferBingeGroup)
+          .put("autoLoadSubtitles", preferences.autoLoadSubtitles)
+          .put("nextEpisodeThresholdMode", preferences.nextEpisodeThresholdMode)
+          .put("nextEpisodeThresholdPercent", preferences.nextEpisodeThresholdPercent)
+          .put("nextEpisodeThresholdMinutes", preferences.nextEpisodeThresholdMinutes)
+        val profilePayload = JSONObject()
+          .put("home", home)
+          .put("detail", profileDetail)
+          .put("playback", profilePlayback)
+          .put("streams", streams)
+        val profileRequest = Request.Builder()
+          .url(apiBaseUrl + "/profiles/" + encodeQuery(profileId) + "/preferences")
+          .put(JSONObject().put("preferences", profilePayload).toString().toRequestBody(jsonMediaType))
+          .headers(authHeaders(session, profileId = profileId))
+          .build()
+        ensureOk(execute(profileRequest), "Failed to sync profile preferences")
+      }
     }
   }
 
-  suspend fun fetchCloudPlaybackPreferences(session: AuthSession): Result<CloudPlaybackPreferences> = withContext(Dispatchers.IO) {
+  suspend fun fetchCloudPlaybackPreferences(session: AuthSession, profileId: String? = null): Result<CloudPlaybackPreferences> = withContext(Dispatchers.IO) {
     runCatching {
       val response = execute(Request.Builder().url("$apiBaseUrl/account/bootstrap").headers(authHeaders(session, includeContentType = false)).build())
       ensureOk(response, "Failed to refresh cloud settings")
-      val preferences = response.json.optJSONObject("preferences") ?: JSONObject()
-      val app = preferences.optJSONObject("app") ?: JSONObject()
-      val home = preferences.optJSONObject("home") ?: JSONObject()
-      val detail = preferences.optJSONObject("detail") ?: JSONObject()
-      val playback = preferences.optJSONObject("playback") ?: JSONObject()
-      val streams = preferences.optJSONObject("streams") ?: JSONObject()
-      val updates = preferences.optJSONObject("updates") ?: JSONObject()
+      val accountPreferences = response.json.optJSONObject("preferences") ?: JSONObject()
+      val profilePreferences = if (profileId.isNullOrBlank()) {
+        JSONObject()
+      } else {
+        val profileResponse = execute(
+          Request.Builder()
+            .url(apiBaseUrl + "/profiles/" + encodeQuery(profileId) + "/preferences")
+            .headers(authHeaders(session, includeContentType = false, profileId = profileId))
+            .build(),
+        )
+        ensureOk(profileResponse, "Failed to refresh profile settings")
+        profileResponse.json.optJSONObject("preferences") ?: JSONObject()
+      }
+      fun mergedSection(name: String): JSONObject {
+        val merged = JSONObject((accountPreferences.optJSONObject(name) ?: JSONObject()).toString())
+        val scoped = profilePreferences.optJSONObject(name) ?: JSONObject()
+        val keys = scoped.keys()
+        while (keys.hasNext()) {
+          val key = keys.next()
+          merged.put(key, scoped.opt(key))
+        }
+        return merged
+      }
+      val app = accountPreferences.optJSONObject("app") ?: JSONObject()
+      val home = mergedSection("home")
+      val detail = mergedSection("detail")
+      val playback = mergedSection("playback")
+      val streams = mergedSection("streams")
+      val updates = accountPreferences.optJSONObject("updates") ?: JSONObject()
       fun optionalBoolean(source: JSONObject, key: String): Boolean? = if (source.has(key) && !source.isNull(key)) source.optBoolean(key) else null
       fun optionalInt(source: JSONObject, key: String): Int? = if (source.has(key) && !source.isNull(key)) source.optInt(key) else null
       fun optionalString(source: JSONObject, key: String): String? = if (source.has(key) && !source.isNull(key)) source.optString(key).takeIf(String::isNotBlank) else null
@@ -923,12 +1234,13 @@ class StreamDekApiClient(context: Context? = null) {
         syncOnCellular = optionalBoolean(app, "syncOverCellular"),
         detailPageStyle = optionalString(home, "detailPageStyle"),
         continueWatchingStyle = optionalString(home, "continueWatchingStyle"),
-        includeLiveInContinueWatching = optionalBoolean(home, "includeLiveInContinueWatching"),
         liveLandscapeCards = optionalBoolean(home, "liveLandscapeCards"),
+        liveFavouriteDrawerCards = optionalBoolean(home, "liveFavouriteDrawerCards"),
         showHeroSynopsis = optionalBoolean(home, "showHeroSynopsis"),
         vividAmbient = optionalBoolean(home, "vividAmbient"),
         ambientTintPercent = optionalInt(home, "ambientTintPercent"),
         defaultAppCatalogsEnabled = optionalBoolean(home, "defaultAppCatalogsEnabled"),
+        homeCatalogRowsJson = home.optJSONArray("homeCatalogRows")?.toString(),
         seasonTabStyle = optionalString(detail, "seasonTabStyle"),
         heroTrailerAutoplay = optionalBoolean(detail, "heroTrailerAutoplay"),
         heroTrailerResolution = optionalInt(detail, "heroTrailerResolution"),
@@ -939,6 +1251,8 @@ class StreamDekApiClient(context: Context? = null) {
         pictureInPictureEnabled = optionalBoolean(playback, "pictureInPictureEnabled"),
         decoderMode = optionalString(playback, "decoderMode"),
         renderSurface = optionalString(playback, "renderSurface"),
+        playerEngine = optionalString(playback, "playerEngine"),
+        preferredAudioLanguage = optionalString(playback, "preferredAudioLanguage"),
         skipIntroEnabled = optionalBoolean(playback, "skipIntroEnabled"),
         skipRecapEnabled = optionalBoolean(playback, "skipRecapEnabled"),
         skipEndingEnabled = optionalBoolean(playback, "skipEndingEnabled"),
@@ -953,6 +1267,7 @@ class StreamDekApiClient(context: Context? = null) {
         blurUnwatchedEpisodes = optionalBoolean(streams, "blurUnwatchedEpisodes"),
         fusionBadgesEnabled = optionalBoolean(streams, "fusionBadgesEnabled"),
         showSizeBadges = optionalBoolean(streams, "showSizeBadges"),
+        showAddonTmdbRatings = optionalBoolean(streams, "showAddonTmdbRatings"),
         preferredQuality = optionalString(playback, "preferredQuality") ?: optionalString(streams, "preferredQuality"),
         maxFileSizeGb = optionalInt(playback, "maxFileSizeGB") ?: optionalInt(streams, "maxFileSizeGB"),
         badgePosition = optionalString(streams, "badgePosition"),
@@ -965,30 +1280,106 @@ class StreamDekApiClient(context: Context? = null) {
 
   suspend fun fetchLatestMobileUpdate(): Result<UpdateManifest> = withContext(Dispatchers.IO) {
     runCatching {
-      val response = execute(Request.Builder().url("$apiBaseUrl/public/updates/android-mobile/latest").header("Accept", "application/json").build())
-      ensureOk(response, "Unable to check for updates right now")
-      val json = response.json
-      val versionCode = json.optInt("versionCode")
-      val versionName = json.optString("versionName")
-      val packageName = json.optString("packageName")
-      require(json.optString("platform") == "android-mobile") { "The update service returned the wrong platform" }
-      require(versionCode > 0 && versionName.isNotBlank() && packageName == BuildConfig.APPLICATION_ID) { "The update service returned invalid app metadata" }
-      UpdateManifest(
-        versionCode = versionCode,
-        versionName = versionName,
-        apkUrl = trustedUpdateUrl(json.optString("apkUrl")),
-        releaseNotes = json.optString("releaseNotes"),
-        required = json.optBoolean("required"),
-        minSupportedVersionCode = json.optInt("minSupportedVersionCode").takeIf { json.has("minSupportedVersionCode") && it > 0 },
-        requiredReason = json.optString("requiredReason").takeIf(String::isNotBlank),
-        packageName = packageName,
-        assetName = json.optString("assetName").takeIf(String::isNotBlank),
-        fileSizeBytes = json.optLong("fileSizeBytes").takeIf { json.has("fileSizeBytes") && it > 0L },
-        checksumSha256 = json.optString("checksumSha256").trim().lowercase().takeIf(String::isNotBlank),
+      var serviceFailure: Throwable? = null
+      val serviceManifest = runCatching { fetchUpdateServiceManifest() }
+        .onFailure { serviceFailure = it }
+        .getOrNull()
+
+      // The StreamDek endpoint carries required-update policy, so prefer it when it advertises
+      // a real newer build. If it is stale, malformed, or still points at an older release, the
+      // public GitHub Release becomes a safe source of truth instead of making manual checks fail.
+      if (serviceManifest != null &&
+        serviceManifest.versionCode > BuildConfig.VERSION_CODE &&
+        compareSemanticVersions(serviceManifest.versionName, BuildConfig.VERSION_NAME) > 0
+      ) {
+        return@runCatching serviceManifest
+      }
+
+      val githubManifest = runCatching { fetchGithubMobileUpdate() }.getOrNull()
+      if (githubManifest != null &&
+        (compareSemanticVersions(githubManifest.versionName, serviceManifest?.versionName.orEmpty()) >= 0 || serviceManifest == null)
+      ) {
+        return@runCatching githubManifest
+      }
+      serviceManifest ?: throw IllegalStateException(
+        serviceFailure?.message ?: "StreamDek could not reach either update source.",
+        serviceFailure,
       )
     }
   }
 
+  private fun fetchUpdateServiceManifest(): UpdateManifest {
+    val response = execute(Request.Builder().url("$apiBaseUrl/public/updates/android-mobile/latest").header("Accept", "application/json").build())
+    ensureOk(response, "Unable to check for updates right now")
+    val json = response.json
+    val versionCode = json.optInt("versionCode")
+    val versionName = json.optString("versionName")
+    val packageName = json.optString("packageName")
+    require(json.optString("platform") == "android-mobile") { "The update service returned the wrong platform" }
+    require(versionCode > 0 && versionName.isNotBlank()) { "The update service returned invalid version metadata" }
+    require(packageName == BuildConfig.APPLICATION_ID) {
+      "The update service package is $packageName, expected ${BuildConfig.APPLICATION_ID}"
+    }
+    return UpdateManifest(
+      versionCode = versionCode,
+      versionName = versionName,
+      apkUrl = trustedUpdateUrl(json.optString("apkUrl")),
+      releaseNotes = json.optString("releaseNotes"),
+      required = json.optBoolean("required"),
+      minSupportedVersionCode = json.optInt("minSupportedVersionCode").takeIf { json.has("minSupportedVersionCode") && it > 0 },
+      requiredReason = json.optString("requiredReason").takeIf(String::isNotBlank),
+      packageName = packageName,
+      assetName = json.optString("assetName").takeIf(String::isNotBlank),
+      fileSizeBytes = json.optLong("fileSizeBytes").takeIf { json.has("fileSizeBytes") && it > 0L },
+      checksumSha256 = json.optString("checksumSha256").trim().lowercase().takeIf(String::isNotBlank),
+    )
+  }
+
+  private fun fetchGithubMobileUpdate(): UpdateManifest {
+    val releaseResponse = execute(
+      Request.Builder()
+        .url("https://api.github.com/repos/StreamDek/StreamDekMobile/releases/latest")
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "StreamDek/${BuildConfig.VERSION_NAME}")
+        .build(),
+    )
+    ensureOk(releaseResponse, "Unable to read the latest StreamDek release")
+    val release = releaseResponse.json
+    val tag = release.optString("tag_name")
+    val versionName = tag.removePrefix("v")
+    require(versionName.matches(Regex("\\d+\\.\\d+\\.\\d+"))) { "GitHub returned an invalid release version" }
+    val assets = release.optJSONArray("assets") ?: JSONArray()
+    val asset = (0 until assets.length())
+      .map { assets.getJSONObject(it) }
+      .firstOrNull { it.optString("name").endsWith(".apk", ignoreCase = true) }
+      ?: error("The latest StreamDek release does not contain an APK")
+
+    val propertiesUrl = "https://raw.githubusercontent.com/StreamDek/StreamDekMobile/$tag/android/version.properties"
+    val versionProperties = client.newCall(
+      Request.Builder().url(propertiesUrl).header("User-Agent", "StreamDek/${BuildConfig.VERSION_NAME}").build(),
+    ).execute().use { response ->
+      require(response.isSuccessful) { "Unable to read the release version metadata" }
+      response.body?.string().orEmpty()
+    }
+    val versionCode = versionProperties.lineSequence()
+      .firstOrNull { it.trim().startsWith("VERSION_CODE=") }
+      ?.substringAfter('=')?.trim()?.toIntOrNull()
+      ?: error("The release does not declare VERSION_CODE")
+    val digest = asset.optString("digest").removePrefix("sha256:").trim().lowercase().takeIf { it.length == 64 }
+    return UpdateManifest(
+      versionCode = versionCode,
+      versionName = versionName,
+      apkUrl = trustedUpdateUrl(asset.optString("browser_download_url")),
+      releaseNotes = release.optString("body"),
+      required = false,
+      minSupportedVersionCode = null,
+      requiredReason = null,
+      packageName = BuildConfig.APPLICATION_ID,
+      assetName = asset.optString("name").takeIf(String::isNotBlank),
+      fileSizeBytes = asset.optLong("size").takeIf { it > 0L },
+      checksumSha256 = digest,
+    )
+  }
   suspend fun downloadUpdate(release: UpdateManifest, destination: File, onProgress: (Long, Long?) -> Unit): Result<File> = withContext(Dispatchers.IO) {
     runCatching {
       destination.parentFile?.mkdirs()
@@ -1035,13 +1426,13 @@ class StreamDekApiClient(context: Context? = null) {
     return parsed.toString()
   }
 
-  suspend fun fetchStreams(session: AuthSession?, type: String, videoId: String): Result<List<AddonStream>> =
+  suspend fun fetchStreams(session: AuthSession?, type: String, videoId: String, profileId: String? = null): Result<List<AddonStream>> =
     withContext(Dispatchers.IO) {
       runCatching {
         val response = execute(
           Request.Builder()
             .url("$apiBaseUrl/addons/streams/$type/${encodeQuery(videoId)}")
-            .headers(authHeaders(session, includeContentType = false))
+            .headers(authHeaders(session, includeContentType = false, profileId = profileId))
             .build(),
         )
         ensureOk(response, "Failed to load streams")
@@ -1049,13 +1440,13 @@ class StreamDekApiClient(context: Context? = null) {
       }
     }
 
-  suspend fun fetchStreamsFromAddon(session: AuthSession?, addonId: String, type: String, videoId: String): Result<List<AddonStream>> =
+  suspend fun fetchStreamsFromAddon(session: AuthSession?, addonId: String, type: String, videoId: String, profileId: String? = null): Result<List<AddonStream>> =
     withContext(Dispatchers.IO) {
       runCatching {
         val response = execute(
           Request.Builder()
             .url("$apiBaseUrl/addons/streams/single/${encodeQuery(addonId)}/${encodeQuery(type)}/${encodeQuery(videoId)}")
-            .headers(authHeaders(session, includeContentType = false))
+            .headers(authHeaders(session, includeContentType = false, profileId = profileId))
             .build(),
         )
         ensureOk(response, "Failed to load streams")
@@ -1070,21 +1461,52 @@ class StreamDekApiClient(context: Context? = null) {
           ?: throw IllegalArgumentException("Addon transport URL is unavailable")
         val baseUrl = manifestUrl.substringBeforeLast("/manifest.json", missingDelimiterValue = manifestUrl.trimEnd('/'))
         val streamType = type.trim().lowercase()
+        // Path segments need proper percent-encoding (spaces -> %20), not form/query
+        // encoding (spaces -> "+"). Add-ons whose native ids contain spaces or other
+        // reserved characters (as CNCVerse Bridge's do) will 404/fall through to a
+        // default route on most HTTP routers if "+" is sent instead of "%20" -- the
+        // same class of bug that caused duplicate catalog rows for this add-on.
+        val streamUrl = "$baseUrl/stream/${Uri.encode(streamType)}/${Uri.encode(videoId)}.json?_sd=${System.currentTimeMillis()}"
         val request = Request.Builder()
-          .url("$baseUrl/stream/${encodeQuery(streamType)}/${encodeQuery(videoId)}.json?_sd=${System.currentTimeMillis()}")
+          .url(streamUrl)
           .header("User-Agent", "Stremio/4.4.168")
           .header("Cache-Control", "no-cache")
           .build()
         val response = execute(request, directStreamClient)
+        android.util.Log.d("StreamDekStreams", "GET $streamUrl -> ok=${response.ok} code=${response.statusCode}")
         ensureOk(response, "Failed to refresh addon stream")
-        parseStreamsResponse(response.json).map { stream ->
+        val streams = parseStreamsResponse(response.json).map { stream ->
           stream.copy(
             addonId = stream.addonId.ifBlank { addon.id },
             addonName = stream.addonName.ifBlank { addon.manifest.name },
           )
         }
+        android.util.Log.d("StreamDekStreams", "$streamUrl -> ${streams.size} streams; urls=${streams.mapNotNull { it.url }.take(3)}")
+        streams
       }
     }
+
+  suspend fun prepareHlsForPlayback(url: String, headers: Map<String, String>): Result<String> = withContext(Dispatchers.IO) {
+    runCatching {
+      val context = appContext ?: return@runCatching url
+      val path = runCatching { URI(url).path.orEmpty() }.getOrDefault("")
+      if (!path.endsWith(".m3u8", ignoreCase = true)) return@runCatching url
+      val requestBuilder = Request.Builder().url(url)
+      headers.forEach { (name, value) -> if (name.isNotBlank() && value.isNotBlank()) requestBuilder.header(name, value) }
+      val response = directStreamClient.newCall(requestBuilder.build()).execute()
+      response.use {
+        if (!it.isSuccessful) return@runCatching url
+        val original = it.body?.string().orEmpty()
+        val sanitized = stripHlsSubtitleRenditions(original, url)
+        if (sanitized == original) return@runCatching url
+        val directory = File(context.cacheDir, "playback-manifests").apply { mkdirs() }
+        val destination = File(directory, "${url.hashCode().toUInt().toString(16)}.m3u8")
+        destination.writeText(sanitized, Charsets.UTF_8)
+        android.util.Log.d("StreamDekHls", "Prepared subtitle-safe HLS master ${destination.name} from $url")
+        destination.absolutePath
+      }
+    }
+  }
 
   suspend fun fetchDebridAccounts(session: AuthSession): Result<List<DebridAccount>> = withContext(Dispatchers.IO) {
     runCatching {
@@ -1405,10 +1827,34 @@ class StreamDekApiClient(context: Context? = null) {
       }
     }
 
-  private fun fetchMediaList(path: String): List<MediaItem> {
-    val response = execute(Request.Builder().url("$apiBaseUrl$path").build())
+  private fun fetchMediaList(path: String, page: Int = 1): List<MediaItem> {
+    val pagedPath = if (page > 1) path + (if ("?" in path) "&" else "?") + "page=$page" else path
+    android.util.Log.d("StreamDekPaging", "fetchMediaList GET $apiBaseUrl$pagedPath")
+    val response = execute(Request.Builder().url("$apiBaseUrl$pagedPath").build())
     ensureOk(response, "Request failed")
-    return response.json.optJSONArray("results").toMediaItems()
+    val items = response.json.optJSONArray("results").toMediaItems()
+    android.util.Log.d("StreamDekPaging", "fetchMediaList $pagedPath -> ok=${response.ok} items=${items.size}")
+    return items
+  }
+
+  // The built-in home rows (New Movies, Trending, etc.) are single unpaginated TMDB requests —
+  // TMDB's discover/trending endpoints default to a 20-item page, which is exactly why these
+  // rows used to stop dead at 20 with no way to fetch more. Kept as its own map (rather than
+  // reusing fetchHomeSections' builtInRequests) since "streaming_networks" is a fixed small list
+  // of networks, not a paginable content catalog, and has no entry here.
+  private val builtInSectionPaths: Map<String, String> = mapOf(
+    "new_movies" to "/tmdb/discover?type=movie&sort_by=primary_release_date.desc",
+    "new_series" to "/tmdb/discover?type=tv&sort_by=first_air_date.desc",
+    "trending_movies" to "/tmdb/trending/movie",
+    "trending_series" to "/tmdb/trending/tv",
+  )
+
+  /** Pages in more items for a built-in (non-add-on) home row by TMDB page number. */
+  suspend fun fetchMoreBuiltInSection(sectionId: String, page: Int): Result<List<MediaItem>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val path = builtInSectionPaths[sectionId] ?: return@runCatching emptyList()
+      fetchMediaList(path, page)
+    }
   }
 
   private fun executeJson(
@@ -1827,6 +2273,99 @@ private fun parseMediaItem(item: JSONObject): MediaItem =
     updatedAt = parseFlexibleTimestamp(item, "updatedAt", "updated_at"),
   )
 
+internal fun parseLocalAddonMetaResponse(root: JSONObject, rawType: String, fallbackId: String): LocalAddonMeta {
+  val meta = root.optJSONObject("meta") ?: root.optJSONObject("data")?.optJSONObject("meta") ?: root
+  val videos = meta.optJSONArray("videos") ?: JSONArray()
+  val episodes = buildList {
+    for (index in 0 until videos.length()) {
+      val video = videos.optJSONObject(index) ?: continue
+      val streamId = video.optString("id").takeIf { it.isNotBlank() } ?: continue
+      val season = video.optInt("season").takeIf { it > 0 } ?: 1
+      val episode = video.optInt("episode").takeIf { it > 0 } ?: index + 1
+      add(
+        EpisodeItem(
+          id = streamId,
+          episodeNumber = episode,
+          seasonNumber = season,
+          name = video.optString("title").ifBlank { video.optString("name") }.ifBlank { "Episode $episode" },
+          overview = video.optString("overview").ifBlank { video.optString("description") },
+          still = video.optString("thumbnail").ifBlank { video.optString("poster") }.ifBlank { null },
+          runtime = video.optInt("runtime").takeIf { it > 0 },
+          airDate = video.optString("released").ifBlank { video.optString("releaseDate") }.ifBlank { null },
+          sourceStreamId = streamId,
+        ),
+      )
+    }
+  }
+  val declaredType = meta.optString("type").ifBlank { rawType }.trim().lowercase()
+  val inferredType = when {
+    episodes.isNotEmpty() -> "tv"
+    declaredType in setOf("series", "show", "tv") -> "tv"
+    declaredType == "movie" -> "movie"
+    else -> "movie"
+  }
+  val releaseInfo = meta.optString("releaseInfo").ifBlank { null }
+  val year = meta.opt("year")?.toString()?.takeIf { it.isNotBlank() && it != "null" }
+    ?: releaseInfo?.let { Regex("\\b(19|20)\\d{2}\\b").find(it)?.value }
+  val cast = when (val castValue = meta.opt("cast")) {
+    is JSONArray -> buildList {
+      for (index in 0 until castValue.length()) {
+        when (val value = castValue.opt(index)) {
+          is JSONObject -> value.optString("name").takeIf { it.isNotBlank() }?.let { name ->
+            add(CastMember(id = value.opt("id")?.toString().orEmpty(), name = name, character = value.optString("character").ifBlank { null }, photo = value.optString("photo").ifBlank { null }))
+          }
+          else -> value?.toString()?.takeIf { it.isNotBlank() }?.let { name -> add(CastMember(id = "addon-cast-$index", name = name, character = null, photo = null)) }
+        }
+      }
+    }
+    is String -> castValue.split(',').map(String::trim).filter(String::isNotBlank).mapIndexed { index, name ->
+      CastMember(id = "addon-cast-$index", name = name, character = null, photo = null)
+    }
+    else -> emptyList()
+  }
+  return LocalAddonMeta(
+    id = meta.optString("id").ifBlank { fallbackId },
+    imdbId = meta.optString("imdb_id").ifBlank { meta.optString("imdbId") }.ifBlank { null },
+    type = inferredType,
+    title = meta.optString("name").ifBlank { meta.optString("title") },
+    year = year,
+    releaseDate = meta.optString("released").ifBlank { meta.optString("releaseDate") }.ifBlank { null },
+    description = meta.optString("description").ifBlank { meta.optString("overview") },
+    poster = meta.optString("poster").ifBlank { null },
+    backdrop = meta.optString("background").ifBlank { meta.optString("backdrop") }.ifBlank { null },
+    genres = parseGenreNames(meta),
+    runtimeMinutes = meta.optInt("runtime").takeIf { it > 0 },
+    cast = cast,
+    episodes = episodes,
+  )
+}
+
+internal fun stripHlsSubtitleRenditions(manifest: String, baseUrl: String? = null): String {
+  val start = manifest.indexOf("#EXTM3U")
+  if (start < 0) return manifest
+  val playlist = manifest.substring(start)
+  val lines = playlist.lines()
+  val hasSubtitles = lines.any { it.trimStart().startsWith("#EXT-X-MEDIA:TYPE=SUBTITLES") }
+  if (!hasSubtitles) return manifest
+  val baseUri = baseUrl?.let { runCatching { URI(it) }.getOrNull() }
+  val uriAttribute = Regex("URI=\"([^\"]+)\"")
+  return lines.asSequence()
+    .filterNot { it.trimStart().startsWith("#EXT-X-MEDIA:TYPE=SUBTITLES") }
+    .map { line ->
+      val withoutSubtitles = line.replace(Regex(",?SUBTITLES=\"[^\"]+\""), "")
+      if (withoutSubtitles.isNotBlank() && !withoutSubtitles.startsWith("#")) {
+        baseUri?.resolve(withoutSubtitles)?.toString() ?: withoutSubtitles
+      } else {
+        uriAttribute.replace(withoutSubtitles) { match ->
+          val resolved = baseUri?.resolve(match.groupValues[1])?.toString() ?: match.groupValues[1]
+          "URI=\"$resolved\""
+        }
+      }
+    }
+    .joinToString("\n")
+    .let { if (playlist.endsWith("\n")) "$it\n" else it }
+}
+
 private fun parseFlexibleTimestamp(json: JSONObject, vararg keys: String): Long? {
   keys.forEach { key ->
     val raw = json.opt(key) ?: return@forEach
@@ -2084,6 +2623,21 @@ private fun parseAddonStringList(values: JSONArray?): List<String> = buildList {
   }
 }
 
+// Some catalogs (esp. "browse this network" style ones) declare a "genre" extra property
+// with a list of named sub-lists instead of one flat listing — without picking one of those
+// options, the addon has nothing to key its response on. See fetchLocalAddonCatalog / the
+// genre handling in fetchAddonCatalog below for where the first option gets used.
+private fun parseAddonGenreOptions(item: JSONObject): List<String> {
+  val extra = item.optJSONArray("extra") ?: return emptyList()
+  for (index in 0 until extra.length()) {
+    val entry = extra.optJSONObject(index) ?: continue
+    if (!entry.optString("name").equals("genre", ignoreCase = true)) continue
+    val options = entry.optJSONArray("options") ?: continue
+    return buildList { for (i in 0 until options.length()) options.optString(i).takeIf { it.isNotBlank() }?.let(::add) }
+  }
+  return emptyList()
+}
+
 private fun parseAddonCatalogs(values: JSONArray?): List<AddonCatalog> = buildList {
   val source = values ?: return@buildList
   for (index in 0 until source.length()) {
@@ -2095,6 +2649,7 @@ private fun parseAddonCatalogs(values: JSONArray?): List<AddonCatalog> = buildLi
         type = item.optString("type").trim(),
         id = id,
         name = item.optString("name").ifBlank { id },
+        genreOptions = parseAddonGenreOptions(item),
       ),
     )
   }
@@ -2107,15 +2662,29 @@ private fun mapHomeCatalogType(rawType: String): String? = when (rawType.trim().
   else -> null
 }
 
+// Home rows show only the catalog's own name \u2014 the provider/addon name and any
+// account email the addon embeds in its labels are stripped out.
+internal fun cleanAddonCatalogLabel(rawName: String, addonName: String = ""): String {
+  var label = rawName.trim()
+  // Drop email addresses and any bracketed/parenthesised wrapper left behind.
+  label = label.replace(Regex("""[\w.+-]+@[\w-]+\.[\w.]+"""), "")
+  // Note: ] and } must be escaped — Android's ICU regex engine rejects them bare.
+  label = label.replace(Regex("""\(\s*\)|\[\s*\]|\{\s*\}"""), "")
+  val addon = addonName.trim()
+  if (addon.isNotEmpty()) {
+    label = label.replace(Regex("(?i)(?<![\\w])" + Regex.escape(addon) + "(?![\\w])"), "")
+  }
+  // Tidy up separators left dangling by the removals above.
+  label = label.replace(Regex("""\s*[-\u2013\u2014|\u2022\u00b7:]\s*"""), " - ").trim()
+  label = label.trim(' ', '-', '\u2013', '\u2014', '|', '\u2022', '\u00b7', ':', ',')
+  return label.replace(Regex("""\s{2,}"""), " ").trim()
+}
+
 private fun buildAddonSectionTitle(addonName: String, catalogName: String?, differentiator: String? = null): String {
   val addon = addonName.trim()
-  val catalog = catalogName.orEmpty().trim()
-  val base = when {
-    catalog.isBlank() -> addon
-    addon.isBlank() -> catalog
-    catalog.contains(addon, ignoreCase = true) -> catalog
-    else -> "$addon - $catalog"
-  }
+  val catalog = cleanAddonCatalogLabel(catalogName.orEmpty(), addon)
+  // Fall back to the addon name only when nothing else identifies the row.
+  val base = catalog.ifBlank { cleanAddonCatalogLabel(addon).ifBlank { addon } }
   return if (differentiator.isNullOrBlank()) base else "$base \u2022 $differentiator"
 }
 

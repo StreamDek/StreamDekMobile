@@ -46,6 +46,67 @@ class M3uPlaylistManagerTest {
     assertEquals("movie", items[1].type)
   }
 
+  @Test fun capturesClearKeyDrmWhenKodipropPrecedesExtinf() {
+    // Real playlists (e.g. Tamil IPTV lists) put #KODIPROP directives before the #EXTINF line
+    // they belong to, not after.
+    val playlist = """
+      #EXTM3U
+      #KODIPROP:inputstream.adaptive.license_type=clearkey
+      #KODIPROP:inputstream.adaptive.license_key=3891557F1CB14DEDB7545BF52499D748:FB662F742E5F5E0C61A7C1C66D2B019A
+      #EXTINF:-1 group-title="Entertainment",Sun TV HD
+      https://livestream.test/SunTVHDB_IN_index.mpd
+    """.trimIndent()
+
+    val items = parseM3u(playlist, "m3u:drm")
+
+    assertEquals(1, items.size)
+    assertEquals("clearkey", items[0].drmLicenseType)
+    assertEquals(
+      "fb662f742e5f5e0c61a7c1c66d2b019a",
+      items[0].drmClearKeys["3891557f1cb14dedb7545bf52499d748"],
+    )
+  }
+
+  @Test fun capturesClearKeyDrmWhenKodipropFollowsExtinf() {
+    val playlist = """
+      #EXTM3U
+      #EXTINF:-1 group-title="Entertainment",Star Vijay HD
+      #KODIPROP:inputstream.adaptive.license_type=clearkey
+      #KODIPROP:inputstream.adaptive.license_key=25dd000e5523540cbd82ae7957fef7d7:f1d145d84b648242ef0b3ad2cac7eeb8
+      #EXTVLCOPT:http-user-agent=plaYtv/7.1.3
+      https://stream.test/jtv/Star_Vijay_HD.mpd
+    """.trimIndent()
+
+    val items = parseM3u(playlist, "m3u:drm")
+
+    assertEquals(1, items.size)
+    assertEquals("clearkey", items[0].drmLicenseType)
+    assertEquals("f1d145d84b648242ef0b3ad2cac7eeb8", items[0].drmClearKeys["25dd000e5523540cbd82ae7957fef7d7"])
+    assertEquals("plaYtv/7.1.3", items[0].requestHeaders["User-Agent"])
+  }
+
+  @Test fun parsesMultipleClearKeyPairsAndDoesNotLeakBetweenEntries() {
+    val playlist = """
+      #EXTM3U
+      #KODIPROP:inputstream.adaptive.license_type=clearkey
+      #KODIPROP:inputstream.adaptive.license_key=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:11111111111111111111111111111111&bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:22222222222222222222222222222222
+      #EXTINF:-1 group-title="Entertainment",Multi Key Channel
+      https://stream.test/multikey.mpd
+      #EXTINF:-1 group-title="Entertainment",Plain Channel
+      https://stream.test/plain.mpd
+    """.trimIndent()
+
+    val items = parseM3u(playlist, "m3u:drm")
+
+    assertEquals(2, items.size)
+    assertEquals(2, items[0].drmClearKeys.size)
+    assertEquals("11111111111111111111111111111111", items[0].drmClearKeys["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"])
+    assertEquals("22222222222222222222222222222222", items[0].drmClearKeys["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"])
+    // The second entry has no KODIPROP of its own - it must not inherit the first entry's keys.
+    assertEquals(null, items[1].drmLicenseType)
+    assertTrue(items[1].drmClearKeys.isEmpty())
+  }
+
   @Test fun reportsIncrementalProgressForLargePlaylists() {
     val playlist = buildString {
       appendLine("#EXTM3U")

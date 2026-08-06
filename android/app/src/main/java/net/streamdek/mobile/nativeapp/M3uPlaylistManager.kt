@@ -263,9 +263,23 @@ private fun isM3uVodEntry(title: String, group: String?, declaredType: String?, 
     "/movie/" in path || "/series/" in path
 }
 
+/** Parses a Kodi-style `#KODIPROP:inputstream.adaptive.license_key=` value into key-id -> key
+ * pairs. Real playlists hex-encode both halves; multiple pairs for multi-key content are
+ * separated by `&` (e.g. `keyid1:key1&keyid2:key2`), matching inputstream.adaptive's convention. */
+private fun parseClearKeyPairs(value: String): Map<String, String> =
+  value.split('&').mapNotNull { pair ->
+    val separator = pair.indexOf(':')
+    if (separator <= 0) return@mapNotNull null
+    val keyId = pair.substring(0, separator).trim().lowercase()
+    val key = pair.substring(separator + 1).trim().lowercase()
+    if (keyId.isBlank() || key.isBlank()) null else keyId to key
+  }.toMap()
+
 /** Parses live and VOD entries from an extended M3U playlist. Finite/VOD entries are exposed as
  * directly playable movie items so they use the normal detail/player flow without being mistaken
- * for live TV. Common `url|User-Agent=...&Referer=...` headers are preserved for IPTV providers. */
+ * for live TV. Common `url|User-Agent=...&Referer=...` headers are preserved for IPTV providers,
+ * and `#KODIPROP:inputstream.adaptive.license_type`/`license_key` ClearKey DRM credentials
+ * (common on Indian/Tamil IPTV playlists) are captured for Media3 playback. */
 internal fun parseM3u(
   body: String,
   sourceId: String,
@@ -280,6 +294,8 @@ internal fun parseM3u(
   var pendingMediaType: String? = null
   var pendingDuration: Double? = null
   val pendingHeaders = linkedMapOf<String, String>()
+  var pendingDrmLicenseType: String? = null
+  val pendingDrmClearKeys = linkedMapOf<String, String>()
   var index = 0
   val totalLines = body.lineSequence().count().coerceAtLeast(1)
   var processedLines = 0
@@ -300,6 +316,13 @@ internal fun parseM3u(
       line.startsWith("#EXTVLCOPT:http-user-agent=", ignoreCase = true) -> pendingHeaders["User-Agent"] = line.substringAfter('=').trim()
       line.startsWith("#EXTVLCOPT:http-referrer=", ignoreCase = true) || line.startsWith("#EXTVLCOPT:http-referer=", ignoreCase = true) -> pendingHeaders["Referer"] = line.substringAfter('=').trim()
       line.startsWith("#EXTVLCOPT:http-origin=", ignoreCase = true) -> pendingHeaders["Origin"] = line.substringAfter('=').trim()
+      // KODIPROP directives can precede or follow their entry's #EXTINF line (both conventions
+      // appear in the wild), so unlike the #EXTINF-scoped fields above they're only cleared once
+      // an entry is actually emitted below - never on #EXTINF itself.
+      line.startsWith("#KODIPROP:inputstream.adaptive.license_type=", ignoreCase = true) ->
+        pendingDrmLicenseType = line.substringAfter('=').trim().takeIf { it.isNotBlank() }
+      line.startsWith("#KODIPROP:inputstream.adaptive.license_key=", ignoreCase = true) ->
+        pendingDrmClearKeys.putAll(parseClearKeyPairs(line.substringAfter('=').trim()))
       line.startsWith("#") -> Unit
       else -> {
         val (streamUrl, inlineHeaders) = parseInlineM3uHeaders(line)
@@ -325,6 +348,8 @@ internal fun parseM3u(
             sourceCatalogName = pendingGroup ?: if (isVod) "$sourceName VOD" else sourceName,
             directStreamUrl = streamUrl,
             requestHeaders = pendingHeaders + inlineHeaders,
+            drmLicenseType = pendingDrmLicenseType,
+            drmClearKeys = pendingDrmClearKeys.toMap(),
           ),
         )
         pendingTitle = null
@@ -333,6 +358,8 @@ internal fun parseM3u(
         pendingMediaType = null
         pendingDuration = null
         pendingHeaders.clear()
+        pendingDrmLicenseType = null
+        pendingDrmClearKeys.clear()
       }
     }
     if (processedLines % 1_000 == 0) onProgress(items.size, processedLines, totalLines)

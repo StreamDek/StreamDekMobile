@@ -4,38 +4,27 @@ import android.content.Context
 import android.content.res.AssetManager
 import android.content.res.Resources
 import android.util.Log
+import com.lagradost.cloudstream3.APIHolder
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.plugins.BasePlugin
+import com.lagradost.cloudstream3.plugins.Plugin
 import dalvik.system.PathClassLoader
 import org.json.JSONObject
 import java.io.File
+import java.lang.ref.WeakReference
 
 /**
  * Loads compiled CloudStream provider plugins (`.cs3` files) on-device.
  *
- * FIRST VERSION — READ BEFORE BUILDING.
+ * A `.cs3` is a zip holding `manifest.json` plus a `classes.dex` compiled against the real
+ * `com.lagradost.cloudstream3` API. StreamDek ships that API — see the
+ * `libs/cloudstream-provider-runtime.jar` note in app/build.gradle — so a plugin's classes
+ * resolve their superclasses (Plugin/BasePlugin/MainAPI/ExtractorApi) against the same classes
+ * this file references, and the loaded provider ends up in [APIHolder.allProviders] exactly the
+ * way it would inside CloudStream itself.
  *
- * This is ported from CloudStream's own open-source loader
- * (recloudstream/cloudstream, `app/src/main/java/com/lagradost/cloudstream3/plugins/PluginManager.kt`),
- * trimmed of the pieces that only make sense inside the real CloudStream app itself
- * (its notification channel, its own `R` string/drawable resources, its settings-persistence
- * keys). The `.cs3` loading mechanism below — PathClassLoader + manifest.json + reflection
- * instantiation — is a faithful port and should behave the same way CloudStream's own loader
- * does, PROVIDED the `com.lagradost.cloudstream3` core classes a plugin's compiled bytecode
- * references (`Plugin`, `BasePlugin`, `MainAPI`, `TvType`, `ExtractorLink`, ...) are actually
- * present on StreamDek's own runtime classpath. That means StreamDek's `build.gradle.kts` needs
- * a real runtime dependency on the cloudstream3 core library — see the comment added there.
- * The exact Maven coordinates and API-compatibility version could not be verified in the
- * environment this was written in (no Android SDK, no Maven network access), so:
- *
- *   1. Confirm the dependency resolves and the versions/apiVersion your plugin repo expects
- *      line up with recloudstream/cloudstream's current plugin-development docs.
- *   2. Expect the first local build to surface dependency version conflicts against
- *      StreamDek's existing OkHttp/Jsoup/coroutines versions — resolve those the normal
- *      Gradle way (forced versions / exclusions) once you see the actual errors.
- *   3. `CloudStreamStreamBridge` (a separate file) turns a loaded plugin's search/loadLinks
- *      results into StreamDek's own stream model using reflection rather than hard-coded
- *      field names, specifically because `ExtractorLink`'s constructor has changed shape
- *      across CloudStream versions — that's the part most likely to need a follow-up pass
- *      once this is building against a real, pinned cloudstream3 version.
+ * Loading is deliberately keyed on the plugin's file path so the same `.cs3` is never
+ * instantiated twice, and unloading removes whatever the plugin registered.
  */
 object CloudStreamPluginLoader {
   private const val TAG = "CloudStreamPluginLoader"
@@ -44,26 +33,29 @@ object CloudStreamPluginLoader {
     val filePath: String,
     val name: String,
     val version: Int,
-    val instance: Any,
+    val instance: BasePlugin,
+    /** The providers this plugin registered while loading. */
+    val providers: List<MainAPI>,
   )
 
-  // Maps plugin file path -> loaded plugin, so the same .cs3 is never instantiated twice.
   private val loaded = LinkedHashMap<String, LoadedCsPlugin>()
 
-  fun loadedPlugins(): List<LoadedCsPlugin> = loaded.values.toList()
+  fun loadedPlugins(): List<LoadedCsPlugin> = synchronized(loaded) { loaded.values.toList() }
 
-  fun isLoaded(filePath: String): Boolean = loaded.containsKey(filePath)
+  fun isLoaded(filePath: String): Boolean = synchronized(loaded) { loaded.containsKey(filePath) }
 
-  /**
-   * Loads a single `.cs3` file. Returns the loaded plugin on success, or a failure describing
-   * what went wrong (missing manifest, class not found, incompatible cloudstream3 version, a
-   * `ClassNotFoundException` for `com.lagradost.cloudstream3.*` meaning the runtime dependency
-   * above is missing or the wrong version, etc).
-   */
+  fun providersFor(filePath: String): List<MainAPI> = synchronized(loaded) { loaded[filePath]?.providers.orEmpty() }
+
+  /** Every provider currently registered by a loaded plugin, in load order. */
+  fun allProviders(): List<MainAPI> = loadedPlugins().flatMap { it.providers }
+
   fun load(context: Context, file: File): Result<LoadedCsPlugin> = runCatching {
     val filePath = file.absolutePath
-    loaded[filePath]?.let { return@runCatching it }
+    synchronized(loaded) { loaded[filePath] }?.let { return@runCatching it }
 
+    CloudStreamRuntime.initialize(context)
+
+    // Android 14+ refuses to load code the app itself wrote unless the file is read-only.
     runCatching { if (!file.setReadOnly()) Log.w(TAG, "Failed to set ${file.name} read-only") }
 
     val loader = PathClassLoader(filePath, context.classLoader)
@@ -78,51 +70,69 @@ object CloudStreamPluginLoader {
     }
     val requiresResources = manifestJson.optBoolean("requiresResources", false)
 
-    val pluginClass = loader.loadClass(pluginClassName)
-    val instance = pluginClass.getDeclaredConstructor().newInstance()
+    val instance = loader.loadClass(pluginClassName).getDeclaredConstructor().newInstance() as? BasePlugin
+      ?: throw IllegalStateException("$pluginClassName is not a CloudStream plugin.")
+    instance.filename = filePath
 
-    // BasePlugin.filename — set reflectively so this file doesn't need a compile-time
-    // reference to the cloudstream3 types (keeps this loader buildable even before the
-    // dependency below is wired up, so install/list/remove UI can be reviewed independently).
-    runCatching {
-      val filenameField = instance.javaClass.methods.firstOrNull { it.name == "setFilename" && it.parameterCount == 1 }
-      filenameField?.invoke(instance, filePath)
-    }
-
-    if (requiresResources) {
+    if (requiresResources && instance is Plugin) {
       @Suppress("DEPRECATION")
       runCatching {
         val assets = AssetManager::class.java.getDeclaredConstructor().newInstance()
-        val addAssetPath = AssetManager::class.java.getMethod("addAssetPath", String::class.java)
-        addAssetPath.invoke(assets, filePath)
-        // Deprecated constructor, but it's what CloudStream's own PluginManager uses for this
-        // exact purpose (loading a plugin's bundled resources) — there's no non-deprecated
-        // replacement that fits this use case.
-        val resources = Resources(assets, context.resources.displayMetrics, context.resources.configuration)
-        val setResources = instance.javaClass.methods.firstOrNull { it.name == "setResources" && it.parameterCount == 1 }
-        setResources?.invoke(instance, resources)
+        AssetManager::class.java.getMethod("addAssetPath", String::class.java).invoke(assets, filePath)
+        // Deprecated constructor, but it is what CloudStream's own PluginManager uses for this
+        // exact purpose (loading a plugin's bundled resources) — there is no replacement that fits.
+        instance.resources = Resources(assets, context.resources.displayMetrics, context.resources.configuration)
       }.onFailure { Log.w(TAG, "Failed to attach plugin resources for $name", it) }
     }
 
-    // Plugin.load(context) vs BasePlugin.load() — call whichever overload exists.
-    val loadWithContext = instance.javaClass.methods.firstOrNull { it.name == "load" && it.parameterCount == 1 }
-    val loadNoArgs = instance.javaClass.methods.firstOrNull { it.name == "load" && it.parameterCount == 0 }
-    when {
-      loadWithContext != null -> loadWithContext.invoke(instance, context)
-      loadNoArgs != null -> loadNoArgs.invoke(instance)
-      else -> throw IllegalStateException("$pluginClassName has no load() entry point — is the cloudstream3 dependency the right version?")
-    }
+    // registerMainAPI() appends to the shared APIHolder list (and stamps each provider with the
+    // plugin's filename), so diffing that list around load() is how we find out which providers
+    // belong to this particular plugin.
+    val before = APIHolder.allProviders.toList()
+    if (instance is Plugin) instance.load(context) else instance.load()
+    val registered = APIHolder.allProviders.toList().filter { candidate -> before.none { it === candidate } }
 
-    val record = LoadedCsPlugin(filePath, name, version, instance)
-    loaded[filePath] = record
+    val record = LoadedCsPlugin(filePath, name, version, instance, registered)
+    synchronized(loaded) { loaded[filePath] = record }
+    Log.i(TAG, "Loaded $name (v$version) with ${registered.size} provider(s): ${registered.joinToString { it.name }}")
     record
   }.onFailure { Log.e(TAG, "Failed to load CloudStream plugin ${file.name}", it) }
 
   fun unload(filePath: String) {
-    val record = loaded.remove(filePath) ?: return
+    val record = synchronized(loaded) { loaded.remove(filePath) } ?: return
+    runCatching { record.instance.beforeUnload() }
+      .onFailure { Log.w(TAG, "beforeUnload failed for ${record.name}", it) }
     runCatching {
-      val beforeUnload = record.instance.javaClass.methods.firstOrNull { it.name == "beforeUnload" && it.parameterCount == 0 }
-      beforeUnload?.invoke(record.instance)
-    }.onFailure { Log.w(TAG, "beforeUnload failed for ${record.name}", it) }
+      APIHolder.allProviders.removeAll { provider -> record.providers.any { it === provider } }
+    }.onFailure { Log.w(TAG, "Failed to unregister providers for ${record.name}", it) }
+  }
+}
+
+/**
+ * One-time process-wide setup the CloudStream runtime expects the host app to have done before
+ * any provider code runs. Inside CloudStream this happens in its Application.onCreate; here it is
+ * driven from plugin loading (and from StreamDek's own Application) instead.
+ *
+ * The only piece that genuinely has to be injected is the application Context: providers reach it
+ * through `CloudStreamApp.context` for `getKey`/`setKey`-backed settings. `MainAPI.settingsForProvider`
+ * already defaults to a usable value in the runtime's own static initialiser.
+ */
+object CloudStreamRuntime {
+  private const val TAG = "CloudStreamRuntime"
+
+  @Volatile private var initialized = false
+
+  fun initialize(context: Context) {
+    if (initialized) return
+    synchronized(this) {
+      if (initialized) return
+      runCatching {
+        // _context is private with only a synthetic accessor, so reflection is the honest way in.
+        val field = com.lagradost.cloudstream3.CloudStreamApp::class.java.getDeclaredField("_context")
+        field.isAccessible = true
+        field.set(null, WeakReference(context.applicationContext))
+      }.onFailure { Log.w(TAG, "Could not attach an application context to the CloudStream runtime", it) }
+      initialized = true
+    }
   }
 }

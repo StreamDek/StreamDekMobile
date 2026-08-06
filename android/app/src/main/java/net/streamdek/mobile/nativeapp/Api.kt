@@ -200,6 +200,13 @@ class FavouriteChannelStore(context: Context) {
           add(parseFavouriteChannel(item))
         }
       }
+        // Channel id is the identity everything else keys on — the star, the drawer and the
+        // favourite badges all ask "is any entry this id". The same channel can nonetheless have
+        // been stored more than once with different source metadata (a card and the player
+        // disagree about which add-on it came from), and a duplicate is invisible until it makes
+        // removing a favourite take as many taps as there are copies. Collapse on read so a
+        // stored list can only ever hold one entry per channel.
+        .distinctBy { it.id }
     }.getOrDefault(emptyList())
   }
 
@@ -1153,6 +1160,8 @@ class StreamDekApiClient(context: Context? = null) {
         .put("continueWatchingStyle", preferences.continueWatchingStyle)
         .put("liveLandscapeCards", preferences.liveLandscapeCards)
         .put("liveFavouriteDrawerCards", preferences.liveFavouriteDrawerCards)
+        .put("liveCategoriesEnabled", preferences.liveCategoriesEnabled)
+        .put("primarySyncService", preferences.primarySyncService)
         .put("showHeroSynopsis", preferences.showHeroSynopsis)
         .put("vividAmbient", preferences.vividAmbient)
         .put("ambientTintPercent", preferences.ambientTintPercent)
@@ -1294,6 +1303,8 @@ class StreamDekApiClient(context: Context? = null) {
         continueWatchingStyle = optionalString(home, "continueWatchingStyle"),
         liveLandscapeCards = optionalBoolean(home, "liveLandscapeCards"),
         liveFavouriteDrawerCards = optionalBoolean(home, "liveFavouriteDrawerCards"),
+        liveCategoriesEnabled = optionalBoolean(home, "liveCategoriesEnabled"),
+        primarySyncService = optionalString(home, "primarySyncService"),
         showHeroSynopsis = optionalBoolean(home, "showHeroSynopsis"),
         vividAmbient = optionalBoolean(home, "vividAmbient"),
         ambientTintPercent = optionalInt(home, "ambientTintPercent"),
@@ -1707,7 +1718,7 @@ class StreamDekApiClient(context: Context? = null) {
         .put("title", item.title)
       item.year?.toIntOrNull()?.let { entry.put("year", it) }
       entry.put("ids", JSONObject().put("tmdb", item.id.toIntOrNull()))
-      val payload = if (item.type == "tv") {
+      val payload = if (item.type.trim().lowercase() in setOf("tv", "series", "show")) {
         JSONObject().put("movies", JSONArray()).put("shows", JSONArray().put(entry))
       } else {
         JSONObject().put("movies", JSONArray().put(entry)).put("shows", JSONArray())
@@ -1717,6 +1728,132 @@ class StreamDekApiClient(context: Context? = null) {
       ensureOk(response, "Failed to update watchlist")
     }
   }
+
+  // ---------------------------------------------------------------------------------------------
+  // Additional tracking services (SIMKL, MDBList)
+  //
+  // These mirror the Trakt endpoints one for one, under the service's own path prefix, and carry
+  // the same profile header — a connection belongs to a profile, not to the account. SIMKL uses
+  // the device-code flow Trakt uses; MDBList authenticates with a user-supplied API key.
+  // ---------------------------------------------------------------------------------------------
+
+  suspend fun fetchSyncServiceStatus(session: AuthSession, profileId: String, service: String): Result<SyncServiceStatus> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = execute(
+          Request.Builder()
+            .url("$apiBaseUrl/${encodeQuery(service)}/auth/status")
+            .headers(authHeaders(session, profileId = profileId))
+            .build(),
+        )
+        ensureOk(response, "Failed to load $service status")
+        SyncServiceStatus(
+          connected = response.json.optBoolean("connected"),
+          username = response.json.optString("username").ifBlank { null },
+          // Older backends predate this field; assume available so they behave as before.
+          available = response.json.optBoolean("available", true),
+          checked = true,
+        )
+      }
+    }
+
+  suspend fun requestSyncServiceDeviceCode(service: String): Result<DeviceCodeInfo> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = executeJson("/${encodeQuery(service)}/auth/device/code", JSONObject())
+      ensureOk(response, "Failed to start $service authentication")
+      DeviceCodeInfo(
+        deviceCode = response.json.optString("device_code"),
+        userCode = response.json.optString("user_code"),
+        verificationUrl = response.json.optString("verification_url"),
+        expiresIn = response.json.optInt("expires_in"),
+        interval = response.json.optInt("interval"),
+      )
+    }
+  }
+
+  suspend fun pollSyncServiceDeviceCode(
+    session: AuthSession,
+    profileId: String,
+    service: String,
+    deviceCode: String,
+  ): Result<String> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = executeJson(
+        "/${encodeQuery(service)}/auth/device/poll",
+        JSONObject().put("device_code", deviceCode),
+        session = session,
+        profileId = profileId,
+      )
+      response.json.optString("status").ifBlank { "error" }
+    }
+  }
+
+  /** Key-based connect, used by MDBList. The key is stored server-side against the profile. */
+  suspend fun connectSyncServiceApiKey(
+    session: AuthSession,
+    profileId: String,
+    service: String,
+    apiKey: String,
+  ): Result<SyncServiceStatus> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = executeJson(
+        "/${encodeQuery(service)}/auth/apikey",
+        JSONObject().put("api_key", apiKey).put("apiKey", apiKey),
+        session = session,
+        profileId = profileId,
+      )
+      ensureOk(response, "Failed to connect $service")
+      SyncServiceStatus(
+        connected = response.json.optBoolean("connected", true),
+        username = response.json.optString("username").ifBlank { null },
+      )
+    }
+  }
+
+  suspend fun disconnectSyncService(session: AuthSession, profileId: String, service: String): Result<Unit> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = execute(
+          Request.Builder()
+            .url("$apiBaseUrl/${encodeQuery(service)}/auth/disconnect")
+            .delete("{}".toRequestBody(jsonMediaType))
+            .headers(authHeaders(session, profileId = profileId))
+            .build(),
+        )
+        ensureOk(response, "Failed to disconnect $service")
+      }
+    }
+
+  /** Same payload shape as [syncWatchlist] so one backend contract covers every service. */
+  suspend fun syncServiceWatchlist(
+    session: AuthSession,
+    profileId: String,
+    service: String,
+    item: MediaItem,
+    remove: Boolean,
+  ): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val entry = JSONObject().put("title", item.title)
+      item.year?.toIntOrNull()?.let { entry.put("year", it) }
+      entry.put("ids", JSONObject().put("tmdb", item.id.toIntOrNull()))
+      val payload = if (item.type.trim().lowercase() in setOf("tv", "series", "show")) {
+        JSONObject().put("movies", JSONArray()).put("shows", JSONArray().put(entry))
+      } else {
+        JSONObject().put("movies", JSONArray().put(entry)).put("shows", JSONArray())
+      }
+      val endpoint = if (remove) "/${encodeQuery(service)}/sync/watchlist/remove" else "/${encodeQuery(service)}/sync/watchlist/add"
+      val response = executeJson(endpoint, payload, session = session, profileId = profileId)
+      ensureOk(response, "Failed to update $service watchlist")
+    }
+  }
+
+  /** Watchlist for a non-Trakt service, used when a profile makes it the primary source. */
+  suspend fun fetchSyncServiceWatchlist(session: AuthSession, profileId: String, service: String): Result<List<TraktItem>> =
+    traktList(session, profileId, "/${encodeQuery(service)}/sync/watchlist/enriched")
+
+  /** Continue Watching for a non-Trakt service. */
+  suspend fun fetchSyncServicePlayback(session: AuthSession, profileId: String, service: String): Result<List<TraktItem>> =
+    traktList(session, profileId, "/${encodeQuery(service)}/sync/playback")
 
   private suspend fun traktList(session: AuthSession, profileId: String, path: String): Result<List<TraktItem>> =
     withContext(Dispatchers.IO) {

@@ -18,8 +18,34 @@ import androidx.media3.exoplayer.scheduler.Scheduler
 import java.io.File
 import java.util.concurrent.Executor
 import net.streamdek.mobile.R
+import org.json.JSONObject
 
 enum class DownloadState { QUEUED, DOWNLOADING, PAUSED, COMPLETED, FAILED, REMOVING }
+
+/**
+ * Which title a download is actually of.
+ *
+ * A download is keyed by its stream URL, which says nothing about the media. Without this, a
+ * downloaded title played back had no id, artwork or episode numbers to record against, so its
+ * Continue Watching entry was keyed on the download hash: no poster, and tapping it resolved that
+ * hash as a catalogue id and opened whatever it happened to match.
+ */
+data class DownloadMedia(
+  val mediaId: String,
+  val mediaType: String,
+  val title: String,
+  val year: String? = null,
+  val poster: String? = null,
+  val backdrop: String? = null,
+  val titleLogo: String? = null,
+  val seasonNumber: Int? = null,
+  val episodeNumber: Int? = null,
+  val episodeTitle: String? = null,
+  val runtimeMinutes: Int? = null,
+) {
+  /** True once the download carries a real catalogue id, rather than a legacy title-only record. */
+  val isResolvable: Boolean get() = mediaId.isNotBlank()
+}
 
 /** Plain, non-experimental view of a Media3 [Download] - keeps `@UnstableApi` Media3 offline
  * types out of [AppUiState] and the rest of the app so the opt-in doesn't have to spread
@@ -31,6 +57,7 @@ data class DownloadEntry(
   val state: DownloadState,
   val percentDownloaded: Float,
   val startTimeMs: Long,
+  val media: DownloadMedia,
 )
 
 /**
@@ -74,10 +101,10 @@ object StreamDekDownloads {
 
   fun currentDownloadEntries(): List<DownloadEntry> = currentDownloads().map { it.toEntry() }
 
-  fun startDownload(id: String, url: String, title: String, mimeType: String?) {
+  fun startDownload(id: String, url: String, media: DownloadMedia, mimeType: String?) {
     val request = DownloadRequest.Builder(id, android.net.Uri.parse(url))
       .apply { if (!mimeType.isNullOrBlank()) setMimeType(mimeType) }
-      .setData(title.toByteArray(Charsets.UTF_8))
+      .setData(encodeMedia(media).toByteArray(Charsets.UTF_8))
       .build()
     DownloadService.sendAddDownload(appContext, StreamDekDownloadService::class.java, request, false)
   }
@@ -86,11 +113,29 @@ object StreamDekDownloads {
     DownloadService.sendRemoveDownload(appContext, StreamDekDownloadService::class.java, id, false)
   }
 
-  /** Title stashed in [DownloadRequest.data] at download time - Media3's request model has
-   * no title field of its own, and this is exactly what it exposes `data` for. */
-  private fun titleFor(download: Download): String =
-    download.request.data.takeIf { it.isNotEmpty() }?.let { String(it, Charsets.UTF_8) }
-      ?: download.request.uri.lastPathSegment.orEmpty().ifBlank { "Download" }
+  /**
+   * The media record is stashed in [DownloadRequest.data] at download time - Media3's request
+   * model has no fields of its own for any of this, and `data` is exactly what it exposes for it.
+   */
+  private fun encodeMedia(media: DownloadMedia): String = JSONObject()
+    .put("v", MEDIA_DATA_VERSION)
+    .put("mediaId", media.mediaId)
+    .put("mediaType", media.mediaType)
+    .put("title", media.title)
+    .put("year", media.year)
+    .put("poster", media.poster)
+    .put("backdrop", media.backdrop)
+    .put("titleLogo", media.titleLogo)
+    .put("seasonNumber", media.seasonNumber)
+    .put("episodeNumber", media.episodeNumber)
+    .put("episodeTitle", media.episodeTitle)
+    .put("runtimeMinutes", media.runtimeMinutes)
+    .toString()
+
+  private fun decodeMedia(download: Download): DownloadMedia = parseDownloadMedia(
+    raw = download.request.data.takeIf { it.isNotEmpty() }?.let { String(it, Charsets.UTF_8) },
+    fallbackTitle = download.request.uri.lastPathSegment.orEmpty().ifBlank { "Download" },
+  )
 
   /** Wraps [upstream] with the shared download cache in read-only mode: a URL that was
    * previously downloaded plays back from disk with no network needed, but ordinary streaming
@@ -106,20 +151,58 @@ object StreamDekDownloads {
       .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
   }
 
-  private fun Download.toEntry(): DownloadEntry = DownloadEntry(
-    id = request.id,
-    title = titleFor(this),
-    url = request.uri.toString(),
-    state = when (state) {
-      Download.STATE_COMPLETED -> DownloadState.COMPLETED
-      Download.STATE_FAILED -> DownloadState.FAILED
-      Download.STATE_REMOVING -> DownloadState.REMOVING
-      Download.STATE_STOPPED -> DownloadState.PAUSED
-      Download.STATE_QUEUED, Download.STATE_RESTARTING -> DownloadState.QUEUED
-      else -> DownloadState.DOWNLOADING
-    },
-    percentDownloaded = percentDownloaded,
-    startTimeMs = startTimeMs,
+  private fun Download.toEntry(): DownloadEntry {
+    val media = decodeMedia(this)
+    return DownloadEntry(
+      id = request.id,
+      title = media.title,
+      url = request.uri.toString(),
+      state = when (state) {
+        Download.STATE_COMPLETED -> DownloadState.COMPLETED
+        Download.STATE_FAILED -> DownloadState.FAILED
+        Download.STATE_REMOVING -> DownloadState.REMOVING
+        Download.STATE_STOPPED -> DownloadState.PAUSED
+        Download.STATE_QUEUED, Download.STATE_RESTARTING -> DownloadState.QUEUED
+        else -> DownloadState.DOWNLOADING
+      },
+      percentDownloaded = percentDownloaded,
+      startTimeMs = startTimeMs,
+      media = media,
+    )
+  }
+
+  private const val MEDIA_DATA_VERSION = 1
+}
+
+/**
+ * Reads the media record out of a download's stored `data`.
+ *
+ * Downloads saved before that record existed hold a bare title string there. Those still list and
+ * play; they just have no catalogue id, which [DownloadMedia.isResolvable] reports so callers
+ * degrade to playing the file instead of looking the id up and opening an unrelated title.
+ */
+internal fun parseDownloadMedia(raw: String?, fallbackTitle: String): DownloadMedia {
+  if (raw.isNullOrBlank()) return DownloadMedia(mediaId = "", mediaType = "movie", title = fallbackTitle)
+
+  val json = runCatching { JSONObject(raw) }.getOrNull()
+    ?: return DownloadMedia(mediaId = "", mediaType = "movie", title = raw)
+
+  fun string(key: String): String? =
+    if (json.has(key) && !json.isNull(key)) json.optString(key).takeIf { it.isNotBlank() } else null
+  fun int(key: String): Int? = if (json.has(key) && !json.isNull(key)) json.optInt(key) else null
+
+  return DownloadMedia(
+    mediaId = string("mediaId").orEmpty(),
+    mediaType = string("mediaType") ?: "movie",
+    title = string("title") ?: fallbackTitle,
+    year = string("year"),
+    poster = string("poster"),
+    backdrop = string("backdrop"),
+    titleLogo = string("titleLogo"),
+    seasonNumber = int("seasonNumber"),
+    episodeNumber = int("episodeNumber"),
+    episodeTitle = string("episodeTitle"),
+    runtimeMinutes = int("runtimeMinutes"),
   )
 }
 

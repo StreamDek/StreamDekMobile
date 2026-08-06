@@ -168,18 +168,38 @@ dependencies {
     implementation("com.frostwire:jlibtorrent-android-arm:1.2.0.18")
     implementation("com.frostwire:jlibtorrent-android-arm64:1.2.0.18")
 
-    // --- CloudStream (.cs3) plugin support — REQUIRED, currently commented out ---
-    // CloudStreamPluginLoader.kt loads compiled .cs3 provider plugins via PathClassLoader.
-    // Those plugins are compiled against the `com.lagradost.cloudstream3` core API, so those
-    // classes must be present on this app's own runtime classpath for a loaded plugin's
-    // superclasses (Plugin/BasePlugin/MainAPI/...) to resolve — otherwise loading fails with
-    // ClassNotFoundException/NoClassDefFoundError.
+    // --- CloudStream (.cs3) plugin support ---
+    // A .cs3 extension is compiled Kotlin/JVM bytecode written against the real
+    // `com.lagradost.cloudstream3` provider API, so that API has to exist on this app's own
+    // runtime classpath before a loaded plugin's superclasses (Plugin/BasePlugin/MainAPI/...)
+    // can resolve. There is no Maven artifact for it: the jar every extension repo compiles
+    // against is published as a plain release asset at
+    //   https://github.com/recloudstream/cloudstream/releases/download/pre-release/classes.jar
+    // (that is exactly what recloudstream's own Gradle plugin downloads for `compileOnly`).
     //
-    // The exact Maven coordinates/version below could NOT be verified in the environment this
-    // was written in (no Android SDK, no Maven/JitPack network access). Before relying on the
-    // CloudStream Collections section in Settings > Plugins, uncomment this, confirm the
-    // coordinates and required `apiVersion` against recloudstream/cloudstream's current
-    // plugin-development docs, and expect to resolve some transitive dependency version
-    // conflicts against the OkHttp/Jsoup/coroutines versions already used above.
-    // implementation("com.github.recloudstream:cloudstream:pre-release")
+    // libs/cloudstream-provider-runtime.jar is that jar trimmed to the provider-facing runtime:
+    // the model layer, MainAPI/APIHolder, utils, extractors, network, mvvm, metaproviders,
+    // syncproviders and the plugin base classes — with CloudStream's own UI, player, downloader
+    // and database packages removed, since nothing a provider calls reaches them. Regenerate it
+    // by re-trimming a newer classes.jar if plugins start failing on a newer plugin apiVersion.
+    //
+    // NOTE: CloudStream is GPL-3.0. Shipping these classes has licensing consequences for
+    // StreamDek's own distribution - that is a product decision, not a technical one.
+    implementation files("libs/cloudstream-provider-runtime.jar")
+
+    // Versions below are pinned to recloudstream/cloudstream's own gradle/libs.versions.toml so
+    // the trimmed runtime (and the plugins compiled against it) link against what they expect.
+    implementation("com.github.Blatzar:NiceHttp:0.4.18")
+    implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.13.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.8.0")
+    implementation("dev.whyoleg.cryptography:cryptography-core:0.6.0")
+    implementation("dev.whyoleg.cryptography:cryptography-provider-optimal:0.6.0")
+    implementation("io.ktor:ktor-http:3.5.0")
+    implementation("com.fleeksoft.ksoup:ksoup:0.2.6")
+    implementation("org.mozilla:rhino:1.8.1")
+    implementation("io.coil-kt.coil3:coil:3.3.0")
+    implementation("androidx.preference:preference-ktx:1.2.1")
+    // Used directly by a number of extensions rather than by the runtime itself.
+    implementation("com.google.code.gson:gson:2.11.0")
 }

@@ -2,6 +2,7 @@ package net.streamdek.mobile.nativeapp
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -45,7 +46,24 @@ data class CsProviderEntry(
 )
 data class CsPluginState(val repos: List<CsRepo> = emptyList(), val providers: List<CsProviderEntry> = emptyList(), val updatedAt: Long = 0L)
 
+/** A known title used to check that a CloudStream source still scrapes. */
+data class CsTestMedia(
+  val label: String,
+  val title: String,
+  val year: Int?,
+  val type: String,
+  val season: Int? = null,
+  val episode: Int? = null,
+) {
+  fun toRequest(): CloudStreamProviderBridge.StreamRequest =
+    CloudStreamProviderBridge.StreamRequest(title = title, year = year, type = type, season = season, episode = episode)
+}
+
 class CloudStreamRepoManager(private val context: Context) {
+  private companion object {
+    const val TAG = "CloudStreamRepos"
+    const val LEGACY_STORAGE_KEY = "state"
+  }
   private val prefs: SharedPreferences = context.applicationContext.getSharedPreferences("streamdek_cs_plugins", Context.MODE_PRIVATE)
   private val http = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).build()
 
@@ -62,9 +80,36 @@ class CloudStreamRepoManager(private val context: Context) {
     File(base, "cs3_plugins").apply { mkdirs() }
   }
 
+  // Which profile's collections are in play. Kept separate per profile the same way the JS plugin
+  // collections, add-ons and M3U playlists are: one household member's sources should not appear
+  // (or start scraping) under another's profile.
+  private var storageKey = LEGACY_STORAGE_KEY
+
   @Volatile var state: CsPluginState = load()
     private set
   var onStateChanged: ((CsPluginState) -> Unit)? = null
+
+  /**
+   * Switches to [ownerKey]'s collections. Everything the previous profile had loaded is unloaded
+   * first — a `.cs3` stays live in the process until it is explicitly dropped, so without this the
+   * outgoing profile's providers would keep answering stream requests for the incoming one.
+   * Callers follow this with [loadEnabledProviders] to bring the new profile's sources up.
+   */
+  fun selectProfileStorage(ownerKey: String) {
+    val nextKey = "state:$ownerKey"
+    if (nextKey == storageKey) return
+    state.providers.mapNotNull { it.installedFilePath }.distinct().forEach(CloudStreamPluginLoader::unload)
+    storageKey = nextKey
+    // Collections added before this was profile-scoped live under the old unscoped key. Hand them
+    // to the first profile that asks so an upgrade does not look like the collections were lost.
+    if (!prefs.contains(nextKey)) {
+      prefs.getString(LEGACY_STORAGE_KEY, null)?.let { legacy ->
+        prefs.edit().putString(nextKey, legacy).remove(LEGACY_STORAGE_KEY).apply()
+      }
+    }
+    state = load()
+    onStateChanged?.invoke(state)
+  }
 
   suspend fun addRepo(rawUrl: String): Result<Unit> = withContext(Dispatchers.IO) {
     runCatching {
@@ -84,7 +129,18 @@ class CloudStreamRepoManager(private val context: Context) {
       // Preserve which providers were enabled/downloaded — refreshing shouldn't silently
       // re-disable something the user already turned on.
       val merged = freshProviders.map { entry ->
-        previous[entry.internalName]?.let { existing -> entry.copy(enabled = existing.enabled, installedFilePath = existing.installedFilePath) } ?: entry
+        val existing = previous[entry.internalName] ?: return@map entry
+        // A version bump means the downloaded .cs3 is stale. Unload and forget it so the next
+        // enable/startup pass fetches the new build instead of re-loading the old classes.
+        if (existing.version != entry.version) {
+          existing.installedFilePath?.let { path ->
+            CloudStreamPluginLoader.unload(path)
+            runCatching { File(path).delete() }
+          }
+          entry.copy(enabled = existing.enabled, installedFilePath = null)
+        } else {
+          entry.copy(enabled = existing.enabled, installedFilePath = existing.installedFilePath)
+        }
       }
       val existingRepo = state.repos.firstOrNull { it.url == url }
       state = state.copy(
@@ -120,31 +176,133 @@ class CloudStreamRepoManager(private val context: Context) {
         save()
         return@runCatching
       }
-      // A .cs3 is compiled against the REAL com.lagradost.cloudstream3 classes, which only
-      // exist inside the actual CloudStream app itself — the "cloudstream3" Maven artifact
-      // every real CloudStream extension repo compiles against (com.lagradost:cloudstream3:
-      // pre-release, e.g. hexated's cloudstream-extensions-hexated build.gradle.kts) is
-      // explicitly documented as "Stubs for all Cloudstream classes": compile-time-only
-      // stand-ins never meant to ship inside another app. Without StreamDek itself containing
-      // real MainAPI/TvType/ExtractorLink implementations — which means either vendoring
-      // CloudStream's GPL-3.0 source or a large clean-room reimplementation of its entire
-      // provider API surface, a licensing/scope decision rather than a bug fix — a loaded
-      // plugin class has nothing real to call into no matter how cleanly it loads. So this
-      // intentionally stops here rather than downloading a multi-megabyte .cs3 and surfacing a
-      // confusing raw ClassNotFoundException for a source that could never have played anyway.
-      throw IllegalStateException("CloudStream sources can't play in StreamDek yet — see the CloudStream Collections note above.")
+      val file = entry.installedFilePath?.let(::File)?.takeIf { it.exists() && it.length() > 0L } ?: downloadPlugin(entry)
+      CloudStreamPluginLoader.load(context.applicationContext, file)
+        .onFailure { failure ->
+          // A half-written or stale download is the usual cause; drop it so the next attempt refetches.
+          runCatching { file.delete() }
+          throw IllegalStateException(loadFailureMessage(entry.name, failure), failure)
+        }
+      state = state.copy(
+        providers = state.providers.map {
+          if (it.repoUrl == repoUrl && it.internalName == internalName) it.copy(enabled = true, installedFilePath = file.absolutePath) else it
+        },
+      )
+      save()
+    }
+  }
+
+  /**
+   * Loads everything the user has already enabled. Called once at startup: `.cs3` providers only
+   * exist in the process while their classes are loaded, so without this an app restart would
+   * silently leave every enabled source unable to answer.
+   */
+  suspend fun loadEnabledProviders(): Unit = withContext(Dispatchers.IO) {
+    val enabledRepos = state.repos.filter { it.enabled }.mapTo(mutableSetOf()) { it.url }
+    val wanted = state.providers.filter { it.enabled && it.repoUrl in enabledRepos }
+    val installedPaths = mutableMapOf<String, String>()
+    wanted.forEach { entry ->
+      val file = entry.installedFilePath?.let(::File)?.takeIf { it.exists() && it.length() > 0L }
+        ?: runCatching { downloadPlugin(entry) }
+          .onFailure { Log.w(TAG, "Could not fetch ${entry.name}", it) }
+          .getOrNull()
+        ?: return@forEach
+      CloudStreamPluginLoader.load(context.applicationContext, file)
+        .onSuccess { installedPaths[entry.repoUrl + "|" + entry.internalName] = file.absolutePath }
+        .onFailure { Log.w(TAG, "Could not load ${entry.name}", it) }
+    }
+    // A source whose file had to be re-fetched here has no stored path yet, and activeProviders()
+    // resolves loaded providers *by* that path — without writing it back the plugin would be
+    // loaded in memory but invisible to every stream request.
+    if (installedPaths.isNotEmpty()) {
+      state = state.copy(
+        providers = state.providers.map { entry ->
+          installedPaths[entry.repoUrl + "|" + entry.internalName]
+            ?.takeIf { it != entry.installedFilePath }
+            ?.let { entry.copy(installedFilePath = it) }
+            ?: entry
+        },
+      )
+      save()
+    }
+    Log.i(TAG, "CloudStream sources ready: ${activeProviders().size} provider(s) from ${wanted.size} enabled source(s)")
+  }
+
+  /**
+   * A well-known title to probe a source with, chosen from the types the source advertises.
+   * Returns null for sources StreamDek cannot meaningfully test by title — live/IPTV scrapers
+   * answer with channels rather than titles, so searching one for a film proves nothing.
+   */
+  fun testMediaForProvider(repoUrl: String, internalName: String): CsTestMedia? {
+    val entry = state.providers.firstOrNull { it.repoUrl == repoUrl && it.internalName == internalName } ?: return null
+    val types = entry.tvTypes.map { it.lowercase() }
+    val anime = types.any { "anime" in it } || entry.name.contains("anime", ignoreCase = true)
+    val hasSeries = types.any { it in setOf("tvseries", "anime", "ova", "asiandrama", "cartoon") }
+    val hasMovie = types.any { it in setOf("movie", "animemovie", "documentary") }
+    return when {
+      anime && hasSeries -> CsTestMedia("Attack on Titan S1 E1", "Attack on Titan", 2013, "tv", 1, 1)
+      anime -> CsTestMedia("Spirited Away (2001)", "Spirited Away", 2001, "movie")
+      hasMovie -> CsTestMedia("The Matrix (1999)", "The Matrix", 1999, "movie")
+      hasSeries -> CsTestMedia("Breaking Bad S1 E1", "Breaking Bad", 2008, "tv", 1, 1)
+      // Sources that declare nothing usable are still worth a films probe; live-only ones are not.
+      types.isEmpty() -> CsTestMedia("The Matrix (1999)", "The Matrix", 1999, "movie")
+      else -> null
+    }
+  }
+
+  /** Runs [testMediaForProvider] through this one source and returns a few sample results. */
+  suspend fun testProvider(repoUrl: String, internalName: String): Result<List<AddonStream>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val entry = state.providers.firstOrNull { it.repoUrl == repoUrl && it.internalName == internalName }
+        ?: throw IllegalStateException("This source is no longer listed in its collection.")
+      val media = testMediaForProvider(repoUrl, internalName)
+        ?: throw IllegalStateException("${entry.name} serves live channels, which cannot be checked with a test title.")
+      val file = entry.installedFilePath?.let(::File)?.takeIf { it.exists() && it.length() > 0L }
+        ?: throw IllegalStateException("Turn ${entry.name} on before testing it.")
+      // Normally already loaded; loading here keeps the button working right after an enable.
+      CloudStreamPluginLoader.load(context.applicationContext, file).getOrThrow()
+      val providers = CloudStreamPluginLoader.providersFor(file.absolutePath)
+      require(providers.isNotEmpty()) { "${entry.name} did not register any provider to test." }
+      CloudStreamProviderBridge.streams(providers, media.toRequest()).take(5)
+    }
+  }
+
+  /** The providers usable right now — loaded, and belonging to an enabled source in an enabled repo. */
+  fun activeProviders(): List<com.lagradost.cloudstream3.MainAPI> {
+    val enabledRepos = state.repos.filter { it.enabled }.mapTo(mutableSetOf()) { it.url }
+    return state.providers
+      .filter { it.enabled && it.repoUrl in enabledRepos }
+      .mapNotNull { it.installedFilePath }
+      .flatMap(CloudStreamPluginLoader::providersFor)
+  }
+
+  private fun loadFailureMessage(name: String, failure: Throwable): String {
+    val reason = failure.message.orEmpty()
+    return when {
+      reason.contains("ClassNotFoundException", true) || reason.contains("NoClassDefFoundError", true) ->
+        "$name needs a part of the CloudStream API that StreamDek does not ship. It cannot run here."
+      reason.contains("manifest.json", true) -> "$name is not a valid CloudStream extension file."
+      reason.isBlank() -> "$name could not be loaded."
+      else -> "$name could not be loaded: ${reason.take(180)}"
     }
   }
 
   private fun downloadPlugin(entry: CsProviderEntry): File {
     val safeName = entry.internalName.replace(Regex("[^A-Za-z0-9._-]"), "_") + "_" + entry.repoUrl.hashCode().toUInt().toString(16) + ".cs3"
     val file = File(pluginDir, safeName)
+    // The loader marks installed plugins read-only (Android 14+ refuses to load writable code),
+    // so an existing copy has to be made writable again before it can be replaced.
+    if (file.exists()) {
+      file.setWritable(true)
+      file.delete()
+    }
     val response = http.newCall(Request.Builder().url(entry.downloadUrl).header("User-Agent", "StreamDek/1.0").build()).execute()
     response.use {
       require(it.isSuccessful) { "Download failed: ${it.code}" }
       val body = it.body ?: throw IllegalStateException("Empty download response.")
       file.outputStream().use { out -> body.byteStream().copyTo(out) }
     }
+    require(file.length() > 0L) { "The download for ${entry.name} was empty." }
     return file
   }
 
@@ -218,12 +376,12 @@ class CloudStreamRepoManager(private val context: Context) {
         )
       }
     })
-    prefs.edit().putString("state", root.toString()).apply()
+    prefs.edit().putString(storageKey, root.toString()).apply()
     onStateChanged?.invoke(state)
   }
 
   private fun load(): CsPluginState = runCatching {
-    val raw = prefs.getString("state", null) ?: return CsPluginState()
+    val raw = prefs.getString(storageKey, null) ?: return CsPluginState()
     val root = JSONObject(raw)
     val repos = root.optJSONArray("repos") ?: JSONArray()
     val providers = root.optJSONArray("providers") ?: JSONArray()
@@ -256,6 +414,7 @@ class CloudStreamRepoManager(private val context: Context) {
 object CloudStreamPlugins {
   lateinit var manager: CloudStreamRepoManager
     private set
+  val isInitialized: Boolean get() = ::manager.isInitialized
   fun initialize(context: Context) {
     if (!::manager.isInitialized) manager = CloudStreamRepoManager(context.applicationContext)
   }

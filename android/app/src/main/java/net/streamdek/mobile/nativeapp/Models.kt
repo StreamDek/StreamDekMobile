@@ -49,8 +49,26 @@ data class MediaItem(
   val sourceCatalogGenre: String? = null,
   val directStreamUrl: String? = null,
   val requestHeaders: Map<String, String> = emptyMap(),
+  // ClearKey DRM, as published by IPTV playlists via #KODIPROP:inputstream.adaptive.license_type
+  // / license_key lines. drmClearKeys maps hex key-id -> hex key. Only "clearkey" is understood
+  // downstream (Media3); other license types are carried through but not decryptable.
+  val drmLicenseType: String? = null,
+  val drmClearKeys: Map<String, String> = emptyMap(),
   val resumeSeasonNumber: Int? = null,
   val resumeEpisodeNumber: Int? = null,
+)
+
+/**
+ * Connection state for one tracking service on the active profile. Trakt keeps its own richer
+ * [TraktStatus] because it also drives Home rows; SIMKL and MDBList only need connect/identify.
+ */
+data class SyncServiceStatus(
+  val connected: Boolean = false,
+  val username: String? = null,
+  /** False when the backend has no credentials configured for the service, so connecting cannot work. */
+  val available: Boolean = true,
+  /** Set once a status call has actually reached the backend. */
+  val checked: Boolean = false,
 )
 
 data class SeasonSummary(
@@ -193,6 +211,8 @@ data class CloudPlaybackPreferences(
   val continueWatchingStyle: String? = null,
   val liveLandscapeCards: Boolean? = null,
   val liveFavouriteDrawerCards: Boolean? = null,
+  val liveCategoriesEnabled: Boolean? = null,
+  val primarySyncService: String? = null,
   val showHeroSynopsis: Boolean? = null,
   val vividAmbient: Boolean? = null,
   val ambientTintPercent: Int? = null,
@@ -302,6 +322,8 @@ data class AddonStream(
   val cachedBy: List<String>,
   val bingeGroup: String? = null,
   val requestHeaders: Map<String, String> = emptyMap(),
+  val drmLicenseType: String? = null,
+  val drmClearKeys: Map<String, String> = emptyMap(),
   val source: String? = null,
 )
 
@@ -408,6 +430,8 @@ data class PlayerSession(
   val nextEpisodeThresholdPercent: Int = 95,
   val nextEpisodeThresholdMinutes: Int = 2,
   val requestHeaders: Map<String, String> = emptyMap(),
+  val drmLicenseType: String? = null,
+  val drmClearKeys: Map<String, String> = emptyMap(),
   val runtimeMinutes: Int? = null,
   val addonSubtitleSources: List<UserSubtitleSource> = emptyList(),
   val userSubtitleSources: List<UserSubtitleSource> = emptyList(),

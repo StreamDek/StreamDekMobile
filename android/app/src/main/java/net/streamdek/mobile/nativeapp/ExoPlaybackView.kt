@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Color
 import android.net.Uri
 import android.util.AttributeSet
+import android.util.Base64
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.C
@@ -20,11 +21,16 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
+import androidx.media3.exoplayer.drm.FrameworkMediaDrm
+import androidx.media3.exoplayer.drm.LocalMediaDrmCallback
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import net.streamdek.mobile.mpv.MpvTrackInfo
+import org.json.JSONArray
+import org.json.JSONObject
 
 /** Media3 playback path used for CNCVerse Bridge VODs. */
 @OptIn(UnstableApi::class)
@@ -60,6 +66,8 @@ class ExoPlaybackView @JvmOverloads constructor(
   private var retiringSource: String? = null
   private var awaitingFirstFrameAfterPromotion = false
   private var requestHeaders: Map<String, String> = emptyMap()
+  private var drmLicenseType: String? = null
+  private var drmClearKeys: Map<String, String> = emptyMap()
   private var pendingPaused = false
   private var pendingSpeed = 1.0
   private var pendingVolume = 1f
@@ -109,6 +117,14 @@ class ExoPlaybackView @JvmOverloads constructor(
       key.trim().takeIf { it.isNotBlank() && !it.equals("Range", true) }
         ?.let { cleanKey -> value.trim().takeIf(String::isNotBlank)?.let { cleanKey to it } }
     }.toMap()
+  }
+
+  /** Only "clearkey" (hex key-id -> hex key, as published by IPTV playlists via
+   * #KODIPROP:inputstream.adaptive.license_* lines) is supported. Anything else is ignored -
+   * the stream will fail to decrypt exactly as it did before this existed. */
+  fun setDrmClearKeys(licenseType: String?, keys: Map<String, String>) {
+    drmLicenseType = licenseType
+    drmClearKeys = keys
   }
 
   fun setSource(url: String?) {
@@ -219,6 +235,28 @@ class ExoPlaybackView @JvmOverloads constructor(
     subtitleView?.setBottomPaddingFraction(((100 - subtitlePositionPercent) / 100f).coerceIn(0.02f, 0.50f))
   }
 
+  /** Builds a local (offline, no license server) ClearKey session from key-id/key pairs
+   * published in plaintext by the playlist itself - the format inputstream.adaptive-based IPTV
+   * M3U/M3U8 playlists use via #KODIPROP:inputstream.adaptive.license_key lines. ExoPlayer's
+   * ClearKey implementation expects a JSON Web Key Set with base64url (no padding) values, so the
+   * playlist's hex key-id/key pairs are re-encoded here. */
+  private fun clearKeyDrmSessionManager(keys: Map<String, String>): DefaultDrmSessionManager {
+    fun hexToBase64Url(hex: String): String {
+      val clean = hex.trim().removePrefix("0x")
+      val bytes = ByteArray(clean.length / 2) { i -> ((Character.digit(clean[i * 2], 16) shl 4) + Character.digit(clean[i * 2 + 1], 16)).toByte() }
+      return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+    }
+    val keyArray = JSONArray()
+    keys.forEach { (keyId, key) ->
+      keyArray.put(JSONObject().put("kty", "oct").put("kid", hexToBase64Url(keyId)).put("k", hexToBase64Url(key)))
+    }
+    val jwkSet = JSONObject().put("keys", keyArray).put("type", "temporary").toString()
+    val drmCallback = LocalMediaDrmCallback(jwkSet.toByteArray(Charsets.UTF_8))
+    return DefaultDrmSessionManager.Builder()
+      .setUuidAndExoMediaDrmProvider(C.CLEARKEY_UUID, FrameworkMediaDrm.DEFAULT_PROVIDER)
+      .build(drmCallback)
+  }
+
   private fun buildPlayer(url: String, startPositionMs: Long): ExoPlayer {
     val httpFactory = DefaultHttpDataSource.Factory()
       .setUserAgent(DEFAULT_USER_AGENT)
@@ -231,9 +269,15 @@ class ExoPlaybackView @JvmOverloads constructor(
     val renderers = DefaultRenderersFactory(context)
       .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
       .setEnableDecoderFallback(true)
+    val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+    if (drmLicenseType.equals("clearkey", ignoreCase = true) && drmClearKeys.isNotEmpty()) {
+      runCatching { clearKeyDrmSessionManager(drmClearKeys) }
+        .onSuccess { manager -> mediaSourceFactory.setDrmSessionManagerProvider { manager } }
+        .onFailure { Log.w(TAG, "Unable to set up ClearKey DRM for $url, playback will likely fail to decrypt", it) }
+    }
     val active = ExoPlayer.Builder(context)
       .setRenderersFactory(renderers)
-      .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+      .setMediaSourceFactory(mediaSourceFactory)
       .build()
     preferredAudioLanguageTags(preferredAudioLanguage).takeIf(List<String>::isNotEmpty)?.let { tags ->
       active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()

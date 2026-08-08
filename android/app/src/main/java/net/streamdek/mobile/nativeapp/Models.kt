@@ -69,6 +69,14 @@ data class SyncServiceStatus(
   val available: Boolean = true,
   /** Set once a status call has actually reached the backend. */
   val checked: Boolean = false,
+  /**
+   * What the service's API can actually serve, as reported by the backend. MDBList keeps a
+   * watchlist but has no playback API, so making it primary must not leave Continue Watching
+   * silently empty with no explanation. Defaults assume full support so a backend that predates
+   * the field behaves exactly as before.
+   */
+  val supportsWatchlist: Boolean = true,
+  val supportsPlayback: Boolean = true,
 )
 
 data class SeasonSummary(
@@ -243,6 +251,7 @@ data class CloudPlaybackPreferences(
   val rememberLastSource: Boolean? = null,
   val blurUnwatchedEpisodes: Boolean? = null,
   val fusionBadgesEnabled: Boolean? = null,
+  val streamDekFormattingEnabled: Boolean? = null,
   val showSizeBadges: Boolean? = null,
   val showAddonTmdbRatings: Boolean? = null,
   val preferredQuality: String? = null,
@@ -277,6 +286,8 @@ data class AddonCatalog(
   // addons fall back to the same generic/default result for every such catalog. When present,
   // the first option is used as the catalog's default preview row.
   val genreOptions: List<String> = emptyList(),
+  /** True when the add-on declares genre as a required extra, so the catalog needs one to answer. */
+  val requiresGenre: Boolean = false,
 )
 
 data class AddonManifest(

@@ -621,7 +621,10 @@ private data class AppUiState(
   val navigationAutoCollapseSeconds: Int = 5,
   val showStreamsList: Boolean = true,
   val heroTrailerAutoplay: Boolean = true,
-  val heroTrailerResolution: Int = 720,
+  // 2160p by default: the resolver hard-gates format selection on this value, so a lower default
+  // silently discards the 4K renditions the iOS YouTube client now provides. HLS and the adaptive
+  // picker both scale down on their own, so this is a ceiling rather than a demand.
+  val heroTrailerResolution: Int = 2160,
   val showHeroSynopsis: Boolean = true,
   val continueWatchingStyle: ContinueWatchingStyle = ContinueWatchingStyle.Glass,
   val liveLandscapeCards: Boolean = true,
@@ -653,6 +656,13 @@ private data class AppUiState(
   val defaultAppCatalogsEnabled: Boolean = true,
   val homeCatalogRows: List<HomeCatalogRow> = emptyList(),
   val fusionBadgesEnabled: Boolean = true,
+  /**
+   * Whether stream rows are rebuilt into StreamDek's own two-line layout instead of showing what
+   * the add-on actually sent. Off by default: an add-on's `name`/`title` already carry its own
+   * deliberate formatting — line breaks, emoji, seeder and size columns — and reshaping them lost
+   * information that only the add-on knows how to present.
+   */
+  val streamDekFormattingEnabled: Boolean = false,
   val showSizeBadges: Boolean = true,
   val showAddonTmdbRatings: Boolean = false,
   val preferredQuality: String = "Auto",
@@ -721,10 +731,47 @@ private const val LANGUAGE_BADGE_GROUP_ID = "gl"
 private val DEFAULT_RATING_PROVIDER_ORDER = listOf("imdb", "tmdb", "tomatoes", "metacritic", "trakt", "letterboxd", "audience")
 private val DEFAULT_RATING_PROVIDER_IDS = DEFAULT_RATING_PROVIDER_ORDER.toSet()
 
+private val streamSizeLabelPattern = Regex("""(\d+(?:[.,]\d+)?)\s*(TB|TiB|GB|GiB|MB|MiB)\b""", RegexOption.IGNORE_CASE)
+
+/**
+ * The size to show on a stream card, or null when there isn't one.
+ *
+ * The badge used to print `stream.size` verbatim and uppercase it, which is only safe when that
+ * field really holds a size. Plenty of sources put something else there — a release group, an
+ * audio layout, a whole language list — and the card then rendered "ENGLISH • HINDI • TAMIL •
+ * TELUGU" as a size pill wide enough to squeeze the title into a three-line column. Requiring the
+ * value to actually parse as a size keeps the badge to what it claims to be, and falling back to
+ * the stream's own text recovers a size for sources that only mention it in the title.
+ */
+private fun streamSizeLabel(stream: AddonStream): String? {
+  fun normalize(match: MatchResult): String {
+    val amount = match.groupValues[1].replace(',', '.')
+    val unit = when (match.groupValues[2].lowercase()) {
+      "tb" -> "TB"
+      "tib" -> "TiB"
+      "gb" -> "GB"
+      "gib" -> "GiB"
+      "mb" -> "MB"
+      "mib" -> "MiB"
+      else -> match.groupValues[2].uppercase()
+    }
+    return "$amount $unit"
+  }
+  stream.size?.let { declared -> streamSizeLabelPattern.find(declared)?.let { return normalize(it) } }
+  val text = listOfNotNull(stream.title, stream.name, stream.description, stream.filename).joinToString(" ")
+  return streamSizeLabelPattern.find(text)?.let(::normalize)
+}
+
+/** Collapses an add-on's multi-line text onto one line so a formatted row stays one line tall. */
+private fun streamSingleLine(value: String?): String? =
+  value?.replace(Regex("\\s+"), " ")?.trim()?.takeIf { it.isNotEmpty() }
+
 private fun parseStreamSizeGiB(size: String?): Double? {
   val raw = size?.trim().orEmpty()
   if (raw.isBlank()) return null
-  val match = Regex("""([\d.]+)\s*(GB|GiB|MB|MiB|TB|TiB)""", RegexOption.IGNORE_CASE).find(raw) ?: return null
+  // The trailing boundary keeps bitrates out: without it "~7.71 Mbps" matches as "7.71 MB", so a
+  // 6 GB result reads as 7 MB and slips straight past the max-size cap.
+  val match = Regex("""([\d.]+)\s*(GB|GiB|MB|MiB|TB|TiB)\b""", RegexOption.IGNORE_CASE).find(raw) ?: return null
   val value = match.groupValues[1].toDoubleOrNull() ?: return null
   return when (match.groupValues[2].lowercase()) {
     "tb", "tib" -> value * 1024.0
@@ -1095,7 +1142,7 @@ private class AppSettingsStore(context: Context) {
     navigationAutoCollapseSeconds = prefs.getInt("navigation_auto_collapse_seconds", 5).coerceIn(2, 15),
     showStreamsList = profilePrefs.getBoolean("show_streams_list", true),
     heroTrailerAutoplay = profilePrefs.getBoolean("hero_trailer_autoplay", true),
-    heroTrailerResolution = profilePrefs.getInt("hero_trailer_resolution", 720).coerceIn(360, 2160),
+    heroTrailerResolution = profilePrefs.getInt("hero_trailer_resolution", 2160).coerceIn(360, 2160),
     showHeroSynopsis = profilePrefs.getBoolean("show_hero_synopsis", true),
     continueWatchingStyle = runCatching { ContinueWatchingStyle.valueOf(profilePrefs.getString("continue_watching_style", ContinueWatchingStyle.Glass.name) ?: ContinueWatchingStyle.Glass.name) }.getOrDefault(ContinueWatchingStyle.Glass),
     liveLandscapeCards = profilePrefs.getBoolean("live_landscape_cards", true),
@@ -1131,6 +1178,7 @@ private class AppSettingsStore(context: Context) {
     defaultAppCatalogsEnabled = profilePrefs.getBoolean("default_app_catalogs_enabled", true),
     homeCatalogRows = parseHomeCatalogRows(profilePrefs.getString("home_catalog_rows", null)),
     fusionBadgesEnabled = profilePrefs.getBoolean("fusion_badges", true),
+    streamDekFormattingEnabled = profilePrefs.getBoolean("streamdek_stream_formatting", false),
     showSizeBadges = profilePrefs.getBoolean("show_size_badges", true),
     showAddonTmdbRatings = profilePrefs.getBoolean("show_addon_tmdb_ratings", false),
     preferredQuality = profilePrefs.getString("preferred_quality", "Auto") ?: "Auto",
@@ -1198,6 +1246,7 @@ private class AppSettingsStore(context: Context) {
   fun saveDefaultAppCatalogsEnabled(value: Boolean) { profilePrefs.edit().putBoolean("default_app_catalogs_enabled", value).apply() }
   fun saveHomeCatalogRows(rows: List<HomeCatalogRow>) { profilePrefs.edit().putString("home_catalog_rows", serializeHomeCatalogRows(rows)).apply() }
   fun saveFusionBadges(value: Boolean) { profilePrefs.edit().putBoolean("fusion_badges", value).apply() }
+  fun saveStreamDekFormatting(value: Boolean) { profilePrefs.edit().putBoolean("streamdek_stream_formatting", value).apply() }
   fun saveShowSizeBadges(value: Boolean) { profilePrefs.edit().putBoolean("show_size_badges", value).apply() }
   fun saveShowAddonTmdbRatings(value: Boolean) { profilePrefs.edit().putBoolean("show_addon_tmdb_ratings", value).apply() }
   fun savePreferredQuality(value: String) { profilePrefs.edit().putString("preferred_quality", value).apply() }
@@ -1564,6 +1613,41 @@ private fun normalizedMediaType(type: String): String = when (type.trim().lowerc
  *  source (Trakt, add-on catalogues, TMDB), so membership has to compare the normalized form —
  *  otherwise the same title looks like two different entries and toggles never line up. */
 private fun mediaKey(type: String, id: String): String = "${normalizedMediaType(type)}:$id"
+
+/**
+ * Whether the add-on publishes a Stremio `meta` resource covering this content type — i.e. it can
+ * describe its own catalog items rather than leaving them to be looked up by id on TMDB.
+ *
+ * The manifest's per-resource type lists are flattened to names when it is parsed, so the type
+ * test falls back to `manifest.types`; an add-on that declares no types is treated as covering
+ * everything, matching Stremio. The backend repeats this check precisely before it picks an
+ * add-on to answer with.
+ */
+private fun AddonManifest.providesMetaFor(type: String): Boolean {
+  if (resources.none { it.trim().equals("meta", ignoreCase = true) }) return false
+  if (types.isEmpty()) return true
+  val nativeType = if (type.trim().lowercase() in setOf("tv", "show", "series")) "series" else type.trim().lowercase()
+  return types.any { declared ->
+    val value = declared.trim().lowercase()
+    value == nativeType || (nativeType == "series" && value == "tv")
+  }
+}
+
+/**
+ * How long a freshly opened detail page gets to itself before the heavy background work starts.
+ *
+ * Sources go first because they are what the viewer is waiting for; the hero trailer follows,
+ * because it is decoration and it brings a video pipeline up with it. Both are short enough to be
+ * imperceptible if the page has already settled, and long enough to stop the two of them
+ * competing with the page's own artwork and layout.
+ */
+private const val DETAIL_SOURCES_DELAY_MS = 450L
+
+/** Measured from the page having content, not from navigation — see the gate in MediaDetailScreen. */
+private const val DETAIL_TRAILER_DELAY_MS = 700L
+
+/** TMDB artwork recovered for a tracking-service row that arrived without any. */
+private data class TrackingArtwork(val poster: String?, val backdrop: String?)
 private fun List<MediaItem>.containsMedia(item: MediaItem): Boolean =
   any { it.id == item.id && normalizedMediaType(it.type) == normalizedMediaType(item.type) }
 
@@ -1779,6 +1863,35 @@ private fun matchFusionBadgeFilters(stream: AddonStream, sources: List<FusionBad
   }
 }
 
+/**
+ * Badge matches, kept for the session.
+ *
+ * Matching runs every enabled filter's regex against a stream's text — with a full badge set that
+ * is dozens of patterns per stream, and forty streams on screen. Results are keyed on the stream's
+ * own text rather than the stream object, so the many results that share a release name resolve to
+ * one entry, and reopening a title reuses what was already worked out. The badge configuration is
+ * part of the key, so changing or switching a badge source invalidates naturally rather than
+ * needing to be cleared.
+ */
+private const val FUSION_BADGE_CACHE_LIMIT = 600
+private val fusionBadgeMatchCache =
+  object : LinkedHashMap<String, List<FusionBadgeFilter>>(0, 0.75f, true) {
+    override fun removeEldestEntry(eldest: Map.Entry<String, List<FusionBadgeFilter>>): Boolean =
+      size > FUSION_BADGE_CACHE_LIMIT
+  }
+
+private fun cachedFusionBadges(
+  stream: AddonStream,
+  sources: List<FusionBadgeSource>,
+  configKey: String,
+): List<FusionBadgeFilter> {
+  val key = configKey + " " + fusionStreamSearchText(stream)
+  synchronized(fusionBadgeMatchCache) { fusionBadgeMatchCache[key] }?.let { return it }
+  val matched = matchFusionBadgeFilters(stream, sources)
+  synchronized(fusionBadgeMatchCache) { fusionBadgeMatchCache[key] = matched }
+  return matched
+}
+
 private fun activeFusionSources(uiState: AppUiState): List<FusionBadgeSource> {
   val active = uiState.activeFusionBadgeUrl?.takeIf { it in uiState.fusionBadgeUrls }
   val urls = if (active != null) listOf(active) else uiState.fusionBadgeUrls
@@ -1834,6 +1947,11 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private var pendingDirectContinueFallback: (() -> Unit)? = null
   private val pendingHomeHeroLogoKeys = mutableSetOf<String>()
   private val pendingAddonRatingKeys = mutableSetOf<String>()
+  private var trackingArtworkJob: Job? = null
+  // TMDB artwork recovered for tracking-service rows that arrived without any, keyed by mediaKey.
+  // Cached for the session so a dashboard refresh does not re-fetch the same titles, and negative
+  // results are remembered too (null value) so an id TMDB cannot resolve is only attempted once.
+  private val trackingArtworkCache = mutableMapOf<String, TrackingArtwork?>()
   // Items whose fetchDetails() call already came back empty/failed once (e.g. a bridge item
   // with a placeholder title and an id TMDB can never resolve). Without this, resolveAddonCatalogRatings
   // re-fetches these same doomed items on every retrigger of its LaunchedEffect (which itself
@@ -1850,7 +1968,16 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   // /stream endpoint needs its OWN canonical id (from resolveLocalAddonStreamId), which is
   // often not the same value at all. Kept as a separate field rather than overloading detail.id
   // for this one case. Null whenever the open detail isn't a local add-on item.
+  // Bumped by every openDetail. launchWork does not cancel the call it supersedes, so without a
+  // generation to compare against, a slow detail load that has since been navigated away from
+  // still lands: it overwrites uiState.detail with the old title and can start its playback.
+  private var detailRequestGeneration = 0
+  private var detailSettleJob: Job? = null
   private var detailLocalStreamId: String? = null
+  // The canonical id a remote metadata add-on gave for the open detail (e.g. "tmdb:1234"). Unlike
+  // detailLocalStreamId this does not replace the normal id list — stream add-ons key on IMDb ids
+  // — it is appended as a last-resort candidate for titles TMDB could not resolve.
+  private var detailAddonMetaId: String? = null
   private var detailLocalEpisodes: List<EpisodeItem> = emptyList()
   private var routeAfterProfileRefresh = false
 
@@ -1903,6 +2030,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     StreamDekPlugins.manager.onStateChanged = { raw -> syncActiveProfilePlugins(raw) }
     StreamDekPlugins.manager.selectProfileStorage(activeOwnerKey() ?: GUEST_OWNER_KEY)
     CloudStreamPlugins.initialize(application.applicationContext)
+    SkyStreamPlugins.initialize(application.applicationContext)
     // .cs3 providers only exist for as long as their classes are loaded, so anything the user
     // already enabled has to be re-loaded on every cold start before it can answer a stream request.
     refreshProfileCloudStreamPlugins()
@@ -2512,6 +2640,11 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   private fun playPendingContinue(detail: MediaDetail, episode: EpisodeItem?): Boolean {
+    // Never take the player away from something already on screen. A resume entry is queued when
+    // a Continue Watching card is tapped and consumed when that title's detail finishes loading —
+    // if the viewer has started watching something else in the meantime, that load arriving is no
+    // reason to yank them into a different title mid-playback.
+    uiState.playerSession?.let { active -> if (active.mediaId != detail.id) return false }
     val entry = pendingDirectContinueEntry?.takeIf {
       (it.mediaId == detail.id || it.mediaId == uiState.detailFallbackItem?.id) && normalizedMediaType(it.mediaType) == normalizedMediaType(detail.type)
     } ?: return false
@@ -2568,7 +2701,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val detailIsLive = fallbackItem?.isLiveCatalogItem() == true
     detailSourceAddonId = fallbackItem?.sourceAddonId
     detailSourceCatalogType = fallbackItem?.sourceCatalogType
+    val detailGeneration = ++detailRequestGeneration
+    detailSettleJob?.cancel()
     detailLocalStreamId = null
+    detailAddonMetaId = null
     detailLocalEpisodes = emptyList()
     detailDirectStream = fallbackItem?.directStreamUrl?.let { url ->
       val addon = uiState.addons.firstOrNull { it.id == fallbackItem.sourceAddonId }
@@ -2601,17 +2737,25 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       loadStreamsForCurrentDetail(null)
       return
     }
-    val localAddonId = fallbackItem?.sourceAddonId?.takeIf { LocalAddonManager.isLocalAddonId(it) }
-    if (localAddonId != null && fallbackItem != null) {
-      // CNCVerse-style catalogs intentionally keep previews tiny (and sometimes use "_" as
-      // the preview title). The canonical /meta response is the source of truth for the real
-      // title, synopsis, year and opaque episode ids; TMDB enrichment is layered on top of it.
+    // Ask the add-on that produced this card to describe it, whenever it publishes a `meta`
+    // resource. That covers two cases with one path: a local bridge, whose catalog previews are
+    // deliberately tiny and whose episode ids are opaque; and a metadata add-on, whose ids TMDB
+    // cannot resolve at all. TMDB enrichment is still layered on top of whatever comes back.
+    val metaAddon = fallbackItem?.sourceAddonId?.let { addonId ->
+      uiState.addons.firstOrNull {
+        it.id == addonId && (LocalAddonManager.isLocalAddonId(it.id) || it.manifest.providesMetaFor(type))
+      }
+    }
+    if (metaAddon != null && fallbackItem != null) {
+      val isLocalMetaAddon = LocalAddonManager.isLocalAddonId(metaAddon.id)
       launchWork(
         onStart = { uiState = uiState.copy(detailLoading = true, detail = null, detailIsLive = false, detailFallbackItem = fallbackItem, selectedPerson = null, personLoading = false, selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null, detailSelectedTab = null, pendingStreamSources = 0, availableStreams = emptyList(), errorMessage = null) },
         block = {
-          val addon = uiState.addons.firstOrNull { it.id == localAddonId }
-            ?: return@launchWork Result.failure(IllegalStateException("The local add-on is no longer installed."))
-          val bridgeMeta = apiClient.fetchLocalAddonMeta(addon, type, id).getOrThrow()
+          val addon = uiState.addons.firstOrNull { it.id == metaAddon.id }
+            ?: return@launchWork Result.failure(IllegalStateException("That add-on is no longer installed."))
+          val bridgeMeta = apiClient
+            .fetchAddonMeta(uiState.session, uiState.activeProfileId, addon, type, id)
+            .getOrThrow()
           val lookupId = bridgeMeta.imdbId ?: bridgeMeta.id
           val typeGuesses = when {
             bridgeMeta.episodes.isNotEmpty() || bridgeMeta.type in setOf("tv", "series", "show") -> listOf("tv", "movie")
@@ -2624,11 +2768,14 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
             }.awaitAll()
             guessResults.firstNotNullOfOrNull { it }
           }
-          android.util.Log.d("StreamDekDetail", "local addon detail addon=$localAddonId rawType=$type bridgeId=${bridgeMeta.id} title=${bridgeMeta.title} episodes=${bridgeMeta.episodes.size} enriched=${enriched != null}")
           Result.success(bridgeMeta to enriched)
         },
         onSuccess = { (bridgeMeta, enriched) ->
-          detailLocalStreamId = bridgeMeta.id
+          if (detailGeneration != detailRequestGeneration) return@launchWork
+          // A local bridge's id replaces the stream lookup outright — that is the only id its own
+          // /stream endpoint answers to. A remote metadata add-on's id is only a fallback: stream
+          // add-ons key on IMDb ids, which enrichment has just resolved.
+          if (isLocalMetaAddon) detailLocalStreamId = bridgeMeta.id else detailAddonMetaId = bridgeMeta.id
           detailLocalEpisodes = bridgeMeta.episodes
           val resolvedDetail = (enriched?.withLocalAddonMeta(bridgeMeta) ?: bridgeMeta.toFallbackDetail(fallbackItem)).withCatalogFallback(fallbackItem)
           val unreleasedMovie = resolvedDetail.type == "movie" && isFutureReleaseDate(resolvedDetail.releaseDate)
@@ -2649,15 +2796,16 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
             val restartSeason = resolvedDetail.seasons.firstOrNull { it.seasonNumber == fallbackItem.resumeSeasonNumber } ?: resolvedDetail.seasons.first()
             loadSeason(resolvedDetail.id, restartSeason.seasonNumber, fallbackItem.resumeEpisodeNumber, resumeKnownSource = pendingDirectContinueEntry != null)
           } else if (!unreleasedMovie) {
-            if (!playPendingContinue(resolvedDetail, continueFallbackEpisode(fallbackItem))) loadStreamsForCurrentDetail(null)
+            if (!playPendingContinue(resolvedDetail, continueFallbackEpisode(fallbackItem))) loadStreamsAfterDetailSettles(null)
           }
         },
         onFailure = {
-          detailLocalStreamId = id
+          if (detailGeneration != detailRequestGeneration) return@launchWork
+          if (isLocalMetaAddon) detailLocalStreamId = id else detailAddonMetaId = id
           detailLocalEpisodes = emptyList()
           val fallback = fallbackItem.toFallbackDetail()
           uiState = uiState.copy(detailLoading = false, detail = fallback, detailIsLive = false, errorMessage = null)
-          if (!playPendingContinue(fallback, continueFallbackEpisode(fallbackItem))) loadStreamsForCurrentDetail(null)
+          if (!playPendingContinue(fallback, continueFallbackEpisode(fallbackItem))) loadStreamsAfterDetailSettles(null)
         },
       )
       return
@@ -2666,6 +2814,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       onStart = { uiState = uiState.copy(detailLoading = true, detail = null, detailIsLive = detailIsLive, detailFallbackItem = fallbackItem, selectedPerson = null, personLoading = false, selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null, detailSelectedTab = null, pendingStreamSources = 0, availableStreams = emptyList(), errorMessage = null) },
       block = { apiClient.fetchDetails(type, id, fallbackItem?.title, fallbackItem?.year) },
       onSuccess = { detail ->
+        if (detailGeneration != detailRequestGeneration) return@launchWork
         val resolvedDetail = detail.withCatalogFallback(fallbackItem)
         val unreleasedMovie = resolvedDetail.type == "movie" && isFutureReleaseDate(resolvedDetail.releaseDate)
         uiState = uiState.copy(
@@ -2682,14 +2831,15 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           val restartSeason = resolvedDetail.seasons.firstOrNull { it.seasonNumber == fallbackItem?.resumeSeasonNumber } ?: resolvedDetail.seasons.first()
           loadSeason(resolvedDetail.id, restartSeason.seasonNumber, fallbackItem?.resumeEpisodeNumber, resumeKnownSource = pendingDirectContinueEntry != null)
         } else if (!unreleasedMovie) {
-          if (!playPendingContinue(resolvedDetail, continueFallbackEpisode(fallbackItem))) loadStreamsForCurrentDetail(null)
+          if (!playPendingContinue(resolvedDetail, continueFallbackEpisode(fallbackItem))) loadStreamsAfterDetailSettles(null)
         }
       },
       onFailure = { message ->
+        if (detailGeneration != detailRequestGeneration) return@launchWork
         val fallback = fallbackItem?.toFallbackDetail()
         if (fallback != null) {
           uiState = uiState.copy(detailLoading = false, detail = fallback, detailIsLive = detailIsLive, errorMessage = null)
-          if (!playPendingContinue(fallback, continueFallbackEpisode(fallbackItem))) loadStreamsForCurrentDetail(null)
+          if (!playPendingContinue(fallback, continueFallbackEpisode(fallbackItem))) loadStreamsAfterDetailSettles(null)
         } else {
           uiState = uiState.copy(detailLoading = false, errorMessage = message)
         }
@@ -2762,7 +2912,28 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     // tracked separately since it can differ completely from whatever TMDB resolved to.
     detailLocalStreamId?.takeIf { it.isNotBlank() }?.let { return listOf(it) }
     val imdbId = detail.imdbId?.let { Regex("tt\\d+", RegexOption.IGNORE_CASE).find(it)?.value }
-    return listOfNotNull(imdbId ?: detail.id.takeIf(String::isNotBlank))
+    return listOfNotNull(imdbId ?: detail.id.takeIf(String::isNotBlank)) +
+      listOfNotNull(detailAddonMetaId?.takeIf { it.isNotBlank() })
+  }
+
+  /**
+   * Starts the first stream search once the page it belongs to has had a chance to draw.
+   *
+   * Opening a detail used to kick off everything at once: TMDB detail, artwork, cast, ratings,
+   * Trakt comments, the hero trailer, and a stream search that fans out across every add-on plus
+   * one QuickJS engine per enabled plugin. All of it competed for the same CPU and network while
+   * the page was still composing, so the content the viewer is actually looking at came in last.
+   *
+   * Only the automatic search on open is deferred. Reload, picking an episode and choosing a
+   * season all still fire immediately — those are direct responses to a tap and any delay there
+   * would read as lag.
+   */
+  private fun loadStreamsAfterDetailSettles(episode: EpisodeItem? = null) {
+    detailSettleJob?.cancel()
+    detailSettleJob = viewModelScope.launch {
+      delay(DETAIL_SOURCES_DELAY_MS)
+      loadStreamsForCurrentDetail(episode)
+    }
   }
 
   fun loadStreamsForCurrentDetail(episode: EpisodeItem? = null) {
@@ -2842,7 +3013,15 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       runCatching { CloudStreamPlugins.manager.activeProviders() }.getOrDefault(emptyList())
     }
     val cloudStreamSourceCount = if (cloudStreamProviders.isEmpty()) 0 else 1
-    val totalSources = candidates.size * enabledAddons.size + pluginSourceCount + cloudStreamSourceCount
+    // SkyStream plugins scrape by title, like the CloudStream ones — an IMDb id is only useful to
+    // the handful that proxy an id-keyed service, so it is passed along but not required.
+    val skyStreamImdbId = detail.imdbId?.let { Regex("tt\\d+", RegexOption.IGNORE_CASE).find(it)?.value }
+    val skyStreamSourceCount = if (
+      cloudStreamTitle == null ||
+      !SkyStreamPlugins.isInitialized ||
+      runCatching { SkyStreamPlugins.manager.activeProviders() }.getOrDefault(emptyList()).isEmpty()
+    ) 0 else 1
+    val totalSources = candidates.size * enabledAddons.size + pluginSourceCount + cloudStreamSourceCount + skyStreamSourceCount
     val generation = ++streamRequestGeneration
     val merged = linkedMapOf<String, AddonStream>()
     val requestGate = Semaphore(4)
@@ -2878,6 +3057,29 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
               }
             }
           }.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) }
+          completedSources += 1
+          publish()
+        }
+      }
+      if (skyStreamSourceCount > 0 && cloudStreamTitle != null) {
+        launch {
+          runCatching {
+            SkyStreamPlugins.manager.streams(
+              title = cloudStreamTitle,
+              year = detail.year?.toIntOrNull(),
+              imdbId = skyStreamImdbId,
+              type = detail.type,
+              season = episode?.seasonNumber,
+              episode = episode?.episodeNumber,
+            ) { providerStreams ->
+              withContext(Dispatchers.Main.immediate) {
+                if (generation == streamRequestGeneration) {
+                  providerStreams.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) }
+                  publish()
+                }
+              }
+            }.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) }
+          }.onFailure { Log.w("StreamDekSkyStream", "SkyStream providers failed for $skyStreamImdbId", it) }
           completedSources += 1
           publish()
         }
@@ -4130,6 +4332,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     preferences.rememberLastSource?.let(appSettingsStore::saveRememberLastSource)
     preferences.blurUnwatchedEpisodes?.let(appSettingsStore::saveBlurUnwatchedEpisodes)
     preferences.fusionBadgesEnabled?.let(appSettingsStore::saveFusionBadges)
+    preferences.streamDekFormattingEnabled?.let(appSettingsStore::saveStreamDekFormatting)
     preferences.showSizeBadges?.let(appSettingsStore::saveShowSizeBadges)
     preferences.showAddonTmdbRatings?.let(appSettingsStore::saveShowAddonTmdbRatings)
     preferences.preferredQuality?.let(appSettingsStore::savePreferredQuality)
@@ -4182,6 +4385,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       rememberLastSource = preferences.rememberLastSource ?: uiState.rememberLastSource,
       blurUnwatchedEpisodes = preferences.blurUnwatchedEpisodes ?: uiState.blurUnwatchedEpisodes,
       fusionBadgesEnabled = preferences.fusionBadgesEnabled ?: uiState.fusionBadgesEnabled,
+      streamDekFormattingEnabled = preferences.streamDekFormattingEnabled ?: uiState.streamDekFormattingEnabled,
       showSizeBadges = preferences.showSizeBadges ?: uiState.showSizeBadges,
       showAddonTmdbRatings = preferences.showAddonTmdbRatings ?: uiState.showAddonTmdbRatings,
       preferredQuality = preferences.preferredQuality ?: uiState.preferredQuality,
@@ -4210,15 +4414,20 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           // would produce duplicate rows and contradictory progress with no principled winner.
           val primary = uiState.primarySyncService
           val primaryIsTrakt = primary == SyncService.Trakt.id
-          val primaryConnected = if (primaryIsTrakt) status.connected else syncServiceStatus(uiState, primary).connected
+          val primaryStatus = syncServiceStatus(uiState, primary)
+          val primaryConnected = if (primaryIsTrakt) status.connected else primaryStatus.connected
           val cw = when {
             !primaryConnected -> emptyList()
             primaryIsTrakt -> apiClient.fetchTraktContinueWatching(session, profileId).getOrElse { emptyList() }
+            // MDBList has no playback API; skipping the call avoids a guaranteed round-trip
+            // failure on every dashboard refresh.
+            !primaryStatus.supportsPlayback -> emptyList()
             else -> apiClient.fetchSyncServicePlayback(session, profileId, primary).getOrElse { emptyList() }
           }
           val wl = when {
             !primaryConnected -> emptyList()
             primaryIsTrakt -> apiClient.fetchTraktWatchlist(session, profileId).getOrElse { emptyList() }
+            !primaryStatus.supportsWatchlist -> emptyList()
             else -> apiClient.fetchSyncServiceWatchlist(session, profileId, primary).getOrElse { emptyList() }
           }
           // Recommendations stay with Trakt: it is the only service that provides them.
@@ -4238,9 +4447,59 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           pendingDeviceCode = null,
           mergedWatchlist = mergeWatchlistWithLocal(dashboard.watchlist),
         )
+        backfillTrackingArtwork()
       },
       onFailure = { message -> uiState = uiState.copy(traktLoading = false, errorMessage = message) },
     )
+  }
+
+  /**
+   * Fill in artwork the tracking service did not send.
+   *
+   * Trakt's enriched endpoints carry TMDB posters inline; SIMKL and MDBList do not, so switching
+   * the primary sync service left the watchlist grid drawing empty cards for titles that opened
+   * fine on the detail page. The rows still carry a resolvable id (plus title/year), which is
+   * exactly what the detail lookup needs, so the images can be recovered client-side.
+   */
+  private fun backfillTrackingArtwork() {
+    val watchlistGaps = uiState.traktWatchlist.filter { it.poster.isNullOrBlank() }
+    val continueGaps = uiState.traktContinueWatching.filter { it.poster.isNullOrBlank() }
+    val gaps = (watchlistGaps + continueGaps).distinctBy { trackingArtworkKey(it) }
+    if (gaps.isEmpty()) return
+    trackingArtworkJob?.cancel()
+    trackingArtworkJob = viewModelScope.launch {
+      // Same bound the other per-item enrichment passes use: enough to fill a screen quickly
+      // without firing one request per row at the backend all at once.
+      val gate = Semaphore(4)
+      val resolved = supervisorScope {
+        gaps.map { item ->
+          async {
+            val key = trackingArtworkKey(item)
+            if (trackingArtworkCache.containsKey(key)) return@async key to trackingArtworkCache[key]
+            val detail = gate.withPermit {
+              apiClient.fetchDetails(item.type, item.tmdbId?.toString() ?: item.id, item.title, item.year).getOrNull()
+            }
+            key to detail?.let { TrackingArtwork(it.poster, it.backdrop) }?.takeIf { !it.poster.isNullOrBlank() }
+          }
+        }.awaitAll()
+      }
+      resolved.forEach { (key, artwork) -> trackingArtworkCache[key] = artwork }
+      if (resolved.none { (_, artwork) -> artwork != null }) return@launch
+      val watchlist = uiState.traktWatchlist.map(::withCachedArtwork)
+      uiState = uiState.copy(
+        traktWatchlist = watchlist,
+        traktContinueWatching = uiState.traktContinueWatching.map(::withCachedArtwork),
+        mergedWatchlist = mergeWatchlistWithLocal(watchlist),
+      )
+    }
+  }
+
+  private fun trackingArtworkKey(item: TraktItem): String = mediaKey(item.type, item.tmdbId?.toString() ?: item.id)
+
+  private fun withCachedArtwork(item: TraktItem): TraktItem {
+    if (!item.poster.isNullOrBlank()) return item
+    val artwork = trackingArtworkCache[trackingArtworkKey(item)] ?: return item
+    return item.copy(poster = artwork.poster, backdrop = item.backdrop?.ifBlank { null } ?: artwork.backdrop)
   }
 
   fun toggleWatchlist(item: MediaItem) {
@@ -4582,6 +4841,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       rememberLastSource = uiState.rememberLastSource,
       blurUnwatchedEpisodes = uiState.blurUnwatchedEpisodes,
       fusionBadgesEnabled = uiState.fusionBadgesEnabled,
+      streamDekFormattingEnabled = uiState.streamDekFormattingEnabled,
       showSizeBadges = uiState.showSizeBadges,
       showAddonTmdbRatings = uiState.showAddonTmdbRatings,
       preferredQuality = uiState.preferredQuality,
@@ -4703,6 +4963,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     syncCloudPreferences()
   }
   fun setFusionBadgesEnabled(value: Boolean) { appSettingsStore.saveFusionBadges(value); uiState = uiState.copy(fusionBadgesEnabled = value); syncCloudPreferences() }
+  fun setStreamDekFormattingEnabled(value: Boolean) { appSettingsStore.saveStreamDekFormatting(value); uiState = uiState.copy(streamDekFormattingEnabled = value); syncCloudPreferences() }
   fun setShowSizeBadges(value: Boolean) { appSettingsStore.saveShowSizeBadges(value); uiState = uiState.copy(showSizeBadges = value); syncCloudPreferences() }
   fun setShowAddonTmdbRatings(value: Boolean) { appSettingsStore.saveShowAddonTmdbRatings(value); uiState = uiState.copy(showAddonTmdbRatings = value); syncCloudPreferences() }
   fun setPreferredQuality(value: String) { appSettingsStore.savePreferredQuality(value); uiState = uiState.copy(preferredQuality = value); syncCloudPreferences() }
@@ -5058,8 +5319,12 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
    * binary the device downloads itself — so this is purely local.
    */
   private fun refreshProfileCloudStreamPlugins() {
-    if (!CloudStreamPlugins.isInitialized) return
     val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
+    // SkyStream collections are profile-scoped for the same reason: one household member's
+    // sources should not answer stream requests under another's profile. Nothing to load ahead
+    // of time — a .sky is read from disk when it is asked for a stream, not held in the process.
+    if (SkyStreamPlugins.isInitialized) SkyStreamPlugins.manager.selectProfileStorage(ownerKey)
+    if (!CloudStreamPlugins.isInitialized) return
     CloudStreamPlugins.manager.selectProfileStorage(ownerKey)
     cloudStreamLoadJob?.cancel()
     cloudStreamLoadJob = viewModelScope.launch(Dispatchers.IO) {
@@ -6519,6 +6784,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
               onVividAmbientChange = viewModel::setVividAmbient,
               onAmbientTintPercentChange = viewModel::setAmbientTintPercent,
               onFusionBadgesChange = viewModel::setFusionBadgesEnabled,
+              onStreamDekFormattingChange = viewModel::setStreamDekFormattingEnabled,
               onShowSizeBadgesChange = viewModel::setShowSizeBadges,
               onShowAddonTmdbRatingsChange = viewModel::setShowAddonTmdbRatings,
               onPreferredQualityChange = viewModel::setPreferredQuality,
@@ -7345,12 +7611,6 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
   }
 }
 
-private data class HomeHeroLayer(
-  val page: Int,
-  val visibility: Float,
-  val offset: Float,
-)
-
 private fun homeHeroPageOffset(
   pagerState: androidx.compose.foundation.pager.PagerState,
   page: Int,
@@ -7423,6 +7683,37 @@ private fun HomeHeroTitle(item: MediaItem, lightMode: Boolean) {
   }
 }
 
+/**
+ * The page indicator, kept in its own composable on purpose.
+ *
+ * Each dot's width tracks the swipe, and width is a *layout* property — so this reads the pager's
+ * offset every frame and re-lays-out on every one of them. That is fine for a row of small boxes,
+ * but inlined in the carousel the read belonged to the carousel's composition scope, which meant
+ * the backdrops, the title block and the whole hero were recomposed and re-measured 60+ times a
+ * second while dragging. Scoping the read here confines that work to the dots.
+ */
+@Composable
+private fun HomeHeroPageDots(
+  pageCount: Int,
+  pagerState: androidx.compose.foundation.pager.PagerState,
+  onSelect: (Int) -> Unit,
+) {
+  Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+    repeat(pageCount) { index ->
+      val activeFraction = homeHeroPageVisibility(pagerState, index)
+      Box(
+        modifier = Modifier
+          .clickable { onSelect(index) }
+          .clip(CircleShape)
+          .background(MaterialTheme.colorScheme.onBackground)
+          .graphicsLayer { alpha = 0.30f + (0.62f * activeFraction) }
+          .width((8f + (18f * activeFraction)).dp)
+          .height(8.dp),
+      )
+    }
+  }
+}
+
 @Composable
 private fun HomeHeroCarousel(
   items: List<MediaItem>,
@@ -7443,25 +7734,25 @@ private fun HomeHeroCarousel(
     val heroHeight = 640.dp
     val heroDotsLaneHeight = 26.dp
     val heroBoundaryFadeHeight = 260.dp
-    val heroWidthPx = maxWidth.value
     val heroItemSpacing = if (maxWidth < 390.dp) 4.dp else if (showSynopsis) 8.dp else 6.dp
     val heroCtaSpacing = if (maxWidth < 390.dp || !showSynopsis) 4.dp else 7.dp
-    // While settled, draw the current page dead centre at full opacity. Anything else
-    // risks a mis-measured offset hiding the hero until the user swipes it back.
-    val visiblePages = if (!pagerState.isScrollInProgress) {
-      listOf(HomeHeroLayer(currentPage, 1f, 0f))
-    } else {
-      listOf(
-        currentPage,
-        (currentPage - 1).coerceAtLeast(0),
-        (currentPage + 1).coerceAtMost(items.lastIndex),
-      ).distinct().mapNotNull { index ->
-        val offset = homeHeroPageOffset(pagerState, index)
-        val visibility = homeHeroPageVisibility(pagerState, index)
-        if (visibility <= 0f) null else HomeHeroLayer(index, visibility, offset)
-      }.sortedBy { it.visibility }
-        // Never end up with nothing to draw.
-        .ifEmpty { listOf(HomeHeroLayer(currentPage, 1f, 0f)) }
+    // Which pages can be on screen at all.
+    //
+    // This used to be rebuilt in composition from `currentPageOffsetFraction`, which changes on
+    // every frame of a swipe — so the entire hero recomposed 60+ times a second while dragging.
+    // Deriving the window from the settled page instead means the list, and the composition that
+    // depends on it, changes once per page turn. Each layer's actual offset is read inside its
+    // graphicsLayer below, which runs in the draw phase and needs no recomposition at all.
+    //
+    // Order is by page index and never changes. The previous version sorted by visibility, so the
+    // two layers swapped slots halfway through every swipe; with no `key`, Compose reused each
+    // slot's AsyncImage for a different page and Coil restarted the request — the flicker that
+    // came across as jitter.
+    val heroPages by remember(pagerState, items.size) {
+      derivedStateOf {
+        val settled = pagerState.currentPage.coerceIn(items.indices)
+        listOf(settled - 1, settled, settled + 1).filter { it in items.indices }
+      }
     }
 
     Box(modifier = Modifier.fillMaxWidth().height(heroHeight + heroDotsLaneHeight)) {
@@ -7472,19 +7763,39 @@ private fun HomeHeroCarousel(
 
       Box(modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().height(heroHeight).clip(RectangleShape)) {
         Box(modifier = Modifier.fillMaxSize().graphicsLayer { translationY = scrollOffset().toFloat() * 0.46f }) {
-          visiblePages.forEach { layer ->
-            AsyncImage(
-              model = items[layer.page].backdrop ?: items[layer.page].poster,
-              contentDescription = items[layer.page].title,
-              modifier = Modifier.fillMaxSize().graphicsLayer {
-                alpha = layer.visibility
-                translationX = -layer.offset * heroWidthPx * 22f
-                scaleX = 1.08f
-                scaleY = 1.08f
-              },
-              contentScale = ContentScale.Crop,
-              alignment = Alignment.Center,
-            )
+          heroPages.forEach { page ->
+            key(page) {
+              AsyncImage(
+                model = items[page].backdrop ?: items[page].poster,
+                contentDescription = items[page].title,
+                // One page of offset moves exactly one hero width, so the next backdrop sits flush
+                // against the current one and tracks the finger. `size.width` is the layer's width
+                // in pixels — the previous multiplier was built on `maxWidth.value`, which is the
+                // width in *dp*, so the neighbouring image was parked roughly seven screens away
+                // and only slid into view over the last tenth of the swipe. For the rest of the
+                // gesture there was nothing but backdrop between the two images.
+                //
+                // Backdrops stay fully opaque: cross-fading two adjacent images means both are
+                // semi-transparent mid-swipe, which shows the background through the seam.
+                // The window always holds three pages so composition stays stable, but a page that
+                // is a full width away must not be rasterised — `alpha = 0f` still draws the layer
+                // and composites it, which measured as ~7ms of extra frame time from the third
+                // full-screen backdrop. drawWithContent skips the draw outright, and like the
+                // transform above it reads the offset in the draw phase, so nothing recomposes.
+                modifier = Modifier
+                  .fillMaxSize()
+                  .graphicsLayer {
+                    translationX = -homeHeroPageOffset(pagerState, page) * size.width
+                    scaleX = 1.08f
+                    scaleY = 1.08f
+                  }
+                  .drawWithContent {
+                    if (kotlin.math.abs(homeHeroPageOffset(pagerState, page)) < 1f) drawContent()
+                  },
+                contentScale = ContentScale.Crop,
+                alignment = Alignment.Center,
+              )
+            }
           }
 
           if (!lightMode) {
@@ -7521,25 +7832,42 @@ private fun HomeHeroCarousel(
           verticalArrangement = Arrangement.spacedBy(heroCtaSpacing),
         ) {
           Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
-            visiblePages.forEach { layer ->
-              Box(modifier = Modifier.graphicsLayer { alpha = layer.visibility; translationX = -layer.offset * heroWidthPx * 12f }) {
+            heroPages.forEach { page ->
+              key(page) {
+              // Same one-page-per-hero-width travel as the backdrop so the title stays locked to
+              // its image, and the same draw-phase offset read so dragging never recomposes this.
+              // Text keeps its cross-fade — sliding two opaque copies of the overlay past each
+              // other reads as a collision rather than a transition. Only the title block lives
+              // here; the shared View Details button below always follows the settled page, so an
+              // off-screen neighbour never becomes a stray touch target.
+              Box(
+                modifier = Modifier
+                  .graphicsLayer {
+                    val offset = homeHeroPageOffset(pagerState, page)
+                    alpha = (1f - kotlin.math.abs(offset)).coerceIn(0f, 1f)
+                    translationX = -offset * size.width
+                  }
+                  .drawWithContent {
+                    if (kotlin.math.abs(homeHeroPageOffset(pagerState, page)) < 1f) drawContent()
+                  },
+              ) {
               Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(heroItemSpacing),
               ) {
-                HomeHeroTitle(items[layer.page], lightMode)
+                HomeHeroTitle(items[page], lightMode)
                 Text(
-                  (listOf(if (items[layer.page].type == "tv" || items[layer.page].type == "series") "Series" else "Movie") + items[layer.page].genres.take(3)).joinToString(" \u00B7 "),
+                  (listOf(if (items[page].type == "tv" || items[page].type == "series") "Series" else "Movie") + items[page].genres.take(3)).joinToString(" \u00B7 "),
                   style = MaterialTheme.typography.bodyMedium,
                   color = Color.White.copy(alpha = 0.72f),
                   fontWeight = FontWeight.Bold,
                   maxLines = 1,
                   overflow = TextOverflow.Ellipsis,
                 )
-                if (showSynopsis && items[layer.page].description.isNotBlank()) {
+                if (showSynopsis && items[page].description.isNotBlank()) {
                   Text(
-                    items[layer.page].description,
+                    items[page].description,
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.White.copy(alpha = 0.82f),
                     maxLines = 2,
@@ -7548,6 +7876,7 @@ private fun HomeHeroCarousel(
                     modifier = Modifier.fillMaxWidth(0.88f),
                   )
                 }
+              }
               }
               }
             }
@@ -7572,20 +7901,11 @@ private fun HomeHeroCarousel(
             .height(heroDotsLaneHeight),
           contentAlignment = Alignment.BottomCenter,
         ) {
-          Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            items.forEachIndexed { index, _ ->
-              val activeFraction = homeHeroPageVisibility(pagerState, index)
-              Box(
-                modifier = Modifier
-                  .clickable { pagerScope.launch { pagerState.animateScrollToPage(index) } }
-                  .clip(CircleShape)
-                  .background(MaterialTheme.colorScheme.onBackground)
-                  .graphicsLayer { alpha = 0.30f + (0.62f * activeFraction) }
-                  .width((8f + (18f * activeFraction)).dp)
-                  .height(8.dp),
-              )
-            }
-          }
+          HomeHeroPageDots(
+            pageCount = items.size,
+            pagerState = pagerState,
+            onSelect = { index -> pagerScope.launch { pagerState.animateScrollToPage(index) } },
+          )
         }
       }
     }
@@ -8109,6 +8429,9 @@ private object BrowseCategoryCache {
   @Synchronized fun clear() = entries.clear()
 }
 
+/** How many entries the browse screen inspects when deciding what kind of catalogue a row holds. */
+private const val BROWSE_ROW_KIND_SAMPLE = 200
+
 private fun browseCategoryIcon(name: String): ImageVector = when (name) {
   "Sports" -> Icons.Rounded.SportsSoccer
   "News" -> Icons.Rounded.Newspaper
@@ -8156,8 +8479,19 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
   val browseHazeState = rememberHazeState()
   val modernHeader = headerStyle == HeaderStyle.Modern
   val isM3uRow = row.id.startsWith("m3u_playlists_")
-  val isLiveRow = row.id == "m3u_playlists_live" || row.title.contains("live", true) || row.title.contains("sport", true) || row.items.any(MediaItem::isLiveCatalogItem)
-  val isNetworkRow = row.id == "streaming_networks" || (!isM3uRow && row.items.any { it.type == "network" })
+  // Both of these decide what kind of row this is, and both used to scan the entire catalogue on
+  // every recomposition — isLiveCatalogItem() compiles regexes, so on a 200k-channel playlist VOD
+  // row (where the id and title checks do not short-circuit) that was enough to stall composition
+  // on its own. The answer cannot change for a given row, and for a catalogue that is homogeneous
+  // by construction a sample off the front is as good an answer as the full sweep.
+  val isLiveRow = remember(row.id, row.title, row.items.size) {
+    row.id == "m3u_playlists_live" || row.title.contains("live", true) || row.title.contains("sport", true) ||
+      row.items.asSequence().take(BROWSE_ROW_KIND_SAMPLE).any(MediaItem::isLiveCatalogItem)
+  }
+  val isNetworkRow = remember(row.id, row.items.size) {
+    row.id == "streaming_networks" ||
+      (!isM3uRow && row.items.asSequence().take(BROWSE_ROW_KIND_SAMPLE).any { it.type == "network" })
+  }
   val landscapeArtwork = (isLiveRow && liveLandscapeCards) || isNetworkRow
   val showsList = layout == BrowseLayout.List
   // Landscape artwork is unreadable three across, so those rows toggle straight between their
@@ -10486,8 +10820,8 @@ private fun LibraryTabScreen(viewModel: NativeAppViewModel) {
           GlassCard {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
               Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("real-debrid", "alldebrid", "premiumize", "torbox", "debrid-link").forEach { provider ->
-                  FilterChip(selected = selectedProvider == provider, onClick = { selectedProvider = provider }, label = { Text(provider) })
+                DebridProviderOptions.forEach { (provider, label) ->
+                  FilterChip(selected = selectedProvider == provider, onClick = { selectedProvider = provider }, label = { Text(label) })
                 }
               }
               OutlinedTextField(value = providerApiKey, onValueChange = { providerApiKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Service access key") }, singleLine = true)
@@ -10504,7 +10838,7 @@ private fun LibraryTabScreen(viewModel: NativeAppViewModel) {
           GlassCard {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
               Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(account.provider, fontWeight = FontWeight.Bold)
+                Text(debridProviderLabel(account.provider), fontWeight = FontWeight.Bold)
                 Text(account.username ?: "Configured", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f))
               }
               Column(horizontalAlignment = Alignment.End) {
@@ -10857,6 +11191,7 @@ private fun SettingsTab(
   onVividAmbientChange: (Boolean) -> Unit,
   onAmbientTintPercentChange: (Int) -> Unit,
   onFusionBadgesChange: (Boolean) -> Unit,
+  onStreamDekFormattingChange: (Boolean) -> Unit,
   onShowSizeBadgesChange: (Boolean) -> Unit,
   onShowAddonTmdbRatingsChange: (Boolean) -> Unit,
   onPreferredQualityChange: (String) -> Unit,
@@ -10949,7 +11284,7 @@ private fun SettingsTab(
       SettingsRoute.Subtitles to "subtitle subtitles caption captions language source",
       SettingsRoute.Addons to "addon add-on catalog channel provider install configure source",
       SettingsRoute.Plugins to "plugin source provider repository javascript cloudstream cs3 extension collection",
-      SettingsRoute.Debrid to "premium debrid real debrid alldebrid torbox account",
+      SettingsRoute.Debrid to "premium debrid real debrid alldebrid premiumize torbox debrid-link deepbrid account",
       SettingsRoute.SyncServices to "sync services tracking tracker trakt simkl mdblist scrobble watchlist history connect",
       SettingsRoute.Trakt to "trakt scrobble watchlist history sync",
       SettingsRoute.Simkl to "simkl tracking scrobble watchlist sync connect",
@@ -11102,9 +11437,9 @@ private fun SettingsTab(
         SettingsSection("Services") {
           SettingsNavRow("+", Color(0xFF22C55E), "Add-ons", "${uiState.addons.count { it.enabled }} on - ${uiState.addons.sumOf { supportedHomeCatalogCount(it) }} Home rows", onClick = { onRouteChange(SettingsRoute.Addons) })
           SettingsDivider()
-          SettingsNavRow("M3U", Color(0xFFEC4899), "M3U Playlists", if (uiState.m3uSources.isEmpty()) "Add an IPTV playlist URL" else "${uiState.m3uSources.count { it.enabled }} of ${uiState.m3uSources.size} playlists on", onClick = { onRouteChange(SettingsRoute.M3uPlaylists) })
-          SettingsDivider()
           SettingsNavRow("JS", Color(0xFFF59E0B), "Plugins", "${enabledStreamingSourceCount()} streaming sources on", onClick = { onRouteChange(SettingsRoute.Plugins) })
+          SettingsDivider()
+          SettingsNavRow("M3U", Color(0xFFEC4899), "M3U Playlists", if (uiState.m3uSources.isEmpty()) "Add an IPTV playlist URL" else "${uiState.m3uSources.count { it.enabled }} of ${uiState.m3uSources.size} playlists on", onClick = { onRouteChange(SettingsRoute.M3uPlaylists) })
           SettingsDivider()
           SettingsNavRow("DB", Color(0xFF38BDF8), "Premium Services", if (uiState.debridAccounts.isEmpty()) "Connect a supported premium service" else "${uiState.debridAccounts.size} services connected", onClick = { onRouteChange(SettingsRoute.Debrid) })
           SettingsDivider()
@@ -11269,6 +11604,7 @@ private fun SettingsTab(
             SettingsSection("Stream Details") {
               SettingsSwitchRow("FSN", Color(0xFFEC4899), "Stream Detail Badges", "Show useful quality and format labels on stream choices.", uiState.fusionBadgesEnabled, onFusionBadgesChange)
               SettingsDivider()
+              SettingsSwitchRow("FMT", Color(0xFF0EA5E9), "StreamDek Formatting", "Rebuild add-on results into StreamDek's own two-line layout. Off shows each result exactly as the add-on sent it, line breaks and all.", uiState.streamDekFormattingEnabled, onStreamDekFormattingChange)
               SettingsSwitchRow("SIZ", Color(0xFFF97316), "Size Badges", "Show the download size on stream choices.", uiState.showSizeBadges, onShowSizeBadgesChange)
               SettingsDivider()
               SettingsChoiceRow("POS", Color(0xFF22D3EE), "Badge Position", "Choose whether stream labels appear at the top or bottom.", listOf("Top", "Bottom"), uiState.badgePosition, onBadgePositionChange)
@@ -12014,10 +12350,12 @@ private fun enabledStreamingSourceCount(): Int {
   val enabledPluginRepos = pluginState.repos.filter { it.enabled }.mapTo(mutableSetOf()) { it.url }
   val pluginSources = pluginState.providers.count { it.enabled && it.repoUrl in enabledPluginRepos }
 
-  if (!CloudStreamPlugins.isInitialized) return pluginSources
+  val skyStreamSources = if (!SkyStreamPlugins.isInitialized) 0 else SkyStreamPlugins.manager.activeProviders().size
+  if (!CloudStreamPlugins.isInitialized) return pluginSources + skyStreamSources
   val cloudStreamState = CloudStreamPlugins.manager.state
   val enabledCloudStreamRepos = cloudStreamState.repos.filter { it.enabled }.mapTo(mutableSetOf()) { it.url }
-  return pluginSources + cloudStreamState.providers.count { it.enabled && it.repoUrl in enabledCloudStreamRepos }
+  return pluginSources + skyStreamSources +
+    cloudStreamState.providers.count { it.enabled && it.repoUrl in enabledCloudStreamRepos }
 }
 
 private fun settingsRouteTitle(route: SettingsRoute): String = when (route) {
@@ -13234,15 +13572,54 @@ private fun PluginSourceTestDialog(state: PluginSourceTestState, onDismiss: () -
 
 @Composable
 private fun PluginProviderSettingsDialog(provider: PluginProvider, onDismiss: () -> Unit) {
-  val scope = rememberCoroutineScope()
-  var loading by remember(provider.id) { mutableStateOf(true) }
-  var saving by remember(provider.id) { mutableStateOf(false) }
-  var fields by remember(provider.id) { mutableStateOf<List<PluginSettingField>>(emptyList()) }
-  var values by remember(provider.id) { mutableStateOf(StreamDekPlugins.manager.providerSettings(provider.id)) }
-  var error by remember(provider.id) { mutableStateOf<String?>(null) }
+  ProviderSettingsDialog(
+    providerKey = provider.id,
+    providerName = provider.name,
+    loadSchema = { StreamDekPlugins.manager.settingsSchema(provider.id) },
+    initialValues = { StreamDekPlugins.manager.providerSettings(provider.id) },
+    onSave = { values -> StreamDekPlugins.manager.saveProviderSettings(provider.id, values) },
+    onDismiss = onDismiss,
+  )
+}
 
-  LaunchedEffect(provider.id) {
-    StreamDekPlugins.manager.settingsSchema(provider.id)
+/** The same dialog for a SkyStream source — its `getSettings()` answers the same field model. */
+@Composable
+private fun SkyProviderSettingsDialog(provider: SkyProvider, onDismiss: () -> Unit) {
+  ProviderSettingsDialog(
+    providerKey = provider.packageName,
+    providerName = provider.name,
+    loadSchema = { SkyStreamPlugins.manager.settingsSchema(provider) },
+    initialValues = { SkyStreamPlugins.manager.providerSettings(provider.packageName) },
+    onSave = { values -> SkyStreamPlugins.manager.saveProviderSettings(provider.packageName, values) },
+    onDismiss = onDismiss,
+  )
+}
+
+/**
+ * Renders whatever settings a source declares at runtime.
+ *
+ * Both plugin systems describe their options the same way — a list of typed fields — so the
+ * rendering, defaulting and saving is shared and each system only supplies how to fetch the
+ * schema and where to put the answers.
+ */
+@Composable
+private fun ProviderSettingsDialog(
+  providerKey: String,
+  providerName: String,
+  loadSchema: suspend () -> Result<List<PluginSettingField>>,
+  initialValues: () -> Map<String, Any>,
+  onSave: suspend (Map<String, Any>) -> Unit,
+  onDismiss: () -> Unit,
+) {
+  val scope = rememberCoroutineScope()
+  var loading by remember(providerKey) { mutableStateOf(true) }
+  var saving by remember(providerKey) { mutableStateOf(false) }
+  var fields by remember(providerKey) { mutableStateOf<List<PluginSettingField>>(emptyList()) }
+  var values by remember(providerKey) { mutableStateOf(initialValues()) }
+  var error by remember(providerKey) { mutableStateOf<String?>(null) }
+
+  LaunchedEffect(providerKey) {
+    loadSchema()
       .onSuccess { loaded ->
         fields = loaded
         val withDefaults = values.toMutableMap()
@@ -13257,7 +13634,7 @@ private fun PluginProviderSettingsDialog(provider: PluginProvider, onDismiss: ()
     Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f))) {
       Column(Modifier.fillMaxWidth().heightIn(max = 620.dp).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("Source settings", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f))
-        Text(provider.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
+        Text(providerName, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
         when {
           loading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
           error != null -> Text(error.orEmpty(), color = MaterialTheme.colorScheme.error)
@@ -13305,7 +13682,7 @@ private fun PluginProviderSettingsDialog(provider: PluginProvider, onDismiss: ()
           Button(onClick = {
             saving = true
             scope.launch {
-              StreamDekPlugins.manager.saveProviderSettings(provider.id, values)
+              onSave(values)
               saving = false
               onDismiss()
             }
@@ -13325,8 +13702,8 @@ private enum class CollectionKind(val label: String, val hint: String, val place
   ),
   CloudStream(
     "CloudStream",
-    "CloudStream .cs3 extensions. Sources start off — turn on the ones you want.",
-    "Paste the repo.json link",
+    "CloudStream .cs3 and SkyStream .sky extensions — the link is read to work out which. A repo.json or a mega repo that bundles several. Sources start off — turn on the ones you want.",
+    "Paste the repo.json or mega repo link",
   ),
 }
 
@@ -13475,14 +13852,39 @@ private fun PluginsSettingsSummary() {
                   }
                   .onFailure { message = humanReadablePluginError(it) }
               CollectionKind.CloudStream -> {
+                // One field serves both formats. A SkyStream repo and a CloudStream repo are
+                // advertised with the identical manifest shape — only the file extension on the
+                // plugin entries tells them apart — so asking the user to pick would be asking
+                // them something the URL already answers. SkyStream is tried first because the
+                // CloudStream reader does not check extensions and would otherwise install .sky
+                // bundles it has no way to run, which is exactly how they failed before.
+                SkyStreamPlugins.initialize(context.applicationContext)
                 CloudStreamPlugins.initialize(context.applicationContext)
-                CloudStreamPlugins.manager.addRepo(url)
-                  .onSuccess {
+                // Both engines are offered the URL. Each takes only the entries whose extension it
+                // can run, so an aggregate carrying both formats installs into both, and one
+                // carrying a single format simply gets "no providers" from the other.
+                val skyResult = SkyStreamPlugins.manager.addRepo(url)
+                val cloudResult = CloudStreamPlugins.manager.addRepo(url)
+                when {
+                  skyResult.isSuccess || cloudResult.isSuccess -> {
                     repositoryUrl = ""
-                    message = "CloudStream collection added."
+                    message = when {
+                      skyResult.isSuccess && cloudResult.isSuccess -> "Collection added — SkyStream and CloudStream sources."
+                      skyResult.isSuccess -> "SkyStream collection added."
+                      else -> "CloudStream collection added."
+                    }
                     cloudStreamVersion += 1
                   }
-                  .onFailure { message = it.message ?: "That collection could not be added." }
+                  // Neither could use it. "These aren't .sky files" is the least informative
+                  // reason, so prefer whatever the other engine said went wrong.
+                  else -> {
+                    val skyFailure = skyResult.exceptionOrNull()
+                    val reason = if (skyFailure is NotASkyStreamRepo) cloudResult.exceptionOrNull() else skyFailure
+                    message = reason?.message
+                      ?: cloudResult.exceptionOrNull()?.message
+                      ?: "That collection could not be added."
+                  }
+                }
               }
             }
             syncState()
@@ -13611,6 +14013,7 @@ private fun PluginsSettingsSummary() {
     }
 
     CloudStreamCollectionsSection(refreshSignal = cloudStreamVersion)
+    SkyStreamCollectionsSection(refreshSignal = cloudStreamVersion)
   }
 }
 
@@ -13622,6 +14025,131 @@ private fun PluginsSettingsSummary() {
  * Sources default to off. A single repo can list 80+ extensions, each a separate multi-megabyte
  * download that only gets fetched when it is switched on.
  */
+/**
+ * Installed SkyStream collections and their sources.
+ *
+ * Deliberately a sibling of [CloudStreamCollectionsSection] rather than a merged list: the two
+ * run on completely different engines, and keeping them apart means it is obvious which kind a
+ * collection is when one of them misbehaves. No per-source test button here — the CloudStream one
+ * probes a known title through a loaded provider, which has no equivalent while these plugins are
+ * only wired up for streams.
+ */
+@Composable
+private fun SkyStreamCollectionsSection(refreshSignal: Int) {
+  val context = LocalContext.current
+  val scope = rememberCoroutineScope()
+  LaunchedEffect(Unit) { SkyStreamPlugins.initialize(context.applicationContext) }
+  if (!SkyStreamPlugins.isInitialized) return
+  val manager = SkyStreamPlugins.manager
+
+  var state by remember(refreshSignal) { mutableStateOf(manager.state) }
+  var busy by remember { mutableStateOf(false) }
+  var message by remember { mutableStateOf<String?>(null) }
+  var expandedRepoUrl by rememberSaveable { mutableStateOf<String?>(null) }
+  var query by rememberSaveable { mutableStateOf("") }
+  var pendingProvider by remember { mutableStateOf<String?>(null) }
+  var settingsProvider by remember { mutableStateOf<SkyProvider?>(null) }
+
+  fun syncState() { state = manager.state }
+
+  settingsProvider?.let { provider ->
+    SkyProviderSettingsDialog(provider = provider, onDismiss = { settingsProvider = null })
+  }
+
+  if (state.repos.isEmpty()) return
+
+  Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+    SettingsSection("SkyStream Collections") {
+      state.repos.forEachIndexed { index, repo ->
+        if (index > 0) Spacer(modifier = Modifier.height(10.dp))
+        val allSources = remember(state, repo.url) { state.providers.filter { it.repoUrl == repo.url } }
+        val sources = remember(allSources, query) {
+          allSources.filter { query.isBlank() || it.name.contains(query, ignoreCase = true) }.sortedBy { it.name.lowercase() }
+        }
+        val enabledCount = allSources.count { it.enabled }
+        CollectionCard(
+          title = repo.name,
+          subtitle = "$enabledCount of ${allSources.size} ${if (allSources.size == 1) "source" else "sources"} on",
+          enabled = repo.enabled,
+          expanded = expandedRepoUrl == repo.url,
+          busy = busy,
+          onToggleEnabled = { enabled -> manager.enableRepo(repo.url, enabled); syncState() },
+          onToggleExpanded = { expandedRepoUrl = if (expandedRepoUrl == repo.url) null else repo.url },
+          onRefresh = {
+            busy = true
+            scope.launch {
+              manager.refreshRepo(repo.url)
+                .onSuccess { message = "${repo.name} updated." }
+                .onFailure { message = it.message ?: "That collection could not be refreshed." }
+              syncState()
+              busy = false
+            }
+          },
+          onRemove = { manager.removeRepo(repo.url); syncState() },
+        ) {
+          OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            placeholder = { InputGuideText("Search sources") },
+            leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+            singleLine = true,
+          )
+          sources.forEachIndexed { sourceIndex, provider ->
+            if (sourceIndex > 0) SettingsDivider()
+            val key = provider.repoUrl + "|" + provider.packageName
+            Row(
+              modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(provider.name, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
+                Text(
+                  listOfNotNull(
+                    provider.categories.takeIf { it.isNotEmpty() }?.joinToString(" / "),
+                    "v${provider.version}",
+                  ).joinToString(" - "),
+                  color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+                  style = MaterialTheme.typography.bodySmall,
+                )
+              }
+              // Settings are declared at runtime, so the only way to know whether a source has
+              // any is to load it and ask. The button is offered whenever the source is on, and
+              // the dialog says so plainly when the plugin declares none.
+              IconButton(
+                onClick = { settingsProvider = provider },
+                enabled = repo.enabled && provider.enabled,
+              ) { Icon(Icons.Rounded.Tune, contentDescription = "${provider.name} settings") }
+              if (pendingProvider == key) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+              } else {
+                Switch(
+                  checked = provider.enabled && repo.enabled,
+                  enabled = repo.enabled,
+                  onCheckedChange = { enabled ->
+                    pendingProvider = key
+                    message = null
+                    scope.launch {
+                      manager.setProviderEnabled(provider.repoUrl, provider.packageName, enabled)
+                        .onFailure { message = it.message ?: "${provider.name} could not be turned on." }
+                      syncState()
+                      pendingProvider = null
+                    }
+                  },
+                )
+              }
+            }
+          }
+        }
+      }
+      message?.let {
+        Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.76f), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 10.dp))
+      }
+    }
+  }
+}
+
 @Composable
 private fun CloudStreamCollectionsSection(refreshSignal: Int) {
   val context = LocalContext.current
@@ -14237,9 +14765,28 @@ private fun DebridServiceCard(providerLabel: String, account: DebridAccount, ind
   }
 }
 
+/**
+ * Every premium service the backend will accept, paired with its display name, in the order the
+ * chips are shown. Must stay in step with SUPPORTED_DEBRID_PROVIDERS on the backend — the id is
+ * what gets posted, and the backend rejects anything not on its own list. Kept here as the single
+ * source of truth so adding a provider is one edit rather than three scattered literals.
+ */
+private val DebridProviderOptions = listOf(
+  "real-debrid" to "Real-Debrid",
+  "alldebrid" to "AllDebrid",
+  "premiumize" to "Premiumize",
+  "torbox" to "TorBox",
+  "debrid-link" to "Debrid-Link",
+  "deepbrid" to "Deepbrid",
+)
+
+/** Display name for a stored provider id, falling back to the id for anything unrecognised. */
+private fun debridProviderLabel(provider: String): String =
+  DebridProviderOptions.firstOrNull { it.first == provider }?.second ?: provider
+
 @Composable
 private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Unit, onAddDebrid: (String, String) -> Unit, onRemoveDebrid: (String) -> Unit, onMoveDebrid: (String, Int) -> Unit) {
-  val providerOptions = listOf("real-debrid" to "Real-Debrid", "alldebrid" to "AllDebrid", "premiumize" to "Premiumize", "torbox" to "TorBox", "debrid-link" to "Debrid-Link")
+  val providerOptions = DebridProviderOptions
   var selectedProvider by rememberSaveable { mutableStateOf(providerOptions.first().first) }
   var apiKey by rememberSaveable(selectedProvider) { mutableStateOf("") }
   val accounts = uiState.debridAccounts.sortedBy { it.priority }
@@ -14262,7 +14809,7 @@ private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Un
     } else {
       val activeProvider = accounts.firstOrNull { it.enabled }?.provider
       accounts.forEachIndexed { index, account ->
-        val label = providerOptions.firstOrNull { it.first == account.provider }?.second ?: account.provider
+        val label = debridProviderLabel(account.provider)
         DebridServiceCard(providerLabel = label, account = account, index = index, total = accounts.size, isActive = account.provider == activeProvider, onRemoveDebrid = onRemoveDebrid, onMoveDebrid = onMoveDebrid)
       }
     }
@@ -14408,6 +14955,13 @@ private fun SyncServicesSettingsSummary(
                 "Connect ${service.label} to make it primary",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+              )
+            } else if (!status.supportsPlayback) {
+              // Say so up front rather than letting the row silently stay empty after switching.
+              Text(
+                "${service.label} has no playback API — Continue Watching stays empty while it is primary",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
               )
             }
           }
@@ -14858,6 +15412,22 @@ private fun DetailScreen(
   LaunchedEffect(episodePageId) {
     if (episodePageId != null) trailerPopupUrl = null
   }
+  // Held back until the page has actually drawn its content, so the trailer's video pipeline is
+  // the last thing to start rather than something the page competes with while coming up.
+  //
+  // The wait is measured from content being on screen, not from navigation: a bare timer started
+  // at navigation can elapse while the page is still empty on a slow detail fetch, which puts the
+  // trailer right back into contention with everything else. It deliberately does not wait on
+  // sources — those can take many seconds, and the trailer is what makes the page feel alive.
+  var trailerReleased by remember(detail.id) { mutableStateOf(false) }
+  LaunchedEffect(detail.id, uiState.detailLoading) {
+    if (uiState.detailLoading) {
+      trailerReleased = false
+      return@LaunchedEffect
+    }
+    delay(DETAIL_TRAILER_DELAY_MS)
+    trailerReleased = true
+  }
   val listState = rememberLazyListState()
   val detailHazeState = rememberHazeState()
   LaunchedEffect(selectedTab) {
@@ -14911,7 +15481,7 @@ private fun DetailScreen(
           metadataLine = metadataLine,
           style = uiState.detailPageStyle,
           scrollOffset = { if (listState.firstVisibleItemIndex == 0) listState.firstVisibleItemScrollOffset else 0 },
-          autoPlayTrailer = uiState.heroTrailerAutoplay && episodePage == null && !uiState.detailIsLive,
+          autoPlayTrailer = uiState.heroTrailerAutoplay && trailerReleased && episodePage == null && !uiState.detailIsLive,
           trailerResolution = uiState.heroTrailerResolution,
           hazeState = detailHazeState,
           streamCount = streamCount,
@@ -15842,8 +16412,15 @@ private fun ClassicDetailHero(
     var trailerFailed by remember(detail.id, detail.trailerUrl) { mutableStateOf(false) }
     var trailerMuted by rememberSaveable(detail.id, "classicTrailerMuted") { mutableStateOf(true) }
     var trailerPlaybackKey by rememberSaveable(detail.id, "classicTrailerKey") { mutableIntStateOf(0) }
+    // Symmetric on purpose. `trailerPlaying` is seeded from autoPlayTrailer at first composition,
+    // and autoPlayTrailer is held false until the page has drawn — so by the time it turns true
+    // the seed has already been taken as false and rememberSaveable will not re-run. Handling only
+    // the false edge left the trailer permanently stopped, reachable only through the replay
+    // button. Starting here is also what lets the gate open later without losing autoplay.
     LaunchedEffect(autoPlayTrailer) {
-      if (!autoPlayTrailer) {
+      if (autoPlayTrailer) {
+        if (!detail.trailerUrl.isNullOrBlank() && !trailerFailed) trailerPlaying = true
+      } else {
         trailerPlaying = false
         trailerReady = false
         trailerFailed = false
@@ -16134,8 +16711,15 @@ private fun DetailHero(
     var trailerPlaying by rememberSaveable(detail.id, detail.trailerUrl) { mutableStateOf(autoPlayTrailer && !detail.trailerUrl.isNullOrBlank()) }
     var trailerMuted by rememberSaveable(detail.id, detail.trailerUrl) { mutableStateOf(true) }
     var trailerPlaybackKey by rememberSaveable(detail.id, detail.trailerUrl) { mutableIntStateOf(0) }
+    // Symmetric on purpose. `trailerPlaying` is seeded from autoPlayTrailer at first composition,
+    // and autoPlayTrailer is held false until the page has drawn — so by the time it turns true
+    // the seed has already been taken as false and rememberSaveable will not re-run. Handling only
+    // the false edge left the trailer permanently stopped, reachable only through the replay
+    // button. Starting here is also what lets the gate open later without losing autoplay.
     LaunchedEffect(autoPlayTrailer) {
-      if (!autoPlayTrailer) {
+      if (autoPlayTrailer) {
+        if (!detail.trailerUrl.isNullOrBlank() && !trailerFailed) trailerPlaying = true
+      } else {
         trailerPlaying = false
         trailerReady = false
         trailerFailed = false
@@ -16530,15 +17114,26 @@ private fun DetailPillTab(label: String, selected: Boolean, onClick: () -> Unit,
     ),
     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp),
   ) {
-    if (loading) {
-      CircularProgressIndicator(
-        modifier = Modifier.size(13.dp),
-        strokeWidth = 1.7.dp,
-        color = foreground.copy(alpha = 0.86f),
+    // The spinner sits on top of the label rather than beside it. Laid out in a row it added
+    // its own width plus a spacer to a pill that is already weight-constrained, which pushed
+    // "Streams (25)" past the space available on a 360dp screen. Overlaying costs no width at
+    // all, and the count stays readable underneath while sources are still arriving.
+    Box(contentAlignment = Alignment.Center) {
+      Text(
+        label,
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.Bold,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
       )
-      Spacer(modifier = Modifier.width(7.dp))
+      if (loading) {
+        CircularProgressIndicator(
+          modifier = Modifier.size(16.dp),
+          strokeWidth = 1.7.dp,
+          color = foreground.copy(alpha = 0.55f),
+        )
+      }
     }
-    Text(label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
   }
 }
 
@@ -16593,14 +17188,43 @@ private fun DetailActionIconPill(icon: ImageVector, label: String, selected: Boo
     Text(label, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
   }
 }
+/**
+ * Widest a fact card has to be before its contents fit on one line.
+ *
+ * "RELEASE DATE" at labelSmall with 1.1sp tracking needs about 90dp and "Feb 27, 2024" at
+ * bodySmall bold about 84dp, on top of the card's own 28dp of horizontal padding. Three equal
+ * columns only clear that from roughly 411dp of screen width upward, which is why the date was
+ * ellipsized and the label wrapped on an ordinary phone.
+ */
+private val DetailFactCardMinWidth = 128.dp
+private val DetailFactCardSpacing = 12.dp
+
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun DetailFactsSection(detail: MediaDetail) {
   Column(modifier = Modifier.padding(horizontal = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
     Text("Movie details", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onBackground)
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-      DetailFactCard("RELEASE DATE", formatReleaseDate(detail.releaseDate), Modifier.weight(1f))
-      DetailFactCard("STATUS", movieStatusLabel(detail), Modifier.weight(1f))
-      DetailFactCard("DURATION", detail.runtimeMinutes?.let { "${it / 60}h ${it % 60}m" } ?: "N/A", Modifier.weight(1f))
+    val facts = listOf(
+      "RELEASE DATE" to formatReleaseDate(detail.releaseDate),
+      "STATUS" to movieStatusLabel(detail),
+      "DURATION" to (detail.runtimeMinutes?.let { "${it / 60}h ${it % 60}m" } ?: "N/A"),
+    )
+    BoxWithConstraints {
+      // Cards are given an explicit width rather than a weight so the ones on a short final row
+      // stay the same size as the rest instead of stretching. Two across from 320dp, three from
+      // roughly 470dp, so wide phones and tablets keep the original single-row layout.
+      val columns = ((maxWidth + DetailFactCardSpacing) / (DetailFactCardMinWidth + DetailFactCardSpacing))
+        .toInt()
+        .coerceIn(1, facts.size)
+      val cardWidth = (maxWidth - DetailFactCardSpacing * (columns - 1)) / columns
+      androidx.compose.foundation.layout.FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(DetailFactCardSpacing),
+        verticalArrangement = Arrangement.spacedBy(DetailFactCardSpacing),
+      ) {
+        facts.forEach { (label, value) ->
+          DetailFactCard(label, value, Modifier.width(cardWidth))
+        }
+      }
     }
   }
 }
@@ -16987,15 +17611,33 @@ private fun StreamListContent(
         horizontalPadding = horizontalPadding,
       )
     }
+    // Keyed by the stream's own identity. Results are re-ranked on every progressive publish, so
+    // an unkeyed loop reuses each slot for whatever stream now sits at that position — which
+    // reassigns the card's content, invalidates its remembered badge match and makes Coil refetch
+    // every badge image. Keying makes a re-sort move nodes instead of rewriting them.
     filteredStreams.take(if (compact) 3 else 40).forEach { stream ->
-      val primaryText = stream.title?.takeIf { it.isNotBlank() }
-        ?: stream.name?.takeIf { it.isNotBlank() }
-        ?: stream.filename?.takeIf { it.isNotBlank() }
-        ?: stream.description?.takeIf { it.isNotBlank() }
-        ?: listOfNotNull(stream.addonName, stream.quality, stream.size).joinToString(" ").ifBlank { "Stream source" }
-      val secondaryText = stream.description
-        ?.takeIf { it.isNotBlank() && it != primaryText }
-        ?: stream.filename?.takeIf { it.isNotBlank() && it != primaryText }
+      key(addonStreamPlaybackIdentity(stream)) {
+      // Formatted mode is capped at three single lines: headline, provider, detail. Everything is
+      // collapsed onto one line each and ellipsized, so one verbose source cannot push the next
+      // result off screen. `name` leads because Stremio's convention is that it carries the short
+      // label and `title`/`description` the long block — the old order took `title` first, which
+      // is why a whole paragraph ended up as the bold headline.
+      val primaryText = streamSingleLine(stream.name)
+        ?: streamSingleLine(stream.title)
+        ?: streamSingleLine(stream.filename)
+        ?: streamSingleLine(stream.description)
+        ?: listOfNotNull(stream.addonName, stream.quality, streamSizeLabel(stream)).joinToString(" ").ifBlank { "Stream source" }
+      val providerText = listOfNotNull(
+        stream.addonName.takeIf { it.isNotBlank() },
+        stream.source?.takeIf { it.isNotBlank() },
+      ).distinct().joinToString(" • ")
+      // Skip the provider line when the headline already names the add-on, rather than printing
+      // "PenguPlay" directly under "PenguPlay 1080p • MoviesDrives".
+      val showProviderLine = providerText.isNotEmpty() &&
+        !(stream.addonName.isNotBlank() && primaryText.contains(stream.addonName, ignoreCase = true))
+      val secondaryText = streamSingleLine(stream.title)?.takeIf { it != primaryText }
+        ?: streamSingleLine(stream.description)?.takeIf { it != primaryText }
+        ?: streamSingleLine(stream.filename)?.takeIf { it != primaryText }
       Card(
         modifier = Modifier.padding(horizontal = horizontalPadding).fillMaxWidth().pointerInput(stream) {
           detectTapGestures(
@@ -17015,19 +17657,52 @@ private fun StreamListContent(
           }
           Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-              Text(primaryText, color = streamForeground, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Black, maxLines = 3, overflow = TextOverflow.Ellipsis)
-              Text(listOfNotNull(stream.addonName.takeIf { it.isNotBlank() }, stream.source?.takeIf { it.isNotBlank() }).distinct().joinToString(" • ").ifBlank { "Tap to play" }, color = streamForeground.copy(alpha = 0.62f), style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+              if (uiState.streamDekFormattingEnabled) {
+                Text(primaryText, color = streamForeground, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (showProviderLine) {
+                  Text(providerText, color = streamForeground.copy(alpha = 0.62f), style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+              } else {
+                // Verbatim. Stremio add-ons put deliberate structure in these two fields — `name`
+                // is the short label ("Torrentio\n4k"), `title`/`description` the detail block with
+                // its own line breaks, emoji and columns. No line cap, no ellipsis, no substitution
+                // between fields, and nothing synthesised from the add-on's name: whatever it sent
+                // is what shows. Only when it sent nothing usable does a filename stand in, so the
+                // row is still identifiable and tappable.
+                val rawLabel = stream.name?.takeIf { it.isNotBlank() }
+                val rawDetail = stream.title?.takeIf { it.isNotBlank() } ?: stream.description?.takeIf { it.isNotBlank() }
+                if (rawLabel == null && rawDetail == null) {
+                  Text(
+                    stream.filename?.takeIf { it.isNotBlank() } ?: "Stream source",
+                    color = streamForeground,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Black,
+                  )
+                }
+                rawLabel?.let {
+                  Text(it, color = streamForeground, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Black)
+                }
+                rawDetail?.let {
+                  Text(it, color = streamForeground.copy(alpha = 0.82f), style = MaterialTheme.typography.bodyMedium)
+                }
+              }
             }
             // Single size badge for the card — the duplicate that used to render
             // inside the badge row below has been removed.
-            if (uiState.showSizeBadges) {
-              stream.size?.takeIf { it.isNotBlank() }?.let { size ->
+            //
+            // Formatted mode only. The badge is StreamDek's own derived label, uppercased, and it
+            // is only as good as what could be scraped out of the add-on's text: for add-ons that
+            // put something other than a size in that field it rendered whole phrases as a pill
+            // ("ENGLISH • HINDI • TAMIL • TELUGU"), squeezing the add-on's own text into a narrow
+            // column. Raw mode shows the size the add-on itself printed, in its own line.
+            if (uiState.streamDekFormattingEnabled && uiState.showSizeBadges) {
+              streamSizeLabel(stream)?.let { size ->
                 Box(
                   modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(oxbloodRed).padding(horizontal = 9.dp, vertical = 4.dp),
                   contentAlignment = Alignment.Center,
                 ) {
                   Text(
-                    size.uppercase(),
+                    size,
                     color = Color.White,
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Black,
@@ -17042,19 +17717,26 @@ private fun StreamListContent(
               }
             }
           }
-          secondaryText?.let {
-            Text(
-              it,
-              color = streamForeground.copy(alpha = 0.76f),
-              style = MaterialTheme.typography.bodyMedium,
-              maxLines = if (compact) 2 else 4,
-              overflow = TextOverflow.Ellipsis,
-            )
+          // Only in formatted mode: the raw branch above already renders the add-on's own detail
+          // text in full, so repeating it here would duplicate it.
+          if (uiState.streamDekFormattingEnabled) {
+            secondaryText?.let {
+              // Third and final line. It sits below the badge row rather than in the title column
+              // so it gets the card's full width instead of whatever the badges leave over.
+              Text(
+                it,
+                color = streamForeground.copy(alpha = 0.76f),
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+              )
+            }
           }
           if (uiState.fusionBadgesEnabled && uiState.badgePosition.equals("Bottom", ignoreCase = true)) {
             FusionBadgeRow(stream = stream, uiState = uiState)
           }
         }
+      }
       }
     }
   }
@@ -17245,9 +17927,12 @@ private fun DetailRatingBadges(
 
 @Composable
 private fun FusionBadgeRow(stream: AddonStream, uiState: AppUiState, modifier: Modifier = Modifier) {
-  val badges = remember(stream, uiState.fusionBadgeSources, uiState.activeFusionBadgeUrl, uiState.fusionBadgeUrls) {
-    matchFusionBadgeFilters(stream, activeFusionSources(uiState)).take(10)
+  val sources = activeFusionSources(uiState)
+  val configKey = remember(uiState.fusionBadgeSources, uiState.activeFusionBadgeUrl, uiState.fusionBadgeUrls) {
+    uiState.activeFusionBadgeUrl.orEmpty() + "|" + uiState.fusionBadgeUrls.joinToString(",") +
+      "|" + sources.sumOf { source -> source.filters.count { it.isEnabled } }
   }
+  val badges = remember(stream, configKey) { cachedFusionBadges(stream, sources, configKey).take(10) }
   if (badges.isEmpty()) return
   val context = LocalContext.current
   val badgeShape = RoundedCornerShape(6.dp)

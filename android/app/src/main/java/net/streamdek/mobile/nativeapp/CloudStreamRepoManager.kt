@@ -18,6 +18,11 @@ import java.util.concurrent.TimeUnit
  * (`{name, pluginLists: [urls to a plugins.json]}`), where each `pluginLists` entry is a
  * compiled `.cs3` provider (a real CloudStream extension, e.g. one of CNCVerse's providers).
  *
+ * A manifest may also be an *aggregate* ("mega") repo that lists other repo manifests under
+ * `repos` instead of listing plugins itself — sky-universe's mega_repo.json is one. Those are
+ * followed transparently, so installing the aggregate URL installs everything the collections
+ * beneath it publish, as one entry in the user's list.
+ *
  * This is deliberately a separate system from [StreamDekPluginManager] (StreamDek's own JS
  * scraper collections): a `.cs3` file is compiled Kotlin/JVM bytecode written against the
  * `com.lagradost.cloudstream3` provider API, not a JS `getStreams()` script, so it needs
@@ -31,6 +36,60 @@ import java.util.concurrent.TimeUnit
  * for the loading part, a real risk before the plugin API dependency has been verified to
  * work — see CloudStreamPluginLoader's header comment.
  */
+/**
+ * How far a chain of aggregate repos is followed. A mega repo pointing at repos that point at
+ * further repos is unusual but legal; the cap stops a malformed or malicious manifest turning an
+ * install into an unbounded crawl. Cycles are already excluded by the visited set.
+ */
+private const val MAX_REPO_NESTING = 3
+
+/** URLs from a manifest array that holds either plain strings or `{ "url": … }` objects. */
+private fun manifestUrlList(values: JSONArray?): List<String> = buildList {
+  val source = values ?: return@buildList
+  for (index in 0 until source.length()) {
+    val value = when (val entry = source.opt(index)) {
+      is String -> entry
+      is JSONObject -> entry.optString("url")
+      else -> null
+    }
+    value?.trim()?.takeIf { it.isNotEmpty() }?.let(::add)
+  }
+}
+
+/**
+ * Every `plugins.json` URL reachable from a repo manifest, in declaration order.
+ *
+ * A plain collection lists them directly under `pluginLists`. An aggregate lists other repo
+ * manifests under `repos` and nothing else, so those have to be fetched and descended into before
+ * there is anything to install — without this, adding one returned "Repo manifest has no
+ * pluginLists" even though every collection beneath it was perfectly valid.
+ *
+ * [fetchManifest] returns null for a child that could not be read, which is skipped rather than
+ * failing the install. Manifests are free to carry both keys; both are honoured.
+ */
+internal fun collectRepoPluginListUrls(
+  rootUrl: String,
+  rootManifest: JSONObject,
+  maxDepth: Int = MAX_REPO_NESTING,
+  fetchManifest: (String) -> JSONObject?,
+): List<String> {
+  val listUrls = LinkedHashSet<String>()
+  val visited = mutableSetOf(rootUrl)
+
+  fun walk(manifest: JSONObject, depth: Int) {
+    listUrls += manifestUrlList(manifest.optJSONArray("pluginLists"))
+    if (depth >= maxDepth) return
+    for (childUrl in manifestUrlList(manifest.optJSONArray("repos"))) {
+      if (!visited.add(childUrl)) continue
+      val childManifest = fetchManifest(childUrl) ?: continue
+      walk(childManifest, depth + 1)
+    }
+  }
+
+  walk(rootManifest, 0)
+  return listUrls.toList()
+}
+
 data class CsRepo(val url: String, val name: String, val description: String?, val iconUrl: String?, val enabled: Boolean = true)
 data class CsProviderEntry(
   val repoUrl: String,
@@ -309,16 +368,34 @@ class CloudStreamRepoManager(private val context: Context) {
   private fun fetchRepo(url: String): Pair<CsRepo, List<CsProviderEntry>> {
     val manifest = JSONObject(text(url))
     val name = manifest.optString("name").ifBlank { "CloudStream collection" }
-    val pluginListUrls = manifest.optJSONArray("pluginLists") ?: throw IllegalArgumentException("Repo manifest has no pluginLists.")
+    val pluginListUrls = collectRepoPluginListUrls(url, manifest) { childUrl ->
+      // One unreachable collection inside an aggregate must not fail the whole install, which
+      // matches how an unreadable plugins.json is already tolerated below.
+      runCatching { JSONObject(text(childUrl)) }
+        .onFailure { Log.w(TAG, "Skipping unreachable repo $childUrl inside $url", it) }
+        .getOrNull()
+    }
+    require(pluginListUrls.isNotEmpty()) { "Repo manifest has no pluginLists." }
+    // Providers are identified by (repoUrl, internalName) everywhere else — state lookups,
+    // enable/disable, and the on-disk .cs3 filename. Everything an aggregate pulls in shares one
+    // repoUrl, so two collections shipping the same internalName would otherwise collide on all
+    // three. First listed wins, which respects the order the aggregate declared.
+    val seen = mutableSetOf<String>()
     val providers = buildList {
-      for (i in 0 until pluginListUrls.length()) {
-        val listUrl = pluginListUrls.optString(i).takeIf { it.isNotBlank() } ?: continue
+      for (listUrl in pluginListUrls) {
         val entries = runCatching { JSONArray(text(listUrl)) }.getOrDefault(JSONArray())
         for (j in 0 until entries.length()) {
           val item = entries.optJSONObject(j) ?: continue
           val internalName = item.optString("internalName").ifBlank { item.optString("name") }
           val downloadUrl = item.optString("url")
           if (internalName.isBlank() || downloadUrl.isBlank()) continue
+          // SkyStream bundles advertise themselves through an identical manifest and are handled
+          // by SkyStreamPluginManager. Skipping them here is what lets one aggregate carrying both
+          // formats install into both engines, each taking only the entries it can actually run —
+          // and stops a pure-SkyStream repo listing dozens of sources that fail on being switched
+          // on, which is how these first showed up.
+          if (isSkyDownloadUrl(downloadUrl)) continue
+          if (!seen.add(internalName)) continue
           val tvTypes = item.optJSONArray("tvTypes")
           add(
             CsProviderEntry(

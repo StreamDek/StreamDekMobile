@@ -1,10 +1,77 @@
 package net.streamdek.mobile.nativeapp
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class M3uPlaylistManagerTest {
+  @Test fun acceptsProviderUrlsCarryingQueryFilters() {
+    // The shapes IPTV panels actually hand out. java.net.URI rejects several of these outright,
+    // which is what stopped them being addable at all.
+    listOf(
+      "http://panel.test:8080/get.php?username=abc&password=def&type=m3u_plus&output=ts",
+      "https://panel.test/playlist?d=8f3a91c2&type=m3u&output=ts",
+      "https://panel.test/get.php?token=a|b&type=m3u&output=hls",
+      "https://panel.test/list?ids=[1,2,3]&type=m3u",
+      "https://panel.test/playlist.m3u8?u=user name&type=m3u",
+    ).forEach { url ->
+      assertNotNull("expected $url to be accepted", M3uPlaylistManager.parsePlaylistUrl(url))
+    }
+  }
+
+  @Test fun rejectsUrlsThatAreNotHttpPlaylists() {
+    listOf("", "not a url", "ftp://panel.test/list.m3u", "/local/path.m3u").forEach { url ->
+      assertNull("expected $url to be rejected", M3uPlaylistManager.parsePlaylistUrl(url))
+    }
+  }
+
+  @Test fun parsesPlaylistWithoutExtm3uHeaderWhenEntriesArePresent() {
+    // Some panels omit the #EXTM3U line entirely; the entries are still perfectly parseable.
+    val items = parseM3uLines(
+      sequenceOf(
+        "#EXTINF:-1 group-title=\"News\",World News",
+        "https://stream.test/live/news.m3u8",
+      ),
+      "m3u:headerless",
+    )
+
+    assertEquals(1, items.size)
+    assertEquals("World News", items[0].title)
+  }
+
+  @Test fun rejectsBodyThatIsNotAPlaylist() {
+    val error = assertThrows(IllegalArgumentException::class.java) {
+      parseM3uLines(sequenceOf("<html>", "<body>Invalid token</body>", "</html>"), "m3u:html")
+    }
+    assertTrue(error.message.orEmpty().contains("doesn't look like an M3U playlist"))
+  }
+
+  @Test fun sharesGroupDerivedStringsAcrossEntriesInTheSameCategory() {
+    // A 200k-channel playlist only fits in memory because entries in one category reuse the same
+    // description, catalog name and genre list instances rather than allocating per entry.
+    val items = parseM3uLines(
+      sequence {
+        yield("#EXTM3U")
+        repeat(50) { index ->
+          yield("#EXTINF:-1 group-title=\"Sports\",Channel $index")
+          yield("https://stream.test/live/$index.m3u8")
+        }
+      },
+      "m3u:pool",
+      "Pool Playlist",
+    )
+
+    assertEquals(50, items.size)
+    assertTrue(items.all { it.description === items[0].description })
+    assertTrue(items.all { it.genres === items[0].genres })
+    assertTrue(items.all { it.sourceCatalogId === items[0].sourceCatalogId })
+    // Entries with no headers or DRM share one empty map rather than allocating per entry.
+    assertTrue(items.all { it.requestHeaders.isEmpty() && it.drmClearKeys.isEmpty() })
+  }
+
   @Test fun separatesLiveAndVodEntriesAndPreservesHeaders() {
     val playlist = """
       #EXTM3U

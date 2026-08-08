@@ -897,13 +897,17 @@ class StreamDekApiClient(context: Context? = null) {
       enabledAddons.flatMap { addon ->
         addon.manifest.catalogs.mapIndexedNotNull { index, catalog ->
           val mappedType = mapHomeCatalogType(catalog.type) ?: return@mapIndexedNotNull null
+          // A catalog that declares genre as required has nothing to answer with until one is
+          // picked, so its preview row uses the add-on's own first option. Catalogs with an
+          // optional genre are left unfiltered.
+          val defaultGenre = catalog.genreOptions.firstOrNull()?.takeIf { catalog.requiresGenre }
           async {
             val items = catalogGate.withPermit {
               runCatching {
                 if (LocalAddonManager.isLocalAddonId(addon.id)) {
-                  fetchLocalAddonCatalog(addon, catalog.type, catalog.id, catalog.name)
+                  fetchLocalAddonCatalog(addon, catalog.type, catalog.id, catalog.name, defaultGenre)
                 } else {
-                  fetchAddonCatalog(addon.id, addon.manifest.name, catalog.type, catalog.id, catalog.name, session, profileId)
+                  fetchAddonCatalog(addon.id, addon.manifest.name, catalog.type, catalog.id, catalog.name, session, profileId, defaultGenre)
                 }
               }.getOrDefault(emptyList()).take(HOME_CATALOG_PREVIEW_LIMIT)
             }
@@ -1068,6 +1072,38 @@ class StreamDekApiClient(context: Context? = null) {
       }
     }
 
+  /**
+   * The add-on's own description of one of its items, for any add-on publishing a `meta` resource.
+   *
+   * Metadata add-ons (aiometadata and similar) exist to answer exactly this call, and until now
+   * nothing did: only local add-ons were ever asked for `/meta`, so a card from a metadata add-on
+   * opened onto a TMDB lookup for an id — `tmdb:1234`, a provider slug — that TMDB has no way to
+   * resolve, and the detail page came up empty. Local add-ons are still queried on-device because
+   * the backend cannot reach a LAN transport URL; everything else is proxied, since the backend is
+   * what holds the add-on's configured transport URL.
+   */
+  suspend fun fetchAddonMeta(
+    session: AuthSession?,
+    profileId: String?,
+    addon: InstalledAddon,
+    rawType: String,
+    id: String,
+  ): Result<LocalAddonMeta> {
+    if (LocalAddonManager.isLocalAddonId(addon.id)) return fetchLocalAddonMeta(addon, rawType, id)
+    return withContext(Dispatchers.IO) {
+      runCatching {
+        val response = execute(
+          Request.Builder()
+            .url("$apiBaseUrl/addons/${Uri.encode(addon.id)}/meta/${Uri.encode(rawType.trim().lowercase())}/${Uri.encode(id)}")
+            .headers(authHeaders(session, includeContentType = false, profileId = profileId))
+            .build(),
+        )
+        ensureOk(response, "Failed to load add-on details")
+        parseLocalAddonMetaResponse(response.json, rawType, id)
+      }
+    }
+  }
+
   /** Fetches the add-on's canonical meta before TMDB enrichment or stream lookup. */
   suspend fun fetchLocalAddonMeta(addon: InstalledAddon, rawType: String, id: String): Result<LocalAddonMeta> =
     withContext(Dispatchers.IO) {
@@ -1199,6 +1235,7 @@ class StreamDekApiClient(context: Context? = null) {
         .put("rememberLastSource", preferences.rememberLastSource)
         .put("blurUnwatchedEpisodes", preferences.blurUnwatchedEpisodes)
         .put("fusionBadgesEnabled", preferences.fusionBadgesEnabled)
+        .put("streamDekFormattingEnabled", preferences.streamDekFormattingEnabled)
         .put("showSizeBadges", preferences.showSizeBadges)
         .put("showAddonTmdbRatings", preferences.showAddonTmdbRatings)
         .put("badgePosition", preferences.badgePosition)
@@ -1335,6 +1372,7 @@ class StreamDekApiClient(context: Context? = null) {
         rememberLastSource = optionalBoolean(streams, "rememberLastSource"),
         blurUnwatchedEpisodes = optionalBoolean(streams, "blurUnwatchedEpisodes"),
         fusionBadgesEnabled = optionalBoolean(streams, "fusionBadgesEnabled"),
+        streamDekFormattingEnabled = optionalBoolean(streams, "streamDekFormattingEnabled"),
         showSizeBadges = optionalBoolean(streams, "showSizeBadges"),
         showAddonTmdbRatings = optionalBoolean(streams, "showAddonTmdbRatings"),
         preferredQuality = optionalString(playback, "preferredQuality") ?: optionalString(streams, "preferredQuality"),
@@ -1747,12 +1785,16 @@ class StreamDekApiClient(context: Context? = null) {
             .build(),
         )
         ensureOk(response, "Failed to load $service status")
+        val capabilities = response.json.optJSONObject("capabilities")
         SyncServiceStatus(
           connected = response.json.optBoolean("connected"),
           username = response.json.optString("username").ifBlank { null },
-          // Older backends predate this field; assume available so they behave as before.
+          // Older backends predate these fields; assume available and fully capable so they
+          // behave exactly as they did before capabilities were reported.
           available = response.json.optBoolean("available", true),
           checked = true,
+          supportsWatchlist = capabilities?.optBoolean("watchlist", true) ?: true,
+          supportsPlayback = capabilities?.optBoolean("playback", true) ?: true,
         )
       }
     }
@@ -2165,6 +2207,33 @@ private fun JSONArray?.toMediaItems(): List<MediaItem> {
 private fun tmdbImageUrl(value: String?, size: String = "w500"): String? {
   val raw = value?.takeIf { it.isNotBlank() } ?: return null
   return if (raw.startsWith("http")) raw else "https://image.tmdb.org/t/p/$size$raw"
+}
+
+/**
+ * Artwork off a tracking-service row (Trakt / SIMKL / MDBList).
+ *
+ * Trakt's enriched endpoints hand back ready-made `poster`/`backdrop` URLs, but the other services
+ * spell the field differently and some nest it under `images`, which left those rows with no image
+ * at all. Only absolute URLs and TMDB-style paths are accepted — a service-local path would just
+ * produce a broken image.tmdb.org URL, so it is left for the artwork backfill to resolve instead.
+ */
+private fun parseTrackingArtwork(json: JSONObject, size: String, vararg keys: String): String? {
+  fun usable(value: String?): String? {
+    val raw = value?.trim()?.takeIf { it.isNotBlank() } ?: return null
+    return if (raw.startsWith("http") || raw.startsWith("/")) tmdbImageUrl(raw, size) else null
+  }
+  keys.forEach { key -> usable(json.optString(key))?.let { return it } }
+  val images = json.optJSONObject("images") ?: return null
+  keys.forEach { key ->
+    val candidate = when (val nested = images.opt(key)) {
+      is String -> nested
+      is JSONArray -> nested.optString(0)
+      is JSONObject -> listOf("full", "url", "medium", "thumb").firstNotNullOfOrNull { nested.optString(it).ifBlank { null } }
+      else -> null
+    }
+    usable(candidate)?.let { return it }
+  }
+  return null
 }
 
 
@@ -2801,14 +2870,35 @@ private fun parseAddonStringList(values: JSONArray?): List<String> = buildList {
 // options, the addon has nothing to key its response on. See fetchLocalAddonCatalog / the
 // genre handling in fetchAddonCatalog below for where the first option gets used.
 private fun parseAddonGenreOptions(item: JSONObject): List<String> {
-  val extra = item.optJSONArray("extra") ?: return emptyList()
-  for (index in 0 until extra.length()) {
-    val entry = extra.optJSONObject(index) ?: continue
-    if (!entry.optString("name").equals("genre", ignoreCase = true)) continue
-    val options = entry.optJSONArray("options") ?: continue
-    return buildList { for (i in 0 until options.length()) options.optString(i).takeIf { it.isNotBlank() }?.let(::add) }
+  val extra = item.optJSONArray("extra")
+  if (extra != null) {
+    for (index in 0 until extra.length()) {
+      val entry = extra.optJSONObject(index) ?: continue
+      if (!entry.optString("name").equals("genre", ignoreCase = true)) continue
+      val options = entry.optJSONArray("options") ?: continue
+      return parseAddonStringList(options)
+    }
   }
-  return emptyList()
+  // Older manifests list the options under a top-level "genres" alongside extraSupported/
+  // extraRequired rather than inside a structured "extra" entry.
+  return parseAddonStringList(item.optJSONArray("genres"))
+}
+
+/**
+ * Whether the catalog cannot be listed at all without a genre.
+ *
+ * Only a *required* genre gets filled in automatically. A catalog with an optional genre filter
+ * answers perfectly well without one, and forcing the first option there would silently turn a
+ * "Popular" row into "Popular · Action".
+ */
+private fun parseAddonGenreRequired(item: JSONObject): Boolean {
+  item.optJSONArray("extra")?.let { extra ->
+    for (index in 0 until extra.length()) {
+      val entry = extra.optJSONObject(index) ?: continue
+      if (entry.optString("name").equals("genre", ignoreCase = true) && entry.optBoolean("isRequired")) return true
+    }
+  }
+  return parseAddonStringList(item.optJSONArray("extraRequired")).any { it.equals("genre", ignoreCase = true) }
 }
 
 private fun parseAddonCatalogs(values: JSONArray?): List<AddonCatalog> = buildList {
@@ -2823,6 +2913,7 @@ private fun parseAddonCatalogs(values: JSONArray?): List<AddonCatalog> = buildLi
         id = id,
         name = item.optString("name").ifBlank { id },
         genreOptions = parseAddonGenreOptions(item),
+        requiresGenre = parseAddonGenreRequired(item),
       ),
     )
   }
@@ -2976,8 +3067,8 @@ private fun parseTraktItem(json: JSONObject): TraktItem =
     type = parseMediaItemType(json),
     year = parseMediaItemYear(json),
     rating = parseRatingValue(json),
-    poster = json.optString("poster").ifBlank { tmdbImageUrl(json.optString("poster_path"), "w500") },
-    backdrop = json.optString("backdrop").ifBlank { tmdbImageUrl(json.optString("backdrop_path"), "w780") },
+    poster = parseTrackingArtwork(json, "w500", "poster", "poster_path", "posterUrl", "poster_url", "image"),
+    backdrop = parseTrackingArtwork(json, "w780", "backdrop", "backdrop_path", "backdropUrl", "backdrop_url", "fanart"),
     description = json.optString("description").ifBlank { null },
     progress = json.optDouble("progress").takeUnless { it.isNaN() || it == 0.0 },
     addedAt = parseFlexibleTimestamp(json, "listed_at", "listedAt", "added_at", "addedAt"),

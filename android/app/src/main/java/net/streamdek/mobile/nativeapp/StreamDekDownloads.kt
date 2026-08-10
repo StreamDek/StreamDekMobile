@@ -2,6 +2,7 @@ package net.streamdek.mobile.nativeapp
 
 import android.app.Notification
 import android.content.Context
+import android.util.Log
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.ExoDatabaseProvider
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -9,16 +10,23 @@ import androidx.media3.datasource.cache.Cache
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.NoOpCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
+import androidx.media3.exoplayer.offline.DefaultDownloadIndex
+import androidx.media3.exoplayer.offline.DefaultDownloaderFactory
 import androidx.media3.exoplayer.offline.Download
 import androidx.media3.exoplayer.offline.DownloadManager
 import androidx.media3.exoplayer.offline.DownloadNotificationHelper
 import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
+import androidx.media3.exoplayer.offline.Downloader
+import androidx.media3.exoplayer.offline.DownloaderFactory
 import androidx.media3.exoplayer.scheduler.Scheduler
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.Executor
 import net.streamdek.mobile.R
 import org.json.JSONObject
+
+private const val TAG = "StreamDekDownloads"
 
 enum class DownloadState { QUEUED, DOWNLOADING, PAUSED, COMPLETED, FAILED, REMOVING }
 
@@ -86,7 +94,14 @@ object StreamDekDownloads {
     cache = downloadCache
     val httpDataSourceFactory = DefaultHttpDataSource.Factory().setUserAgent(USER_AGENT).setAllowCrossProtocolRedirects(true)
     val cacheDataSourceFactory = CacheDataSource.Factory().setCache(downloadCache).setUpstreamDataSourceFactory(httpDataSourceFactory)
-    manager = DownloadManager(appContext, databaseProvider, downloadCache, cacheDataSourceFactory, Executor(Runnable::run)).apply {
+    val executor = Executor(Runnable::run)
+    // Built from an explicit index and downloader factory rather than the convenience constructor
+    // purely so the factory can be wrapped - see [ResilientDownloaderFactory] for why.
+    manager = DownloadManager(
+      appContext,
+      DefaultDownloadIndex(databaseProvider),
+      ResilientDownloaderFactory(DefaultDownloaderFactory(cacheDataSourceFactory, executor)),
+    ).apply {
       maxParallelDownloads = 2
     }
   }
@@ -172,6 +187,42 @@ object StreamDekDownloads {
   }
 
   private const val MEDIA_DATA_VERSION = 1
+}
+
+/**
+ * Wraps Media3's downloader factory so a request it cannot build a downloader for fails that one
+ * download instead of taking the process down.
+ *
+ * [DownloadManager] resolves the downloader for a request on its own background thread and does
+ * not guard that call, so anything thrown there is an uncaught exception on a bare
+ * [android.os.HandlerThread] - a hard process kill. Because the manager re-resolves every download
+ * still in the index at startup, a single unbuildable request meant the app died before it could
+ * draw, on every launch, with no way in from the UI to delete the download that caused it.
+ *
+ * The one that happened was a DASH stream queued while the DASH module was missing from the build
+ * (now added), but any future gap - an unknown content type, a stripped module, a request written
+ * by a newer version - lands in exactly the same place. Failing the download keeps it visible and
+ * removable in the Downloads list, which is the state the user can act on.
+ */
+@OptIn(UnstableApi::class)
+private class ResilientDownloaderFactory(private val delegate: DownloaderFactory) : DownloaderFactory {
+  override fun createDownloader(request: DownloadRequest): Downloader =
+    runCatching { delegate.createDownloader(request) }.getOrElse { error ->
+      Log.e(TAG, "No downloader for ${request.uri} (mimeType=${request.mimeType}); marking it failed", error)
+      UnsupportedDownloader(error)
+    }
+}
+
+/** Reports [cause] as an ordinary download failure, which [DownloadManager] handles by moving the
+ * download to [Download.STATE_FAILED]. [remove] succeeds so the user can still delete it. */
+@OptIn(UnstableApi::class)
+private class UnsupportedDownloader(private val cause: Throwable) : Downloader {
+  override fun download(progressListener: Downloader.ProgressListener?): Nothing =
+    throw IOException("This source cannot be downloaded on this build.", cause)
+
+  override fun cancel() = Unit
+
+  override fun remove() = Unit
 }
 
 /**

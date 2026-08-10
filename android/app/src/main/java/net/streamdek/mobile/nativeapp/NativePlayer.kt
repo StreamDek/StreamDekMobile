@@ -56,6 +56,7 @@ import androidx.compose.material.icons.rounded.Forward10
 import androidx.compose.material.icons.rounded.Brightness6
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.GridView
+import androidx.compose.material.icons.rounded.HideSource
 import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.ChevronLeft
@@ -72,6 +73,7 @@ import androidx.compose.material.icons.rounded.SlowMotionVideo
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material.icons.rounded.Subtitles
+import androidx.compose.material.icons.rounded.Timeline
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Tv
 import androidx.compose.material.icons.rounded.ViewList
@@ -277,7 +279,13 @@ fun NativePlayerScreen(
   var liveRetryAttempts by remember(session.url) { mutableIntStateOf(0) }
   var lastLiveRetryAtMs by remember(session.url) { mutableStateOf(0L) }
   var showPausedInfo by remember(session.url) { mutableStateOf(false) }
+  // The favourites list is matched on channel id, the same identity toggleFavouriteChannel
+  // stores and removes by, so the tray's stars agree with the header star and the drawer.
+  val favouriteChannelIds = remember(favouriteChannels) { favouriteChannels.mapTo(HashSet()) { it.id } }
   var showLiveChannels by remember(session.url) { mutableStateOf(false) }
+  // Keyed on the live identity rather than session.url so the choice carries across a channel
+  // switch, and on the setting so changing it from Settings re-seeds a session already playing.
+  var showLiveProgress by remember(liveEngineKey, session.showLiveProgressBar) { mutableStateOf(session.showLiveProgressBar) }
   var showFavouriteDrawer by remember(session.url) { mutableStateOf(false) }
   var pendingChannelSelection by remember(session.url) { mutableStateOf<MediaItem?>(null) }
   var showChannelSwipeCue by remember(session.url) { mutableStateOf(false) }
@@ -1036,7 +1044,9 @@ fun NativePlayerScreen(
           activeSeekTo(currentTime)
           keepControlsVisible()
         },
-        showSeeking = !session.isLive,
+        // A live source showing a seekable bar is one the double-tap gestures can move too;
+        // without a bar (or without a seekable window) there is nothing for them to act on.
+        showSeeking = !session.isLive || (showLiveProgress && duration > 0.0),
       )
     }
 
@@ -1050,7 +1060,10 @@ fun NativePlayerScreen(
         currentTime = currentTime,
         duration = duration,
         isLive = session.isLive,
-        progress = if (!session.isLive && duration > 0.0) (currentTime / duration).toFloat().coerceIn(0f, 1f) else 0f,
+        isVod = session.isVod,
+        showLiveProgress = showLiveProgress,
+        onToggleLiveProgress = { showLiveProgress = !showLiveProgress; keepControlsVisible() },
+        progress = if (duration > 0.0) (currentTime / duration).toFloat().coerceIn(0f, 1f) else 0f,
         error = error,
         resizeMode = resizeMode,
         speed = playbackSpeed,
@@ -1271,6 +1284,7 @@ fun NativePlayerScreen(
         channels = liveChannels,
         currentChannelId = session.mediaId,
         loading = liveChannelsLoading,
+        favouriteChannelIds = favouriteChannelIds,
         onSelect = { channel -> showLiveChannels = false; pendingChannelSelection = channel },
       )
     }
@@ -1333,12 +1347,16 @@ fun NativePlayerScreen(
     if (session.isLive && hasLoaded && !isLoading && error.isNullOrBlank() && !showLiveChannels && !showFavouriteDrawer) {
       Surface(
         modifier = Modifier.align(Alignment.BottomEnd).padding(end = 20.dp, bottom = 20.dp).zIndex(12f),
-        color = Color(0xFFE11D48),
+        color = if (session.isVod) Color(0xFF2563EB) else Color(0xFFE11D48),
         shape = CircleShape,
       ) {
         Row(modifier = Modifier.padding(horizontal = 13.5.dp, vertical = 6.3.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-          Box(modifier = Modifier.size(6.3.dp).clip(CircleShape).background(Color.White))
-          Text("LIVE", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.8.sp, letterSpacing = 0.9.sp)
+          if (session.isVod) {
+            Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp))
+          } else {
+            Box(modifier = Modifier.size(6.3.dp).clip(CircleShape).background(Color.White))
+          }
+          Text(if (session.isVod) "VOD" else "LIVE", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.8.sp, letterSpacing = 0.9.sp)
         }
       }
     }
@@ -1515,6 +1533,7 @@ private fun LiveChannelTray(
   channels: List<MediaItem>,
   currentChannelId: String,
   loading: Boolean,
+  favouriteChannelIds: Set<String>,
   onSelect: (MediaItem) -> Unit,
 ) {
   val currentIndex = channels.indexOfFirst { it.id == currentChannelId }.coerceAtLeast(0)
@@ -1557,6 +1576,7 @@ private fun LiveChannelTray(
       ) {
         items(channels, key = { "${it.sourceAddonId}-${it.sourceCatalogId}-${it.type}-${it.id}" }) { channel ->
           val selected = channel.id == currentChannelId
+          val favourite = channel.id in favouriteChannelIds
           Box(
             modifier = Modifier.width(160.dp).height(90.dp).clip(RoundedCornerShape(10.dp))
               .border(if (selected) 2.dp else 1.dp, if (selected) Color.White else Color.White.copy(alpha = 0.20f), RoundedCornerShape(10.dp))
@@ -1573,6 +1593,14 @@ private fun LiveChannelTray(
               "NOW PLAYING", modifier = Modifier.align(Alignment.TopStart).padding(7.dp), color = Color.White,
               fontSize = 7.5.sp, fontWeight = FontWeight.Black, letterSpacing = 0.7.sp,
             )
+            // Same filled yellow star as the player header, in the corner the NOW PLAYING marker
+            // does not use, so a channel that is both still shows both.
+            if (favourite) Box(
+              modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(20.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f)),
+              contentAlignment = Alignment.Center,
+            ) {
+              Icon(Icons.Rounded.Star, contentDescription = "In favourites", tint = Color(0xFFFACC15), modifier = Modifier.size(13.dp))
+            }
           }
         }
       }
@@ -1832,11 +1860,22 @@ private fun PlayerBottomControls(
   onSpeed: () -> Unit,
   onSubtitles: () -> Unit,
   isLive: Boolean,
+  isVod: Boolean,
+  showLiveProgress: Boolean,
+  onToggleLiveProgress: () -> Unit,
   onAudio: () -> Unit,
   onSources: () -> Unit,
   onEngine: () -> Unit,
   onLock: () -> Unit,
 ) {
+  // A live channel with no seekable window reports no duration, so there is no bar to draw and
+  // nothing to drag. The elapsed time and a LIVE marker still answer what the toggle was asked
+  // for - how long this has been playing - rather than showing a slider pinned at zero.
+  //
+  // Only live sessions take that path. A VOD reports no duration too for the moment before it
+  // has loaded, and there the slider it is about to fill is the right thing to show.
+  val liveWithoutWindow = isLive && duration <= 0.0
+  val showProgressRow = !isLive || showLiveProgress
   Column(
     modifier = Modifier
       .fillMaxWidth()
@@ -1846,17 +1885,36 @@ private fun PlayerBottomControls(
     verticalArrangement = Arrangement.spacedBy(10.dp),
   ) {
     if (!error.isNullOrBlank()) Text(error, color = Color(0xFFFF9A9A), style = MaterialTheme.typography.bodySmall)
-    if (!isLive) {
+    if (showProgressRow) {
       Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Box(
           modifier = Modifier.width(78.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.44f)).padding(vertical = 8.dp),
           contentAlignment = Alignment.Center,
         ) { Text(formatClock(currentTime), color = Color.White.copy(alpha = 0.92f)) }
-        Slider(value = progress, onValueChange = onProgressChange, onValueChangeFinished = onProgressFinished, modifier = Modifier.weight(1f).padding(horizontal = 14.dp))
+        if (liveWithoutWindow) {
+          Box(modifier = Modifier.weight(1f).padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
+            Box(modifier = Modifier.fillMaxWidth().height(3.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.22f)))
+          }
+        } else {
+          Slider(value = progress, onValueChange = onProgressChange, onValueChangeFinished = onProgressFinished, modifier = Modifier.weight(1f).padding(horizontal = 14.dp))
+        }
         Box(
           modifier = Modifier.width(96.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.44f)).padding(vertical = 8.dp),
           contentAlignment = Alignment.Center,
-        ) { Text(formatClock(duration), color = Color.White.copy(alpha = 0.92f)) }
+        ) {
+          if (liveWithoutWindow) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+              if (isVod) {
+                Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = Color(0xFF60A5FA), modifier = Modifier.size(12.dp))
+              } else {
+                Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(Color(0xFFE11D48)))
+              }
+              Text(if (isVod) "VOD" else "LIVE", color = Color.White.copy(alpha = 0.92f), fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp)
+            }
+          } else {
+            Text(formatClock(duration), color = Color.White.copy(alpha = 0.92f))
+          }
+        }
       }
     }
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
@@ -1870,7 +1928,14 @@ private fun PlayerBottomControls(
         verticalAlignment = Alignment.CenterVertically,
       ) {
         PlayerDockButton("Zoom", Icons.Rounded.SettingsOverscan, onZoom)
-        if (!isLive) {
+        if (isLive) {
+          PlayerDockButton(
+            "Progress",
+            if (showLiveProgress) Icons.Rounded.Timeline else Icons.Rounded.HideSource,
+            onToggleLiveProgress,
+            active = showLiveProgress,
+          )
+        } else {
           PlayerDockButton("Speed", Icons.Rounded.SlowMotionVideo, onSpeed)
           PlayerDockButton("Subs", Icons.Rounded.Subtitles, onSubtitles)
           PlayerDockButton("Audio", Icons.Rounded.VolumeUp, onAudio)
@@ -1884,14 +1949,19 @@ private fun PlayerBottomControls(
 }
 
 @Composable
-private fun PlayerDockButton(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+private fun PlayerDockButton(
+  label: String,
+  icon: androidx.compose.ui.graphics.vector.ImageVector,
+  onClick: () -> Unit,
+  active: Boolean = false,
+) {
   Row(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(6.dp),
     modifier = Modifier.clickable(onClick = onClick),
   ) {
-    Icon(icon, contentDescription = label, tint = Color.White.copy(alpha = 0.92f), modifier = Modifier.size(21.dp))
-    Text(label, color = Color.White.copy(alpha = 0.78f), fontSize = 11.sp, maxLines = 1)
+    Icon(icon, contentDescription = label, tint = if (active) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.92f), modifier = Modifier.size(21.dp))
+    Text(label, color = if (active) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.78f), fontSize = 11.sp, maxLines = 1)
   }
 }
 

@@ -2,14 +2,22 @@ package net.streamdek.mobile.nativeapp
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import net.streamdek.mobile.BuildConfig
+import java.io.BufferedOutputStream
 import java.io.BufferedReader
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.FilterInputStream
 import java.io.InputStream
 import java.io.InputStreamReader
+import java.io.OutputStream
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
@@ -54,11 +62,19 @@ object M3uPlaylistManager {
   private const val PREFS_NAME = "streamdek_m3u_playlists"
   private const val KEY_SOURCES = "sources"
   private const val ID_PREFIX = "m3u:"
+  private const val CACHE_DIRECTORY = "m3u-cache"
+  private const val TAG = "M3uPlaylistManager"
+
+  /** How old a cached playlist may get before a load quietly refreshes it from the provider in
+   * the background. The cached channels stay on screen throughout, and stay usable indefinitely
+   * if that refresh never succeeds. */
+  private val CACHE_REFRESH_AFTER_MS = TimeUnit.HOURS.toMillis(24)
 
   /** Fallback identity for panels that only serve playlists to a recognised player. */
   private const val PLAYER_USER_AGENT = "VLC/3.0.20 LibVLC/3.0.20"
 
   private var prefs: SharedPreferences? = null
+  private var cacheRoot: File? = null
   private var ownerKey: String = "guest"
   private val http = OkHttpClient.Builder()
     .connectTimeout(15, TimeUnit.SECONDS)
@@ -66,7 +82,9 @@ object M3uPlaylistManager {
     .build()
 
   fun initialize(context: Context) {
-    if (prefs == null) prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val app = context.applicationContext
+    if (prefs == null) prefs = app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    if (cacheRoot == null) cacheRoot = File(app.filesDir, CACHE_DIRECTORY)
   }
 
   fun selectProfileStorage(ownerKey: String) {
@@ -108,6 +126,7 @@ object M3uPlaylistManager {
 
   fun remove(id: String) {
     writeAll(readAll().filterNot { it.id == id })
+    runCatching { cacheFile(id)?.delete() }
   }
 
   fun setEnabled(id: String, enabled: Boolean) {
@@ -133,13 +152,68 @@ object M3uPlaylistManager {
     })
   }
 
+  /**
+   * The playlist's items, from the on-disk copy when there is one.
+   *
+   * Every enabled playlist used to be re-downloaded and re-parsed on each launch and each profile
+   * switch, so a provider list was simply absent - and the Live TV rows empty - until tens of
+   * megabytes had come back over the network. The copy written by [streamAndParse] makes a
+   * restart a local read instead, which is also what keeps the channels there with no connection.
+   * Pass [forceRefresh] for an explicit "refresh" action, which always goes to the provider.
+   */
   suspend fun fetchItems(
     source: M3uPlaylistSource,
+    forceRefresh: Boolean = false,
     onProgress: (M3uLoadProgress) -> Unit = {},
   ): Result<M3uPlaylistItems> = withContext(Dispatchers.IO) {
     runCatching {
+      if (!forceRefresh) {
+        parseCached(source.id, source.name, onProgress)?.let { return@runCatching it.toM3uPlaylistItems() }
+      }
       streamAndParse(source.url, source.id, source.name, onProgress).toM3uPlaylistItems()
     }
+  }
+
+  /** True when [source] has no stored copy, or one old enough to be worth quietly re-fetching. */
+  fun needsBackgroundRefresh(source: M3uPlaylistSource): Boolean {
+    val cached = cacheFile(source.id)?.takeIf { it.isFile && it.length() > 0L } ?: return true
+    return System.currentTimeMillis() - cached.lastModified() > CACHE_REFRESH_AFTER_MS
+  }
+
+  private fun cacheFile(sourceId: String): File? {
+    val root = cacheRoot ?: return null
+    if (!root.isDirectory && !root.mkdirs()) return null
+    // The id is already a hash of the playlist URL, but it carries the "m3u:" prefix and whatever
+    // the provider's URL contributed, so it is reduced again to something certain to be a
+    // legal file name.
+    return File(root, "${sourceId.hashCode().toUInt().toString(16)}.m3u.gz")
+  }
+
+  /** Parses the stored copy of a playlist, or returns null when there isn't a usable one. A
+   * cache that fails to read is treated as absent so the caller falls through to the network. */
+  private fun parseCached(
+    sourceId: String,
+    sourceName: String,
+    onProgress: (M3uLoadProgress) -> Unit,
+  ): List<MediaItem>? {
+    val file = cacheFile(sourceId)?.takeIf { it.isFile && it.length() > 0L } ?: return null
+    return runCatching {
+      GZIPInputStream(FileInputStream(file), 64 * 1024).use { gzip ->
+        val reader = BufferedReader(InputStreamReader(gzip, StandardCharsets.UTF_8), 128 * 1024)
+        var lastReported = 0
+        val items = parseM3uLines(reader.lineSequence(), sourceId, sourceName) { parsed, _ ->
+          if (parsed - lastReported >= 5_000) {
+            lastReported = parsed
+            onProgress(M3uLoadProgress("Opening $sourceName: ${parsed.formattedM3uCount()} items", null, parsed))
+          }
+        }
+        onProgress(M3uLoadProgress("Loaded ${items.size.formattedM3uCount()} saved items from $sourceName", 1f, items.size))
+        items
+      }
+    }.onFailure { error ->
+      Log.w(TAG, "Saved copy of $sourceName was unreadable; re-fetching it", error)
+      runCatching { file.delete() }
+    }.getOrNull()
   }
 
   /**
@@ -170,25 +244,53 @@ object M3uPlaylistManager {
     sourceName: String,
     onProgress: (M3uLoadProgress) -> Unit,
   ): List<MediaItem> {
-    openPlaylist(url).use { response ->
-      val body = response.body
-      val total = body.contentLength().takeIf { it > 0L }
-      val counting = CountingInputStream(body.byteStream())
-      // A large read buffer matters here: at ~2 lines per channel this reader is asked for a
-      // line 400k times for a single big playlist.
-      val reader = BufferedReader(InputStreamReader(counting, StandardCharsets.UTF_8), 128 * 1024)
-      var lastReported = 0L
-      val items = parseM3uLines(reader.lineSequence(), sourceId, sourceName) { parsed, _ ->
-        val read = counting.bytesRead
-        if (read - lastReported >= 512 * 1024) {
-          lastReported = read
-          val fraction = total?.let { (read.toDouble() / it).toFloat().coerceIn(0f, 0.99f) }
-          onProgress(M3uLoadProgress("Reading $sourceName: ${parsed.formattedM3uCount()} items found", fraction, parsed))
+    // The body is teed into a gzip file as it is parsed, so storing a copy for the next launch
+    // costs one pass rather than a second download - and, since nothing is held whole in memory,
+    // does not undo the streaming this method exists for. Compressed because playlist text is
+    // extremely repetitive: a 60 MB provider list lands at a few megabytes.
+    val target = cacheFile(sourceId)
+    val temp = target?.let { File(it.parentFile, "${it.name}.tmp") }
+    val sink = temp?.let { runCatching { GZIPOutputStream(BufferedOutputStream(FileOutputStream(it), 64 * 1024)) }.getOrNull() }
+    var parsedCleanly = false
+    try {
+      openPlaylist(url).use { response ->
+        val body = response.body
+        val total = body.contentLength().takeIf { it > 0L }
+        val counting = CountingInputStream(body.byteStream(), sink)
+        // A large read buffer matters here: at ~2 lines per channel this reader is asked for a
+        // line 400k times for a single big playlist.
+        val reader = BufferedReader(InputStreamReader(counting, StandardCharsets.UTF_8), 128 * 1024)
+        var lastReported = 0L
+        val items = parseM3uLines(reader.lineSequence(), sourceId, sourceName) { parsed, _ ->
+          val read = counting.bytesRead
+          if (read - lastReported >= 512 * 1024) {
+            lastReported = read
+            val fraction = total?.let { (read.toDouble() / it).toFloat().coerceIn(0f, 0.99f) }
+            onProgress(M3uLoadProgress("Reading $sourceName: ${parsed.formattedM3uCount()} items found", fraction, parsed))
+          }
+        }
+        if (counting.bytesRead == 0L) throw IllegalStateException("Empty playlist response.")
+        parsedCleanly = true
+        onProgress(M3uLoadProgress("Loaded ${items.size.formattedM3uCount()} items from $sourceName", 1f, items.size))
+        return items
+      }
+    } finally {
+      // Only a body that parsed all the way through is worth keeping: a truncated response or a
+      // provider error page must not become the copy served on the next launch. The finished
+      // file replaces the previous one in one move, so a failure here leaves the older - still
+      // valid - copy exactly as it was.
+      runCatching { sink?.close() }
+      if (temp != null && target != null) {
+        if (parsedCleanly && temp.isFile && temp.length() > 0L) {
+          target.delete()
+          if (!temp.renameTo(target)) {
+            temp.delete()
+            Log.w(TAG, "Could not store a copy of $sourceName; it will reload from the network next time")
+          }
+        } else {
+          temp.delete()
         }
       }
-      if (counting.bytesRead == 0L) throw IllegalStateException("Empty playlist response.")
-      onProgress(M3uLoadProgress("Loaded ${items.size.formattedM3uCount()} items from $sourceName", 1f, items.size))
-      return items
     }
   }
 
@@ -258,15 +360,36 @@ object M3uPlaylistManager {
   }
 }
 
-/** Wraps a stream so download progress can be reported without buffering what was read. */
-private class CountingInputStream(delegate: InputStream) : FilterInputStream(delegate) {
+/**
+ * Wraps a stream so download progress can be reported without buffering what was read, and
+ * copies what passes through to [sink] when one is supplied.
+ *
+ * A sink that fails is dropped rather than propagated: not being able to store a copy of the
+ * playlist is not a reason to fail the load that is already succeeding.
+ */
+private class CountingInputStream(delegate: InputStream, private var sink: OutputStream?) : FilterInputStream(delegate) {
   var bytesRead: Long = 0L
     private set
 
-  override fun read(): Int = super.read().also { if (it >= 0) bytesRead += 1 }
+  override fun read(): Int = super.read().also { value ->
+    if (value >= 0) {
+      bytesRead += 1
+      copy { it.write(value) }
+    }
+  }
 
   override fun read(b: ByteArray, off: Int, len: Int): Int =
-    super.read(b, off, len).also { if (it > 0) bytesRead += it }
+    super.read(b, off, len).also { count ->
+      if (count > 0) {
+        bytesRead += count
+        copy { it.write(b, off, count) }
+      }
+    }
+
+  private inline fun copy(block: (OutputStream) -> Unit) {
+    val target = sink ?: return
+    runCatching { block(target) }.onFailure { sink = null }
+  }
 }
 
 private val m3uTvgLogoRegex = Regex("tvg-logo=\"([^\"]*)\"", RegexOption.IGNORE_CASE)

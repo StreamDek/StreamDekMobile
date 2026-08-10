@@ -279,28 +279,44 @@ class ExoPlaybackView @JvmOverloads constructor(
       .setRenderersFactory(renderers)
       .setMediaSourceFactory(mediaSourceFactory)
       .build()
-    preferredAudioLanguageTags(preferredAudioLanguage).takeIf(List<String>::isNotEmpty)?.let { tags ->
-      active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
-        .setPreferredAudioLanguages(*tags.toTypedArray())
+    // Media3 picks the media source implementation for this URL's content type reflectively,
+    // inside setMediaItem, on the calling thread - so a type whose module isn't on the classpath
+    // throws right here rather than arriving as a PlaybackException. Releasing the half-built
+    // player lets that failure travel out to the normal error/failover path instead of leaking a
+    // decoder on its way to crashing the app.
+    try {
+      preferredAudioLanguageTags(preferredAudioLanguage).takeIf(List<String>::isNotEmpty)?.let { tags ->
+        active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
+          .setPreferredAudioLanguages(*tags.toTypedArray())
+          .build()
+      }
+      val item = MediaItem.Builder()
+        .setUri(url)
+        .apply { inferMimeType(url)?.let(::setMimeType) }
+        .apply { pendingSubtitle?.let { setSubtitleConfigurations(listOf(it)) } }
         .build()
+      active.setMediaItem(item, startPositionMs.coerceAtLeast(0L))
+      active.setPlaybackSpeed(pendingSpeed.toFloat())
+      active.volume = pendingVolume
+      active.playWhenReady = !pendingPaused
+      active.prepare()
+    } catch (error: Throwable) {
+      active.release()
+      throw error
     }
-    val item = MediaItem.Builder()
-      .setUri(url)
-      .apply { inferMimeType(url)?.let(::setMimeType) }
-      .apply { pendingSubtitle?.let { setSubtitleConfigurations(listOf(it)) } }
-      .build()
-    active.setMediaItem(item, startPositionMs.coerceAtLeast(0L))
-    active.setPlaybackSpeed(pendingSpeed.toFloat())
-    active.volume = pendingVolume
-    active.playWhenReady = !pendingPaused
-    active.prepare()
     return active
   }
 
   private fun prepareSource(url: String, startPositionMs: Long = 0L) {
     releasePendingPlayer()
     releasePlayer()
-    val active = buildPlayer(url, startPositionMs)
+    val active = try {
+      buildPlayer(url, startPositionMs)
+    } catch (error: Throwable) {
+      Log.e(TAG, "Media3 could not open ${url.substringBefore('?')}", error)
+      onErrorCallback?.invoke("This source could not be played.")
+      return
+    }
     exoPlayer = active
     activeSource = url
     player = active
@@ -313,7 +329,13 @@ class ExoPlaybackView @JvmOverloads constructor(
    * channel switch never shows PlayerView's black shutter from `player = null`. */
   private fun prepareSourceInBackground(url: String) {
     releasePendingPlayer()
-    val candidate = buildPlayer(url, 0L)
+    val candidate = try {
+      buildPlayer(url, 0L)
+    } catch (error: Throwable) {
+      Log.w(TAG, "Media3 could not open the next channel; keeping the current source visible", error)
+      onErrorCallback?.invoke("This source could not be played.")
+      return
+    }
     // The outgoing channel keeps supplying audio until this candidate has rendered its first
     // frame. Muting the candidate prevents overlapping audio during that short handoff.
     candidate.volume = 0f

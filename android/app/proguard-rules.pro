@@ -13,6 +13,19 @@
 # Suppress R8 warnings from Google Cast SDK (invalid stack map tables in precompiled bytecode)
 -dontwarn com.google.android.gms.internal.cast.**
 
+# --- Media3 adaptive-streaming modules ---
+# DefaultMediaSourceFactory and DefaultDownloaderFactory pick the DASH/HLS/SmoothStreaming
+# implementation for a content type with Class.forName, so nothing in the app references these
+# statically and R8 is free to strip them. A stripped class is indistinguishable from an absent
+# module: both surface as IllegalStateException("Module missing for content type N"), which the
+# DownloadManager thread throws uncaught and takes the process down with.
+-keep class androidx.media3.exoplayer.dash.DashMediaSource$Factory { *; }
+-keep class androidx.media3.exoplayer.hls.HlsMediaSource$Factory { *; }
+-keep class androidx.media3.exoplayer.smoothstreaming.SsMediaSource$Factory { *; }
+-keep class androidx.media3.exoplayer.dash.offline.DashDownloader$Factory { *; }
+-keep class androidx.media3.exoplayer.hls.offline.HlsDownloader$Factory { *; }
+-keep class androidx.media3.exoplayer.smoothstreaming.offline.SsDownloader$Factory { *; }
+
 # --- CloudStream (.cs3) provider runtime ---
 # Loaded .cs3 plugins resolve their superclasses and call into this API by its original names at
 # runtime, so none of it may be renamed, shrunk or repackaged. Same for NiceHttp, which the

@@ -288,6 +288,10 @@ data class AddonCatalog(
   val genreOptions: List<String> = emptyList(),
   /** True when the add-on declares genre as a required extra, so the catalog needs one to answer. */
   val requiresGenre: Boolean = false,
+  /** True when the catalog declares the "search" extra, meaning it can answer a text query. This
+   * is the only way an add-on's own titles — live channels especially — are findable: they are
+   * not in TMDB, and the app never holds a complete copy of a catalog to filter locally. */
+  val supportsSearch: Boolean = false,
 )
 
 data class AddonManifest(
@@ -438,6 +442,11 @@ data class PlayerSession(
   val preferBingeGroup: Boolean = true,
   val nextEpisodeThresholdMode: String = "minutes",
   val isLive: Boolean = false,
+  /** True when a live-style session is an on-demand playlist item rather than a linear channel. */
+  val isVod: Boolean = false,
+  /** Starting state of the progress bar for a live or live-VOD session, from settings. The
+   * player's own "Progress" control overrides it for the session that is playing. */
+  val showLiveProgressBar: Boolean = false,
   val nextEpisodeThresholdPercent: Int = 95,
   val nextEpisodeThresholdMinutes: Int = 2,
   val requestHeaders: Map<String, String> = emptyMap(),

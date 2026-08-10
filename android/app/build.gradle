@@ -159,6 +159,13 @@ dependencies {
     implementation files("libs/quickjs-runtime.aar")
     implementation("androidx.media3:media3-exoplayer:1.8.0")
     implementation("androidx.media3:media3-exoplayer-hls:1.8.0")
+    // Media3 resolves the media source and downloader for a content type reflectively, by class
+    // name, from whichever of these modules is on the classpath. With only HLS present, a DASH
+    // (.mpd) source threw IllegalStateException("Module missing for content type 0") - on the
+    // main thread when one was tapped, and on DownloadManager's own thread for every launch
+    // after one had been queued for download, which killed the process before the UI drew.
+    implementation("androidx.media3:media3-exoplayer-dash:1.8.0")
+    implementation("androidx.media3:media3-exoplayer-smoothstreaming:1.8.0")
     implementation("androidx.media3:media3-datasource:1.8.0")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     implementation("androidx.media3:media3-ui:1.8.0")

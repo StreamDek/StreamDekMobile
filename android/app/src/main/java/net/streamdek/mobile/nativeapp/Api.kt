@@ -11,6 +11,9 @@ import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import okhttp3.Cache
+import okhttp3.CacheControl
+import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -286,6 +289,57 @@ data class DiscoverPage(
   val totalPages: Int,
 )
 
+private const val ADDON_CACHE_DIRECTORY = "addon-http"
+private const val ADDON_CACHE_MAX_BYTES = 12L * 1024L * 1024L
+
+/**
+ * How long an add-on's answer may be reused. Deliberately short: many add-ons hand back
+ * time-limited playback URLs, so this is only meant to absorb opening a title, backing out and
+ * returning to it within one sitting - not to hold results across a session.
+ */
+private const val ADDON_CACHE_SECONDS = 90
+
+/**
+ * Gives add-on responses a cache lifetime they almost never declare themselves.
+ *
+ * Stremio add-ons overwhelmingly send no caching headers at all, and OkHttp will not store a
+ * response it has not been told it may store - so without this the cache above would sit empty
+ * and every re-open of a title would hit the add-on again. That is what drains the per-IP request
+ * quotas some add-ons enforce.
+ *
+ * An add-on that does express an opinion keeps it, `no-store` included. `Pragma: no-cache` is
+ * dropped only when we are supplying the policy, since HTTP/1.0's spelling of "never store this"
+ * would otherwise override the header being added here.
+ */
+private object AddonResponseCacheInterceptor : Interceptor {
+  override fun intercept(chain: Interceptor.Chain): okhttp3.Response {
+    val response = chain.proceed(chain.request())
+    if (!response.isSuccessful) return response
+    val declared = response.header("Cache-Control").orEmpty()
+    val addonHasAnOpinion = declared.contains("no-store", ignoreCase = true) ||
+      declared.contains("max-age", ignoreCase = true) ||
+      declared.contains("s-maxage", ignoreCase = true)
+    if (addonHasAnOpinion) return response
+    return response.newBuilder()
+      .header("Cache-Control", "private, max-age=$ADDON_CACHE_SECONDS")
+      .removeHeader("Pragma")
+      .build()
+  }
+}
+
+/** Per-account capabilities that decide how streams are fetched. */
+data class AddonEntitlements(val ultra: Boolean = false, val serverSideStreams: Boolean = false)
+
+/**
+ * The chosen torrent is not on the user's debrid service yet — a provider accepted the magnet and
+ * is fetching it onto its own servers now.
+ *
+ * Typed rather than a plain failure because it is not one: the source is fine and will usually
+ * play in a few minutes. It also has to survive the torrent-engine fallback, which reports its
+ * own unrelated errors on the way to giving up and would otherwise be the message shown.
+ */
+class DebridDownloadingException(message: String) : IllegalStateException(message)
+
 class StreamDekApiClient(context: Context? = null) {
   private val appContext = context?.applicationContext
   private val clientIdentity = appContext?.let { ClientIdentityStore(it).load() }
@@ -294,6 +348,14 @@ class StreamDekApiClient(context: Context? = null) {
     .connectTimeout(15, TimeUnit.SECONDS)
     .readTimeout(120, TimeUnit.SECONDS)
     .callTimeout(150, TimeUnit.SECONDS)
+    // Without a Cache installed, OkHttp does not store responses at all, so removing the old
+    // cache-busting query parameter on its own would have changed nothing.
+    .apply {
+      appContext?.let { context ->
+        runCatching { cache(Cache(File(context.cacheDir, ADDON_CACHE_DIRECTORY), ADDON_CACHE_MAX_BYTES)) }
+      }
+    }
+    .addNetworkInterceptor(AddonResponseCacheInterceptor)
     .build()
   private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
   val apiBaseUrl: String = BuildConfig.API_BASE_URL.trimEnd('/')
@@ -962,6 +1024,7 @@ class StreamDekApiClient(context: Context? = null) {
         val item = items.optJSONObject(index) ?: continue
         val normalizedCatalogType = rawType.trim().lowercase()
         val mediaItem = parseMediaItem(item).copy(
+          id = parseAddonCatalogItemId(item),
           type = when (normalizedCatalogType) {
             "series", "show" -> "tv"
             else -> normalizedCatalogType
@@ -984,9 +1047,40 @@ class StreamDekApiClient(context: Context? = null) {
   // meaning to the backend, which can't reach a URL like http://127.0.0.1:11470 on the phone's
   // own network. Their catalogs are instead fetched directly from the addon, on-device, exactly
   // like fetchFreshStreamsFromAddon already does for streams.
-  private suspend fun fetchLocalAddonCatalog(addon: InstalledAddon, rawType: String, catalogId: String, catalogName: String, genre: String? = null, skip: Int = 0): List<MediaItem> {
-    val base = (addon.transportUrl ?: addon.baseUrl ?: addon.manifestUrl?.substringBeforeLast("/manifest.json"))?.trimEnd('/')
-      ?: return emptyList()
+  /**
+   * Asks one of an add-on's catalogs to answer a text query.
+   *
+   * The only way an add-on's own titles are findable at all. TMDB search — the app's entire
+   * search until now — has no idea what a live channel is, and a catalog is never held complete
+   * in memory to filter locally, so a channel like "Sky Cinema Action" simply could not be found.
+   *
+   * Goes straight to the add-on rather than through StreamDek's servers, matching how streams are
+   * now fetched, so it needs no backend change and works for local add-ons unmodified.
+   */
+  suspend fun searchAddonCatalog(
+    addon: InstalledAddon,
+    catalog: AddonCatalog,
+    query: String,
+  ): Result<List<MediaItem>> = withContext(Dispatchers.IO) {
+    runCatching {
+      if (query.isBlank()) return@runCatching emptyList()
+      fetchAddonCatalogDirect(
+        addon = addon,
+        rawType = catalog.type,
+        catalogId = catalog.id,
+        catalogName = catalog.name,
+        // A catalog that insists on a genre still needs one alongside the query.
+        genre = catalog.genreOptions.firstOrNull()?.takeIf { catalog.requiresGenre },
+        search = query.trim(),
+      )
+    }
+  }
+
+  private suspend fun fetchLocalAddonCatalog(addon: InstalledAddon, rawType: String, catalogId: String, catalogName: String, genre: String? = null, skip: Int = 0): List<MediaItem> =
+    fetchAddonCatalogDirect(addon, rawType, catalogId, catalogName, genre, skip)
+
+  private suspend fun fetchAddonCatalogDirect(addon: InstalledAddon, rawType: String, catalogId: String, catalogName: String, genre: String? = null, skip: Int = 0, search: String? = null): List<MediaItem> {
+    val base = addonRequestBaseUrl(addon) ?: return emptyList()
     // Stremio's catalog protocol takes "extra" properties (genre, skip, search) as one more
     // path segment before .json, e.g. /catalog/other/{id}/genre=Comedy&skip=100.json — not a
     // query string. Some catalogs (see the manifest that prompted this) only return meaningful,
@@ -1004,6 +1098,7 @@ class StreamDekApiClient(context: Context? = null) {
     fun pathSegment(value: String) = Uri.encode(value)
     val extraParams = buildList {
       genre?.takeIf { it.isNotBlank() }?.let { add("genre=" + pathSegment(it)) }
+      search?.takeIf { it.isNotBlank() }?.let { add("search=" + pathSegment(it)) }
       if (skip > 0) add("skip=$skip")
     }
     val extraSegment = extraParams.takeIf { it.isNotEmpty() }?.joinToString("&", prefix = "/").orEmpty()
@@ -1025,6 +1120,7 @@ class StreamDekApiClient(context: Context? = null) {
         val item = items.optJSONObject(index) ?: continue
         val normalizedCatalogType = rawType.trim().lowercase()
         val mediaItem = parseMediaItem(item).copy(
+          id = parseAddonCatalogItemId(item),
           type = when (normalizedCatalogType) {
             "series", "show" -> "tv"
             else -> normalizedCatalogType
@@ -1044,6 +1140,22 @@ class StreamDekApiClient(context: Context? = null) {
   }
 
   /**
+   * The address an add-on's own resources hang off, with any `/manifest.json` removed.
+   *
+   * `transportUrl` is the manifest's own address and usually ends in `/manifest.json`. Appending
+   * `/catalog/...` to it unchanged produced `.../manifest.json/catalog/...`, which every add-on
+   * answers with a 404 — the catalog path only ever worked for the local add-ons it was written
+   * for, whose stored URL happened to carry no suffix. [fetchFreshStreamsFromAddon] already
+   * trimmed it this way for streams; catalogs and search now share that behaviour.
+   */
+  private fun addonRequestBaseUrl(addon: InstalledAddon): String? {
+    val raw = addon.transportUrl ?: addon.manifestUrl ?: addon.baseUrl ?: addon.url ?: return null
+    return raw.substringBeforeLast("/manifest.json", missingDelimiterValue = raw)
+      .trimEnd('/')
+      .takeIf { it.isNotBlank() }
+  }
+
+  /**
    * Resolves the id an add-on's own /stream endpoint actually expects, by asking its
    * /meta/{type}/{id}.json first — the same round-trip every working Stremio client makes
    * before requesting streams. A self-hosted bridge (like a local CNCVerse-style server) can
@@ -1056,7 +1168,7 @@ class StreamDekApiClient(context: Context? = null) {
   suspend fun resolveLocalAddonStreamId(addon: InstalledAddon, rawType: String, id: String): Result<String> =
     withContext(Dispatchers.IO) {
       runCatching {
-        val base = (addon.transportUrl ?: addon.baseUrl ?: addon.manifestUrl?.substringBeforeLast("/manifest.json"))?.trimEnd('/')
+        val base = addonRequestBaseUrl(addon)
           ?: return@runCatching id
         fun pathSegment(value: String) = Uri.encode(value)
         val request = Request.Builder()
@@ -1108,7 +1220,7 @@ class StreamDekApiClient(context: Context? = null) {
   suspend fun fetchLocalAddonMeta(addon: InstalledAddon, rawType: String, id: String): Result<LocalAddonMeta> =
     withContext(Dispatchers.IO) {
       runCatching {
-        val base = (addon.transportUrl ?: addon.baseUrl ?: addon.manifestUrl?.substringBeforeLast("/manifest.json"))?.trimEnd('/')
+        val base = addonRequestBaseUrl(addon)
           ?: error("Addon transport URL is unavailable")
         val response = execute(
           Request.Builder()
@@ -1471,6 +1583,48 @@ class StreamDekApiClient(context: Context? = null) {
       }
     }
 
+  /**
+   * The per-account capabilities the app needs before deciding how to fetch streams.
+   *
+   * `serverSideStreams` off - the default - means this account queries add-ons itself, from the
+   * device, so its own IP is what an add-on sees.
+   */
+  suspend fun fetchAddonEntitlements(session: AuthSession?): Result<AddonEntitlements> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = execute(
+          Request.Builder()
+            .url("$apiBaseUrl/addons/entitlements")
+            .headers(authHeaders(session, includeContentType = false))
+            .build(),
+        )
+        ensureOk(response, "Failed to load account entitlements")
+        AddonEntitlements(
+          ultra = response.json.optBoolean("ultra", false),
+          serverSideStreams = response.json.optBoolean("serverSideStreams", false),
+        )
+      }
+    }
+
+  /**
+   * Translates a catalogue id into the one an add-on's /stream endpoint expects (usually TMDB to
+   * IMDb). Contacts no add-on: the mapping needs a TMDB key that only the server holds, so this
+   * stays server-side even for accounts that fetch every stream themselves.
+   */
+  suspend fun resolveAddonVideoId(session: AuthSession?, type: String, videoId: String): Result<String> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = execute(
+          Request.Builder()
+            .url("$apiBaseUrl/addons/resolve-id/${encodeQuery(type)}/${encodeQuery(videoId)}")
+            .headers(authHeaders(session, includeContentType = false))
+            .build(),
+        )
+        ensureOk(response, "Failed to resolve the add-on id")
+        response.json.optString("videoId").takeIf { it.isNotBlank() } ?: videoId
+      }
+    }
+
   suspend fun fetchStreamsFromAddon(session: AuthSession?, addonId: String, type: String, videoId: String, profileId: String? = null): Result<List<AddonStream>> =
     withContext(Dispatchers.IO) {
       runCatching {
@@ -1485,7 +1639,19 @@ class StreamDekApiClient(context: Context? = null) {
       }
     }
 
-  suspend fun fetchFreshStreamsFromAddon(addon: InstalledAddon, type: String, videoId: String): Result<List<AddonStream>> =
+  /**
+   * Asks an add-on for its streams directly from this device.
+   *
+   * [forceNetwork] bypasses the short response cache. Playback uses it: a cached list is fine for
+   * deciding what to show, but the URL actually about to be opened must be one the add-on stands
+   * behind right now.
+   */
+  suspend fun fetchFreshStreamsFromAddon(
+    addon: InstalledAddon,
+    type: String,
+    videoId: String,
+    forceNetwork: Boolean = false,
+  ): Result<List<AddonStream>> =
     withContext(Dispatchers.IO) {
       runCatching {
         val manifestUrl = addon.transportUrl ?: addon.manifestUrl ?: addon.url
@@ -1497,11 +1663,15 @@ class StreamDekApiClient(context: Context? = null) {
         // reserved characters (as CNCVerse Bridge's do) will 404/fall through to a
         // default route on most HTTP routers if "+" is sent instead of "%20" -- the
         // same class of bug that caused duplicate catalog rows for this add-on.
-        val streamUrl = "$baseUrl/stream/${Uri.encode(streamType)}/${Uri.encode(videoId)}.json?_sd=${System.currentTimeMillis()}"
+        // No cache-busting parameter and no no-cache header: both were making every request a
+        // unique, uncacheable one, so re-opening a title always spent another request against
+        // whatever per-IP quota the add-on enforces. Freshness is handled where it matters
+        // instead - by [forceNetwork] at playback.
+        val streamUrl = "$baseUrl/stream/${Uri.encode(streamType)}/${Uri.encode(videoId)}.json"
         val request = Request.Builder()
           .url(streamUrl)
           .header("User-Agent", "Stremio/4.4.168")
-          .header("Cache-Control", "no-cache")
+          .apply { if (forceNetwork) cacheControl(CacheControl.FORCE_NETWORK) }
           .build()
         val response = execute(request, directStreamClient)
         android.util.Log.d("StreamDekStreams", "GET $streamUrl -> ok=${response.ok} code=${response.statusCode}")
@@ -1538,6 +1708,34 @@ class StreamDekApiClient(context: Context? = null) {
       }
     }
   }
+
+  /**
+   * Which of [infoHashes] the user's own debrid providers already hold, as hash -> provider names.
+   *
+   * Only hashes leave the device and no add-on is involved, so this works the same whether the
+   * streams themselves came from StreamDek's servers or straight from an add-on.
+   */
+  suspend fun fetchDebridCachedHashes(session: AuthSession, infoHashes: List<String>): Result<Map<String, List<String>>> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        if (infoHashes.isEmpty()) return@runCatching emptyMap()
+        val payload = JSONObject().put("infoHashes", JSONArray(infoHashes))
+        val response = executeJson("/debrid/cache-check", payload, session = session)
+        ensureOk(response, "Failed to check debrid cache")
+        val cachedBy = response.json.optJSONObject("cachedBy") ?: JSONObject()
+        buildMap {
+          cachedBy.keys().forEach { hash ->
+            val providers = cachedBy.optJSONArray(hash) ?: return@forEach
+            val names = buildList {
+              for (index in 0 until providers.length()) {
+                providers.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+              }
+            }
+            if (names.isNotEmpty()) put(hash.lowercase(), names)
+          }
+        }
+      }
+    }
 
   suspend fun fetchDebridAccounts(session: AuthSession): Result<List<DebridAccount>> = withContext(Dispatchers.IO) {
     runCatching {
@@ -1583,6 +1781,21 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
 
+  suspend fun setDebridAccountEnabled(session: AuthSession, provider: String, enabled: Boolean): Result<Unit> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val payload = JSONObject().put("enabled", enabled)
+        val response = execute(
+          Request.Builder()
+            .url("$apiBaseUrl/debrid/accounts/${encodeQuery(provider)}")
+            .patch(payload.toString().toRequestBody(jsonMediaType))
+            .headers(authHeaders(session))
+            .build(),
+        )
+        ensureOk(response, "Failed to ${if (enabled) "enable" else "disable"} debrid account")
+      }
+    }
+
   suspend fun reorderDebridAccounts(session: AuthSession, orderedProviders: List<String>): Result<Unit> = withContext(Dispatchers.IO) {
     runCatching {
       val response = executeJson(
@@ -1609,6 +1822,13 @@ class StreamDekApiClient(context: Context? = null) {
       stream.cachedBy.firstOrNull()?.let { payload.put("providerHint", it) }
       maxSizeBytes?.let { payload.put("maxSize", it) }
       val response = executeJson("/debrid/resolve", payload, session = session)
+      if (!response.ok && response.json.optBoolean("downloading")) {
+        throw DebridDownloadingException(
+          response.json.optString("error").ifBlank {
+            "Not cached yet — your debrid service has started downloading it. Try this source again in a few minutes."
+          },
+        )
+      }
       ensureOk(response, "Could not resolve stream")
       val json = response.json
       if (json.optString("url").isBlank()) return@runCatching null
@@ -2483,6 +2703,16 @@ private fun parseMediaItemId(item: JSONObject): String {
   ).firstOrNull { it.isNotBlank() }.orEmpty()
 }
 
+/**
+ * Add-on resource routes are keyed by the exact `id` published in their catalog response.
+ * Metadata add-ons commonly include a numeric `tmdbId` alongside a canonical id such as
+ * `tmdb:tv:1399`; the general TMDB parser prefers that numeric field, but using it for the
+ * add-on's `/meta` and `/stream` routes breaks the resource chain.
+ */
+internal fun parseAddonCatalogItemId(item: JSONObject): String =
+  item.opt("id")?.toString()?.takeIf { it.isNotBlank() && it != "null" }
+    ?: parseMediaItemId(item)
+
 private fun parseMediaItemType(item: JSONObject): String {
   if (item.has("logo") && !item.has("title") && !item.has("poster")) return "network"
   val rawType = item.optString("type").ifBlank { item.optString("media_type").ifBlank { item.optString("kind") } }
@@ -2869,6 +3099,23 @@ private fun parseAddonStringList(values: JSONArray?): List<String> = buildList {
 // with a list of named sub-lists instead of one flat listing — without picking one of those
 // options, the addon has nothing to key its response on. See fetchLocalAddonCatalog / the
 // genre handling in fetchAddonCatalog below for where the first option gets used.
+/**
+ * Whether the catalog accepts a `search` extra.
+ *
+ * Both manifest spellings are accepted: the structured `extra: [{ name: "search" }]` form and the
+ * older flat `extraSupported: ["search"]` list, which plenty of installed add-ons still use.
+ */
+private fun parseAddonSearchSupported(item: JSONObject): Boolean {
+  item.optJSONArray("extra")?.let { extra ->
+    for (index in 0 until extra.length()) {
+      val entry = extra.optJSONObject(index) ?: continue
+      if (entry.optString("name").equals("search", ignoreCase = true)) return true
+    }
+  }
+  return parseAddonStringList(item.optJSONArray("extraSupported"))
+    .any { it.equals("search", ignoreCase = true) }
+}
+
 private fun parseAddonGenreOptions(item: JSONObject): List<String> {
   val extra = item.optJSONArray("extra")
   if (extra != null) {
@@ -2914,12 +3161,15 @@ private fun parseAddonCatalogs(values: JSONArray?): List<AddonCatalog> = buildLi
         name = item.optString("name").ifBlank { id },
         genreOptions = parseAddonGenreOptions(item),
         requiresGenre = parseAddonGenreRequired(item),
+        supportsSearch = parseAddonSearchSupported(item),
       ),
     )
   }
 }
 
-private fun mapHomeCatalogType(rawType: String): String? = when (rawType.trim().lowercase()) {
+/** Maps an add-on's own catalog type onto the app's, or null when the app has nowhere to show it.
+ * Also used by the search screen to decide which catalogs can serve the type being browsed. */
+internal fun mapHomeCatalogType(rawType: String): String? = when (rawType.trim().lowercase()) {
   "movie" -> "movie"
   "series", "tv" -> "tv"
   "sport", "sports", "channel", "live", "other" -> rawType.trim().lowercase()

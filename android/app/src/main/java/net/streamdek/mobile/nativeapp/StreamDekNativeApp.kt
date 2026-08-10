@@ -243,7 +243,10 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -427,7 +430,7 @@ private val PageTitleSize = 32.sp
 private val PageTitleLineHeight = 37.sp
 private val LocalStreamDekHazeState = compositionLocalOf<HazeState?> { null }
 
-private enum class SettingsRoute { GeneralPlayback, HomeAppearance, HomeLayout, DetailScreen, Streams, PlaybackAutomation, Subtitles, Addons, M3uPlaylists, Downloads, Plugins, Debrid, SyncServices, Trakt, Simkl, Mdblist, ConnectTv, Ratings, Profiles, Account, AppUpdates }
+internal enum class SettingsRoute { GeneralPlayback, HomeAppearance, HomeLayout, DetailScreen, Streams, PlaybackAutomation, Subtitles, Addons, M3uPlaylists, Downloads, Plugins, Debrid, SyncServices, Trakt, Simkl, Mdblist, ConnectTv, Ratings, Profiles, Account, AppUpdates }
 /** How a tracking service is connected. Trakt and SIMKL use a device code; MDBList uses a key. */
 private enum class SyncAuthKind { DeviceCode, ApiKey }
 
@@ -529,6 +532,10 @@ private data class AppUiState(
   val addonCatalogRatings: Map<String, Double> = emptyMap(),
   val searchLoading: Boolean = false,
   val searchResults: List<MediaItem> = emptyList(),
+  /** Matches from installed add-ons' own searchable catalogs — the only place an add-on's live
+   * channels can be found, since TMDB does not carry them. */
+  val addonSearchResults: List<MediaItem> = emptyList(),
+  val addonSearchLoading: Boolean = false,
   val searchResultQuery: String = "",
   val localContinueWatching: List<MediaItem> = emptyList(),
   val localResumeEntries: List<PlaybackMemoryEntry> = emptyList(),
@@ -629,6 +636,10 @@ private data class AppUiState(
   val continueWatchingStyle: ContinueWatchingStyle = ContinueWatchingStyle.Glass,
   val liveLandscapeCards: Boolean = true,
   val liveCategoriesEnabled: Boolean = true,
+  val liveProgressBarEnabled: Boolean = false,
+  /** When false (the default) the device queries add-ons itself rather than asking StreamDek's
+   * servers to do it, so an add-on sees this user's IP and never the shared server one. */
+  val serverSideStreamsEnabled: Boolean = false,
   /** Which tracking service feeds Home rows and Continue Watching. The rest mirror writes only. */
   val primarySyncService: String = SyncService.Trakt.id,
   val liveFavouriteDrawerCards: Boolean = false,
@@ -1093,7 +1104,7 @@ private class AppSettingsStore(context: Context) {
   private val profileSettingKeys = setOf(
     "detail_page_style", "season_tab_style", "show_streams_list", "hero_trailer_autoplay", "hero_trailer_resolution",
     "show_hero_synopsis", "continue_watching_style", "live_landscape_cards", "live_favourite_drawer_cards",
-    "live_categories_enabled", "mdblist_api_key", "primary_sync_service",
+    "live_categories_enabled", "live_progress_bar", "mdblist_api_key", "primary_sync_service",
     "remember_last_source", "skip_intro_enabled", "skip_segments_enabled", "skip_recap_enabled", "skip_ending_enabled",
     "auto_play_next_episode", "prefer_binge_group", "auto_load_subtitles", "blur_unwatched_episodes",
     "next_episode_threshold_mode", "next_episode_threshold_percent", "next_episode_threshold_minutes",
@@ -1147,6 +1158,7 @@ private class AppSettingsStore(context: Context) {
     continueWatchingStyle = runCatching { ContinueWatchingStyle.valueOf(profilePrefs.getString("continue_watching_style", ContinueWatchingStyle.Glass.name) ?: ContinueWatchingStyle.Glass.name) }.getOrDefault(ContinueWatchingStyle.Glass),
     liveLandscapeCards = profilePrefs.getBoolean("live_landscape_cards", true),
     liveCategoriesEnabled = profilePrefs.getBoolean("live_categories_enabled", true),
+    liveProgressBarEnabled = profilePrefs.getBoolean("live_progress_bar", false),
     primarySyncService = normalizedPrimarySyncService(profilePrefs.getString("primary_sync_service", null)),
     liveFavouriteDrawerCards = profilePrefs.getBoolean("live_favourite_drawer_cards", false),
     rememberLastSource = profilePrefs.getBoolean("remember_last_source", true),
@@ -1212,6 +1224,7 @@ private class AppSettingsStore(context: Context) {
   fun saveContinueWatchingStyle(value: ContinueWatchingStyle) { profilePrefs.edit().putString("continue_watching_style", value.name).apply() }
   fun saveLiveLandscapeCards(value: Boolean) { profilePrefs.edit().putBoolean("live_landscape_cards", value).apply() }
   fun saveLiveCategoriesEnabled(value: Boolean) { profilePrefs.edit().putBoolean("live_categories_enabled", value).apply() }
+  fun saveLiveProgressBarEnabled(value: Boolean) { profilePrefs.edit().putBoolean("live_progress_bar", value).apply() }
   fun savePrimarySyncService(value: String) { profilePrefs.edit().putString("primary_sync_service", value).apply() }
   fun saveLiveFavouriteDrawerCards(value: Boolean) { profilePrefs.edit().putBoolean("live_favourite_drawer_cards", value).apply() }
   fun saveRememberLastSource(value: Boolean) { profilePrefs.edit().putBoolean("remember_last_source", value).apply() }
@@ -1608,6 +1621,17 @@ private fun normalizedMediaType(type: String): String = when (type.trim().lowerc
   "tv", "series", "show" -> "tv"
   else -> type.trim().lowercase()
 }
+
+/**
+ * Keeps the Stremio resource type used by the catalog that produced a card.
+ *
+ * UI models normalize `series` to `tv`, but add-on routes do not: metadata add-ons such as
+ * AIOMetadata publish `/meta/series/...` and answer `/meta/tv/...` with no item. Prefer the
+ * original catalog type, falling back to Stremio's canonical `series` spelling for TV cards.
+ */
+internal fun addonMetaRequestType(type: String, sourceCatalogType: String?): String =
+  sourceCatalogType?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+    ?: if (normalizedMediaType(type) == "tv") "series" else type.trim().lowercase()
 
 /** Watchlist/library identity. Types reach us as "tv", "series" or "show" depending on the
  *  source (Trakt, add-on catalogues, TMDB), so membership has to compare the normalized form —
@@ -2268,7 +2292,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         fetchStreamsForPlayback("series", ids).map { streams -> nextEpisode to streams }
       },
       onSuccess = { (nextEpisode, streams) ->
-        val ranked = rankedStreams(mediaStreamsOnly(streams, detail), uiState.debridAccounts.isNotEmpty(), uiState.preferredQuality, uiState.maxFileSizeGb)
+        val ranked = rankedStreams(mediaStreamsOnly(streams, detail), uiState.debridAccounts.any { it.enabled }, uiState.preferredQuality, uiState.maxFileSizeGb)
         val sameBingeGroup = currentStream?.bingeGroup?.takeIf { it.isNotBlank() }?.let { group -> ranked.firstOrNull { it.bingeGroup == group } }
         val sameAddonAndQuality = currentStream?.let { current -> ranked.firstOrNull { it.addonId == current.addonId && it.quality == current.quality } }
         val selected = if (player.preferBingeGroup) sameBingeGroup ?: sameAddonAndQuality ?: ranked.firstOrNull() else ranked.firstOrNull()
@@ -2318,7 +2342,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         fetchStreamsForPlayback("series", ids).map { streams -> target to streams }
       },
       onSuccess = { (target, streams) ->
-        val ranked = rankedStreams(mediaStreamsOnly(streams, detail), uiState.debridAccounts.isNotEmpty(), uiState.preferredQuality, uiState.maxFileSizeGb)
+        val ranked = rankedStreams(mediaStreamsOnly(streams, detail), uiState.debridAccounts.any { it.enabled }, uiState.preferredQuality, uiState.maxFileSizeGb)
         val bingeMatch = currentStream?.bingeGroup?.takeIf { it.isNotBlank() }?.let { group -> ranked.firstOrNull { it.bingeGroup == group } }
         val addonMatch = currentStream?.let { source -> ranked.firstOrNull { it.addonId == source.addonId && it.quality == source.quality } }
         val selected = if (uiState.preferBingeGroup) bingeMatch ?: addonMatch ?: ranked.firstOrNull() else ranked.firstOrNull()
@@ -2411,7 +2435,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       if (resolved.isEmpty()) throw lastFailure ?: IllegalStateException("No playable stream was found for this channel.")
       resolved
     }
-    val ranked = rankedStreams(mediaStreamsOnly(streams, detail), uiState.debridAccounts.isNotEmpty(), uiState.preferredQuality, uiState.maxFileSizeGb)
+    val ranked = rankedStreams(mediaStreamsOnly(streams, detail), uiState.debridAccounts.any { it.enabled }, uiState.preferredQuality, uiState.maxFileSizeGb)
     val selected = ranked.firstOrNull() ?: throw IllegalStateException("No playable stream was found for this channel.")
     val directUrl = selected.url?.takeIf { it.isNotBlank() && !it.startsWith("magnet:", ignoreCase = true) }
     val playback = if (directUrl != null) ResolvedPlayback(directUrl, selected) else resolvePlayback(selected, detail, null).getOrThrow()
@@ -2457,7 +2481,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       val baseIds = listOfNotNull(detail.imdbId?.takeIf { it.isNotBlank() }, detail.id, item.id).distinct()
       val videoIds = baseIds.map { base -> episode?.let { "$base:${it.seasonNumber}:${it.episodeNumber}" } ?: base }
       val fetched = fetchStreamsForPlayback(streamType, videoIds, live = false, detail = detail).getOrThrow()
-      rankedStreams(mediaStreamsOnly(fetched, detail), uiState.debridAccounts.isNotEmpty(), uiState.preferredQuality, uiState.maxFileSizeGb)
+      rankedStreams(mediaStreamsOnly(fetched, detail), uiState.debridAccounts.any { it.enabled }, uiState.preferredQuality, uiState.maxFileSizeGb)
         .firstOrNull() ?: throw IllegalStateException("No playable source was found for ${item.title}.")
     }
     val playback = resolvePlayback(stream, detail, episode).getOrThrow()
@@ -2569,6 +2593,50 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
             uiState = uiState.copy(searchLoading = false, searchResultQuery = normalized, errorMessage = error.message ?: "Search failed.")
           }
         }
+    }
+    searchInstalledAddons(normalized, generation)
+  }
+
+  /**
+   * Asks every enabled add-on catalog that advertises search to answer the same query.
+   *
+   * Runs alongside the TMDB search rather than after it: the two answer different questions, and
+   * an add-on's live channels exist in neither TMDB nor any list the app already holds. Failures
+   * are silent per add-on — one unreachable add-on must not turn a search that found things into
+   * an error.
+   */
+  private fun searchInstalledAddons(query: String, generation: Long) {
+    val searchable = uiState.addons
+      .filter { it.enabled }
+      .flatMap { addon -> addon.manifest.catalogs.filter { it.supportsSearch }.map { addon to it } }
+    if (searchable.isEmpty()) {
+      uiState = uiState.copy(addonSearchResults = emptyList(), addonSearchLoading = false)
+      return
+    }
+    uiState = uiState.copy(addonSearchLoading = true)
+    viewModelScope.launch {
+      val gate = Semaphore(5)
+      val results = supervisorScope {
+        searchable.map { (addon, catalog) ->
+          async(Dispatchers.IO) {
+            gate.withPermit {
+              apiClient.searchAddonCatalog(addon, catalog, query)
+                // Logged rather than swallowed silently: a catalog answering 404 for every query
+                // is indistinguishable from one that simply has no matches, which is how a
+                // malformed request URL went unnoticed until an add-on was tested by hand.
+                .onFailure { Log.w("StreamDekAddonSearch", "${addon.manifest.name}/${catalog.id} search failed", it) }
+                .getOrDefault(emptyList())
+            }
+          }
+        }.awaitAll().flatten()
+      }
+      if (generation != searchRequestGeneration) return@launch
+      // Add-ons answer their own way, and some ignore the query and return a default listing, so
+      // the results are matched against the query here too rather than trusted wholesale.
+      val relevant = withContext(Dispatchers.Default) {
+        results.filter { it.playlistSearchRank(query) != null }.distinctBy { "${it.type}-${it.id}" }
+      }
+      uiState = uiState.copy(addonSearchResults = relevant, addonSearchLoading = false)
     }
   }
 
@@ -2748,13 +2816,14 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
     if (metaAddon != null && fallbackItem != null) {
       val isLocalMetaAddon = LocalAddonManager.isLocalAddonId(metaAddon.id)
+      val metaRequestType = addonMetaRequestType(type, fallbackItem.sourceCatalogType)
       launchWork(
         onStart = { uiState = uiState.copy(detailLoading = true, detail = null, detailIsLive = false, detailFallbackItem = fallbackItem, selectedPerson = null, personLoading = false, selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null, detailSelectedTab = null, pendingStreamSources = 0, availableStreams = emptyList(), errorMessage = null) },
         block = {
           val addon = uiState.addons.firstOrNull { it.id == metaAddon.id }
             ?: return@launchWork Result.failure(IllegalStateException("That add-on is no longer installed."))
           val bridgeMeta = apiClient
-            .fetchAddonMeta(uiState.session, uiState.activeProfileId, addon, type, id)
+            .fetchAddonMeta(uiState.session, uiState.activeProfileId, addon, metaRequestType, id)
             .getOrThrow()
           val lookupId = bridgeMeta.imdbId ?: bridgeMeta.id
           val typeGuesses = when {
@@ -3032,7 +3101,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
     fun publish() {
       if (generation != streamRequestGeneration) return
-      val ranked = rankedStreams(mediaStreamsOnly(merged.values.toList(), detail), uiState.debridAccounts.isNotEmpty(), uiState.preferredQuality, uiState.maxFileSizeGb)
+      val ranked = rankedStreams(mediaStreamsOnly(merged.values.toList(), detail), uiState.debridAccounts.any { it.enabled }, uiState.preferredQuality, uiState.maxFileSizeGb)
       val remaining = (totalSources - completedSources).coerceAtLeast(0)
       uiState = uiState.copy(
         streamLoading = remaining > 0,
@@ -3135,7 +3204,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           }
           fallback.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) }
         }
-        val ranked = rankedStreams(mediaStreamsOnly(merged.values.toList(), detail), uiState.debridAccounts.isNotEmpty(), uiState.preferredQuality, uiState.maxFileSizeGb)
+        val ranked = rankedStreams(mediaStreamsOnly(merged.values.toList(), detail), uiState.debridAccounts.any { it.enabled }, uiState.preferredQuality, uiState.maxFileSizeGb)
         uiState = uiState.copy(
           streamLoading = false,
           pendingStreamSources = 0,
@@ -3143,41 +3212,126 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           selectedEpisode = episode,
           errorMessage = lastError.let { error -> if (ranked.isEmpty() && error != null) error.message ?: "No playable streams were found." else uiState.errorMessage },
         )
+        markDebridCachedStreams(generation)
       }
     }
   }
 
+  /**
+   * Fills in which streams the user's debrid providers already hold, once the whole list is in.
+   *
+   * Deliberately one request for the merged set rather than one per add-on: results arrive
+   * add-on by add-on, and asking after each publish would put the same question to the provider
+   * a dozen times for one title.
+   *
+   * Available to every account with a debrid provider - it describes that user's own
+   * subscription, so there is nothing to gate.
+   */
+  private fun markDebridCachedStreams(generation: Long) {
+    val session = uiState.session ?: return
+    if (uiState.debridAccounts.none { it.enabled }) return
+    // Streams fetched through StreamDek's servers already carry their markers.
+    val hashes = uiState.availableStreams
+      .filter { it.cachedBy.isEmpty() }
+      .mapNotNull { it.infoHash?.trim()?.takeIf(String::isNotEmpty)?.lowercase() }
+      .distinct()
+    if (hashes.isEmpty()) return
+    viewModelScope.launch {
+      apiClient.fetchDebridCachedHashes(session, hashes).onSuccess { cached ->
+        if (generation != streamRequestGeneration || cached.isEmpty()) return@onSuccess
+        val decorated = uiState.availableStreams.map { stream ->
+          val providers = stream.infoHash?.trim()?.lowercase()?.let(cached::get).orEmpty()
+          if (providers.isEmpty() || stream.cachedBy.isNotEmpty()) stream else stream.copy(cachedBy = providers)
+        }
+        // Being cached is worth 400 points in rankedStreams, so the order the user is looking at
+        // is wrong until it is applied - re-ranked here rather than left stale. Stream cards are
+        // keyed by identity, so re-ordering moves cards instead of reassigning them.
+        uiState = uiState.copy(
+          availableStreams = rankedStreams(
+            decorated,
+            uiState.debridAccounts.any { it.enabled },
+            uiState.preferredQuality,
+            uiState.maxFileSizeGb,
+          ),
+        )
+      }
+    }
+  }
+
+  /**
+   * Ids already translated for add-on /stream calls, one in-flight resolution per title.
+   *
+   * The fan-out calls [fetchAddonStreamsWithRetry] once per add-on, and every one of them needs
+   * the same translated id — without sharing the work here, opening a title would ask the
+   * resolver as many times as the user has add-ons installed.
+   */
+  private val resolvedAddonVideoIds = mutableMapOf<String, kotlinx.coroutines.Deferred<String>>()
+
+  private suspend fun addonVideoIdFor(type: String, id: String): String {
+    if (type != "movie" && type != "series" && type != "tv") return id
+    if (id.substringBefore(":").matches(IMDB_ID_PATTERN)) return id
+    val key = "$type:$id"
+    val pending = synchronized(resolvedAddonVideoIds) {
+      resolvedAddonVideoIds.getOrPut(key) {
+        viewModelScope.async(Dispatchers.IO) {
+          apiClient.resolveAddonVideoId(uiState.session, type, id).getOrDefault(id)
+        }
+      }
+    }
+    return runCatching { pending.await() }.getOrDefault(id)
+  }
+
   private suspend fun fetchAddonStreamsWithRetry(addon: InstalledAddon, type: String, id: String): Result<List<AddonStream>> {
     val requestedType = type.trim().lowercase()
+    val declaredTypes = addon.manifest.types.map { it.trim().lowercase() }.filterTo(mutableSetOf()) { it.isNotBlank() }
     val typeCandidates = if (uiState.detailIsLive) {
       buildList {
         add(requestedType)
         detailSourceCatalogType?.trim()?.lowercase()?.takeIf { it.isNotBlank() }?.let(::add)
-        addon.manifest.types.mapTo(this) { it.trim().lowercase() }
+        addAll(declaredTypes)
         addAll(listOf("live", "channel", "tv", "sport", "sports", "other"))
       }.filter { it.isNotBlank() }.distinct()
+        // The generic spellings above exist because live add-ons disagree about what to call a
+        // channel, not because any one add-on serves all of them. Asking an add-on for a type it
+        // never advertised is a guaranteed-empty round trip, and at six or more candidates
+        // against two request paths that was most of the traffic a single channel generated.
+        .filter { declaredTypes.isEmpty() || it == requestedType || it in declaredTypes }
     } else {
       listOf(requestedType)
     }
     var lastError: Throwable? = null
     val isLocalAddon = LocalAddonManager.isLocalAddonId(addon.id)
-    if (!isLocalAddon) {
+    // Asking StreamDek's servers to fetch streams is now an entitlement rather than the default.
+    // An add-on that decides it dislikes the caller blocks that caller for everyone behind it, so
+    // a single add-on's abuse detection used to remove sources for the whole user base. Fetching
+    // from the device puts that risk on the one account it belongs to.
+    val useServerSideStreams = !isLocalAddon && uiState.serverSideStreamsEnabled
+    if (useServerSideStreams) {
       for (candidateType in typeCandidates) {
         apiClient.fetchStreamsFromAddon(uiState.session, addon.id, candidateType, id, uiState.activeProfileId)
           .onSuccess { if (it.isNotEmpty()) return Result.success(it) }
           .onFailure { lastError = it }
       }
     }
-    val baseId = id.substringBefore(":")
     val requiresImdbId = !uiState.detailIsLive && (requestedType == "movie" || requestedType == "series" || requestedType == "tv")
+    // Without the server in front, an id an add-on cannot read has to be translated first or the
+    // request below is a guaranteed miss - that translation needs a TMDB key only the server
+    // holds. The resolver contacts no add-on, so no add-on learns a StreamDek address from it.
+    val directId = if (isLocalAddon || !requiresImdbId) id else addonVideoIdFor(requestedType, id)
+    val baseId = directId.substringBefore(":")
     // Local add-ons only ever fetch directly from the device (there's no backend copy to try
     // first), so they always go straight to the on-device fetch below.
-    if (isLocalAddon || !requiresImdbId || baseId.matches(Regex("^tt\\d+$", RegexOption.IGNORE_CASE))) {
-      if (!isLocalAddon) delay(180L)
+    if (isLocalAddon || !requiresImdbId || baseId.matches(IMDB_ID_PATTERN)) {
+      if (useServerSideStreams) delay(180L)
       for (candidateType in typeCandidates.take(3)) {
-        apiClient.fetchFreshStreamsFromAddon(addon, candidateType, id)
+        val answered = apiClient.fetchFreshStreamsFromAddon(addon, candidateType, directId)
           .onSuccess { if (it.isNotEmpty()) return Result.success(it) }
           .onFailure { lastError = it }
+          .isSuccess
+        // A direct fetch throws on any non-2xx, so reaching here having succeeded means the
+        // add-on answered and genuinely has nothing for this title. Trying the remaining
+        // spellings of the type would only ask the same question again.
+        if (answered) break
       }
     }
     return lastError.let { error -> if (error == null) Result.success(emptyList()) else Result.failure(error) }
@@ -3283,6 +3437,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     return types.any { it in liveAddonTypes }
   }
 
+  private val IMDB_ID_PATTERN = Regex("^tt\\d+$", RegexOption.IGNORE_CASE)
+
   private fun addonSupportsStreamType(addon: InstalledAddon, type: String): Boolean {
     val resources = addon.manifest.resources.map { it.trim().lowercase() }
     if (resources.isNotEmpty() && resources.none { it == "stream" || it == "streams" }) return false
@@ -3307,7 +3463,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val streamType = if (detail.type == "tv") "series" else detail.type
     val mediaId = detail.imdbId?.takeIf { it.isNotBlank() } ?: detail.id
     val videoId = episode?.let { "$mediaId:${it.seasonNumber}:${it.episodeNumber}" } ?: mediaId
-    val fresh = apiClient.fetchFreshStreamsFromAddon(addon, streamType, videoId).getOrThrow()
+    val fresh = apiClient.fetchFreshStreamsFromAddon(addon, streamType, videoId, forceNetwork = true).getOrThrow()
     return fresh.firstOrNull { candidate ->
       !stream.bingeGroup.isNullOrBlank() && candidate.bingeGroup == stream.bingeGroup
     } ?: fresh.firstOrNull { candidate ->
@@ -3331,11 +3487,18 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val infoHash = playbackStream.infoHash?.takeIf { it.isNotBlank() }
       ?: throw IllegalStateException("This source does not contain a playable URL or torrent hash.")
     var lastFailure: Throwable? = null
+    // Kept apart from lastFailure: the torrent engine below reports its own errors on the way to
+    // giving up, and overwriting "your debrid is fetching this" with one of those is how a source
+    // that is simply not ready yet came to read as a dead one.
+    var debridDownloading: DebridDownloadingException? = null
 
     val maxSizeBytes = uiState.maxFileSizeGb.takeIf { it > 0 }?.toLong()?.times(1024L * 1024L * 1024L)
-    if (uiState.session != null && uiState.debridAccounts.isNotEmpty()) {
+    if (uiState.session != null && uiState.debridAccounts.any { it.enabled }) {
       apiClient.resolveStream(uiState.session!!, playbackStream, maxSizeBytes)
-        .onFailure { lastFailure = it }
+        .onFailure { error ->
+          lastFailure = error
+          (error as? DebridDownloadingException)?.let { debridDownloading = it }
+        }
         .getOrNull()?.url?.takeIf { it.isNotBlank() }?.let { resolvedUrl ->
           return@runCatching ResolvedPlayback(resolvedUrl, playbackStream)
         }
@@ -3364,7 +3527,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         }
     }
 
-    throw IllegalStateException(lastFailure?.message ?: "This torrent could not be resolved. Enable the local torrent server or try another source.")
+    throw debridDownloading
+      ?: IllegalStateException(lastFailure?.message ?: "This torrent could not be resolved. Enable the local torrent server or try another source.")
   }
 
   fun playStream(
@@ -3541,7 +3705,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         }
       },
       onSuccess = { streams ->
-        val ranked = rankedStreams(mediaStreamsOnly(streams, detail), uiState.debridAccounts.isNotEmpty(), uiState.preferredQuality, uiState.maxFileSizeGb)
+        val ranked = rankedStreams(mediaStreamsOnly(streams, detail), uiState.debridAccounts.any { it.enabled }, uiState.preferredQuality, uiState.maxFileSizeGb)
         uiState = uiState.copy(streamLoading = false, availableStreams = ranked, selectedEpisode = selectedEpisode)
         val preferred = remembered?.stream?.takeIf { uiState.detailIsLive && uiState.rememberLastSource }?.let { saved ->
           ranked.firstOrNull { candidate ->
@@ -3851,7 +4015,20 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
   }
 
-  fun loadM3uPlaylists() {
+  /**
+   * Publishes every enabled playlist's channels, from each one's stored copy where there is one.
+   *
+   * [forceRefresh] re-fetches from the provider instead, which is what the Refresh action does.
+   */
+  fun loadM3uPlaylists(forceRefresh: Boolean = false) = loadM3uPlaylists(forceRefresh, background = false)
+
+  /**
+   * @param background a refresh running behind channels that are already on screen. It shows no
+   *   progress or error UI, and publishes nothing if it came back with nothing - a provider that
+   *   is unreachable, or rejecting the token today, must not empty a Live TV list that was
+   *   working a moment ago.
+   */
+  private fun loadM3uPlaylists(forceRefresh: Boolean, background: Boolean) {
     val sources = M3uPlaylistManager.list()
     val enabledSources = sources.filter { it.enabled }
     val generation = ++m3uLoadGeneration
@@ -3867,18 +4044,21 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       )
       return
     }
-    uiState = uiState.copy(
-      m3uLoading = true,
-      m3uProgress = 0f,
-      m3uStatusMessage = "Preparing ${enabledSources.size} playlist(s)…",
-      m3uErrorMessage = null,
-    )
+    if (!background) {
+      uiState = uiState.copy(
+        m3uLoading = true,
+        m3uProgress = 0f,
+        m3uStatusMessage = "Preparing ${enabledSources.size} playlist(s)…",
+        m3uErrorMessage = null,
+      )
+    }
     viewModelScope.launch {
       val liveChannels = mutableListOf<MediaItem>()
       val vodItems = mutableListOf<MediaItem>()
       val failures = mutableListOf<String>()
       enabledSources.forEachIndexed { index, source ->
-        M3uPlaylistManager.fetchItems(source) { progress ->
+        M3uPlaylistManager.fetchItems(source, forceRefresh = forceRefresh) { progress ->
+          if (background) return@fetchItems
           val aggregate = progress.fraction?.let { (index + it) / enabledSources.size.toFloat() }
           publishM3uProgress(
             generation,
@@ -3894,15 +4074,21 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         }
       }
       if (generation != m3uLoadGeneration) return@launch
+      if (background && liveChannels.isEmpty() && vodItems.isEmpty()) return@launch
       uiState = uiState.copy(
         m3uLoading = false,
         m3uProgress = null,
         m3uStatusMessage = null,
-        m3uErrorMessage = failures.takeIf { it.isNotEmpty() }?.joinToString("\n"),
+        m3uErrorMessage = if (background) uiState.m3uErrorMessage else failures.takeIf { it.isNotEmpty() }?.joinToString("\n"),
         m3uSources = M3uPlaylistManager.list(),
         m3uChannels = liveChannels,
         m3uVodItems = vodItems,
       )
+      // A stored copy is served however old it is, so this is the only thing that ever renews
+      // one on its own. It runs after the channels are already listed, and cannot take them away.
+      if (!forceRefresh && !background && enabledSources.any(M3uPlaylistManager::needsBackgroundRefresh)) {
+        loadM3uPlaylists(forceRefresh = true, background = true)
+      }
     }
   }
 
@@ -3960,6 +4146,25 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     appSettingsStore.saveDownloadsEnabled(value)
     uiState = uiState.copy(downloadsEnabled = value)
     if (value) refreshDownloads()
+  }
+
+  /**
+   * Asks which stream-fetching path this account is entitled to.
+   *
+   * A failure leaves it off rather than assuming the generous answer: falling back to the server
+   * path would put StreamDek's shared IP in front of the add-ons again, which is the situation
+   * being fixed, and direct fetching works for everyone regardless.
+   */
+  private fun refreshAddonEntitlements() {
+    val session = uiState.session ?: run {
+      uiState = uiState.copy(serverSideStreamsEnabled = false)
+      return
+    }
+    viewModelScope.launch {
+      apiClient.fetchAddonEntitlements(session)
+        .onSuccess { uiState = uiState.copy(serverSideStreamsEnabled = it.serverSideStreams) }
+        .onFailure { uiState = uiState.copy(serverSideStreamsEnabled = false) }
+    }
   }
 
   fun refreshDownloads() {
@@ -4061,6 +4266,22 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     launchWork(onStart = { uiState = uiState.copy(debridLoading = true) }, block = { apiClient.addDebridAccount(session, provider, apiKey) }, onSuccess = { refreshDebridAccounts() })
   }
   fun removeDebridAccount(provider: String) { val session = uiState.session ?: return; launchWork(onStart = {}, block = { apiClient.removeDebridAccount(session, provider) }, onSuccess = { refreshDebridAccounts() }) }
+  fun setDebridAccountEnabled(provider: String, enabled: Boolean) {
+    val session = uiState.session ?: return
+    val previous = uiState.debridAccounts
+    uiState = uiState.copy(
+      debridAccounts = previous.map { account ->
+        if (account.provider == provider) account.copy(enabled = enabled) else account
+      },
+      errorMessage = null,
+    )
+    launchWork(
+      onStart = {},
+      block = { apiClient.setDebridAccountEnabled(session, provider, enabled) },
+      onSuccess = { refreshDebridAccounts() },
+      onFailure = { message -> uiState = uiState.copy(debridAccounts = previous, errorMessage = message) },
+    )
+  }
   fun moveDebridAccount(provider: String, delta: Int) {
     val session = uiState.session ?: return
     val current = uiState.debridAccounts.sortedBy { it.priority }.toMutableList()
@@ -4903,6 +5124,16 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setContinueWatchingStyle(style: ContinueWatchingStyle) { appSettingsStore.saveContinueWatchingStyle(style); uiState = uiState.copy(continueWatchingStyle = style); syncCloudPreferences() }
   fun setLiveLandscapeCards(value: Boolean) { appSettingsStore.saveLiveLandscapeCards(value); uiState = uiState.copy(liveLandscapeCards = value); syncCloudPreferences() }
   fun setLiveCategoriesEnabled(value: Boolean) { appSettingsStore.saveLiveCategoriesEnabled(value); uiState = uiState.copy(liveCategoriesEnabled = value); syncCloudPreferences() }
+
+  /** Also applied to a session already playing, so switching it on from Settings does not require
+   * leaving and re-entering the channel to take effect. */
+  fun setLiveProgressBarEnabled(value: Boolean) {
+    appSettingsStore.saveLiveProgressBarEnabled(value)
+    uiState = uiState.copy(
+      liveProgressBarEnabled = value,
+      playerSession = uiState.playerSession?.copy(showLiveProgressBar = value),
+    )
+  }
   fun setLiveFavouriteDrawerCards(value: Boolean) { appSettingsStore.saveLiveFavouriteDrawerCards(value); uiState = uiState.copy(liveFavouriteDrawerCards = value); syncCloudPreferences() }
   fun setRememberLastSource(value: Boolean) { appSettingsStore.saveRememberLastSource(value); uiState = uiState.copy(rememberLastSource = value); syncCloudPreferences() }
   fun setSyncOnCellular(value: Boolean) { appSettingsStore.saveSyncOnCellular(value); uiState = uiState.copy(syncOnCellular = value); syncCloudPreferences(force = true) }
@@ -5234,6 +5465,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       }
     }
     refreshFusionBadgeSources()
+    refreshAddonEntitlements()
     loadHome(force = forceHome)
     refreshAddons()
     loadM3uPlaylists()
@@ -5597,6 +5829,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     drmLicenseType = stream.drmLicenseType,
     drmClearKeys = stream.drmClearKeys,
     isLive = uiState.detailIsLive,
+    isVod = uiState.detailIsLive && detailSourceCatalogType.equals("movie", ignoreCase = true),
+    showLiveProgressBar = uiState.liveProgressBarEnabled,
     runtimeMinutes = episode?.runtime ?: detail.runtimeMinutes,
     addonSubtitleSources = addonSubtitleSources(),
     userSubtitleSources = UserSubtitleSourceStore.load(getApplication<Application>().applicationContext, activeOwnerKey() ?: GUEST_OWNER_KEY),
@@ -6774,6 +7008,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
               onContinueWatchingStyleChange = viewModel::setContinueWatchingStyle,
               onLiveLandscapeCardsChange = viewModel::setLiveLandscapeCards,
               onLiveCategoriesEnabledChange = viewModel::setLiveCategoriesEnabled,
+              onLiveProgressBarEnabledChange = viewModel::setLiveProgressBarEnabled,
               onLiveFavouriteDrawerCardsChange = viewModel::setLiveFavouriteDrawerCards,
               onRememberLastSourceChange = viewModel::setRememberLastSource,
               onBlurUnwatchedEpisodesChange = viewModel::setBlurUnwatchedEpisodes,
@@ -6808,7 +7043,9 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
               onRemoveM3uPlaylist = viewModel::removeM3uPlaylist,
               onSetM3uPlaylistEnabled = viewModel::setM3uPlaylistEnabled,
               onMoveM3uPlaylist = viewModel::moveM3uPlaylist,
-              onRefreshM3uPlaylists = viewModel::loadM3uPlaylists,
+              // Refresh is the way to go back to the provider - an ordinary load now reads each
+              // playlist's stored copy.
+              onRefreshM3uPlaylists = { viewModel.loadM3uPlaylists(forceRefresh = true) },
               onDownloadsEnabledChange = viewModel::setDownloadsEnabled,
               onRefreshDownloads = viewModel::refreshDownloads,
               onRemoveDownload = viewModel::removeDownload,
@@ -6824,6 +7061,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
               onRefreshDebrid = viewModel::refreshDebridAccounts,
               onAddDebrid = viewModel::addDebridAccount,
               onRemoveDebrid = viewModel::removeDebridAccount,
+              onSetDebridEnabled = viewModel::setDebridAccountEnabled,
               onMoveDebrid = viewModel::moveDebridAccount,
               onRequestTraktDeviceCode = viewModel::requestTraktDeviceCode,
               onRefreshSyncServices = viewModel::refreshSyncServices,
@@ -9330,6 +9568,96 @@ private fun LibraryHeaderPanel(
   }
 }
 
+/**
+ * One catalog an installed add-on offers, presented as a Discover source.
+ *
+ * Holds the add-on rather than just its id because paging a catalog needs the whole record (a
+ * local add-on is fetched straight from the device, a hosted one through its transport URL).
+ */
+private data class AddonDiscoverSource(
+  val key: String,
+  val addon: InstalledAddon,
+  val catalog: AddonCatalog,
+  /** "Add-on · Catalog", for the picker where there is room to disambiguate two add-ons that
+   * both call a catalog something generic like "Search". */
+  val label: String,
+  /** Just the catalog name, for the filter row. The full label is far too long there - it
+   * ellipsised to "Xperience · To…", which told the user nothing about what was selected. */
+  val shortLabel: String,
+)
+
+/** Section heading for playlist results, with a count so a capped list does not look like the
+ * whole answer. */
+@Composable
+private fun PlaylistResultsHeader(title: String, count: Int) {
+  Column(
+    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+    verticalArrangement = Arrangement.spacedBy(2.dp),
+  ) {
+    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+    Text(
+      if (count >= PLAYLIST_SEARCH_LIMIT) "Top $count matches" else "$count ${if (count == 1) "match" else "matches"}",
+      style = MaterialTheme.typography.bodySmall,
+      color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.58f),
+    )
+  }
+}
+
+/** How many playlist matches one section will show. A provider list can match thousands of
+ * entries for a short query, and past a screenful the rest is noise. */
+internal const val PLAYLIST_SEARCH_LIMIT = 60
+
+/**
+ * True when [needle] starts a word in this string.
+ *
+ * Uses case-insensitive indexOf rather than lowercasing, because this runs once per playlist entry
+ * per keystroke and a 200k-entry list would otherwise allocate 200k throwaway strings each time.
+ */
+internal fun String.containsWordStart(needle: String): Boolean {
+  var index = indexOf(needle, ignoreCase = true)
+  while (index >= 0) {
+    if (index == 0 || !this[index - 1].isLetterOrDigit()) return true
+    index = indexOf(needle, index + 1, ignoreCase = true)
+  }
+  return false
+}
+
+/**
+ * How well a playlist entry answers [needle], lower being better, or null when it does not.
+ *
+ * Ranked by *how* the match was made rather than by position alone, so searching "bbc" puts the
+ * channel called "BBC One" above a film whose category merely happens to mention it.
+ */
+internal fun MediaItem.playlistSearchRank(needle: String): Int? = when {
+  title.equals(needle, ignoreCase = true) -> 0
+  title.startsWith(needle, ignoreCase = true) -> 1
+  title.containsWordStart(needle) -> 2
+  title.contains(needle, ignoreCase = true) -> 3
+  sourceCatalogName?.contains(needle, ignoreCase = true) == true -> 4
+  else -> null
+}
+
+/**
+ * The best [limit] entries for [query], already ordered.
+ *
+ * Deliberately searches the title and category only. Playlist descriptions are built from the
+ * group and source name, so matching them too would make almost every entry in a category match
+ * any word from its name.
+ */
+internal fun List<MediaItem>.matchingPlaylistItems(query: String, limit: Int = PLAYLIST_SEARCH_LIMIT): List<MediaItem> {
+  val needle = query.trim()
+  if (needle.length < 2) return emptyList()
+  val ranked = ArrayList<Pair<Int, MediaItem>>()
+  for (item in this) {
+    val rank = item.playlistSearchRank(needle) ?: continue
+    ranked.add(rank to item)
+  }
+  return ranked
+    .sortedWith(compareBy({ it.first }, { it.second.title.lowercase() }))
+    .take(limit)
+    .map { it.second }
+}
+
 private fun List<MediaItem>.filteredBy(filter: MediaFilter): List<MediaItem> = when (filter) {
   MediaFilter.All -> this
   MediaFilter.Movies -> filter { it.type == "movie" }
@@ -10082,6 +10410,17 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
   var discoverType by rememberSaveable { mutableStateOf("movie") }
   var selectedGenreId by rememberSaveable { mutableStateOf<Int?>(null) }
   var selectedYear by rememberSaveable { mutableStateOf<String?>(null) }
+  // Which catalogue Discover is reading from: null is StreamDek's own (TMDB), anything else is
+  // one catalog belonging to an installed add-on. Saved as a key rather than the catalog object
+  // so it survives the add-on list being refreshed underneath it.
+  var selectedCatalogKey by rememberSaveable { mutableStateOf<String?>(null) }
+  var selectedCatalogGenre by rememberSaveable { mutableStateOf<String?>(null) }
+  // The add-on and catalog name behind that key, kept so switching Movies <-> Series can stay on
+  // the same add-on. A movie catalog genuinely cannot serve series, but the add-on that owns it
+  // almost always has a series catalog too, and dropping the user back to StreamDek every time
+  // they changed type made the source control feel broken.
+  var selectedAddonId by rememberSaveable { mutableStateOf<String?>(null) }
+  var selectedCatalogLabel by rememberSaveable { mutableStateOf<String?>(null) }
   var discoverGenres by remember { mutableStateOf<List<DiscoverGenre>>(emptyList()) }
   var discoverItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
   var discoverPage by remember { mutableStateOf(1) }
@@ -10110,27 +10449,94 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
     else -> "Movies"
   }
 
-  fun selectedGenreLabel(): String = discoverGenres.firstOrNull { it.id == selectedGenreId }?.name ?: "All Genres"
+  // Every catalog an enabled add-on offers for the type currently being browsed. This is what
+  // widens Discover past TMDB: an add-on's own lists (a debrid cloud, a curated "Top 10", an
+  // anime catalogue) become selectable sources rather than only ever appearing on Home.
+  val addonSources = remember(uiState.addons, discoverType) {
+    val wanted = if (discoverType == "documentary") "movie" else discoverType
+    uiState.addons
+      .filter { it.enabled }
+      .flatMap { addon ->
+        addon.manifest.catalogs.mapNotNull { catalog ->
+          if (mapHomeCatalogType(catalog.type) != wanted) return@mapNotNull null
+          val catalogName = cleanAddonCatalogLabel(catalog.name, addon.manifest.name).ifBlank { catalog.name }
+          AddonDiscoverSource(
+            key = "${addon.id}|${catalog.type}|${catalog.id}",
+            addon = addon,
+            catalog = catalog,
+            label = "${addon.manifest.name} · $catalogName",
+            shortLabel = catalogName,
+          )
+        }
+      }
+  }
+  val selectedCatalog = remember(addonSources, selectedCatalogKey) {
+    addonSources.firstOrNull { it.key == selectedCatalogKey }
+  }
+  // An add-on catalog answers with whatever its own genre options say, so those replace TMDB's
+  // genre list while one is selected. A catalog with none simply has no genre control.
+  val catalogGenreOptions = selectedCatalog?.catalog?.genreOptions.orEmpty()
+
+  fun selectedSourceLabel(): String = selectedCatalog?.shortLabel ?: "StreamDek"
+  fun selectedGenreLabel(): String = when {
+    selectedCatalog != null -> selectedCatalogGenre ?: if (selectedCatalog.catalog.requiresGenre) "Choose" else "All Genres"
+    else -> discoverGenres.firstOrNull { it.id == selectedGenreId }?.name ?: "All Genres"
+  }
   fun selectedYearLabel(): String = yearOptions.firstOrNull { it.value == selectedYear }?.label ?: "Any Year"
 
   fun loadDiscover(page: Int, append: Boolean) {
     if (discoverRequestedPage == page) return
+    val source = selectedCatalog
     scope.launch {
       discoverRequestedPage = page
       if (page <= 1) discoverLoading = true else discoverLoadingMore = true
-      apiClient.fetchDiscover(discoverType, page, selectedGenreId, selectedYear)
-        .onSuccess { payload ->
-          discoverPage = payload.page
-          discoverTotalPages = payload.totalPages
-          discoverItems = if (append) {
-            (discoverItems + payload.items).distinctBy { "${it.type}-${it.id}" }
-          } else {
-            payload.items.distinctBy { "${it.type}-${it.id}" }
+      if (source == null) {
+        apiClient.fetchDiscover(discoverType, page, selectedGenreId, selectedYear)
+          .onSuccess { payload ->
+            discoverPage = payload.page
+            discoverTotalPages = payload.totalPages
+            discoverItems = if (append) {
+              (discoverItems + payload.items).distinctBy { "${it.type}-${it.id}" }
+            } else {
+              payload.items.distinctBy { "${it.type}-${it.id}" }
+            }
           }
-        }
-        .onFailure {
-          if (!append) discoverItems = emptyList()
-        }
+          .onFailure {
+            if (!append) discoverItems = emptyList()
+          }
+      } else {
+        // Add-on catalogs page by how many items have already been taken, not by page number,
+        // and never say how many there are in total. Paging therefore stops when a request comes
+        // back with nothing new rather than on a page count.
+        val skip = if (append) discoverItems.size else 0
+        val genre = selectedCatalogGenre
+          ?: source.catalog.genreOptions.firstOrNull()?.takeIf { source.catalog.requiresGenre }
+        apiClient.fetchMoreCatalogItems(
+          session = uiState.session,
+          addon = source.addon,
+          catalogType = source.catalog.type,
+          catalogId = source.catalog.id,
+          catalogName = source.catalog.name,
+          genre = genre,
+          skip = skip,
+          profileId = uiState.activeProfileId,
+        )
+          .onSuccess { items ->
+            discoverPage = page
+            val merged = if (append) {
+              (discoverItems + items).distinctBy { "${it.type}-${it.id}" }
+            } else {
+              items.distinctBy { "${it.type}-${it.id}" }
+            }
+            // Nothing new came back, so this catalog has no more to give.
+            discoverTotalPages = if (merged.size > discoverItems.size || !append) page + 1 else page
+            discoverItems = merged
+          }
+          .onFailure {
+            if (!append) discoverItems = emptyList()
+            discoverTotalPages = page
+          }
+      }
       discoverLoading = false
       discoverLoadingMore = false
       discoverRequestedPage = null
@@ -10163,11 +10569,44 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
     }
   }
 
-  LaunchedEffect(discoverType, selectedGenreId, selectedYear) {
+  LaunchedEffect(discoverType, selectedGenreId, selectedYear, selectedCatalogKey, selectedCatalogGenre) {
+    // Changing type invalidates the selected catalog for one frame, until the effect below finds
+    // that add-on's catalog for the new type. Loading now would fetch and show StreamDek's
+    // results in the meantime, which is the flicker the user would see mid-switch.
+    if (selectedAddonId != null && selectedCatalog == null) return@LaunchedEffect
     discoverPage = 1
     discoverTotalPages = 1
     discoverRequestedPage = null
+    discoverItems = emptyList()
     loadDiscover(page = 1, append = false)
+  }
+
+  /**
+   * Keeps the chosen source pointing at something that can actually answer.
+   *
+   * The catalog list is rebuilt for whichever type is being browsed, so changing Movies <->
+   * Series always invalidates the current key. Rather than giving up and reverting to StreamDek,
+   * the same add-on is looked up again for the new type — preferring a catalog with the same name
+   * ("Blumhouse" movies -> "Blumhouse" series) and otherwise taking that add-on's first. Only an
+   * add-on with nothing for this type, or one that has been disabled or uninstalled, falls back.
+   */
+  LaunchedEffect(addonSources, selectedCatalogKey, selectedAddonId) {
+    val addonId = selectedAddonId ?: return@LaunchedEffect
+    if (addonSources.any { it.key == selectedCatalogKey }) return@LaunchedEffect
+    val sameAddon = addonSources.filter { it.addon.id == addonId }
+    val replacement = sameAddon.firstOrNull { it.shortLabel.equals(selectedCatalogLabel, ignoreCase = true) }
+      ?: sameAddon.firstOrNull()
+    if (replacement != null) {
+      selectedCatalogKey = replacement.key
+      selectedCatalogLabel = replacement.shortLabel
+      // Genre options belong to the catalog, so one chosen for the old catalog cannot carry over.
+      selectedCatalogGenre = null
+    } else {
+      selectedCatalogKey = null
+      selectedAddonId = null
+      selectedCatalogLabel = null
+      selectedCatalogGenre = null
+    }
   }
 
   LaunchedEffect(listState, query, discoverPage, discoverTotalPages, discoverLoading, discoverLoadingMore, discoverItems.size, discoverRequestedPage) {
@@ -10185,6 +10624,54 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
     uiState.searchResults.distinctBy { "${it.type}-${it.id}" }.filteredBy(filter)
   }
 
+  // Installed playlists are already parsed in memory, so matching them is a local pass rather
+  // than another round trip - results appear without waiting on the network. It runs off the main
+  // thread because a provider list can hold hundreds of thousands of entries, and behind the same
+  // debounce the remote search uses so typing does not re-scan the list on every character.
+  var playlistLive by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+  var playlistVod by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+  var playlistGroup by remember { mutableStateOf<String?>(null) }
+
+  LaunchedEffect(query, uiState.m3uChannels, uiState.m3uVodItems) {
+    val normalized = query.trim()
+    if (normalized.length < 2) {
+      playlistLive = emptyList()
+      playlistVod = emptyList()
+      playlistGroup = null
+      return@LaunchedEffect
+    }
+    delay(500)
+    val live = withContext(Dispatchers.Default) { uiState.m3uChannels.matchingPlaylistItems(normalized) }
+    val vod = withContext(Dispatchers.Default) { uiState.m3uVodItems.matchingPlaylistItems(normalized) }
+    playlistLive = live
+    playlistVod = vod
+    // A category chosen for the previous query rarely exists in the new one's matches.
+    playlistGroup = null
+  }
+
+  // Categories are taken from what actually matched rather than from the whole playlist, so every
+  // chip offered leads somewhere. Playlist group-titles are already parsed into sourceCatalogName.
+  val playlistGroups = remember(playlistLive, playlistVod) {
+    (playlistLive + playlistVod)
+      .mapNotNull { it.sourceCatalogName?.takeIf(String::isNotBlank) }
+      .groupingBy { it }
+      .eachCount()
+      .entries
+      .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+      .take(12)
+      .map { it.key }
+  }
+  val visiblePlaylistLive = remember(playlistLive, playlistGroup) {
+    playlistGroup?.let { group -> playlistLive.filter { it.sourceCatalogName == group } } ?: playlistLive
+  }
+  val visiblePlaylistVod = remember(playlistVod, playlistGroup) {
+    playlistGroup?.let { group -> playlistVod.filter { it.sourceCatalogName == group } } ?: playlistVod
+  }
+  val hasPlaylistMatches = visiblePlaylistLive.isNotEmpty() || visiblePlaylistVod.isNotEmpty()
+  val addonMatches = remember(uiState.addonSearchResults) {
+    uiState.addonSearchResults.distinctBy { "${it.type}-${it.id}" }
+  }
+
   val discoverOptions = remember(discoverSheet, discoverType, discoverGenres, selectedGenreId, selectedYear) {
     when (discoverSheet) {
       "type" -> listOf("movie", "tv", "documentary").map { value ->
@@ -10197,7 +10684,68 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
           },
         )
       }
+      "source" -> buildList {
+        add(
+          SearchSelectionOption(
+            label = "StreamDek",
+            selected = selectedCatalogKey == null,
+            onSelect = {
+              selectedCatalogKey = null
+              selectedAddonId = null
+              selectedCatalogLabel = null
+              selectedCatalogGenre = null
+              discoverSheet = null
+            },
+          )
+        )
+        addonSources.forEach { source ->
+          add(
+            SearchSelectionOption(
+              label = source.label,
+              selected = source.key == selectedCatalogKey,
+              onSelect = {
+                selectedCatalogKey = source.key
+                selectedAddonId = source.addon.id
+                selectedCatalogLabel = source.shortLabel
+                // TMDB's genre and year mean nothing to an add-on catalog, and a stale one left
+                // showing in the field would claim a filter that is not being applied.
+                selectedCatalogGenre = null
+                selectedGenreId = null
+                selectedYear = null
+                discoverSheet = null
+              },
+            )
+          )
+        }
+      }
       "genre" -> buildList {
+        if (selectedCatalog != null) {
+          if (!selectedCatalog.catalog.requiresGenre) {
+            add(
+              SearchSelectionOption(
+                label = "All Genres",
+                selected = selectedCatalogGenre == null,
+                onSelect = {
+                  selectedCatalogGenre = null
+                  discoverSheet = null
+                },
+              )
+            )
+          }
+          catalogGenreOptions.forEach { option ->
+            add(
+              SearchSelectionOption(
+                label = option,
+                selected = option == selectedCatalogGenre,
+                onSelect = {
+                  selectedCatalogGenre = option
+                  discoverSheet = null
+                },
+              )
+            )
+          }
+          return@buildList
+        }
         add(
           SearchSelectionOption(
             label = "All Genres",
@@ -10283,29 +10831,50 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
             subtitle = "",
             horizontalPadding = 0.dp,
           )
-          Row(
+          // Sized to their contents and wrapped rather than forced into equal columns. Add-on
+          // catalog names vary from "A24" to "Right Now Movies", and an even split either wasted
+          // half the row on "Movies" or cut the selected source down to something unreadable.
+          androidx.compose.foundation.layout.FlowRow(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(18.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
           ) {
             SearchDiscoverField(
               label = "Type",
               value = discoverTypeLabel(discoverType),
-              modifier = Modifier.weight(1f),
               onClick = { discoverSheet = "type" },
             )
-            SearchDiscoverField(
-              label = "Genre",
-              value = selectedGenreLabel(),
-              modifier = Modifier.weight(1f),
-              enabled = discoverType != "documentary" && discoverGenres.isNotEmpty(),
-              onClick = { if (discoverType != "documentary" && discoverGenres.isNotEmpty()) discoverSheet = "genre" },
-            )
-            SearchDiscoverField(
-              label = "Year",
-              value = selectedYearLabel(),
-              modifier = Modifier.weight(1f),
-              onClick = { discoverSheet = "year" },
-            )
+            if (addonSources.isNotEmpty()) {
+              SearchDiscoverField(
+                label = "Source",
+                value = selectedSourceLabel(),
+                onClick = { discoverSheet = "source" },
+              )
+            }
+            // With an add-on catalog selected the control offers that catalog's own options, so
+            // it is dropped entirely when that catalog declares none - a permanently greyed-out
+            // "All Genres" only looks broken.
+            val showGenre = if (selectedCatalog != null) {
+              catalogGenreOptions.isNotEmpty()
+            } else {
+              discoverType != "documentary" && discoverGenres.isNotEmpty()
+            }
+            if (showGenre) {
+              SearchDiscoverField(
+                label = "Genre",
+                value = selectedGenreLabel(),
+                onClick = { discoverSheet = "genre" },
+              )
+            }
+            // An add-on catalog answers with its own ordering and has no year parameter, so the
+            // control is dropped rather than left showing a filter that would be ignored.
+            if (selectedCatalog == null) {
+              SearchDiscoverField(
+                label = "Year",
+                value = selectedYearLabel(),
+                onClick = { discoverSheet = "year" },
+              )
+            }
           }
         }
       }
@@ -10357,10 +10926,10 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
         }
       }
       when {
-        uiState.searchLoading && searchResults.isEmpty() -> {
+        uiState.searchLoading && searchResults.isEmpty() && !hasPlaylistMatches && addonMatches.isEmpty() -> {
           item { SearchGridSkeleton(columns = columns) }
         }
-        searchResults.isEmpty() -> {
+        searchResults.isEmpty() && !hasPlaylistMatches && addonMatches.isEmpty() && !uiState.addonSearchLoading -> {
           item {
             LibraryEmptyState(
               icon = { Icon(Icons.Rounded.Search, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.70f), modifier = Modifier.size(54.dp)) },
@@ -10370,7 +10939,69 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
           }
         }
         else -> {
-          item { MediaGrid(searchResults.take(60), onOpen, columns = columns, showMeta = false, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched) }
+          if (searchResults.isNotEmpty()) {
+            item { MediaGrid(searchResults.take(60), onOpen, columns = columns, showMeta = false, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched) }
+          }
+        }
+      }
+
+      // Add-on results sit between the catalogue and the playlists: they are the only place an
+      // add-on's own titles - live channels above all - can appear, since TMDB does not carry
+      // them and the app never holds a whole catalog to filter.
+      if (addonMatches.isNotEmpty()) {
+        item { PlaylistResultsHeader("From your add-ons", addonMatches.size) }
+        item {
+          MediaGrid(addonMatches.take(60), onOpen, columns = columns, showMeta = false, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched)
+        }
+      }
+
+      // Playlist matches keep their own sections rather than joining the grid above. A provider
+      // list can answer a short query with thousands of channels, and merged in they would bury
+      // the handful of catalogue results the user was most likely looking for.
+      if (hasPlaylistMatches) {
+        if (playlistGroups.size > 1) {
+          item {
+            Column(
+              modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+              verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+              Text(
+                "From your playlists",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground,
+              )
+              androidx.compose.foundation.layout.FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                FilterChip(
+                  selected = playlistGroup == null,
+                  onClick = { playlistGroup = null },
+                  label = { Text("All") },
+                )
+                playlistGroups.forEach { group ->
+                  FilterChip(
+                    selected = playlistGroup == group,
+                    onClick = { playlistGroup = if (playlistGroup == group) null else group },
+                    label = { Text(group, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                  )
+                }
+              }
+            }
+          }
+        }
+        if (visiblePlaylistLive.isNotEmpty()) {
+          item { PlaylistResultsHeader("Playlist Live TV", visiblePlaylistLive.size) }
+          item {
+            MediaGrid(visiblePlaylistLive, onOpen, columns = columns, showMeta = false, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched)
+          }
+        }
+        if (visiblePlaylistVod.isNotEmpty()) {
+          item { PlaylistResultsHeader("Playlist VOD", visiblePlaylistVod.size) }
+          item {
+            MediaGrid(visiblePlaylistVod, onOpen, columns = columns, showMeta = false, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched)
+          }
         }
       }
     }
@@ -10409,6 +11040,7 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
       title = when (discoverSheet) {
         "type" -> "Choose Type"
         "genre" -> "Choose Genre"
+        "source" -> "Choose Source"
         else -> "Choose Year"
       },
       options = discoverOptions,
@@ -10846,6 +11478,7 @@ private fun LibraryTabScreen(viewModel: NativeAppViewModel) {
                   TextButton(onClick = { viewModel.moveDebridAccount(account.provider, -1) }) { Text("Up") }
                   TextButton(onClick = { viewModel.moveDebridAccount(account.provider, 1) }) { Text("Down") }
                 }
+                Switch(checked = account.enabled, onCheckedChange = { viewModel.setDebridAccountEnabled(account.provider, it) })
                 TextButton(onClick = { viewModel.removeDebridAccount(account.provider) }) { Text("Remove") }
               }
             }
@@ -11181,6 +11814,7 @@ private fun SettingsTab(
   onContinueWatchingStyleChange: (ContinueWatchingStyle) -> Unit,
   onLiveLandscapeCardsChange: (Boolean) -> Unit,
   onLiveCategoriesEnabledChange: (Boolean) -> Unit,
+  onLiveProgressBarEnabledChange: (Boolean) -> Unit,
   onLiveFavouriteDrawerCardsChange: (Boolean) -> Unit,
   onRememberLastSourceChange: (Boolean) -> Unit,
   onBlurUnwatchedEpisodesChange: (Boolean) -> Unit,
@@ -11224,6 +11858,7 @@ private fun SettingsTab(
   onRefreshDebrid: () -> Unit,
   onAddDebrid: (String, String) -> Unit,
   onRemoveDebrid: (String) -> Unit,
+  onSetDebridEnabled: (String, Boolean) -> Unit,
   onMoveDebrid: (String, Int) -> Unit,
   onRequestTraktDeviceCode: () -> Unit,
   onRefreshSyncServices: () -> Unit,
@@ -11272,37 +11907,7 @@ private fun SettingsTab(
     }
   }
   val settingsRefreshScope = rememberCoroutineScope()
-  val settingsSearchEntries = remember {
-    listOf(
-      SettingsRoute.Account to "account sign in sign out email sync services",
-      SettingsRoute.Profiles to "profile switch kids pin default avatar family",
-      SettingsRoute.GeneralPlayback to "language theme colour color dark light header navigation cellular",
-      SettingsRoute.HomeAppearance to "home appearance rows catalog layout cards live channel category categories group iptv playlist",
-      SettingsRoute.DetailScreen to "detail hero trailer autoplay synopsis ratings badges ambient",
-      SettingsRoute.Streams to "streams source quality size player audio pip torrent peer magnet cache storage download",
-      SettingsRoute.PlaybackAutomation to "autoplay skip intro recap ending next episode binge",
-      SettingsRoute.Subtitles to "subtitle subtitles caption captions language source",
-      SettingsRoute.Addons to "addon add-on catalog channel provider install configure source",
-      SettingsRoute.Plugins to "plugin source provider repository javascript cloudstream cs3 extension collection",
-      SettingsRoute.Debrid to "premium debrid real debrid alldebrid premiumize torbox debrid-link deepbrid account",
-      SettingsRoute.SyncServices to "sync services tracking tracker trakt simkl mdblist scrobble watchlist history connect",
-      SettingsRoute.Trakt to "trakt scrobble watchlist history sync",
-      SettingsRoute.Simkl to "simkl tracking scrobble watchlist sync connect",
-      SettingsRoute.Mdblist to "mdblist list ratings access key tracking sync connect",
-      SettingsRoute.ConnectTv to "tv television pair pairing code connect",
-      SettingsRoute.Ratings to "rating imdb tmdb mdblist badge score",
-      SettingsRoute.AppUpdates to "update version apk install release",
-    )
-  }
-  val settingsSearchResults = remember(settingsSearchQuery) {
-    val stopWords = setOf("a", "an", "and", "can", "do", "for", "how", "i", "in", "is", "my", "of", "the", "to", "want", "where")
-    val query = settingsSearchQuery.trim().lowercase()
-    val tokens = query.split(Regex("[^a-z0-9]+"), limit = 0).filter { it.length > 1 && it !in stopWords }
-    if (query.isBlank()) emptyList() else settingsSearchEntries.map { (destination, keywords) ->
-      val haystack = "${settingsRouteTitle(destination)} ${settingsRouteSubtitle(destination)} $keywords".lowercase()
-      destination to ((if (haystack.contains(query)) 20 else 0) + tokens.count(haystack::contains))
-    }.filter { it.second > 0 }.sortedByDescending { it.second }.map { it.first }
-  }
+  val settingsSearchResults = remember(settingsSearchQuery) { searchSettingsRoutes(settingsSearchQuery) }
   var fullScreenProfilePin by rememberSaveable(uiState.pinPromptProfileId) { mutableStateOf("") }
   var showFusionBadgeUrls by rememberSaveable { mutableStateOf(false) }
   var previewFusionSource by remember { mutableStateOf<FusionBadgeSource?>(null) }
@@ -11623,6 +12228,8 @@ private fun SettingsTab(
               SettingsChoiceRow("HW", Color(0xFFA78BFA), "mpv Video Compatibility", "Used when mpv is selected or Automatic switches to it. Recommended works for most videos.", listOf("HW+", "HW", "SW"), uiState.decoderMode, onDecoderModeChange)
               SettingsDivider()
               SettingsChoiceRow("SF", Color(0xFF06B6D4), "mpv Display", "Used when mpv is selected or Automatic switches to it. Try Compatibility if the picture is missing.", listOf("Standard", "Compatibility"), uiState.renderSurface, onRenderSurfaceChange)
+              SettingsDivider()
+              SettingsSwitchRow("BAR", Color(0xFFEF4444), "Live Progress Bar", "Show the progress bar while a live channel or playlist VOD is playing. You can also turn it on and off from the player's Progress button.", uiState.liveProgressBarEnabled, onLiveProgressBarEnabledChange)
             }
           }
           item {
@@ -11661,7 +12268,7 @@ private fun SettingsTab(
         SettingsRoute.M3uPlaylists -> item { M3uPlaylistsSettingsSummary(uiState, onAddM3uPlaylist, onRemoveM3uPlaylist, onSetM3uPlaylistEnabled, onMoveM3uPlaylist, onRefreshM3uPlaylists) }
         SettingsRoute.Downloads -> item { DownloadsSettingsSummary(uiState, onRefreshDownloads, onRemoveDownload, onPlayDownload, onOpenDownloadDetails) }
         SettingsRoute.Plugins -> item { PluginsSettingsSummary() }
-        SettingsRoute.Debrid -> item { DebridSettingsSummary(uiState, onRefreshDebrid, onAddDebrid, onRemoveDebrid, onMoveDebrid) }
+        SettingsRoute.Debrid -> item { DebridSettingsSummary(uiState, onRefreshDebrid, onAddDebrid, onRemoveDebrid, onSetDebridEnabled, onMoveDebrid) }
         SettingsRoute.SyncServices -> item { SyncServicesSettingsSummary(uiState, onRouteChange, onRefreshSyncServices, onPrimarySyncServiceChange) }
         SettingsRoute.Trakt -> item { TraktSettingsSummary(uiState, onRequestTraktDeviceCode, onPollTraktAuthorization, onDisconnectTrakt, onRefreshTrakt) }
         SettingsRoute.Simkl -> item { DeviceCodeSyncServiceSummary(SyncService.Simkl, uiState, onRequestSyncServiceDeviceCode, onPollSyncServiceAuthorization, onDisconnectSyncService, onRefreshSyncServices) }
@@ -12358,7 +12965,72 @@ private fun enabledStreamingSourceCount(): Int {
     cloudStreamState.providers.count { it.enabled && it.repoUrl in enabledCloudStreamRepos }
 }
 
-private fun settingsRouteTitle(route: SettingsRoute): String = when (route) {
+/**
+ * Words that should find a settings page, beyond its own title and description.
+ *
+ * Exhaustive `when` rather than a hand-maintained list on purpose: a new settings page now fails
+ * to compile until it has been given search terms. The list this replaced had drifted three pages
+ * behind the enum — Catalog & Home Layout, M3U Playlists and Downloads were entirely unfindable,
+ * so searching "iptv", "m3u" or "offline" led nowhere.
+ */
+/**
+ * Settings pages matching [rawQuery], best first, or empty for a blank query.
+ *
+ * A match in the page's own name counts for far more than one in its description or keywords.
+ * Without that weighting every page scored the same for a whole-query hit and ties fell back to
+ * enum order, so typing "trakt" opened Sync Services — which merely mentions Trakt — instead of
+ * the Trakt page itself.
+ */
+internal fun searchSettingsRoutes(rawQuery: String): List<SettingsRoute> {
+  val stopWords = setOf("a", "an", "and", "can", "do", "for", "how", "i", "in", "is", "my", "of", "the", "to", "want", "where")
+  val query = rawQuery.trim().lowercase()
+  if (query.isBlank()) return emptyList()
+  val tokens = query.split(Regex("[^a-z0-9]+"), limit = 0).filter { it.length > 1 && it !in stopWords }
+  return SettingsRoute.values()
+    .map { route ->
+      val title = settingsRouteTitle(route).lowercase()
+      val body = "${settingsRouteSubtitle(route)} ${settingsRouteKeywords(route)}".lowercase()
+      var score = 0
+      if (title == query) score += 100
+      if (title.contains(query)) score += 60
+      if (body.contains(query)) score += 20
+      score += tokens.count(title::contains) * 5
+      score += tokens.count(body::contains)
+      route to score
+    }
+    .filter { it.second > 0 }
+    // Title breaks ties rather than enum order, so the list cannot silently reorder when a new
+    // page is added to the middle of the enum.
+    .sortedWith(compareByDescending<Pair<SettingsRoute, Int>> { it.second }.thenBy { settingsRouteTitle(it.first) })
+    .map { it.first }
+}
+
+internal fun settingsRouteKeywords(route: SettingsRoute): String = when (route) {
+  SettingsRoute.Account -> "account sign in sign out email sync services subscription"
+  SettingsRoute.Profiles -> "profile switch kids pin default avatar family"
+  SettingsRoute.GeneralPlayback -> "language theme colour color dark light header navigation cellular appearance"
+  SettingsRoute.HomeAppearance -> "home appearance rows catalog layout cards live channel category categories group iptv playlist favourite favorite drawer star ambient synopsis"
+  SettingsRoute.HomeLayout -> "layout rows reorder drag order arrange home catalog sections which rows"
+  SettingsRoute.DetailScreen -> "detail hero trailer autoplay synopsis ratings badges ambient season tabs"
+  SettingsRoute.Streams -> "streams source quality size player audio pip torrent peer magnet cache storage download " +
+    "live progress bar seek scrub timeline elapsed duration formatting badges engine mpv media3 decoder"
+  SettingsRoute.PlaybackAutomation -> "autoplay skip intro recap ending next episode binge threshold"
+  SettingsRoute.Subtitles -> "subtitle subtitles caption captions language source position style"
+  SettingsRoute.Addons -> "addon add-on catalog channel provider install configure source manifest stremio"
+  SettingsRoute.M3uPlaylists -> "m3u m3u8 iptv playlist url link xtream provider channels live vod refresh import"
+  SettingsRoute.Downloads -> "download downloads offline saved save storage remove delete watch offline"
+  SettingsRoute.Plugins -> "plugin source provider repository javascript cloudstream cs3 extension collection scraper"
+  SettingsRoute.Debrid -> "premium debrid real debrid alldebrid premiumize torbox debrid-link deepbrid account cached"
+  SettingsRoute.SyncServices -> "sync services tracking tracker trakt simkl mdblist scrobble watchlist history connect"
+  SettingsRoute.Trakt -> "trakt scrobble watchlist history sync"
+  SettingsRoute.Simkl -> "simkl tracking scrobble watchlist sync connect"
+  SettingsRoute.Mdblist -> "mdblist list ratings access key tracking sync connect"
+  SettingsRoute.ConnectTv -> "tv television pair pairing code connect cast handoff"
+  SettingsRoute.Ratings -> "rating imdb tmdb mdblist badge score"
+  SettingsRoute.AppUpdates -> "update version apk install release changelog"
+}
+
+internal fun settingsRouteTitle(route: SettingsRoute): String = when (route) {
   SettingsRoute.GeneralPlayback -> "General"
   SettingsRoute.HomeAppearance -> "Home and Appearance"
   SettingsRoute.HomeLayout -> "Catalog & Home Layout"
@@ -12382,7 +13054,7 @@ private fun settingsRouteTitle(route: SettingsRoute): String = when (route) {
   SettingsRoute.AppUpdates -> "App Updates"
 }
 
-private fun settingsRouteSubtitle(route: SettingsRoute): String = when (route) {
+internal fun settingsRouteSubtitle(route: SettingsRoute): String = when (route) {
   SettingsRoute.GeneralPlayback -> "Choose the language, colours, and everyday app options."
   SettingsRoute.HomeAppearance -> "Choose what appears on Home and how the app looks."
   SettingsRoute.HomeLayout -> "Choose which rows appear on Home and drag to reorder them. Changes apply in the background."
@@ -14740,7 +15412,7 @@ private fun AddonsSettingsSummary(uiState: AppUiState, onRefreshAddons: () -> Un
 }
 
 @Composable
-private fun DebridServiceCard(providerLabel: String, account: DebridAccount, index: Int, total: Int, isActive: Boolean, onRemoveDebrid: (String) -> Unit, onMoveDebrid: (String, Int) -> Unit) {
+private fun DebridServiceCard(providerLabel: String, account: DebridAccount, index: Int, total: Int, isActive: Boolean, onRemoveDebrid: (String) -> Unit, onSetDebridEnabled: (String, Boolean) -> Unit, onMoveDebrid: (String, Int) -> Unit) {
   Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(22.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.13f))) {
     Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
       Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -14755,6 +15427,10 @@ private fun DebridServiceCard(providerLabel: String, account: DebridAccount, ind
           val accountLabel = account.username?.let { "Signed in as $it" } ?: "Connected"
           Text("$resolverStatus | Order ${index + 1} | $accountLabel", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodySmall)
         }
+        Switch(
+          checked = account.enabled,
+          onCheckedChange = { onSetDebridEnabled(account.provider, it) },
+        )
       }
       Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
         OutlinedButton(onClick = { onMoveDebrid(account.provider, -1) }, enabled = index > 0, shape = RoundedCornerShape(999.dp)) { Text("Up") }
@@ -14785,7 +15461,7 @@ private fun debridProviderLabel(provider: String): String =
   DebridProviderOptions.firstOrNull { it.first == provider }?.second ?: provider
 
 @Composable
-private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Unit, onAddDebrid: (String, String) -> Unit, onRemoveDebrid: (String) -> Unit, onMoveDebrid: (String, Int) -> Unit) {
+private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Unit, onAddDebrid: (String, String) -> Unit, onRemoveDebrid: (String) -> Unit, onSetDebridEnabled: (String, Boolean) -> Unit, onMoveDebrid: (String, Int) -> Unit) {
   val providerOptions = DebridProviderOptions
   var selectedProvider by rememberSaveable { mutableStateOf(providerOptions.first().first) }
   var apiKey by rememberSaveable(selectedProvider) { mutableStateOf("") }
@@ -14810,7 +15486,7 @@ private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Un
       val activeProvider = accounts.firstOrNull { it.enabled }?.provider
       accounts.forEachIndexed { index, account ->
         val label = debridProviderLabel(account.provider)
-        DebridServiceCard(providerLabel = label, account = account, index = index, total = accounts.size, isActive = account.provider == activeProvider, onRemoveDebrid = onRemoveDebrid, onMoveDebrid = onMoveDebrid)
+        DebridServiceCard(providerLabel = label, account = account, index = index, total = accounts.size, isActive = account.provider == activeProvider, onRemoveDebrid = onRemoveDebrid, onSetDebridEnabled = onSetDebridEnabled, onMoveDebrid = onMoveDebrid)
       }
     }
   }
@@ -17081,7 +17757,14 @@ private fun StreamDekDetailActions(
       if (showEpisodes) {
         DetailPillTab("Episodes", selectedTab == DetailTab.Episodes.name, onEpisodes, modifier = Modifier.weight(1.18f))
       } else if (showStreamsList) {
-        DetailPillTab("Streams ($streamCount)", selectedTab == DetailTab.Streams.name, onStreams, modifier = Modifier.weight(1.18f), loading = streamLoading)
+        DetailPillTab(
+          "Streams ($streamCount)",
+          selectedTab == DetailTab.Streams.name,
+          onStreams,
+          modifier = Modifier.weight(1.18f),
+          loading = streamLoading,
+          compactLabel = "⚡ $streamCount",
+        )
       }
       if (showMediaActions) {
         DetailIconOnlyPill(if (inWatchlist) "Saved" else "Save", inWatchlist, onSave) { Icon(Icons.Rounded.Bookmark, contentDescription = null, modifier = Modifier.size(19.dp)) }
@@ -17100,9 +17783,26 @@ private fun StreamDekDetailActions(
   }
 }
 
+/**
+ * A tab pill that falls back to [compactLabel] when [label] will not fit.
+ *
+ * The pills share the row with About and up to three icon buttons, so on a narrow screen the
+ * weight left for this one is not enough for "Streams (25)" and it ellipsised to something like
+ * "Streams (2…" — the count, which is the useful part, was what got cut. The width is measured
+ * rather than guessed from the screen size, so the swap happens exactly when it is needed and
+ * only for the label that is genuinely too long.
+ */
 @Composable
-private fun DetailPillTab(label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, loading: Boolean = false) {
+private fun DetailPillTab(
+  label: String,
+  selected: Boolean,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+  loading: Boolean = false,
+  compactLabel: String? = null,
+) {
   val foreground = MaterialTheme.colorScheme.onBackground
+  val textStyle = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
   OutlinedButton(
     modifier = modifier,
     onClick = onClick,
@@ -17118,13 +17818,25 @@ private fun DetailPillTab(label: String, selected: Boolean, onClick: () -> Unit,
     // its own width plus a spacer to a pill that is already weight-constrained, which pushed
     // "Streams (25)" past the space available on a 360dp screen. Overlaying costs no width at
     // all, and the count stays readable underneath while sources are still arriving.
-    Box(contentAlignment = Alignment.Center) {
+    BoxWithConstraints(contentAlignment = Alignment.Center) {
+      val measurer = rememberTextMeasurer()
+      val available = constraints.maxWidth
+      val shown = remember(label, compactLabel, available, textStyle) {
+        if (compactLabel == null) {
+          label
+        } else {
+          val width = measurer.measure(AnnotatedString(label), textStyle, maxLines = 1).size.width
+          if (width <= available) label else compactLabel
+        }
+      }
       Text(
-        label,
-        style = MaterialTheme.typography.labelMedium,
-        fontWeight = FontWeight.Bold,
+        shown,
+        style = textStyle,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
+        // The compact form is an icon plus a number, which reads as nothing useful aloud, so the
+        // full wording is what assistive tech is given either way.
+        modifier = Modifier.semantics { contentDescription = label },
       )
       if (loading) {
         CircularProgressIndicator(
@@ -18742,7 +19454,6 @@ private fun GlassCard(modifier: Modifier = Modifier, containerAlpha: Float = 0.8
     Column(modifier = Modifier.fillMaxWidth(), content = content)
   }
 }
-
 
 
 

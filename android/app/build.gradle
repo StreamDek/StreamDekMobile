@@ -44,6 +44,10 @@ def loadEnvValue = { String key, String fallback = "" ->
 }
 
 def apiBaseUrl = loadEnvValue("STREAMDEK_API_URL", "https://api.streamdek.net")
+// StreamDek's own IntroDB key, used for skip-segment lookups when the viewer has not supplied one.
+// IntroDB serves reads anonymously, so an empty value here still works — it just shares the
+// unauthenticated rate limit rather than StreamDek's own allowance.
+def introdbApiKey = loadEnvValue("STREAMDEK_INTRODB_API_KEY", "")
 
 android {
     namespace = "net.streamdek.mobile"
@@ -76,6 +80,7 @@ android {
         }
 
         buildConfigField "String", "API_BASE_URL", "\"${apiBaseUrl}\""
+        buildConfigField "String", "INTRODB_API_KEY", "\"${introdbApiKey}\""
     }
 
     signingConfigs {

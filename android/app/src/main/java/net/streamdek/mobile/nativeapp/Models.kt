@@ -238,6 +238,7 @@ data class CloudPlaybackPreferences(
   val renderSurface: String? = null,
   val playerEngine: String? = null,
   val preferredAudioLanguage: String? = null,
+  val introdbApiKey: String? = null,
   val skipIntroEnabled: Boolean? = null,
   val skipRecapEnabled: Boolean? = null,
   val skipEndingEnabled: Boolean? = null,
@@ -274,6 +275,18 @@ data class UpdateManifest(
   val assetName: String?,
   val fileSizeBytes: Long?,
   val checksumSha256: String?,
+)
+
+/**
+ * One IPTV playlist as the account holds it. The device keeps a richer copy with its cache and
+ * channel counts attached ([M3uPlaylistSource]); this is only what travels between clients.
+ */
+data class RemotePlaylist(
+  val id: String,
+  val name: String,
+  val url: String,
+  val enabled: Boolean = true,
+  val position: Int = 0,
 )
 
 data class AddonCatalog(
@@ -340,6 +353,12 @@ data class AddonStream(
   val drmLicenseType: String? = null,
   val drmClearKeys: Map<String, String> = emptyMap(),
   val source: String? = null,
+  /**
+   * A usenet result: an NZB to fetch and the news servers holding its articles, in place of a
+   * playable url or an info hash. StreamDek assembles these on the device itself.
+   */
+  val nzbUrl: String? = null,
+  val nntpServers: List<String> = emptyList(),
 )
 
 data class DebridAccount(
@@ -438,6 +457,8 @@ data class PlayerSession(
   val skipIntroEnabled: Boolean = true,
   val skipRecapEnabled: Boolean = true,
   val skipEndingEnabled: Boolean = true,
+  /** The viewer's own IntroDB key. Blank falls back to the key built into the app. */
+  val introdbApiKey: String = "",
   val autoPlayNextEpisode: Boolean = true,
   val preferBingeGroup: Boolean = true,
   val nextEpisodeThresholdMode: String = "minutes",
@@ -458,6 +479,11 @@ data class PlayerSession(
   val isProxied: Boolean = false,
   val playerEngine: String = "Auto",
   val preferredAudioLanguage: String = "en",
+  /** Press and hold anywhere on the video to temporarily play at [holdToSpeedMultiplier]x. */
+  val holdToSpeedEnabled: Boolean = true,
+  val holdToSpeedMultiplier: Float = 2f,
+  /** Drag left or right across the video to scrub, committed on release. */
+  val swipeToSeekEnabled: Boolean = true,
 )
 
 

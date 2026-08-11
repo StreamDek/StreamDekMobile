@@ -943,6 +943,106 @@ class StreamDekApiClient(context: Context? = null) {
   }
 
 
+  // ── IPTV playlists ─────────────────────────────────────────────────────────────────────────
+  // The account holds the list of playlists; the channels themselves are still fetched and parsed
+  // on the device by M3uPlaylistManager. Only the pointer travels.
+
+  /** Playlists saved against this profile, in display order. */
+  suspend fun fetchPlaylists(session: AuthSession, profileId: String): Result<List<RemotePlaylist>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(
+        Request.Builder()
+          .url("$apiBaseUrl/playlists")
+          .headers(authHeaders(session, includeContentType = false, profileId = profileId))
+          .build(),
+      )
+      ensureOk(response, "Failed to load playlists")
+      parseRemotePlaylists(response.json)
+    }
+  }
+
+  suspend fun addPlaylist(session: AuthSession, profileId: String, url: String, name: String?): Result<List<RemotePlaylist>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val payload = JSONObject().put("url", url).apply { name?.takeIf { it.isNotBlank() }?.let { put("name", it) } }
+      val response = executeJson("/playlists", payload, session = session, profileId = profileId)
+      ensureOk(response, "Failed to add playlist")
+      parseRemotePlaylists(response.json)
+    }
+  }
+
+  suspend fun updatePlaylist(
+    session: AuthSession,
+    profileId: String,
+    id: String,
+    name: String? = null,
+    enabled: Boolean? = null,
+    position: Int? = null,
+  ): Result<List<RemotePlaylist>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val payload = JSONObject().apply {
+        name?.let { put("name", it) }
+        enabled?.let { put("enabled", it) }
+        position?.let { put("position", it) }
+      }
+      val request = Request.Builder()
+        .url(apiBaseUrl + "/playlists/" + encodeQuery(id))
+        .patch(payload.toString().toRequestBody(jsonMediaType))
+        .headers(authHeaders(session, profileId = profileId))
+        .build()
+      val response = execute(request)
+      ensureOk(response, "Failed to update playlist")
+      parseRemotePlaylists(response.json)
+    }
+  }
+
+  suspend fun removePlaylist(session: AuthSession, profileId: String, id: String): Result<List<RemotePlaylist>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val request = Request.Builder()
+        .url(apiBaseUrl + "/playlists/" + encodeQuery(id))
+        .delete()
+        .headers(authHeaders(session, profileId = profileId))
+        .build()
+      val response = execute(request)
+      ensureOk(response, "Failed to remove playlist")
+      parseRemotePlaylists(response.json)
+    }
+  }
+
+  /**
+   * Uploads playlists this device holds locally. URLs already on the account are left untouched:
+   * the copy there may have been renamed or turned off from another device.
+   */
+  suspend fun importPlaylists(session: AuthSession, profileId: String, playlists: List<RemotePlaylist>): Result<List<RemotePlaylist>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val array = JSONArray()
+      playlists.forEach { playlist ->
+        array.put(JSONObject().put("url", playlist.url).put("name", playlist.name).put("enabled", playlist.enabled))
+      }
+      val response = executeJson("/playlists/import", JSONObject().put("playlists", array), session = session, profileId = profileId)
+      ensureOk(response, "Failed to upload playlists")
+      parseRemotePlaylists(response.json)
+    }
+  }
+
+  private fun parseRemotePlaylists(body: JSONObject): List<RemotePlaylist> {
+    val array = body.optJSONArray("playlists") ?: return emptyList()
+    return buildList {
+      for (index in 0 until array.length()) {
+        val item = array.optJSONObject(index) ?: continue
+        val url = item.optString("url").trim().takeIf { it.isNotBlank() } ?: continue
+        add(
+          RemotePlaylist(
+            id = item.optString("id"),
+            name = item.optString("name").ifBlank { url },
+            url = url,
+            enabled = item.optBoolean("enabled", true),
+            position = item.optInt("position", index),
+          ),
+        )
+      }
+    }
+  }
+
   private suspend fun fetchAddonHomeSections(session: AuthSession?, addons: List<InstalledAddon>, profileId: String?): List<MediaSection> {
     val enabledAddons = addons.filter { it.enabled }.sortedBy { it.position }
     if (enabledAddons.isEmpty()) return emptyList()
@@ -1022,6 +1122,7 @@ class StreamDekApiClient(context: Context? = null) {
     return buildList {
       for (index in 0 until items.length()) {
         val item = items.optJSONObject(index) ?: continue
+        if (isPlaceholderCatalogMeta(item)) continue
         val normalizedCatalogType = rawType.trim().lowercase()
         val mediaItem = parseMediaItem(item).copy(
           id = parseAddonCatalogItemId(item),
@@ -1118,6 +1219,7 @@ class StreamDekApiClient(context: Context? = null) {
     return buildList {
       for (index in 0 until items.length()) {
         val item = items.optJSONObject(index) ?: continue
+        if (isPlaceholderCatalogMeta(item)) continue
         val normalizedCatalogType = rawType.trim().lowercase()
         val mediaItem = parseMediaItem(item).copy(
           id = parseAddonCatalogItemId(item),
@@ -1323,6 +1425,9 @@ class StreamDekApiClient(context: Context? = null) {
         .put("externalRatingsEnabled", preferences.externalRatingsEnabled)
         .put("enabledRatingProviders", preferences.enabledRatingProviders?.let(::JSONArray))
         .put("mdblistApiKey", preferences.mdblistApiKey)
+        // Also written under `streams` below: the setting is presented on Title Pages now, but
+        // clients that have not moved yet still read the older location.
+        .put("blurUnwatchedEpisodes", preferences.blurUnwatchedEpisodes)
       val playback = JSONObject()
         .put("pictureInPictureEnabled", preferences.pictureInPictureEnabled)
         .put("decoderMode", preferences.decoderMode)
@@ -1335,6 +1440,7 @@ class StreamDekApiClient(context: Context? = null) {
         .put("skipIntroEnabled", preferences.skipIntroEnabled)
         .put("skipRecapEnabled", preferences.skipRecapEnabled)
         .put("skipEndingEnabled", preferences.skipEndingEnabled)
+        .put("introdbApiKey", preferences.introdbApiKey)
         .put("autoPlayNextEpisodeEnabled", preferences.autoPlayNextEpisode)
         .put("autoplayNextEpisode", preferences.autoPlayNextEpisode)
         .put("preferBingeGroupNextEpisode", preferences.preferBingeGroup)
@@ -1369,6 +1475,8 @@ class StreamDekApiClient(context: Context? = null) {
       ensureOk(execute(request), "Failed to sync app preferences")
       if (!profileId.isNullOrBlank()) {
         val profileDetail = JSONObject(detail.toString()).apply { remove("mdblistApiKey") }
+        // The IntroDB key stays out of this payload for the same reason the MDBList one is removed
+        // above: both are account-level in the cloud and profile-scoped on the device.
         val profilePlayback = JSONObject()
           .put("preferredQuality", preferences.preferredQuality)
           .put("maxFileSizeGB", preferences.maxFileSizeGb)
@@ -1471,6 +1579,7 @@ class StreamDekApiClient(context: Context? = null) {
         renderSurface = optionalString(playback, "renderSurface"),
         playerEngine = optionalString(playback, "playerEngine"),
         preferredAudioLanguage = optionalString(playback, "preferredAudioLanguage"),
+        introdbApiKey = optionalStringAllowEmpty(playback, "introdbApiKey"),
         skipIntroEnabled = optionalBoolean(playback, "skipIntroEnabled"),
         skipRecapEnabled = optionalBoolean(playback, "skipRecapEnabled"),
         skipEndingEnabled = optionalBoolean(playback, "skipEndingEnabled"),
@@ -1482,7 +1591,7 @@ class StreamDekApiClient(context: Context? = null) {
         nextEpisodeThresholdMinutes = optionalInt(playback, "nextEpisodeThresholdMinutes"),
         showStreamsList = optionalBoolean(streams, "showStreamsList"),
         rememberLastSource = optionalBoolean(streams, "rememberLastSource"),
-        blurUnwatchedEpisodes = optionalBoolean(streams, "blurUnwatchedEpisodes"),
+        blurUnwatchedEpisodes = optionalBoolean(detail, "blurUnwatchedEpisodes") ?: optionalBoolean(streams, "blurUnwatchedEpisodes"),
         fusionBadgesEnabled = optionalBoolean(streams, "fusionBadgesEnabled"),
         streamDekFormattingEnabled = optionalBoolean(streams, "streamDekFormattingEnabled"),
         showSizeBadges = optionalBoolean(streams, "showSizeBadges"),
@@ -2713,6 +2822,22 @@ internal fun parseAddonCatalogItemId(item: JSONObject): String =
   item.opt("id")?.toString()?.takeIf { it.isNotBlank() && it != "null" }
     ?: parseMediaItemId(item)
 
+/**
+ * Whether a catalog entry is an add-on reporting a failure rather than describing a real title.
+ *
+ * AIOStreams drops a card into the row whenever one of the catalog providers behind it errors —
+ * "[❌] Bingecat / Failed to parse meta for Bingecat" — under its own `aiostreamserror` id prefix,
+ * which its manifest openly declares. That is a diagnostic for the add-on's operator, not
+ * something to put on a viewer's home screen: it has no artwork and opening it leads nowhere.
+ */
+internal fun isPlaceholderCatalogMeta(item: JSONObject): Boolean {
+  val id = item.opt("id")?.toString()?.trim().orEmpty()
+  if (id.isBlank() || id.equals("null", ignoreCase = true)) return true
+  if (id.startsWith("aiostreamserror", ignoreCase = true)) return true
+  val name = item.optString("name").ifBlank { item.optString("title") }.trim()
+  return name.startsWith("[❌]")
+}
+
 private fun parseMediaItemType(item: JSONObject): String {
   if (item.has("logo") && !item.has("title") && !item.has("poster")) return "network"
   val rawType = item.optString("type").ifBlank { item.optString("media_type").ifBlank { item.optString("kind") } }
@@ -3278,6 +3403,13 @@ private fun parseAddonStream(json: JSONObject): AddonStream =
       bingeGroup = optJSONObject("behaviorHints")?.optString("bingeGroup")?.ifBlank { null },
       requestHeaders = parseStreamRequestHeaders(optJSONObject("behaviorHints"), optJSONObject("headers")),
       source = optString("source").ifBlank { optString("provider") }.ifBlank { null },
+      nzbUrl = optString("nzbUrl").ifBlank { null },
+      nntpServers = buildList {
+        val servers = optJSONArray("servers") ?: JSONArray()
+        for (index in 0 until servers.length()) {
+          servers.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+        }
+      },
       cachedBy = buildList {
         val providers = optJSONArray("cachedBy") ?: JSONArray()
         for (index in 0 until providers.length()) {

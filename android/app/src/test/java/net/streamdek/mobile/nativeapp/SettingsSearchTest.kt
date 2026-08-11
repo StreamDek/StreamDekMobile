@@ -33,11 +33,22 @@ class SettingsSearchTest {
     assertTrue("reorder rows", SettingsRoute.HomeLayout in find("reorder rows"))
   }
 
-  @Test fun findsTheLiveProgressBarSetting() {
-    // Lives on the Streams page; before this it matched nothing at all.
-    assertTrue(SettingsRoute.Streams in find("live progress bar"))
-    assertTrue(SettingsRoute.Streams in find("progress bar"))
-    assertTrue(SettingsRoute.Streams in find("seek"))
+  /**
+   * Settings that moved when the pages were reorganised. Searching is how people who knew the old
+   * layout will find them again, so each lands on the page that now owns it.
+   */
+  @Test fun findsSettingsOnThePageThatNowOwnsThem() {
+    assertTrue("live progress bar", SettingsRoute.LiveTv in find("live progress bar"))
+    assertTrue("progress bar", SettingsRoute.LiveTv in find("progress bar"))
+    assertTrue("seek", SettingsRoute.Player in find("seek"))
+    assertTrue("hold to speed up", SettingsRoute.Player in find("hold to speed up"))
+    assertTrue("torrent", SettingsRoute.PeerToPeer in find("torrent"))
+    assertTrue("magnet", SettingsRoute.PeerToPeer in find("magnet"))
+    assertTrue("mpv", SettingsRoute.Player in find("mpv"))
+    assertTrue("blur", SettingsRoute.TitlePages in find("blur"))
+    assertTrue("cellular", SettingsRoute.SyncServices in find("cellular"))
+    assertTrue("dark mode", SettingsRoute.Appearance in find("dark mode"))
+    assertTrue("max file size", SettingsRoute.Streams in find("file size"))
   }
 
   @Test fun blankQueryReturnsNothing() {

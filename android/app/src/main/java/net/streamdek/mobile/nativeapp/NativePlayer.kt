@@ -126,6 +126,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
+import net.streamdek.mobile.BuildConfig
 import net.streamdek.mobile.MainActivity
 import net.streamdek.mobile.mpv.MPVView
 import net.streamdek.mobile.mpv.MpvTrackInfo
@@ -138,6 +139,12 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.PointerEventPass
+import kotlinx.coroutines.withTimeoutOrNull
+import androidx.compose.material.icons.rounded.FastForward
+import androidx.compose.material.icons.rounded.FastRewind
 import kotlin.math.roundToInt
 
 private enum class PlayerPanel { None, Sources, Audio, Subtitles, Speed, Engine }
@@ -279,6 +286,30 @@ fun NativePlayerScreen(
   var liveRetryAttempts by remember(session.url) { mutableIntStateOf(0) }
   var lastLiveRetryAtMs by remember(session.url) { mutableStateOf(0L) }
   var showPausedInfo by remember(session.url) { mutableStateOf(false) }
+  /** Set while a press-and-hold is boosting playback; cleared the moment the finger lifts. */
+  var speedBoostActive by remember(session.url) { mutableStateOf(false) }
+  /**
+   * Where a horizontal scrub currently points, in seconds. Non-null only while the finger is
+   * down: the seek is committed on release so a long drag is one seek, not hundreds.
+   */
+  var scrubTargetSeconds by remember(session.url) { mutableStateOf<Double?>(null) }
+  /**
+   * Lifting after a hold or a scrub is still an "up" as far as the tap handler is concerned, and
+   * without this the controls would flash on every time one of those gestures ended.
+   */
+  var suppressNextTap by remember(session.url) { mutableStateOf(false) }
+
+  // Boost is applied on top of whatever speed the viewer chose in the speed panel, and putting it
+  // in one effect means release always restores that speed — including if the finger is still
+  // down when the session changes underneath it.
+  LaunchedEffect(speedBoostActive, playbackSpeed, activeEngine) {
+    val target = if (speedBoostActive) {
+      (playbackSpeed * session.holdToSpeedMultiplier).coerceIn(MIN_PLAYBACK_SPEED, MAX_PLAYBACK_SPEED)
+    } else {
+      playbackSpeed
+    }
+    activeSetSpeed(target.toDouble())
+  }
   // The favourites list is matched on channel id, the same identity toggleFavouriteChannel
   // stores and removes by, so the tray's stars agree with the header star and the drawer.
   val favouriteChannelIds = remember(favouriteChannels) { favouriteChannels.mapTo(HashSet()) { it.id } }
@@ -473,7 +504,7 @@ fun NativePlayerScreen(
     }
   }
 
-  LaunchedEffect(session.url, session.skipIntroEnabled, session.skipRecapEnabled, session.skipEndingEnabled, session.isLive) {
+  LaunchedEffect(session.url, session.skipIntroEnabled, session.skipRecapEnabled, session.skipEndingEnabled, session.introdbApiKey, session.isLive) {
     if (session.isLive) {
       skipSegments = emptyList()
       return@LaunchedEffect
@@ -864,7 +895,44 @@ fun NativePlayerScreen(
       modifier = Modifier
         .fillMaxSize()
         .background(Color.Black.copy(alpha = if (isLoading || controlsLocked || (!showControls && activePanel == PlayerPanel.None)) 0.0f else if (activePanel == PlayerPanel.None) 0.18f else 0.58f))
-        .pointerInput(session.url, session.isLive, isLoading, controlsLocked, audioManager) {
+        // Press and hold anywhere to play faster, for as long as the finger stays down. Kept in
+        // its own non-consuming detector so the tap and drag handlers below still see every
+        // event exactly as they did before.
+        .pointerInput(session.url, isLoading, controlsLocked, session.holdToSpeedEnabled) {
+          if (isLoading || controlsLocked || !session.holdToSpeedEnabled) return@pointerInput
+          awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            var boosted = false
+            try {
+              // A press that ends, or wanders, before the delay is somebody tapping or swiping.
+              val settled = withTimeoutOrNull(HOLD_TO_SPEED_DELAY_MS) {
+                while (true) {
+                  val event = awaitPointerEvent(PointerEventPass.Initial)
+                  val change = event.changes.firstOrNull { it.id == down.id } ?: return@withTimeoutOrNull Unit
+                  if (!change.pressed) return@withTimeoutOrNull Unit
+                  if ((change.position - down.position).getDistance() > viewConfiguration.touchSlop) {
+                    return@withTimeoutOrNull Unit
+                  }
+                }
+                @Suppress("UNREACHABLE_CODE") Unit
+              }
+              if (settled == null) {
+                boosted = true
+                speedBoostActive = true
+                while (true) {
+                  val event = awaitPointerEvent(PointerEventPass.Initial)
+                  if (event.changes.none { it.pressed }) break
+                }
+              }
+            } finally {
+              if (boosted) {
+                speedBoostActive = false
+                suppressNextTap = true
+              }
+            }
+          }
+        }
+        .pointerInput(session.url, session.isLive, isLoading, controlsLocked, audioManager, session.swipeToSeekEnabled, duration) {
           if (!isLoading && !controlsLocked) {
             var totalX = 0f
             var totalY = 0f
@@ -872,6 +940,10 @@ fun NativePlayerScreen(
             var initialBrightness = 0.5f
             var initialVolume = 0.5f
             var didAdjustLevel = false
+            var scrubFromSeconds = 0.0
+            // Scrubbing is for material with a known length: a linear channel has nothing to
+            // scrub through, and the horizontal swipe there already opens the favourites drawer.
+            val canScrub = session.swipeToSeekEnabled && !session.isLive && duration > 1.0
             detectDragGestures(
               onDragStart = { offset ->
                 totalX = 0f
@@ -880,8 +952,16 @@ fun NativePlayerScreen(
                 initialBrightness = currentWindowBrightness()
                 initialVolume = currentMediaVolume()
                 didAdjustLevel = false
+                scrubFromSeconds = currentTime
               },
               onDragEnd = {
+                scrubTargetSeconds?.let { target ->
+                  activeSeekTo(target)
+                  currentTime = target
+                  scrubTargetSeconds = null
+                  suppressNextTap = true
+                  keepControlsVisible()
+                }
                 val startedInChannelZone = dragStartX >= size.width * 0.33f && dragStartX < size.width * 0.67f
                 if (session.isLive && !didAdjustLevel) {
                   when {
@@ -906,6 +986,7 @@ fun NativePlayerScreen(
                 totalX += amount.x
                 totalY += amount.y
                 val verticalGesture = kotlin.math.abs(totalY) > kotlin.math.abs(totalX) && kotlin.math.abs(totalY) > 12f
+                val horizontalGesture = kotlin.math.abs(totalX) > kotlin.math.abs(totalY) && kotlin.math.abs(totalX) > 16f
                 when {
                   verticalGesture && dragStartX < size.width * 0.33f -> {
                     applyBrightness(adjustedPlayerLevel(initialBrightness, totalY, size.height.toFloat()))
@@ -915,6 +996,12 @@ fun NativePlayerScreen(
                     applyMediaVolume(adjustedPlayerLevel(initialVolume, totalY, size.height.toFloat()))
                     didAdjustLevel = true
                   }
+                  horizontalGesture && canScrub && !didAdjustLevel -> {
+                    // A full sweep of the screen covers SCRUB_FULL_WIDTH_SECONDS, so the same
+                    // finger movement means the same jump whatever the runtime.
+                    val offsetSeconds = (totalX / size.width.toFloat()) * SCRUB_FULL_WIDTH_SECONDS
+                    scrubTargetSeconds = (scrubFromSeconds + offsetSeconds).coerceIn(0.0, duration)
+                  }
                 }
                 change.consume()
               },
@@ -922,7 +1009,10 @@ fun NativePlayerScreen(
           }
         }
         .clickable(enabled = !isLoading, interactionSource = surfaceInteractionSource, indication = null) {
-          if (controlsLocked) {
+          if (suppressNextTap) {
+            // The finger that just lifted was holding to speed up, or scrubbing.
+            suppressNextTap = false
+          } else if (controlsLocked) {
             showUnlockControl = true
             unlockActivityVersion += 1
           } else if (showLiveChannels) {
@@ -937,6 +1027,68 @@ fun NativePlayerScreen(
           }
           },
       )
+
+    // Hold-to-speed indicator. Sits above the video so the viewer can see why it sped up, and
+    // disappears the instant the finger lifts.
+    AnimatedVisibility(
+      visible = speedBoostActive && !controlsLocked,
+      modifier = Modifier.align(Alignment.TopCenter).padding(top = 26.dp).zIndex(19f),
+      enter = fadeIn(animationSpec = tween(120)),
+      exit = fadeOut(animationSpec = tween(160)),
+    ) {
+      Surface(
+        color = Color(0xD9161A23),
+        shape = RoundedCornerShape(999.dp),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
+      ) {
+        Row(
+          modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Icon(Icons.Rounded.FastForward, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+          Text(
+            "${formatPlaybackSpeed(playbackSpeed * session.holdToSpeedMultiplier)}x speed",
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+          )
+        }
+      }
+    }
+
+    // Scrub preview. Shows where release will land and how far that is from here.
+    AnimatedVisibility(
+      visible = scrubTargetSeconds != null && !controlsLocked,
+      modifier = Modifier.align(Alignment.Center).zIndex(19f),
+      enter = fadeIn(animationSpec = tween(90)),
+      exit = fadeOut(animationSpec = tween(140)),
+    ) {
+      val target = scrubTargetSeconds ?: currentTime
+      val delta = (target - currentTime).roundToInt()
+      Surface(
+        color = Color(0xD9161A23),
+        shape = RoundedCornerShape(22.dp),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
+      ) {
+        Column(
+          modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+          horizontalAlignment = Alignment.CenterHorizontally,
+          verticalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+          Icon(
+            if (delta < 0) Icons.Rounded.FastRewind else Icons.Rounded.FastForward,
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(28.dp),
+          )
+          Text(formatClock(target), color = Color.White, fontWeight = FontWeight.Bold)
+          Text(
+            (if (delta < 0) "−" else "+") + formatClock(kotlin.math.abs(delta).toDouble()),
+            color = Color.White.copy(alpha = 0.7f),
+          )
+        }
+      }
+    }
 
     AnimatedVisibility(
       visible = adjustmentKind != null && !controlsLocked,
@@ -2177,6 +2329,21 @@ private fun PlayerOptionRow(label: String, selected: Boolean, onClick: () -> Uni
 private fun trackLabel(track: MpvTrackInfo): String =
   listOfNotNull(track.language?.uppercase(), track.title, track.codec).joinToString(" - ").ifBlank { "Track ${track.id}" }
 
+/** How long a finger has to stay put before a press becomes a speed boost. */
+private const val HOLD_TO_SPEED_DELAY_MS = 350L
+
+/** A full sweep across the screen scrubs this far, so the gesture feels the same at any runtime. */
+private const val SCRUB_FULL_WIDTH_SECONDS = 120f
+
+private const val MIN_PLAYBACK_SPEED = 0.25f
+private const val MAX_PLAYBACK_SPEED = 4f
+
+/** "2x" rather than "2.0x", but "1.5x" keeps its half. */
+internal fun formatPlaybackSpeed(speed: Float): String {
+  val clamped = speed.coerceIn(MIN_PLAYBACK_SPEED, MAX_PLAYBACK_SPEED)
+  return if (clamped % 1f == 0f) clamped.toInt().toString() else "%.2f".format(clamped).trimEnd('0').trimEnd('.')
+}
+
 private fun formatClock(seconds: Double): String {
   if (seconds.isNaN() || seconds <= 0.0) return "0:00"
   val total = seconds.toInt()
@@ -2301,15 +2468,30 @@ private fun extractSkipSegments(body: String): List<SkipSegment> {
   return entries.mapNotNull { (item, type) -> normalizeSkipSegment(item, type) }.distinctBy { Triple(it.type, it.startSeconds, it.endSeconds) }.sortedBy { it.startSeconds }
 }
 
+/**
+ * IntroDB reads work without credentials, so a key only raises the rate limit the request is
+ * counted against. The viewer's own key wins; otherwise the build supplies StreamDek's, which is
+ * blank in builds that were not given one and simply leaves the request anonymous.
+ */
+private fun introdbApiKeyFor(session: PlayerSession): String =
+  session.introdbApiKey.trim().ifBlank { BuildConfig.INTRODB_API_KEY.trim() }
+
+private fun introdbRequest(url: String, apiKey: String): Request = Request.Builder()
+  .url(url)
+  .header("Accept", "application/json")
+  .apply { if (apiKey.isNotBlank()) header("X-API-Key", apiKey) }
+  .build()
+
 private suspend fun fetchSkipSegments(session: PlayerSession): List<SkipSegment> = withContext(Dispatchers.IO) {
   val imdbId = session.imdbId?.takeIf { it.startsWith("tt") } ?: return@withContext emptyList()
   val season = session.seasonNumber ?: return@withContext emptyList()
   val episode = session.episodeNumber ?: return@withContext emptyList()
+  val apiKey = introdbApiKeyFor(session)
   runCatching {
-    val request = Request.Builder().url("https://api.introdb.app/segments?imdb_id=$imdbId&season=$season&episode=$episode").header("Accept", "application/json").build()
+    val request = introdbRequest("https://api.introdb.app/segments?imdb_id=$imdbId&season=$season&episode=$episode", apiKey)
     val segments = playerHttpClient.newCall(request).execute().use { response -> if (response.isSuccessful) extractSkipSegments(response.body?.string().orEmpty()) else emptyList() }.toMutableList()
     if (segments.none { it.type == "intro" }) {
-      val legacy = Request.Builder().url("https://api.introdb.app/intro?imdb=$imdbId&imdb_id=$imdbId&season=$season&episode=$episode").header("Accept", "application/json").build()
+      val legacy = introdbRequest("https://api.introdb.app/intro?imdb=$imdbId&imdb_id=$imdbId&season=$season&episode=$episode", apiKey)
       playerHttpClient.newCall(legacy).execute().use { response ->
         if (response.isSuccessful) {
           val root = JSONObject(response.body?.string().orEmpty())

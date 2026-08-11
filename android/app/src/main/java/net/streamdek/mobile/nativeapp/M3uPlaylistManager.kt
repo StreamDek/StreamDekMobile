@@ -124,6 +124,40 @@ object M3uPlaylistManager {
     }
   }
 
+  /** The local id for a playlist URL. Deterministic, so the same playlist lines up across devices. */
+  fun localIdFor(url: String): String = ID_PREFIX + Integer.toHexString(url.trim().hashCode())
+
+  /**
+   * Brings local storage in line with the account's list, returning the URLs held only on this
+   * device so the caller can upload them.
+   *
+   * Rows the account has are added or updated locally; anything local the account does not have is
+   * left alone rather than deleted — a playlist added on this phone before it could reach the
+   * server must not be wiped by the first sync that follows. Channel counts and caches survive,
+   * because the local id is derived from the URL and so matches what was already stored.
+   */
+  fun mergeRemote(remote: List<M3uPlaylistSource>): List<M3uPlaylistSource> {
+    val local = readAll()
+    val localByUrl = local.associateBy { it.url.trim().lowercase() }
+    val remoteUrls = remote.mapTo(mutableSetOf()) { it.url.trim().lowercase() }
+
+    val merged = remote.mapIndexed { index, row ->
+      val existing = localByUrl[row.url.trim().lowercase()]
+      M3uPlaylistSource(
+        id = existing?.id ?: localIdFor(row.url),
+        name = row.name,
+        url = row.url,
+        enabled = row.enabled,
+        position = index,
+        liveItemCount = existing?.liveItemCount,
+        vodItemCount = existing?.vodItemCount,
+      )
+    }
+    val localOnly = local.filterNot { it.url.trim().lowercase() in remoteUrls }
+    writeAll(merged + localOnly.mapIndexed { index, source -> source.copy(position = merged.size + index) })
+    return localOnly
+  }
+
   fun remove(id: String) {
     writeAll(readAll().filterNot { it.id == id })
     runCatching { cacheFile(id)?.delete() }

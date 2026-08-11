@@ -324,6 +324,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
+import net.streamdek.mobile.usenet.UsenetPlayback
 import net.streamdek.mobile.torrent.TorrentServerConfig
 import net.streamdek.mobile.torrent.TorrentServerService
 
@@ -430,7 +431,25 @@ private val PageTitleSize = 32.sp
 private val PageTitleLineHeight = 37.sp
 private val LocalStreamDekHazeState = compositionLocalOf<HazeState?> { null }
 
-internal enum class SettingsRoute { GeneralPlayback, HomeAppearance, HomeLayout, DetailScreen, Streams, PlaybackAutomation, Subtitles, Addons, M3uPlaylists, Downloads, Plugins, Debrid, SyncServices, Trakt, Simkl, Mdblist, ConnectTv, Ratings, Profiles, Account, AppUpdates }
+/**
+ * Settings pages, grouped the way the settings home lists them: what plays, how it looks, where
+ * it comes from, what it is connected to, then the account.
+ *
+ * The order here is the order of the groups on screen, so a page added to the middle of a group
+ * lands in the right place in search results too.
+ */
+internal enum class SettingsRoute {
+  // Playback — the settings people come back to most.
+  Player, SkipAndAutoplay, Subtitles, Streams, Downloads,
+  // Appearance — how the app and its pages look.
+  Appearance, HomeScreen, HomeLayout, TitlePages, Ratings, LiveTv,
+  // Sources — where titles and streams come from. Peer-to-peer sits last as the advanced one.
+  Addons, Plugins, M3uPlaylists, Debrid, PeerToPeer,
+  // Connections — other services and devices.
+  SyncServices, Trakt, Simkl, Mdblist, ConnectTv,
+  // Account and app.
+  Account, Profiles, AppUpdates,
+}
 /** How a tracking service is connected. Trakt and SIMKL use a device code; MDBList uses a key. */
 private enum class SyncAuthKind { DeviceCode, ApiKey }
 
@@ -632,7 +651,8 @@ private data class AppUiState(
   // silently discards the 4K renditions the iOS YouTube client now provides. HLS and the adaptive
   // picker both scale down on their own, so this is a ceiling rather than a demand.
   val heroTrailerResolution: Int = 2160,
-  val showHeroSynopsis: Boolean = true,
+  /** Off by default, matching the TV app: the spotlight reads better as artwork and title alone. */
+  val showHeroSynopsis: Boolean = false,
   val continueWatchingStyle: ContinueWatchingStyle = ContinueWatchingStyle.Glass,
   val liveLandscapeCards: Boolean = true,
   val liveCategoriesEnabled: Boolean = true,
@@ -646,9 +666,15 @@ private data class AppUiState(
   val rememberLastSource: Boolean = true,
   val syncOnCellular: Boolean = false,
   val syncRefreshing: Boolean = false,
+  /** Player touch gestures. Device-local: they describe this screen, not the account. */
+  val holdToSpeedEnabled: Boolean = true,
+  val holdToSpeedMultiplier: Float = 2f,
+  val swipeToSeekEnabled: Boolean = true,
   val skipIntroEnabled: Boolean = true,
   val skipRecapEnabled: Boolean = true,
   val skipEndingEnabled: Boolean = true,
+  /** The viewer's own IntroDB key. Blank uses the key StreamDek ships with. */
+  val introdbApiKey: String = "",
   val autoPlayNextEpisode: Boolean = true,
   val preferBingeGroup: Boolean = true,
   val autoLoadSubtitles: Boolean = true,
@@ -1106,6 +1132,7 @@ private class AppSettingsStore(context: Context) {
     "show_hero_synopsis", "continue_watching_style", "live_landscape_cards", "live_favourite_drawer_cards",
     "live_categories_enabled", "live_progress_bar", "mdblist_api_key", "primary_sync_service",
     "remember_last_source", "skip_intro_enabled", "skip_segments_enabled", "skip_recap_enabled", "skip_ending_enabled",
+    "introdb_api_key",
     "auto_play_next_episode", "prefer_binge_group", "auto_load_subtitles", "blur_unwatched_episodes",
     "next_episode_threshold_mode", "next_episode_threshold_percent", "next_episode_threshold_minutes",
     "ratings_enabled", "external_ratings_enabled", "enabled_rating_providers", "vivid_ambient", "ambient_tint_percent",
@@ -1154,7 +1181,7 @@ private class AppSettingsStore(context: Context) {
     showStreamsList = profilePrefs.getBoolean("show_streams_list", true),
     heroTrailerAutoplay = profilePrefs.getBoolean("hero_trailer_autoplay", true),
     heroTrailerResolution = profilePrefs.getInt("hero_trailer_resolution", 2160).coerceIn(360, 2160),
-    showHeroSynopsis = profilePrefs.getBoolean("show_hero_synopsis", true),
+    showHeroSynopsis = profilePrefs.getBoolean("show_hero_synopsis", false),
     continueWatchingStyle = runCatching { ContinueWatchingStyle.valueOf(profilePrefs.getString("continue_watching_style", ContinueWatchingStyle.Glass.name) ?: ContinueWatchingStyle.Glass.name) }.getOrDefault(ContinueWatchingStyle.Glass),
     liveLandscapeCards = profilePrefs.getBoolean("live_landscape_cards", true),
     liveCategoriesEnabled = profilePrefs.getBoolean("live_categories_enabled", true),
@@ -1163,9 +1190,13 @@ private class AppSettingsStore(context: Context) {
     liveFavouriteDrawerCards = profilePrefs.getBoolean("live_favourite_drawer_cards", false),
     rememberLastSource = profilePrefs.getBoolean("remember_last_source", true),
     syncOnCellular = prefs.getBoolean("sync_on_cellular", false),
+    holdToSpeedEnabled = prefs.getBoolean("hold_to_speed_enabled", true),
+    holdToSpeedMultiplier = prefs.getFloat("hold_to_speed_multiplier", 2f),
+    swipeToSeekEnabled = prefs.getBoolean("swipe_to_seek_enabled", true),
     skipIntroEnabled = profilePrefs.getBoolean("skip_intro_enabled", profilePrefs.getBoolean("skip_segments_enabled", true)),
     skipRecapEnabled = profilePrefs.getBoolean("skip_recap_enabled", true),
     skipEndingEnabled = profilePrefs.getBoolean("skip_ending_enabled", true),
+    introdbApiKey = profilePrefs.getString("introdb_api_key", "") ?: "",
     autoPlayNextEpisode = profilePrefs.getBoolean("auto_play_next_episode", true),
     preferBingeGroup = profilePrefs.getBoolean("prefer_binge_group", true),
     autoLoadSubtitles = profilePrefs.getBoolean("auto_load_subtitles", true),
@@ -1229,9 +1260,13 @@ private class AppSettingsStore(context: Context) {
   fun saveLiveFavouriteDrawerCards(value: Boolean) { profilePrefs.edit().putBoolean("live_favourite_drawer_cards", value).apply() }
   fun saveRememberLastSource(value: Boolean) { profilePrefs.edit().putBoolean("remember_last_source", value).apply() }
   fun saveSyncOnCellular(value: Boolean) { prefs.edit().putBoolean("sync_on_cellular", value).apply() }
+  fun saveHoldToSpeedEnabled(value: Boolean) { prefs.edit().putBoolean("hold_to_speed_enabled", value).apply() }
+  fun saveHoldToSpeedMultiplier(value: Float) { prefs.edit().putFloat("hold_to_speed_multiplier", value).apply() }
+  fun saveSwipeToSeekEnabled(value: Boolean) { prefs.edit().putBoolean("swipe_to_seek_enabled", value).apply() }
   fun saveSkipIntroEnabled(value: Boolean) { profilePrefs.edit().putBoolean("skip_intro_enabled", value).putBoolean("skip_segments_enabled", value).apply() }
   fun saveSkipRecapEnabled(value: Boolean) { profilePrefs.edit().putBoolean("skip_recap_enabled", value).apply() }
   fun saveSkipEndingEnabled(value: Boolean) { profilePrefs.edit().putBoolean("skip_ending_enabled", value).apply() }
+  fun saveIntrodbApiKey(value: String) { profilePrefs.edit().putString("introdb_api_key", value.trim()).apply() }
   fun saveAutoPlayNextEpisode(value: Boolean) { profilePrefs.edit().putBoolean("auto_play_next_episode", value).apply() }
   fun savePreferBingeGroup(value: Boolean) { profilePrefs.edit().putBoolean("prefer_binge_group", value).apply() }
   fun saveAutoLoadSubtitles(value: Boolean) { profilePrefs.edit().putBoolean("auto_load_subtitles", value).apply() }
@@ -1647,6 +1682,28 @@ private fun mediaKey(type: String, id: String): String = "${normalizedMediaType(
  * everything, matching Stremio. The backend repeats this check precisely before it picks an
  * add-on to answer with.
  */
+/**
+ * Whether an add-on's `meta` answer actually describes the item that was asked for.
+ *
+ * Advertising a `meta` resource is not the same as being able to serve one. AIOStreams, for one,
+ * answers every `/meta` call with a placeholder whose id encodes the failure
+ * ("aiostreamserror.%7B…%7D") and whose name is the error text. Taken at face value that replaced
+ * the title on screen with an error message and then sent the stream add-ons an id nothing has
+ * ever heard of — so the page came up empty in both halves.
+ *
+ * The test is about substance rather than any one add-on's error format: a usable answer either
+ * keeps an id that can still drive a stream lookup (the id that was requested, or an IMDb id) or
+ * brings episodes with it. A local bridge is exempt — swapping the browsing id for a different
+ * canonical one is exactly what it exists to do.
+ */
+internal fun isUsableAddonMeta(meta: LocalAddonMeta, requestedId: String, isLocalAddon: Boolean): Boolean {
+  if (meta.title.isBlank()) return false
+  if (isLocalAddon) return meta.id.isNotBlank()
+  if (!meta.imdbId.isNullOrBlank()) return true
+  if (meta.episodes.isNotEmpty()) return true
+  return meta.id.equals(requestedId, ignoreCase = true)
+}
+
 private fun AddonManifest.providesMetaFor(type: String): Boolean {
   if (resources.none { it.trim().equals("meta", ignoreCase = true) }) return false
   if (types.isEmpty()) return true
@@ -2118,6 +2175,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
     uiState = uiState.copy(playerSession = null, playerLaunching = false, playerLaunchingLabel = null, streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null)
     stopOnDemandTorrentServer()
+    // Closes the news server connections and drops the partially assembled file. A no-op unless
+    // what just stopped was a usenet source.
+    UsenetPlayback.release()
   }
 
   fun cancelPlayerLaunch() {
@@ -2822,18 +2882,29 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         block = {
           val addon = uiState.addons.firstOrNull { it.id == metaAddon.id }
             ?: return@launchWork Result.failure(IllegalStateException("That add-on is no longer installed."))
-          val bridgeMeta = apiClient
+          val rawMeta = apiClient
             .fetchAddonMeta(uiState.session, uiState.activeProfileId, addon, metaRequestType, id)
             .getOrThrow()
-          val lookupId = bridgeMeta.imdbId ?: bridgeMeta.id
+          // An add-on that advertises `meta` but cannot describe this item is treated as though it
+          // had not answered: the card's own id is what TMDB and the stream add-ons get.
+          val bridgeMeta = rawMeta.takeIf { isUsableAddonMeta(it, id, isLocalMetaAddon) }
+          val lookupId = bridgeMeta?.let { it.imdbId ?: it.id } ?: id
           val typeGuesses = when {
+            bridgeMeta == null -> if (normalizedMediaType(type) == "tv") listOf("tv", "movie") else listOf("movie", "tv")
             bridgeMeta.episodes.isNotEmpty() || bridgeMeta.type in setOf("tv", "series", "show") -> listOf("tv", "movie")
             bridgeMeta.type == "movie" -> listOf("movie", "tv")
             else -> listOf("movie", "tv")
           }
           val enriched = coroutineScope {
             val guessResults = typeGuesses.map { guess ->
-              async { apiClient.fetchDetails(guess, lookupId, bridgeMeta.title, bridgeMeta.year).getOrNull() }
+              async {
+                apiClient.fetchDetails(
+                  guess,
+                  lookupId,
+                  bridgeMeta?.title ?: fallbackItem.title,
+                  bridgeMeta?.year ?: fallbackItem.year,
+                ).getOrNull()
+              }
             }.awaitAll()
             guessResults.firstNotNullOfOrNull { it }
           }
@@ -2843,10 +2914,15 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           if (detailGeneration != detailRequestGeneration) return@launchWork
           // A local bridge's id replaces the stream lookup outright — that is the only id its own
           // /stream endpoint answers to. A remote metadata add-on's id is only a fallback: stream
-          // add-ons key on IMDb ids, which enrichment has just resolved.
-          if (isLocalMetaAddon) detailLocalStreamId = bridgeMeta.id else detailAddonMetaId = bridgeMeta.id
-          detailLocalEpisodes = bridgeMeta.episodes
-          val resolvedDetail = (enriched?.withLocalAddonMeta(bridgeMeta) ?: bridgeMeta.toFallbackDetail(fallbackItem)).withCatalogFallback(fallbackItem)
+          // add-ons key on IMDb ids, which enrichment has just resolved. When the add-on could not
+          // describe the item at all, the card's own id stands and nothing is overridden.
+          if (isLocalMetaAddon) detailLocalStreamId = bridgeMeta?.id ?: id else detailAddonMetaId = bridgeMeta?.id
+          detailLocalEpisodes = bridgeMeta?.episodes.orEmpty()
+          val resolvedDetail = (
+            enriched?.let { if (bridgeMeta != null) it.withLocalAddonMeta(bridgeMeta) else it }
+              ?: bridgeMeta?.toFallbackDetail(fallbackItem)
+              ?: fallbackItem.toFallbackDetail()
+            ).withCatalogFallback(fallbackItem)
           val unreleasedMovie = resolvedDetail.type == "movie" && isFutureReleaseDate(resolvedDetail.releaseDate)
           uiState = uiState.copy(
             detailLoading = false,
@@ -3484,6 +3560,16 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       return@runCatching ResolvedPlayback(preparedUrl, playbackStream)
     }
 
+    // A usenet result is assembled here on the device: the NZB names the articles, the stream's
+    // own `servers` list says where to pull them from, and the player is handed a loopback URL
+    // into the local assembler. Nothing about it touches a StreamDek server.
+    playbackStream.nzbUrl?.takeIf { it.isNotBlank() }?.let { nzbUrl ->
+      val localUrl = withContext(Dispatchers.IO) {
+        UsenetPlayback.open(getApplication(), nzbUrl, playbackStream.nntpServers)
+      }
+      return@runCatching ResolvedPlayback(localUrl, playbackStream)
+    }
+
     val infoHash = playbackStream.infoHash?.takeIf { it.isNotBlank() }
       ?: throw IllegalStateException("This source does not contain a playable URL or torrent hash.")
     var lastFailure: Throwable? = null
@@ -4114,6 +4200,13 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
             m3uChannels = uiState.m3uChannels + result.content.liveChannels,
             m3uVodItems = uiState.m3uVodItems + result.content.vodItems,
           )
+          // The playlist plays from the local copy either way; the account catches up behind it.
+          val session = uiState.session
+          val profileId = uiState.activeProfileId?.takeIf { it.isNotBlank() }
+          if (session != null && profileId != null) {
+            apiClient.addPlaylist(session, profileId, result.source.url, result.source.name)
+              .onFailure { Log.w("StreamDekPlaylists", "could not save playlist to the account", it) }
+          }
         }
         .onFailure { error ->
           if (generation != m3uLoadGeneration) return@onFailure
@@ -4128,19 +4221,97 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   fun removeM3uPlaylist(id: String) {
+    val removed = uiState.m3uSources.firstOrNull { it.id == id }
     M3uPlaylistManager.remove(id)
     loadM3uPlaylists()
+    removed?.let { source -> mirrorPlaylistToAccount { session, profileId, remote ->
+      remote.firstOrNull { it.url.equals(source.url, ignoreCase = true) }
+        ?.let { apiClient.removePlaylist(session, profileId, it.id) }
+    } }
   }
 
   fun setM3uPlaylistEnabled(id: String, enabled: Boolean) {
+    val changed = uiState.m3uSources.firstOrNull { it.id == id }
     M3uPlaylistManager.setEnabled(id, enabled)
     loadM3uPlaylists()
+    changed?.let { source -> mirrorPlaylistToAccount { session, profileId, remote ->
+      remote.firstOrNull { it.url.equals(source.url, ignoreCase = true) }
+        ?.let { apiClient.updatePlaylist(session, profileId, it.id, enabled = enabled) }
+    } }
   }
 
   fun moveM3uPlaylist(id: String, delta: Int) {
     M3uPlaylistManager.move(id, delta)
-    uiState = uiState.copy(m3uSources = M3uPlaylistManager.list())
+    val reordered = M3uPlaylistManager.list()
+    uiState = uiState.copy(m3uSources = reordered)
+    mirrorPlaylistToAccount { session, profileId, remote ->
+      reordered.forEach { source ->
+        remote.firstOrNull { it.url.equals(source.url, ignoreCase = true) }
+          ?.let { apiClient.updatePlaylist(session, profileId, it.id, position = source.position) }
+      }
+      null
+    }
   }
+
+  /**
+   * Applies a playlist change to the account behind whatever already happened on the device.
+   *
+   * The device stays the source of truth for what is on screen: playlists are parsed and cached
+   * locally, and a phone with no connection must still be able to add or turn one off. The account
+   * copy is caught up on the next sync, so a failure here is logged rather than surfaced.
+   */
+  private fun mirrorPlaylistToAccount(
+    block: suspend (AuthSession, String, List<RemotePlaylist>) -> Any?,
+  ) {
+    val session = uiState.session ?: return
+    val profileId = uiState.activeProfileId?.takeIf { it.isNotBlank() } ?: return
+    viewModelScope.launch {
+      val remote = apiClient.fetchPlaylists(session, profileId).getOrElse {
+        Log.w("StreamDekPlaylists", "could not read account playlists", it)
+        return@launch
+      }
+      runCatching { block(session, profileId, remote) }
+        .onFailure { Log.w("StreamDekPlaylists", "could not mirror playlist change", it) }
+    }
+  }
+
+  /**
+   * Reconciles this profile's playlists with the account.
+   *
+   * Playlists used to live only on the device, so the first run after signing in finds entries the
+   * account has never seen and uploads them; from then on there is nothing local-only left and
+   * this is just a pull. Matching is by URL, so a second device uploading the same playlist joins
+   * the existing entry instead of adding a duplicate.
+   */
+  private fun syncPlaylistsWithAccount() {
+    val session = uiState.session ?: return
+    val profileId = uiState.activeProfileId?.takeIf { it.isNotBlank() } ?: return
+    viewModelScope.launch {
+      val remote = apiClient.fetchPlaylists(session, profileId).getOrElse {
+        Log.w("StreamDekPlaylists", "playlist sync skipped", it)
+        return@launch
+      }
+      val deviceOnly = M3uPlaylistManager.mergeRemote(remote.map(::toLocalPlaylistSource))
+      if (deviceOnly.isNotEmpty()) {
+        apiClient.importPlaylists(
+          session,
+          profileId,
+          deviceOnly.map { RemotePlaylist(id = "", name = it.name, url = it.url, enabled = it.enabled, position = it.position) },
+        ).onSuccess { uploaded -> M3uPlaylistManager.mergeRemote(uploaded.map(::toLocalPlaylistSource)) }
+          .onFailure { Log.w("StreamDekPlaylists", "could not upload device playlists", it) }
+      }
+      val merged = M3uPlaylistManager.list()
+      if (merged != uiState.m3uSources) loadM3uPlaylists()
+    }
+  }
+
+  private fun toLocalPlaylistSource(remote: RemotePlaylist) = M3uPlaylistSource(
+    id = M3uPlaylistManager.localIdFor(remote.url),
+    name = remote.name,
+    url = remote.url,
+    enabled = remote.enabled,
+    position = remote.position,
+  )
 
   fun setDownloadsEnabled(value: Boolean) {
     appSettingsStore.saveDownloadsEnabled(value)
@@ -4224,6 +4395,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     uiState = uiState.copy(
       returnToDetailAfterPlayer = false,
       playerSession = PlayerSession(
+        holdToSpeedEnabled = uiState.holdToSpeedEnabled,
+        holdToSpeedMultiplier = uiState.holdToSpeedMultiplier,
+        swipeToSeekEnabled = uiState.swipeToSeekEnabled,
         url = entry.url,
         title = media.title,
         subtitle = media.seasonNumber?.let { season -> media.episodeNumber?.let { "S$season E$it" } } ?: media.year,
@@ -4543,6 +4717,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     preferences.skipIntroEnabled?.let(appSettingsStore::saveSkipIntroEnabled)
     preferences.skipRecapEnabled?.let(appSettingsStore::saveSkipRecapEnabled)
     preferences.skipEndingEnabled?.let(appSettingsStore::saveSkipEndingEnabled)
+    // Same account-level/profile-scoped split as the MDBList key above: the cloud copy only seeds
+    // a profile that has none of its own.
+    if (uiState.introdbApiKey.isBlank()) preferences.introdbApiKey?.takeIf { it.isNotBlank() }?.let(appSettingsStore::saveIntrodbApiKey)
     preferences.autoPlayNextEpisode?.let(appSettingsStore::saveAutoPlayNextEpisode)
     preferences.preferBingeGroup?.let(appSettingsStore::savePreferBingeGroup)
     preferences.autoLoadSubtitles?.let(appSettingsStore::saveAutoLoadSubtitles)
@@ -4596,6 +4773,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       skipIntroEnabled = preferences.skipIntroEnabled ?: uiState.skipIntroEnabled,
       skipRecapEnabled = preferences.skipRecapEnabled ?: uiState.skipRecapEnabled,
       skipEndingEnabled = preferences.skipEndingEnabled ?: uiState.skipEndingEnabled,
+      introdbApiKey = uiState.introdbApiKey.ifBlank { preferences.introdbApiKey?.trim().orEmpty() },
       autoPlayNextEpisode = preferences.autoPlayNextEpisode ?: uiState.autoPlayNextEpisode,
       preferBingeGroup = preferences.preferBingeGroup ?: uiState.preferBingeGroup,
       autoLoadSubtitles = preferences.autoLoadSubtitles ?: uiState.autoLoadSubtitles,
@@ -5052,6 +5230,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       skipIntroEnabled = uiState.skipIntroEnabled,
       skipRecapEnabled = uiState.skipRecapEnabled,
       skipEndingEnabled = uiState.skipEndingEnabled,
+      introdbApiKey = uiState.introdbApiKey,
       autoPlayNextEpisode = uiState.autoPlayNextEpisode,
       preferBingeGroup = uiState.preferBingeGroup,
       autoLoadSubtitles = uiState.autoLoadSubtitles,
@@ -5137,9 +5316,20 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setLiveFavouriteDrawerCards(value: Boolean) { appSettingsStore.saveLiveFavouriteDrawerCards(value); uiState = uiState.copy(liveFavouriteDrawerCards = value); syncCloudPreferences() }
   fun setRememberLastSource(value: Boolean) { appSettingsStore.saveRememberLastSource(value); uiState = uiState.copy(rememberLastSource = value); syncCloudPreferences() }
   fun setSyncOnCellular(value: Boolean) { appSettingsStore.saveSyncOnCellular(value); uiState = uiState.copy(syncOnCellular = value); syncCloudPreferences(force = true) }
+  fun setHoldToSpeedEnabled(value: Boolean) { appSettingsStore.saveHoldToSpeedEnabled(value); uiState = uiState.copy(holdToSpeedEnabled = value) }
+  fun setHoldToSpeedMultiplier(value: Float) { appSettingsStore.saveHoldToSpeedMultiplier(value); uiState = uiState.copy(holdToSpeedMultiplier = value) }
+  fun setSwipeToSeekEnabled(value: Boolean) { appSettingsStore.saveSwipeToSeekEnabled(value); uiState = uiState.copy(swipeToSeekEnabled = value) }
   fun setSkipIntroEnabled(value: Boolean) { appSettingsStore.saveSkipIntroEnabled(value); uiState = uiState.copy(skipIntroEnabled = value); syncCloudPreferences() }
   fun setSkipRecapEnabled(value: Boolean) { appSettingsStore.saveSkipRecapEnabled(value); uiState = uiState.copy(skipRecapEnabled = value); syncCloudPreferences() }
   fun setSkipEndingEnabled(value: Boolean) { appSettingsStore.saveSkipEndingEnabled(value); uiState = uiState.copy(skipEndingEnabled = value); syncCloudPreferences() }
+  fun setIntrodbApiKey(value: String) {
+    val trimmed = value.trim()
+    appSettingsStore.saveIntrodbApiKey(trimmed)
+    // A session already playing keeps its own copy, so update it too — the player refetches its
+    // skip segments when the key changes.
+    uiState = uiState.copy(introdbApiKey = trimmed, playerSession = uiState.playerSession?.copy(introdbApiKey = trimmed))
+    syncCloudPreferences()
+  }
   fun setAutoPlayNextEpisode(value: Boolean) { appSettingsStore.saveAutoPlayNextEpisode(value); uiState = uiState.copy(autoPlayNextEpisode = value); syncCloudPreferences() }
   fun setPreferBingeGroup(value: Boolean) { appSettingsStore.savePreferBingeGroup(value); uiState = uiState.copy(preferBingeGroup = value); syncCloudPreferences() }
   fun setNextEpisodeThresholdMode(value: String) { appSettingsStore.saveNextEpisodeThresholdMode(value); uiState = uiState.copy(nextEpisodeThresholdMode = value); syncCloudPreferences() }
@@ -5160,12 +5350,6 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     val providers = if (enabled) uiState.enabledRatingProviders + normalized else uiState.enabledRatingProviders - normalized
     appSettingsStore.saveEnabledRatingProviders(providers)
     uiState = uiState.copy(enabledRatingProviders = providers)
-    syncCloudPreferences()
-    uiState.detail?.let(::refreshExternalRatings)
-  }
-  fun setMdblistApiKey(value: String) {
-    appSettingsStore.saveMdblistApiKey(value)
-    uiState = uiState.copy(mdblistApiKey = value.trim())
     syncCloudPreferences()
     uiState.detail?.let(::refreshExternalRatings)
   }
@@ -5469,6 +5653,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     loadHome(force = forceHome)
     refreshAddons()
     loadM3uPlaylists()
+    syncPlaylistsWithAccount()
     refreshTraktData()
     refreshSyncServices()
     uiState = uiState.copy(mergedWatchlist = loadLocalWatchlist(), favouriteChannels = loadLocalFavouriteChannels(), localContinueWatching = loadLocalContinueWatching(), localResumeEntries = loadResumeEntries())
@@ -5487,6 +5672,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     LocalAddonManager.selectProfileStorage(ownerKey)
     M3uPlaylistManager.selectProfileStorage(ownerKey)
     loadM3uPlaylists()
+    syncPlaylistsWithAccount()
     val activeProfile = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }
     // Tracking connections belong to the profile: clear the previous profile's statuses so a
     // stale "Connected" never shows against the profile that was just switched to.
@@ -5788,6 +5974,9 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   private fun traktItemId(item: TraktItem): String = item.tmdbId?.toString() ?: item.id
 
   private fun buildPlayerSession(url: String, detail: MediaDetail, sourceLabel: String?, episode: EpisodeItem?, stream: AddonStream, resumePercent: Double = 0.0): PlayerSession = PlayerSession(
+    holdToSpeedEnabled = uiState.holdToSpeedEnabled,
+    holdToSpeedMultiplier = uiState.holdToSpeedMultiplier,
+    swipeToSeekEnabled = uiState.swipeToSeekEnabled,
     url = url,
     title = sanitizeDisplayText(detail.title).orEmpty(),
     subtitle = sanitizeDisplayText(episode?.let { "S${it.seasonNumber} E${it.episodeNumber}" } ?: detail.year),
@@ -5820,6 +6009,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     skipIntroEnabled = uiState.skipIntroEnabled,
     skipRecapEnabled = uiState.skipRecapEnabled,
     skipEndingEnabled = uiState.skipEndingEnabled,
+    introdbApiKey = uiState.introdbApiKey,
     autoPlayNextEpisode = uiState.autoPlayNextEpisode,
     preferBingeGroup = uiState.preferBingeGroup,
     nextEpisodeThresholdMode = uiState.nextEpisodeThresholdMode,
@@ -6992,9 +7182,13 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
               onCollapsibleNavigationEnabledChange = viewModel::setCollapsibleNavigationEnabled,
               onNavigationAutoCollapseSecondsChange = viewModel::setNavigationAutoCollapseSeconds,
               onSyncOnCellularChange = viewModel::setSyncOnCellular,
+              onHoldToSpeedEnabledChange = viewModel::setHoldToSpeedEnabled,
+              onHoldToSpeedMultiplierChange = viewModel::setHoldToSpeedMultiplier,
+              onSwipeToSeekEnabledChange = viewModel::setSwipeToSeekEnabled,
               onSkipIntroEnabledChange = viewModel::setSkipIntroEnabled,
               onSkipRecapEnabledChange = viewModel::setSkipRecapEnabled,
               onSkipEndingEnabledChange = viewModel::setSkipEndingEnabled,
+              onIntrodbApiKeyChange = viewModel::setIntrodbApiKey,
               onAutoPlayNextEpisodeChange = viewModel::setAutoPlayNextEpisode,
               onPreferBingeGroupChange = viewModel::setPreferBingeGroup,
               onNextEpisodeThresholdModeChange = viewModel::setNextEpisodeThresholdMode,
@@ -7015,7 +7209,6 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
               onRatingsEnabledChange = viewModel::setRatingsEnabled,
               onExternalRatingsEnabledChange = viewModel::setExternalRatingsEnabled,
               onRatingProviderEnabledChange = viewModel::setRatingProviderEnabled,
-              onMdblistApiKeyChange = viewModel::setMdblistApiKey,
               onVividAmbientChange = viewModel::setVividAmbient,
               onAmbientTintPercentChange = viewModel::setAmbientTintPercent,
               onFusionBadgesChange = viewModel::setFusionBadgesEnabled,
@@ -11598,6 +11791,32 @@ private fun AmbientTintSlider(percent: Int, enabled: Boolean, onPercentChange: (
 }
 
 @Composable
+private fun HoldToSpeedMultiplierPicker(multiplier: Float, onMultiplierChange: (Float) -> Unit) {
+  Column(
+    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+    verticalArrangement = Arrangement.spacedBy(8.dp),
+  ) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+      Text("Hold speed", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurface)
+      Text(
+        "How fast to play while your finger is down. This multiplies whatever speed is already set.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
+      )
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+      listOf(1.5f, 2f, 2.5f, 3f, 4f).forEach { option ->
+        FilterChip(
+          selected = multiplier == option,
+          onClick = { onMultiplierChange(option) },
+          label = { Text("${formatPlaybackSpeed(option)}x") },
+        )
+      }
+    }
+  }
+}
+
+@Composable
 private fun NavigationAutoCollapseDelaySlider(seconds: Int, enabled: Boolean, onSecondsChange: (Int) -> Unit) {
   Column(
     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
@@ -11798,9 +12017,13 @@ private fun SettingsTab(
   onCollapsibleNavigationEnabledChange: (Boolean) -> Unit,
   onNavigationAutoCollapseSecondsChange: (Int) -> Unit,
   onSyncOnCellularChange: (Boolean) -> Unit,
+  onHoldToSpeedEnabledChange: (Boolean) -> Unit,
+  onHoldToSpeedMultiplierChange: (Float) -> Unit,
+  onSwipeToSeekEnabledChange: (Boolean) -> Unit,
   onSkipIntroEnabledChange: (Boolean) -> Unit,
   onSkipRecapEnabledChange: (Boolean) -> Unit,
   onSkipEndingEnabledChange: (Boolean) -> Unit,
+  onIntrodbApiKeyChange: (String) -> Unit,
   onAutoPlayNextEpisodeChange: (Boolean) -> Unit,
   onPreferBingeGroupChange: (Boolean) -> Unit,
   onNextEpisodeThresholdModeChange: (String) -> Unit,
@@ -11821,7 +12044,6 @@ private fun SettingsTab(
   onRatingsEnabledChange: (Boolean) -> Unit,
   onExternalRatingsEnabledChange: (Boolean) -> Unit,
   onRatingProviderEnabledChange: (String, Boolean) -> Unit,
-  onMdblistApiKeyChange: (String) -> Unit,
   onVividAmbientChange: (Boolean) -> Unit,
   onAmbientTintPercentChange: (Int) -> Unit,
   onFusionBadgesChange: (Boolean) -> Unit,
@@ -12021,45 +12243,54 @@ private fun SettingsTab(
           SettingsNavRow(uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }?.name?.trim()?.firstOrNull()?.uppercase() ?: "?", Color(0xFFE5E7EB), "Account", uiState.session?.user?.email?.let(::obfuscateEmail) ?: "Signed out", onClick = { onRouteChange(SettingsRoute.Account) })
           SettingsDivider()
           SettingsProfileRow(uiState = uiState, onClick = onSwitchProfile)
+          SettingsDivider()
+          // The row above switches profile. Managing them was only reachable through the picker,
+          // so creating one or setting a PIN had no obvious way in from here.
+          SettingsNavRow("PRO", Color(0xFF60A5FA), "Manage Profiles", if (uiState.profiles.size == 1) "1 profile" else "${uiState.profiles.size} profiles", onClick = { onRouteChange(SettingsRoute.Profiles) })
         }
       }
       item {
-        SettingsSection("Preferences") {
-          SettingsNavRow("GE", Color(0xFF94A3B8), "General", "Language, colours, and everyday app choices.", onClick = { onRouteChange(SettingsRoute.GeneralPlayback) })
+        SettingsSection("Playback") {
+          SettingsNavRow("PLY", Color(0xFF22C55E), "Player", "Player engine, audio language, gestures, and floating video.", onClick = { onRouteChange(SettingsRoute.Player) })
           SettingsDivider()
-          SettingsNavRow("HM", Color(0xFFF59E0B), "Home and Appearance", "Choose your Home rows and how pages look.", onClick = { onRouteChange(SettingsRoute.HomeAppearance) })
+          SettingsNavRow("SKP", Color(0xFF60A5FA), "Skip and Autoplay", "Skip intros and recaps, and start the next episode.", onClick = { onRouteChange(SettingsRoute.SkipAndAutoplay) })
           SettingsDivider()
-          SettingsNavRow("DT", Color(0xFF22C55E), "Detail Screen", "Choose how trailers and ratings appear.", onClick = { onRouteChange(SettingsRoute.DetailScreen) })
+          SettingsNavRow("SUB", Color(0xFFA78BFA), "Subtitles", "Automatic subtitles and the sources they come from.", onClick = { onRouteChange(SettingsRoute.Subtitles) })
           SettingsDivider()
-          SettingsNavRow("S", Color(0xFFEC4899), "Streams", "Choose how streams are shown and played.", onClick = { onRouteChange(SettingsRoute.Streams) })
+          SettingsNavRow("S", Color(0xFFEC4899), "Streams and Quality", "Preferred quality, size limits, and how results are labelled.", onClick = { onRouteChange(SettingsRoute.Streams) })
           SettingsDivider()
-          SettingsNavRow("NXT", Color(0xFF22C55E), "Playback Automation", "Choose what StreamDek skips and when the next episode starts.", onClick = { onRouteChange(SettingsRoute.PlaybackAutomation) })
-          SettingsDivider()
-          SettingsNavRow("SUB", Color(0xFFA78BFA), "Subtitles", "Choose automatic subtitles and add subtitle sources.", onClick = { onRouteChange(SettingsRoute.Subtitles) })
+          SettingsNavRow("DL", Color(0xFF22C55E), "Downloads", if (!uiState.downloadsEnabled) "Off" else "${uiState.downloads.size} saved on this device", onClick = { onRouteChange(SettingsRoute.Downloads) })
         }
       }
       item {
-        SettingsSection("Services") {
+        SettingsSection("Appearance") {
+          SettingsNavRow("GE", Color(0xFF94A3B8), "Appearance and Language", "Colours, theme, text language, and navigation.", onClick = { onRouteChange(SettingsRoute.Appearance) })
+          SettingsDivider()
+          SettingsNavRow("HM", Color(0xFFF59E0B), "Home Screen", "Choose your Home rows and how the spotlight looks.", onClick = { onRouteChange(SettingsRoute.HomeScreen) })
+          SettingsDivider()
+          SettingsNavRow("DT", Color(0xFF22C55E), "Title Pages", "Trailers, ratings, season tabs, and episode artwork.", onClick = { onRouteChange(SettingsRoute.TitlePages) })
+          SettingsDivider()
+          SettingsNavRow("TV", Color(0xFFF97316), "Live TV", "Channel cards, categories, and the live progress bar.", onClick = { onRouteChange(SettingsRoute.LiveTv) })
+        }
+      }
+      item {
+        SettingsSection("Sources") {
           SettingsNavRow("+", Color(0xFF22C55E), "Add-ons", "${uiState.addons.count { it.enabled }} on - ${uiState.addons.sumOf { supportedHomeCatalogCount(it) }} Home rows", onClick = { onRouteChange(SettingsRoute.Addons) })
           SettingsDivider()
           SettingsNavRow("JS", Color(0xFFF59E0B), "Plugins", "${enabledStreamingSourceCount()} streaming sources on", onClick = { onRouteChange(SettingsRoute.Plugins) })
           SettingsDivider()
-          SettingsNavRow("M3U", Color(0xFFEC4899), "M3U Playlists", if (uiState.m3uSources.isEmpty()) "Add an IPTV playlist URL" else "${uiState.m3uSources.count { it.enabled }} of ${uiState.m3uSources.size} playlists on", onClick = { onRouteChange(SettingsRoute.M3uPlaylists) })
+          SettingsNavRow("M3U", Color(0xFFEC4899), "Playlists", if (uiState.m3uSources.isEmpty()) "Add an IPTV playlist URL" else "${uiState.m3uSources.count { it.enabled }} of ${uiState.m3uSources.size} playlists on", onClick = { onRouteChange(SettingsRoute.M3uPlaylists) })
           SettingsDivider()
           SettingsNavRow("DB", Color(0xFF38BDF8), "Premium Services", if (uiState.debridAccounts.isEmpty()) "Connect a supported premium service" else "${uiState.debridAccounts.size} services connected", onClick = { onRouteChange(SettingsRoute.Debrid) })
           SettingsDivider()
-          SettingsNavRow("SYN", Color(0xFFA78BFA), "Sync Services", syncServicesSubtitle(uiState), onClick = { onRouteChange(SettingsRoute.SyncServices) })
-          SettingsDivider()
-          SettingsNavRow("TV", Color(0xFF38BDF8), "Connect to TV", "Scan or enter a pairing code and manage linked TVs.", onClick = { onRouteChange(SettingsRoute.ConnectTv) })
+          SettingsNavRow("P2P", Color(0xFF94A3B8), "Peer-to-Peer", if (uiState.torrentServerSettings.enabled) "On - ${uiState.torrentServerStatus.cacheSizeGb} GB cache limit" else "Off", onClick = { onRouteChange(SettingsRoute.PeerToPeer) })
         }
       }
       item {
-        SettingsSection("Downloads") {
-          SettingsSwitchRow("DL", Color(0xFF22C55E), "Allow Downloads", "Let StreamDek save eligible movies and episodes for offline playback.", uiState.downloadsEnabled, onDownloadsEnabledChange)
-          if (uiState.downloadsEnabled) {
-            SettingsDivider()
-            SettingsNavRow("DL", Color(0xFF22C55E), "Manage Downloads", "${uiState.downloads.size} download(s) on this device", onClick = { onRouteChange(SettingsRoute.Downloads) })
-          }
+        SettingsSection("Connections") {
+          SettingsNavRow("SYN", Color(0xFFA78BFA), "Sync Services", syncServicesSubtitle(uiState), onClick = { onRouteChange(SettingsRoute.SyncServices) })
+          SettingsDivider()
+          SettingsNavRow("TV", Color(0xFF38BDF8), "Connect to TV", "Scan or enter a pairing code and manage linked TVs.", onClick = { onRouteChange(SettingsRoute.ConnectTv) })
         }
       }
       item {
@@ -12071,11 +12302,9 @@ private fun SettingsTab(
     } else {
       item { SettingsDetailHeader(route = route) }
       when (route) {
-        SettingsRoute.GeneralPlayback -> {
+        SettingsRoute.Appearance -> {
           item {
-            SettingsSection("General") {
-              SettingsChoiceRow("XA", Color(0xFFA78BFA), "Language", "Choose the language used for the app interface.", supportedAppLanguages.keys.toList(), uiState.appLanguage, onAppLanguageChange)
-              SettingsDivider()
+            SettingsSection("Appearance") {
               SettingsChoiceRow("MO", Color(0xFF64748B), "Appearance", "Choose the app color scheme.", AppAppearance.values().map { it.name }, uiState.appAppearance.name) { selected ->
                 onAppAppearanceChange(AppAppearance.valueOf(selected))
               }
@@ -12086,11 +12315,11 @@ private fun SettingsTab(
                 onHeaderStyleChange(if (selected == "Modern") HeaderStyle.Modern else HeaderStyle.Classic)
               }
               SettingsDivider()
-              SettingsSwitchRow("NET", Color(0xFF38BDF8), "Sync on Cellular", "Keep your account and add-ons up to date when using mobile data.", uiState.syncOnCellular, onSyncOnCellularChange)
+              SettingsChoiceRow("XA", Color(0xFFA78BFA), "Language", "Choose the language used for the app interface.", supportedAppLanguages.keys.toList(), uiState.appLanguage, onAppLanguageChange)
             }
           }
           item {
-            SettingsSection("Floating Navigation") {
+            SettingsSection("Navigation") {
               SettingsSwitchRow("LBL", Color(0xFF6366F1), "Show Navigation Labels", "Show page names below the navigation icons.", uiState.showNavLabels, onShowNavLabelsChange)
               SettingsDivider()
               SettingsSwitchRow("NAV", Color(0xFF22D3EE), "Collapsible Floating Navigation", "Hide the navigation after you choose a page, leaving your profile button visible.", uiState.collapsibleNavigationEnabled, onCollapsibleNavigationEnabledChange)
@@ -12103,15 +12332,18 @@ private fun SettingsTab(
             }
           }
         }
-        SettingsRoute.PlaybackAutomation -> {
+        SettingsRoute.SkipAndAutoplay -> {
           item {
-            SettingsSection("Playback Automation") {
+            SettingsSection("Skipping") {
               SettingsSwitchRow("IN", Color(0xFF60A5FA), "Skip Intro", "Show a button when an intro can be skipped.", uiState.skipIntroEnabled, onSkipIntroEnabledChange)
               SettingsDivider()
               SettingsSwitchRow("RE", Color(0xFF38BDF8), "Skip Recap", "Show a button when a recap can be skipped.", uiState.skipRecapEnabled, onSkipRecapEnabledChange)
               SettingsDivider()
               SettingsSwitchRow("END", Color(0xFFF59E0B), "Skip Ending", "Show a button when the ending can be skipped.", uiState.skipEndingEnabled, onSkipEndingEnabledChange)
-              SettingsDivider()
+            }
+          }
+          item {
+            SettingsSection("Next Episode") {
               SettingsSwitchRow("NXT", Color(0xFF22C55E), "Auto-Play Next Episode", "Start the next episode automatically near the end.", uiState.autoPlayNextEpisode, onAutoPlayNextEpisodeChange)
               SettingsDivider()
               SettingsSwitchRow("BG", Color(0xFFA78BFA), "Keep the Same Source", "Try to keep using the same source and video quality for the next episode.", uiState.preferBingeGroup, onPreferBingeGroupChange)
@@ -12120,6 +12352,7 @@ private fun SettingsTab(
           item {
             NextEpisodeThresholdSettings(uiState, onNextEpisodeThresholdModeChange, onNextEpisodeThresholdPercentChange, onNextEpisodeThresholdMinutesChange)
           }
+          item { IntrodbApiKeySettings(uiState.introdbApiKey, onIntrodbApiKeyChange) }
         }
         SettingsRoute.Subtitles -> {
           item {
@@ -12132,10 +12365,10 @@ private fun SettingsTab(
         SettingsRoute.ConnectTv -> {
           item { ConnectToTvSettings(uiState = uiState, onDeviceRenamed = onRefreshLinkedTvs) }
         }
-        SettingsRoute.HomeAppearance -> {
+        SettingsRoute.HomeScreen -> {
           item {
-            SettingsSection("Home and Appearance") {
-              SettingsNavRow("GRID", Color(0xFF38BDF8), "Catalog & Home Layout", "Choose which rows appear on Home and drag to reorder them.", value = "${uiState.homeCatalogRows.count { it.enabled }}", onClick = { onRouteChange(SettingsRoute.HomeLayout) })
+            SettingsSection("Home Screen") {
+              SettingsNavRow("GRID", Color(0xFF38BDF8), "Home Rows", "Choose which rows appear on Home and drag to reorder them.", value = "${uiState.homeCatalogRows.count { it.enabled }}", onClick = { onRouteChange(SettingsRoute.HomeLayout) })
               SettingsDivider()
               SettingsChoiceRow("LAY", Color(0xFF22D3EE), "Page Style", "Choose how media pages and the Home spotlight are arranged.", DetailPageStyle.values().map { it.name }, uiState.detailPageStyle.name) { selected ->
                 onDetailPageStyleChange(DetailPageStyle.valueOf(selected))
@@ -12145,33 +12378,59 @@ private fun SettingsTab(
                 onContinueWatchingStyleChange(ContinueWatchingStyle.valueOf(selected))
               }
               SettingsDivider()
-              SettingsSwitchRow("TV", Color(0xFFF97316), "Landscape Live TV Cards", "Show live TV channels as wide landscape cards.", uiState.liveLandscapeCards, onLiveLandscapeCardsChange)
-              SettingsDivider()
-              SettingsSwitchRow("CAT", Color(0xFF38BDF8), "Group Live TV Into Categories", "Sort live add-on and playlist channels into categories on their View All page. Off shows one flat list.", uiState.liveCategoriesEnabled, onLiveCategoriesEnabledChange)
-              SettingsDivider()
-              SettingsSwitchRow("FAV", Color(0xFFFACC15), "Card-style Player Favourites", "Show channel artwork in the live-player favourites drawer. Off uses the compact text list.", uiState.liveFavouriteDrawerCards, onLiveFavouriteDrawerCardsChange)
-              SettingsDivider()
               SettingsSwitchRow("DOC", Color(0xFF94A3B8), "Show Hero Synopsis", "Show the story summary in the Home spotlight.", uiState.showHeroSynopsis, onShowHeroSynopsisChange)
-              SettingsDivider()
+            }
+          }
+          item {
+            SettingsSection("Ambient Background") {
               SettingsSwitchRow("AMB", Color(0xFFA78BFA), "Ambient Background", "Show a colourful ambient glow behind home and detail screens.", uiState.vividAmbient, onVividAmbientChange)
               SettingsDivider()
               AmbientTintSlider(percent = uiState.ambientTintPercent, enabled = uiState.vividAmbient, onPercentChange = onAmbientTintPercentChange)
             }
           }
         }
-        SettingsRoute.HomeLayout -> item { CatalogHomeLayoutSettings(uiState, onDefaultAppCatalogsEnabledChange, onHomeCatalogRowEnabledChange, onMoveHomeCatalogRow, dragScrollBy = { delta -> settingsListState.scrollBy(delta) }) }
-        SettingsRoute.DetailScreen -> {
+        SettingsRoute.LiveTv -> {
           item {
-            SettingsSection("Detail Screen") {
-              SettingsSwitchRow("TRL", Color(0xFF22C55E), "Hero trailer autoplay", "Play a trailer automatically at the top of a media page when one is available.", uiState.heroTrailerAutoplay, onHeroTrailerAutoplayChange)
+            SettingsSection("Channels") {
+              SettingsSwitchRow("TV", Color(0xFFF97316), "Landscape Channel Cards", "Show live TV channels as wide landscape cards.", uiState.liveLandscapeCards, onLiveLandscapeCardsChange)
               SettingsDivider()
-              SettingsChoiceRow("HD", Color(0xFF38BDF8), "Trailer resolution", "Choose the best video quality trailers may use.", listOf("360p", "720p", "1080p", "2160p"), "${uiState.heroTrailerResolution}p") { selected -> onHeroTrailerResolutionChange(selected.removeSuffix("p").toInt()) }
+              SettingsSwitchRow("CAT", Color(0xFF38BDF8), "Group Channels Into Categories", "Sort live add-on and playlist channels into categories on their View All page. Off shows one flat list.", uiState.liveCategoriesEnabled, onLiveCategoriesEnabledChange)
+            }
+          }
+          item {
+            SettingsSection("Live Player") {
+              SettingsSwitchRow("FAV", Color(0xFFFACC15), "Card-style Favourites", "Show channel artwork in the live-player favourites drawer. Off uses the compact text list.", uiState.liveFavouriteDrawerCards, onLiveFavouriteDrawerCardsChange)
               SettingsDivider()
-              SettingsNavRow("MDB", Color(0xFFF5C518), "Ratings", "Turn ratings on and choose which rating services appear.", value = if (uiState.ratingsEnabled) "Enabled" else "Off", onClick = { onRouteChange(SettingsRoute.Ratings) })
+              SettingsSwitchRow("BAR", Color(0xFFEF4444), "Live Progress Bar", "Show the progress bar while a live channel or playlist VOD is playing. You can also turn it on and off from the player's Progress button.", uiState.liveProgressBarEnabled, onLiveProgressBarEnabledChange)
+            }
+          }
+          item {
+            SettingsSection("Where Channels Come From") {
+              SettingsNavRow("M3U", Color(0xFFEC4899), "Playlists", if (uiState.m3uSources.isEmpty()) "Add an IPTV playlist URL" else "${uiState.m3uSources.count { it.enabled }} of ${uiState.m3uSources.size} playlists on", onClick = { onRouteChange(SettingsRoute.M3uPlaylists) })
+            }
+          }
+        }
+        SettingsRoute.HomeLayout -> item { CatalogHomeLayoutSettings(uiState, onDefaultAppCatalogsEnabledChange, onHomeCatalogRowEnabledChange, onMoveHomeCatalogRow, dragScrollBy = { delta -> settingsListState.scrollBy(delta) }) }
+        SettingsRoute.TitlePages -> {
+          item {
+            SettingsSection("Trailers") {
+              SettingsSwitchRow("TRL", Color(0xFF22C55E), "Play Trailers Automatically", "Play a trailer at the top of a title page when one is available.", uiState.heroTrailerAutoplay, onHeroTrailerAutoplayChange)
               SettingsDivider()
+              SettingsChoiceRow("HD", Color(0xFF38BDF8), "Trailer Quality", "Choose the best video quality trailers may use.", listOf("360p", "720p", "1080p", "2160p"), "${uiState.heroTrailerResolution}p") { selected -> onHeroTrailerResolutionChange(selected.removeSuffix("p").toInt()) }
+            }
+          }
+          item {
+            SettingsSection("Episodes and Seasons") {
               SettingsChoiceRow("SEA", Color(0xFF38BDF8), "Season Tabs", "Choose regular tabs or poster image tabs for series seasons.", SeasonTabStyle.values().map { it.name }, uiState.seasonTabStyle.name) { selected ->
                 onSeasonTabStyleChange(SeasonTabStyle.valueOf(selected))
               }
+              SettingsDivider()
+              SettingsSwitchRow("BLR", Color(0xFFA78BFA), "Hide Episode Spoilers", "Blur episode artwork until the episode has been marked watched.", uiState.blurUnwatchedEpisodes, onBlurUnwatchedEpisodesChange)
+            }
+          }
+          item {
+            SettingsSection("Ratings") {
+              SettingsNavRow("MDB", Color(0xFFF5C518), "Ratings", "Turn ratings on and choose which rating services appear.", value = if (uiState.ratingsEnabled) "On" else "Off", onClick = { onRouteChange(SettingsRoute.Ratings) })
             }
           }
         }
@@ -12182,7 +12441,7 @@ private fun SettingsTab(
               onRatingsEnabledChange = onRatingsEnabledChange,
               onExternalRatingsEnabledChange = onExternalRatingsEnabledChange,
               onRatingProviderEnabledChange = onRatingProviderEnabledChange,
-              onMdblistApiKeyChange = onMdblistApiKeyChange,
+              onRouteChange = onRouteChange,
             )
           }
           item {
@@ -12193,45 +12452,69 @@ private fun SettingsTab(
         }
         SettingsRoute.Streams -> {
           item {
-            SettingsSection("Streams") {
-              SettingsSwitchRow("LST", Color(0xFF22D3EE), "Show Streams List", "Show available streams on media pages.", uiState.showStreamsList, onShowStreamsListChange)
-              SettingsDivider()
-              SettingsSwitchRow("SRC", Color(0xFF6366F1), "Remember Last Source", "Try the source you used last when you return to a title.", uiState.rememberLastSource, onRememberLastSourceChange)
-              SettingsDivider()
-              SettingsChoiceRow("Q", Color(0xFF22C55E), "Preferred Stream Quality", "Put your preferred video quality near the top.", listOf("2160p", "1080p", "720p", "Auto"), uiState.preferredQuality, onPreferredQualityChange)
+            SettingsSection("Choosing a Stream") {
+              SettingsChoiceRow("Q", Color(0xFF22C55E), "Preferred Quality", "Put your preferred video quality near the top.", listOf("2160p", "1080p", "720p", "Auto"), uiState.preferredQuality, onPreferredQualityChange)
               SettingsDivider()
               SettingsChoiceRow("GB", Color(0xFFF97316), "Max File Size", "Exclude streams larger than this size.", listOf("0", "4", "8", "12", "20"), uiState.maxFileSizeGb.toString()) { onMaxFileSizeChange(it.toInt()) }
               SettingsDivider()
-              SettingsSwitchRow("BLR", Color(0xFFA78BFA), "Blur Unwatched Episodes", "Blur episode art until the episode has been marked watched.", uiState.blurUnwatchedEpisodes, onBlurUnwatchedEpisodesChange)
+              SettingsSwitchRow("SRC", Color(0xFF6366F1), "Remember Last Source", "Try the source you used last when you return to a title.", uiState.rememberLastSource, onRememberLastSourceChange)
+              SettingsDivider()
+              SettingsSwitchRow("LST", Color(0xFF22D3EE), "Show Streams List", "Show available streams on title pages instead of playing the best match.", uiState.showStreamsList, onShowStreamsListChange)
             }
           }
           item {
-            SettingsSection("Stream Details") {
+            SettingsSection("How Results Look") {
               SettingsSwitchRow("FSN", Color(0xFFEC4899), "Stream Detail Badges", "Show useful quality and format labels on stream choices.", uiState.fusionBadgesEnabled, onFusionBadgesChange)
               SettingsDivider()
-              SettingsSwitchRow("FMT", Color(0xFF0EA5E9), "StreamDek Formatting", "Rebuild add-on results into StreamDek's own two-line layout. Off shows each result exactly as the add-on sent it, line breaks and all.", uiState.streamDekFormattingEnabled, onStreamDekFormattingChange)
               SettingsSwitchRow("SIZ", Color(0xFFF97316), "Size Badges", "Show the download size on stream choices.", uiState.showSizeBadges, onShowSizeBadgesChange)
               SettingsDivider()
               SettingsChoiceRow("POS", Color(0xFF22D3EE), "Badge Position", "Choose whether stream labels appear at the top or bottom.", listOf("Top", "Bottom"), uiState.badgePosition, onBadgePositionChange)
               SettingsDivider()
               SettingsNavRow("TAG", Color(0xFFA78BFA), "Badge Styles", fusionBadgeSourceSummary(uiState), onClick = { showFusionBadgeUrls = true })
+              SettingsDivider()
+              SettingsSwitchRow("FMT", Color(0xFF0EA5E9), "StreamDek Formatting", "Rebuild add-on results into StreamDek's own two-line layout. Off shows each result exactly as the add-on sent it, line breaks and all.", uiState.streamDekFormattingEnabled, onStreamDekFormattingChange)
             }
           }
+        }
+        SettingsRoute.Player -> {
           item {
-            SettingsSection("Playback") {
+            SettingsSection("Player") {
               SettingsChoiceRow("PLY", Color(0xFF22C55E), "Default Player", "Automatic starts with Media3 and switches to mpv if a source cannot play.", listOf("Auto", "Media3", "MPV"), uiState.playerEngine, onPlayerEngineChange)
               SettingsDivider()
               SettingsChoiceRow("AUD", Color(0xFFF59E0B), "Default Audio", "Choose the spoken language StreamDek should prefer when a video offers more than one.", listOf("en", "original", "es", "fr", "de", "it", "pt", "ja", "ko", "hi", "ta", "zh", "vi"), uiState.preferredAudioLanguage, onPreferredAudioLanguageChange)
               SettingsDivider()
               SettingsSwitchRow("PIP", Color(0xFF6366F1), "Floating Player", "Keep the video in a small window when you leave StreamDek.", uiState.pictureInPictureEnabled, onPictureInPictureEnabledChange)
+            }
+          }
+          item {
+            SettingsSection("Gestures") {
+              SettingsSwitchRow(
+                "HLD", Color(0xFFF472B6), "Hold to Speed Up",
+                "Press and hold anywhere on the video to play faster until you let go.",
+                uiState.holdToSpeedEnabled, onHoldToSpeedEnabledChange,
+              )
+              if (uiState.holdToSpeedEnabled) {
+                SettingsDivider()
+                HoldToSpeedMultiplierPicker(uiState.holdToSpeedMultiplier, onHoldToSpeedMultiplierChange)
+              }
               SettingsDivider()
+              SettingsSwitchRow(
+                "SWP", Color(0xFF34D399), "Swipe to Seek",
+                "Drag left or right across the video to scrub, and let go to jump there.",
+                uiState.swipeToSeekEnabled, onSwipeToSeekEnabledChange,
+              )
+            }
+          }
+          item {
+            // Last on the page: only worth opening when something will not play.
+            SettingsSection("If a Video Will Not Play") {
               SettingsChoiceRow("HW", Color(0xFFA78BFA), "mpv Video Compatibility", "Used when mpv is selected or Automatic switches to it. Recommended works for most videos.", listOf("HW+", "HW", "SW"), uiState.decoderMode, onDecoderModeChange)
               SettingsDivider()
               SettingsChoiceRow("SF", Color(0xFF06B6D4), "mpv Display", "Used when mpv is selected or Automatic switches to it. Try Compatibility if the picture is missing.", listOf("Standard", "Compatibility"), uiState.renderSurface, onRenderSurfaceChange)
-              SettingsDivider()
-              SettingsSwitchRow("BAR", Color(0xFFEF4444), "Live Progress Bar", "Show the progress bar while a live channel or playlist VOD is playing. You can also turn it on and off from the player's Progress button.", uiState.liveProgressBarEnabled, onLiveProgressBarEnabledChange)
             }
           }
+        }
+        SettingsRoute.PeerToPeer -> {
           item {
             SettingsSection("Peer-to-Peer Playback") {
               SettingsSwitchRow("TOR", Color(0xFF22C55E), "Enable Peer-to-Peer Playback", "Play torrent or magnet sources through this phone when no direct web stream is available. Video data is temporary, not a saved download.", uiState.torrentServerSettings.enabled, onCheckedChange = { enabled ->
@@ -12266,10 +12549,27 @@ private fun SettingsTab(
         }
         SettingsRoute.Addons -> item { AddonsSettingsSummary(uiState, onRefreshAddons, onInstallAddon, onToggleAddon, onUninstallAddon, onMoveAddon, dragScrollBy = { delta -> settingsListState.scrollBy(delta) }) }
         SettingsRoute.M3uPlaylists -> item { M3uPlaylistsSettingsSummary(uiState, onAddM3uPlaylist, onRemoveM3uPlaylist, onSetM3uPlaylistEnabled, onMoveM3uPlaylist, onRefreshM3uPlaylists) }
-        SettingsRoute.Downloads -> item { DownloadsSettingsSummary(uiState, onRefreshDownloads, onRemoveDownload, onPlayDownload, onOpenDownloadDetails) }
+        SettingsRoute.Downloads -> {
+          item {
+            SettingsSection("Downloads") {
+              SettingsSwitchRow("DL", Color(0xFF22C55E), "Allow Downloads", "Let StreamDek save eligible movies and episodes for offline playback.", uiState.downloadsEnabled, onDownloadsEnabledChange)
+            }
+          }
+          if (uiState.downloadsEnabled) {
+            item { DownloadsSettingsSummary(uiState, onRefreshDownloads, onRemoveDownload, onPlayDownload, onOpenDownloadDetails) }
+          }
+        }
         SettingsRoute.Plugins -> item { PluginsSettingsSummary() }
         SettingsRoute.Debrid -> item { DebridSettingsSummary(uiState, onRefreshDebrid, onAddDebrid, onRemoveDebrid, onSetDebridEnabled, onMoveDebrid) }
-        SettingsRoute.SyncServices -> item { SyncServicesSettingsSummary(uiState, onRouteChange, onRefreshSyncServices, onPrimarySyncServiceChange) }
+        SettingsRoute.SyncServices -> {
+          item { SyncServicesSettingsSummary(uiState, onRouteChange, onRefreshSyncServices, onPrimarySyncServiceChange) }
+          item {
+            // Lives here rather than under Appearance: what it governs is this syncing.
+            SettingsSection("Syncing") {
+              SettingsSwitchRow("NET", Color(0xFF38BDF8), "Sync on Cellular", "Keep your account and add-ons up to date when using mobile data.", uiState.syncOnCellular, onSyncOnCellularChange)
+            }
+          }
+        }
         SettingsRoute.Trakt -> item { TraktSettingsSummary(uiState, onRequestTraktDeviceCode, onPollTraktAuthorization, onDisconnectTrakt, onRefreshTrakt) }
         SettingsRoute.Simkl -> item { DeviceCodeSyncServiceSummary(SyncService.Simkl, uiState, onRequestSyncServiceDeviceCode, onPollSyncServiceAuthorization, onDisconnectSyncService, onRefreshSyncServices) }
         SettingsRoute.Mdblist -> item { ApiKeySyncServiceSummary(SyncService.Mdblist, uiState, uiState.mdblistApiKey, onConnectSyncServiceApiKey, onDisconnectSyncService, onRefreshSyncServices) }
@@ -12945,6 +13245,39 @@ private fun NextEpisodeThresholdSettings(
 }
 
 /**
+ * The viewer's own IntroDB key for the skip-segment lookups the player already makes. Held in a
+ * local draft rather than saved per keystroke: every save also pushes the synced preferences.
+ */
+@Composable
+private fun IntrodbApiKeySettings(savedKey: String, onIntrodbApiKeyChange: (String) -> Unit) {
+  var draft by remember(savedKey) { mutableStateOf(savedKey) }
+  SettingsSection("Intro Detection") {
+    Text("IntroDB API Key", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
+    Text(
+      "StreamDek looks up intro, recap, and ending times on IntroDB. Add a key from introdb.app to use your own allowance, or leave this empty to use the one built into StreamDek.",
+      color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
+      style = MaterialTheme.typography.bodyMedium,
+    )
+    Spacer(modifier = Modifier.height(12.dp))
+    OutlinedTextField(
+      value = draft,
+      onValueChange = { draft = it },
+      modifier = Modifier.fillMaxWidth(),
+      singleLine = true,
+      placeholder = { InputGuideText("idb_...") },
+    )
+    Spacer(modifier = Modifier.height(10.dp))
+    Button(
+      onClick = { onIntrodbApiKeyChange(draft) },
+      enabled = draft.trim() != savedKey,
+      modifier = Modifier.fillMaxWidth().height(54.dp),
+      colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.surface),
+      shape = RoundedCornerShape(999.dp),
+    ) { Text("Save", fontWeight = FontWeight.Black) }
+  }
+}
+
+/**
  * Streaming sources currently on, across both plugin systems: JS plugin collections and the
  * compiled CloudStream (.cs3) providers. The Settings row counted only the former, so anyone
  * running CloudStream sources exclusively was told they had none.
@@ -13006,75 +13339,85 @@ internal fun searchSettingsRoutes(rawQuery: String): List<SettingsRoute> {
 }
 
 internal fun settingsRouteKeywords(route: SettingsRoute): String = when (route) {
-  SettingsRoute.Account -> "account sign in sign out email sync services subscription"
-  SettingsRoute.Profiles -> "profile switch kids pin default avatar family"
-  SettingsRoute.GeneralPlayback -> "language theme colour color dark light header navigation cellular appearance"
-  SettingsRoute.HomeAppearance -> "home appearance rows catalog layout cards live channel category categories group iptv playlist favourite favorite drawer star ambient synopsis"
-  SettingsRoute.HomeLayout -> "layout rows reorder drag order arrange home catalog sections which rows"
-  SettingsRoute.DetailScreen -> "detail hero trailer autoplay synopsis ratings badges ambient season tabs"
-  SettingsRoute.Streams -> "streams source quality size player audio pip torrent peer magnet cache storage download " +
-    "live progress bar seek scrub timeline elapsed duration formatting badges engine mpv media3 decoder"
-  SettingsRoute.PlaybackAutomation -> "autoplay skip intro recap ending next episode binge threshold"
+  SettingsRoute.Player -> "player engine mpv media3 exoplayer audio language dub pip picture in picture floating " +
+    "gesture gestures hold speed swipe seek scrub decoder hardware software compatibility display surface video will not play"
+  SettingsRoute.SkipAndAutoplay -> "autoplay auto play skip intro recap ending credits next episode binge threshold introdb intro db api key"
   SettingsRoute.Subtitles -> "subtitle subtitles caption captions language source position style"
-  SettingsRoute.Addons -> "addon add-on catalog channel provider install configure source manifest stremio"
-  SettingsRoute.M3uPlaylists -> "m3u m3u8 iptv playlist url link xtream provider channels live vod refresh import"
+  SettingsRoute.Streams -> "streams stream results source quality resolution 4k 1080p size limit filter badges labels " +
+    "formatting remember last source list"
   SettingsRoute.Downloads -> "download downloads offline saved save storage remove delete watch offline"
+  SettingsRoute.Appearance -> "appearance language theme colour color dark light mode header navigation labels collapse font"
+  SettingsRoute.HomeScreen -> "home screen rows spotlight hero synopsis continue watching page style ambient glow background"
+  SettingsRoute.HomeLayout -> "layout rows reorder drag order arrange home catalog sections which rows"
+  SettingsRoute.TitlePages -> "title detail page trailer autoplay season tabs episode artwork blur spoiler ratings"
+  SettingsRoute.Ratings -> "rating ratings imdb tmdb rotten tomatoes metacritic mdblist badge score"
+  SettingsRoute.LiveTv -> "live tv channel channels iptv category categories group landscape cards favourite favorite drawer progress bar"
+  SettingsRoute.Addons -> "addon add-on catalog channel provider install configure source manifest stremio"
   SettingsRoute.Plugins -> "plugin source provider repository javascript cloudstream cs3 extension collection scraper"
+  SettingsRoute.M3uPlaylists -> "m3u m3u8 iptv playlist url link xtream provider channels live vod refresh import"
   SettingsRoute.Debrid -> "premium debrid real debrid alldebrid premiumize torbox debrid-link deepbrid account cached"
-  SettingsRoute.SyncServices -> "sync services tracking tracker trakt simkl mdblist scrobble watchlist history connect"
+  SettingsRoute.PeerToPeer -> "peer to peer p2p torrent magnet seed cache storage engine background service"
+  SettingsRoute.SyncServices -> "sync services tracking tracker trakt simkl mdblist scrobble watchlist history connect cellular mobile data"
   SettingsRoute.Trakt -> "trakt scrobble watchlist history sync"
   SettingsRoute.Simkl -> "simkl tracking scrobble watchlist sync connect"
   SettingsRoute.Mdblist -> "mdblist list ratings access key tracking sync connect"
   SettingsRoute.ConnectTv -> "tv television pair pairing code connect cast handoff"
-  SettingsRoute.Ratings -> "rating imdb tmdb mdblist badge score"
-  SettingsRoute.AppUpdates -> "update version apk install release changelog"
+  SettingsRoute.Account -> "account sign in sign out email sync services subscription"
+  SettingsRoute.Profiles -> "profile switch kids pin default avatar family"
+  SettingsRoute.AppUpdates -> "update version apk install release changelog about"
 }
 
 internal fun settingsRouteTitle(route: SettingsRoute): String = when (route) {
-  SettingsRoute.GeneralPlayback -> "General"
-  SettingsRoute.HomeAppearance -> "Home and Appearance"
-  SettingsRoute.HomeLayout -> "Catalog & Home Layout"
-  SettingsRoute.DetailScreen -> "Detail Screen"
-  SettingsRoute.Streams -> "Streams"
-  SettingsRoute.Addons -> "Add-ons"
-  SettingsRoute.M3uPlaylists -> "M3U Playlists"
+  SettingsRoute.Player -> "Player"
+  SettingsRoute.SkipAndAutoplay -> "Skip and Autoplay"
+  SettingsRoute.Subtitles -> "Subtitles"
+  SettingsRoute.Streams -> "Streams and Quality"
   SettingsRoute.Downloads -> "Downloads"
+  SettingsRoute.Appearance -> "Appearance and Language"
+  SettingsRoute.HomeScreen -> "Home Screen"
+  SettingsRoute.HomeLayout -> "Home Rows"
+  SettingsRoute.TitlePages -> "Title Pages"
+  SettingsRoute.Ratings -> "Ratings"
+  SettingsRoute.LiveTv -> "Live TV"
+  SettingsRoute.Addons -> "Add-ons"
   SettingsRoute.Plugins -> "Plugins"
-  SettingsRoute.ConnectTv -> "Connect to TV"
+  SettingsRoute.M3uPlaylists -> "Playlists"
   SettingsRoute.Debrid -> "Premium Services"
+  SettingsRoute.PeerToPeer -> "Peer-to-Peer"
   SettingsRoute.SyncServices -> "Sync Services"
   SettingsRoute.Trakt -> "Trakt"
   SettingsRoute.Simkl -> "SIMKL"
   SettingsRoute.Mdblist -> "MDBList"
-  SettingsRoute.PlaybackAutomation -> "Playback Automation"
-  SettingsRoute.Subtitles -> "Subtitles"
-  SettingsRoute.Ratings -> "Ratings"
+  SettingsRoute.ConnectTv -> "Connect to TV"
+  SettingsRoute.Account -> "Account"
   SettingsRoute.Profiles -> "Profiles"
-  SettingsRoute.Account -> "Account and Services"
   SettingsRoute.AppUpdates -> "App Updates"
 }
 
 internal fun settingsRouteSubtitle(route: SettingsRoute): String = when (route) {
-  SettingsRoute.GeneralPlayback -> "Choose the language, colours, and everyday app options."
-  SettingsRoute.HomeAppearance -> "Choose what appears on Home and how the app looks."
+  SettingsRoute.Player -> "Choose the player, audio language, gestures, and what to try when a video will not play."
+  SettingsRoute.SkipAndAutoplay -> "Choose what can be skipped and when the next episode starts."
+  SettingsRoute.Subtitles -> "Choose automatic subtitles and manage the sources StreamDek searches."
+  SettingsRoute.Streams -> "Choose the quality StreamDek prefers and how stream results are labelled."
+  SettingsRoute.Downloads -> "Save titles for offline playback, and manage what is already saved."
+  SettingsRoute.Appearance -> "Choose the colours, theme, text language, and navigation style."
+  SettingsRoute.HomeScreen -> "Choose which rows appear on Home and how the spotlight looks."
   SettingsRoute.HomeLayout -> "Choose which rows appear on Home and drag to reorder them. Changes apply in the background."
-  SettingsRoute.DetailScreen -> "Choose how trailers and title information appear."
-  SettingsRoute.Streams -> "Choose how StreamDek sorts, labels, and shows streams."
+  SettingsRoute.TitlePages -> "Choose how trailers, seasons, episode artwork, and ratings appear."
+  SettingsRoute.Ratings -> "Choose which ratings appear on title pages."
+  SettingsRoute.LiveTv -> "Choose how channels are listed and what the live player shows."
   SettingsRoute.Addons -> "Add, arrange, turn on, or remove streaming sources."
-  SettingsRoute.M3uPlaylists -> "Add IPTV M3U or M3U8 playlist URLs and choose which ones are on."
-  SettingsRoute.Downloads -> "See, play, and remove titles saved for offline playback."
   SettingsRoute.Plugins -> "Add plugin and CloudStream collections, and choose the streaming sources they provide."
-  SettingsRoute.ConnectTv -> "Pair this phone with StreamDek TV and manage authorized televisions."
+  SettingsRoute.M3uPlaylists -> "Add IPTV M3U or M3U8 playlist URLs and choose which ones are on."
   SettingsRoute.Debrid -> "Connect premium services and choose which one StreamDek tries first."
+  SettingsRoute.PeerToPeer -> "Play torrent and magnet sources through this phone, and limit what they store."
   SettingsRoute.SyncServices -> "Connect Trakt, SIMKL, or MDBList to the profile you are using."
   SettingsRoute.Trakt -> "Connect Trakt and keep the current profile up to date."
   SettingsRoute.Simkl -> "Connect SIMKL and keep the current profile up to date."
   SettingsRoute.Mdblist -> "Connect MDBList with an access key for the current profile."
-  SettingsRoute.PlaybackAutomation -> "Choose what can be skipped and when the next episode starts."
-  SettingsRoute.Subtitles -> "Choose automatic subtitles and manage the sources StreamDek searches."
-  SettingsRoute.Ratings -> "Choose which ratings appear on media pages."
-  SettingsRoute.Profiles -> "Create, switch, secure, and manage local viewing profiles."
+  SettingsRoute.ConnectTv -> "Pair this phone with StreamDek TV and manage authorized televisions."
   SettingsRoute.Account -> "Refresh account state or sign in and out."
+  SettingsRoute.Profiles -> "Create, switch, secure, and manage local viewing profiles."
   SettingsRoute.AppUpdates -> "See your app version and check for updates."
 }
 
@@ -13092,7 +13435,9 @@ private fun settingsGlyph(icon: String): ImageVector = when (icon) {
   "RE" -> Icons.Rounded.Replay
   "LINK" -> Icons.Rounded.Link
   "END" -> Icons.Rounded.SkipNext
-  "NXT" -> Icons.Rounded.SkipNext
+  "NXT", "SKP" -> Icons.Rounded.SkipNext
+  "PLY" -> Icons.Rounded.PlayArrow
+  "P2P" -> Icons.Rounded.Share
   "BG" -> Icons.Rounded.GridView
   "SUB", "Aa" -> Icons.Rounded.Subtitles
   "LBL", "DOC", "AMB" -> Icons.Rounded.Visibility
@@ -13111,6 +13456,7 @@ private fun settingsGlyph(icon: String): ImageVector = when (icon) {
   "LIVE" -> Icons.Rounded.Tv
   "DL" -> Icons.Rounded.Download
   "MDB", "RAT" -> Icons.Rounded.Star
+  "PRO" -> Icons.Rounded.AccountCircle
   else -> Icons.Rounded.Security
 }
 
@@ -15803,7 +16149,7 @@ private fun RatingsSettingsSummary(
   onRatingsEnabledChange: (Boolean) -> Unit,
   onExternalRatingsEnabledChange: (Boolean) -> Unit,
   onRatingProviderEnabledChange: (String, Boolean) -> Unit,
-  onMdblistApiKeyChange: (String) -> Unit,
+  onRouteChange: (SettingsRoute) -> Unit,
 ) {
   Column(verticalArrangement = Arrangement.spacedBy(24.dp)) {
     SettingsSection("Ratings") {
@@ -15811,14 +16157,16 @@ private fun RatingsSettingsSummary(
       SettingsDivider()
       SettingsSwitchRow("EXT", Color(0xFF22D3EE), "Show More Rating Services", "Show scores from services such as IMDb and Rotten Tomatoes.", uiState.externalRatingsEnabled, onExternalRatingsEnabledChange)
     }
-    SettingsSection("MDBList Connection") {
-      Text("MDBList Access Key", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
-      Text("Get an access key from mdblist.com/preferences to show ratings from other services.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.titleSmall)
-      OutlinedTextField(value = uiState.mdblistApiKey, onValueChange = onMdblistApiKeyChange, modifier = Modifier.fillMaxWidth(), singleLine = true, placeholder = { InputGuideText("Paste access key") })
-      Spacer(modifier = Modifier.height(10.dp))
-      Button(onClick = { onMdblistApiKeyChange(uiState.mdblistApiKey) }, modifier = Modifier.fillMaxWidth().height(54.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(999.dp)) {
-        Text("Save", fontWeight = FontWeight.Black)
-      }
+    // The key itself is entered on the MDBList page, which checks it before saving. This page used
+    // to carry a second, unchecked copy of the same field, so a key could be saved here that
+    // MDBList would reject there.
+    SettingsSection("Where Extra Ratings Come From") {
+      SettingsNavRow(
+        "MDB", Color(0xFFF5C518), "MDBList",
+        if (uiState.mdblistApiKey.isBlank()) "Needed for IMDb, Rotten Tomatoes, and other services" else "Access key saved",
+        value = if (uiState.mdblistStatus.connected) "Connected" else null,
+        onClick = { onRouteChange(SettingsRoute.Mdblist) },
+      )
     }
     SettingsSection("Rating Services") {
       listOf(

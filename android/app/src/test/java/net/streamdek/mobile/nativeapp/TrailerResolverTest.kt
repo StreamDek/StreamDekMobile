@@ -4,6 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TrailerResolverTest {
@@ -20,6 +21,74 @@ class TrailerResolverTest {
       array.put(JSONObject().put("url", url).put("mimeType", mime).put("height", height))
     }
     return array
+  }
+
+  /** Renditions with a declared size, which is what decides whether one can be finished. */
+  private fun sizedFormats(vararg entries: List<Any>): JSONArray {
+    val array = JSONArray()
+    entries.forEach { (url, mime, height, bytes) ->
+      array.put(
+        JSONObject().put("url", url).put("mimeType", mime).put("height", height)
+          .put("contentLength", bytes.toString()),
+      )
+    }
+    return array
+  }
+
+  private val avc = "video/mp4; codecs=\"avc1.640028\""
+  private val budget = 7L * 1024 * 1024
+
+  @Test
+  fun `prefers a rendition that can be played to the end over a taller one that cannot`() {
+    // googlevideo serves only the first few megabytes of these URLs, so a 1080p trailer runs out
+    // of obtainable bytes partway through. A smaller rendition that fits plays completely.
+    val available = sizedFormats(
+      listOf("v1080", avc, 1080, 20L * 1024 * 1024),
+      listOf("v480", avc, 480, 5L * 1024 * 1024),
+    )
+    assertEquals("v480" to 480, selectAdaptiveVideo(available, 2160, budget))
+  }
+
+  @Test
+  fun `still takes the tallest among the renditions that fit`() {
+    val available = sizedFormats(
+      listOf("v240", avc, 240, 2L * 1024 * 1024),
+      listOf("v480", avc, 480, 5L * 1024 * 1024),
+      listOf("v1080", avc, 1080, 20L * 1024 * 1024),
+    )
+    assertEquals("v480" to 480, selectAdaptiveVideo(available, 2160, budget))
+  }
+
+  @Test
+  fun `falls back to an oversized rendition rather than showing nothing`() {
+    val available = sizedFormats(listOf("v1080", avc, 1080, 20L * 1024 * 1024))
+    assertEquals("v1080" to 1080, selectAdaptiveVideo(available, 2160, budget))
+  }
+
+  @Test
+  fun `an adaptive pair beats the lone 360p muxed stream`() {
+    // The headset client publishes exactly one progressive format and it is 360p. Preferring
+    // progressive on sight threw away a 1080p adaptive rendition and ignored the quality setting.
+    val progressive = JSONArray().put(
+      JSONObject().put("url", "muxed360").put("mimeType", avc).put("height", 360)
+        .put("audioQuality", "AUDIO_QUALITY_LOW"),
+    )
+    val adaptive = sizedFormats(listOf("v1080", avc, 1080, 4L * 1024 * 1024))
+    val progressiveHeight = selectProgressiveTrailer(progressive, 2160)?.height
+    val adaptiveHeight = selectAdaptiveVideo(adaptive, 2160, budget)?.second
+    assertEquals(360, progressiveHeight)
+    assertEquals(1080, adaptiveHeight)
+    // The resolver takes the taller of the two, so the adaptive pair wins.
+    assertTrue(adaptiveHeight!! > progressiveHeight!!)
+  }
+
+  @Test
+  fun `keeps honouring the resolution ceiling`() {
+    val available = sizedFormats(
+      listOf("v1080", avc, 1080, 1L * 1024 * 1024),
+      listOf("v480", avc, 480, 1L * 1024 * 1024),
+    )
+    assertEquals("v480" to 480, selectAdaptiveVideo(available, 480, budget))
   }
 
   private fun audio(vararg entries: Pair<String, Pair<String, Int>>): JSONArray {
@@ -76,6 +145,62 @@ class TrailerResolverTest {
   @Test
   fun `falls back to webm audio so a vp9 pick still has sound`() {
     assertEquals("opus", selectAdaptiveAudio(audio("opus" to ("audio/webm; codecs=\"opus\"" to 160000))))
+  }
+
+  @Test
+  fun `picks the trailer over the promotional run that precedes it`() {
+    // The real order a metadata service returns for a released film: the marketing cutdowns are
+    // newest, so they come first, and taking the head of the list opened the page on a
+    // fifteen-second theatre sting instead of the trailer.
+    val candidates = listOf(
+      TrailerCandidate("promo1", "Vision ASMR 15 OWN NOW 16x9", 15),
+      TrailerCandidate("promo2", "Dune: Part Two | \"#1 Movie in the World\" | Now Playing", 15),
+      TrailerCandidate("promo3", "Dune: Part Two | \"A Remarkable Achievement\" | Now Playing", 60),
+      TrailerCandidate("promo4", "Dune: Part Two | Tickets on Sale Now", 30),
+      TrailerCandidate("real", "Dune: Part Two | Official Trailer 2", 183),
+    )
+    assertEquals("real", pickBestTrailerCandidate(candidates))
+  }
+
+  @Test
+  fun `a trailer that never says trailer still beats a longer promo`() {
+    val candidates = listOf(
+      TrailerCandidate("promo", "Barbie Streaming Exclusively on Max", 70),
+      TrailerCandidate("main", "Barbie | Main Trailer", 161),
+    )
+    assertEquals("main", pickBestTrailerCandidate(candidates))
+  }
+
+  @Test
+  fun `prefers the fuller cut when two are both real trailers`() {
+    val candidates = listOf(
+      TrailerCandidate("teaser", "Barbie | Teaser Trailer", 75),
+      TrailerCandidate("full", "Barbie | Main Trailer", 161),
+    )
+    assertEquals("full", pickBestTrailerCandidate(candidates))
+  }
+
+  @Test
+  fun `keeps the only video a title has even when it looks like a promo`() {
+    // Better a short promo than a hero with nothing in it.
+    assertEquals("only", pickBestTrailerCandidate(listOf(TrailerCandidate("only", "Now Playing", 15))))
+    assertNull(pickBestTrailerCandidate(emptyList()))
+  }
+
+  @Test
+  fun `running time outweighs marketing language on both sides`() {
+    // "In Theaters Now" appears on genuine trailers, so the wording alone must not sink one...
+    assertTrue(trailerCandidateScore("Official Trailer | In Theaters December 25", 145) > 0)
+    // ...and a promo cutdown must not be rescued by having "trailer" in its name.
+    assertTrue(trailerCandidateScore("Trailer | Tickets on Sale Now", 15) < 0)
+  }
+
+  @Test
+  fun `sets aside videos that are a different format entirely`() {
+    assertTrue(
+      trailerCandidateScore("Official Trailer", 150) > trailerCandidateScore("Behind the Scenes", 150),
+    )
+    assertTrue(trailerCandidateScore("Cast Interview", 150) < trailerCandidateScore("Trailer", 150))
   }
 
   @Test

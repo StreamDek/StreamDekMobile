@@ -2,6 +2,7 @@ package net.streamdek.mobile.nativeapp
 
 import android.content.Context
 import android.graphics.Color
+import android.graphics.Typeface
 import android.net.Uri
 import android.util.AttributeSet
 import android.util.Base64
@@ -73,6 +74,11 @@ class ExoPlaybackView @JvmOverloads constructor(
   private var pendingVolume = 1f
   private var preferredAudioLanguage = "en"
   private var subtitlePositionPercent = 92
+  private var subtitleTextColor = Color.WHITE
+  private var subtitleBackgroundColor = Color.TRANSPARENT
+  private var subtitleOutlineColor = Color.BLACK
+  private var subtitleOutlineEnabled = true
+  private var subtitleBold = false
   private var pendingSubtitle: MediaItem.SubtitleConfiguration? = null
   private val audioSelections = mutableMapOf<Int, Pair<Tracks.Group, Int>>()
   private val subtitleSelections = mutableMapOf<Int, Pair<Tracks.Group, Int>>()
@@ -226,9 +232,55 @@ class ExoPlaybackView @JvmOverloads constructor(
   }
 
   fun setSubtitleColor(color: String) {
-    val parsed = runCatching { Color.parseColor(color.take(7)) }.getOrDefault(Color.WHITE)
-    subtitleView?.setStyle(CaptionStyleCompat(parsed, Color.TRANSPARENT, Color.TRANSPARENT, CaptionStyleCompat.EDGE_TYPE_OUTLINE, Color.BLACK, null))
+    subtitleTextColor = parseCaptionColor(color, Color.WHITE)
+    applyCaptionStyle()
   }
+
+  fun setSubtitleBackgroundColor(color: String) {
+    subtitleBackgroundColor = parseCaptionColor(color, Color.TRANSPARENT)
+    applyCaptionStyle()
+  }
+
+  fun setSubtitleOutline(enabled: Boolean, color: String) {
+    subtitleOutlineEnabled = enabled
+    subtitleOutlineColor = parseCaptionColor(color, Color.BLACK)
+    applyCaptionStyle()
+  }
+
+  fun setSubtitleBold(bold: Boolean) {
+    subtitleBold = bold
+    applyCaptionStyle()
+  }
+
+  /**
+   * Media3 takes the whole caption style at once, so every setter above routes through here rather
+   * than each one rebuilding the style and dropping the others' values on the way past.
+   *
+   * Bold has no slot in [CaptionStyleCompat], so it is carried by a typeface.
+   */
+  private fun applyCaptionStyle() {
+    val view = subtitleView ?: return
+    view.setApplyEmbeddedStyles(false)
+    view.setStyle(
+      CaptionStyleCompat(
+        subtitleTextColor,
+        subtitleBackgroundColor,
+        Color.TRANSPARENT,
+        if (subtitleOutlineEnabled) CaptionStyleCompat.EDGE_TYPE_OUTLINE else CaptionStyleCompat.EDGE_TYPE_NONE,
+        subtitleOutlineColor,
+        if (subtitleBold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT,
+      ),
+    )
+  }
+
+  /**
+   * The settings store writes colours as Android does, "#AARRGGBB".
+   *
+   * This used to read the same eight digits as "#RRGGBBAA", so every choice arrived with the wrong
+   * alpha: yellow, "#FFFFEB3B", became a 23%-opaque white and black text vanished entirely.
+   */
+  private fun parseCaptionColor(value: String, fallback: Int): Int =
+    runCatching { Color.parseColor(value.trim()) }.getOrDefault(fallback)
 
   fun setSubtitlePosition(position: Int) {
     subtitlePositionPercent = position.coerceIn(0, 100)

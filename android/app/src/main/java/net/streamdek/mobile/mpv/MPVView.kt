@@ -39,6 +39,8 @@ class MPVView @JvmOverloads constructor(
         private const val MPV_FORMAT_DOUBLE = 5
         private const val MPV_LOG_LEVEL_ERROR = 2
         private const val MPV_LOG_LEVEL_WARN = 3
+        private const val DEFAULT_SUBTITLE_COLOR = "#FFFFFFFF"
+        private const val DEFAULT_SUBTITLE_OUTLINE_COLOR = "#FF000000"
     }
 
     private var initialized = false
@@ -48,6 +50,17 @@ class MPVView @JvmOverloads constructor(
     private var pendingDecoderMode: String = "HW+"
     private var pendingRenderSurface: String = "Standard"
     private var pendingPreferredAudioLanguage: String = "en"
+    /**
+     * Subtitle appearance, held here rather than written straight through: the player sets it while
+     * the view is still being constructed, long before mpv exists to receive it.
+     */
+    private var subtitleFontSize = 55
+    private var subtitlePosition = 92
+    private var subtitleColor = DEFAULT_SUBTITLE_COLOR
+    private var subtitleBackgroundColor = "#00000000"
+    private var subtitleOutlineEnabled = true
+    private var subtitleOutlineColor = DEFAULT_SUBTITLE_OUTLINE_COLOR
+    private var subtitleBold = false
     private var paused = false
     private var surface: Surface? = null
     private var headers: Map<String, String>? = null
@@ -117,6 +130,10 @@ class MPVView @JvmOverloads constructor(
             }
             observeProperties()
             initialized = true
+            // The player sets the subtitle appearance the moment this view is constructed, which is
+            // before the surface exists and therefore before mpv can be told anything. Replay it
+            // here so the viewer's choices are in place for the first subtitle drawn.
+            applySubtitleStyle()
 
             pendingSource?.let { source ->
                 if (BuildConfig.DEBUG) Log.i(TAG, "Applying pending source after surface ready")
@@ -529,20 +546,45 @@ class MPVView @JvmOverloads constructor(
 
     /** Set subtitle font size (mpv default is 55). */
     fun setSubtitleFontSize(size: Int) {
-        if (!initialized || isDestroyed) return
-        if (BuildConfig.DEBUG) Log.i(TAG, "setSubtitleFontSize: $size")
-        MPVLib.setPropertyInt("sub-font-size", size)
+        subtitleFontSize = size
+        applySubtitleStyle()
     }
 
     /**
-     * Set subtitle text color in #RRGGBBAA hex format.
-     * E.g. white = "#FFFFFFFF", yellow = "#FFFF00FF".
+     * Set subtitle text color in #AARRGGBB hex format - the order the settings store writes.
+     * E.g. white = "#FFFFFFFF", yellow = "#FFFFEB3B".
      */
     fun setSubtitleColor(color: String) {
-        if (!initialized || isDestroyed) return
-        val mpvColor = normalizeSubtitleColor(color)
-        if (BuildConfig.DEBUG) Log.i(TAG, "setSubtitleColor: $color -> $mpvColor")
-        MPVLib.setPropertyString("sub-color", mpvColor)
+        subtitleColor = color
+        applySubtitleStyle()
+    }
+
+    /**
+     * Set the panel drawn behind subtitle text, in #AARRGGBB hex.
+     *
+     * A fully transparent value leaves the picture untouched, which is mpv's own default.
+     */
+    fun setSubtitleBackgroundColor(color: String) {
+        subtitleBackgroundColor = color
+        applySubtitleStyle()
+    }
+
+    /**
+     * Set the border traced around subtitle glyphs, in #AARRGGBB hex.
+     *
+     * Turning the outline off is expressed as a zero outline size rather than a transparent colour,
+     * so the border does not quietly reappear when the colour is next changed.
+     */
+    fun setSubtitleOutline(enabled: Boolean, color: String) {
+        subtitleOutlineEnabled = enabled
+        subtitleOutlineColor = color
+        applySubtitleStyle()
+    }
+
+    /** Draw subtitles in a heavier weight. */
+    fun setSubtitleBold(bold: Boolean) {
+        subtitleBold = bold
+        applySubtitleStyle()
     }
 
     /**
@@ -550,10 +592,65 @@ class MPVView @JvmOverloads constructor(
      * Maps to mpv's `sub-pos` property.
      */
     fun setSubtitlePosition(position: Int) {
-        if (!initialized || isDestroyed) return
-        if (BuildConfig.DEBUG) Log.i(TAG, "setSubtitlePosition: $position")
-        MPVLib.setPropertyInt("sub-pos", position)
+        subtitlePosition = position
+        applySubtitleStyle()
     }
+
+    /**
+     * Push the whole appearance to mpv at once.
+     *
+     * Every setter routes through here because two of mpv's own behaviours otherwise make the
+     * settings look like they do nothing:
+     *
+     *  - a styled (ASS/SSA) subtitle carries its own colours and weight, and mpv's default
+     *    `sub-ass-override=scale` lets only the sizing options through. That is exactly why size
+     *    and position appeared to work while colour, background and bold did not. The override is
+     *    forced only once the viewer has chosen a look of their own, so a subtitle script that
+     *    styles itself is left alone for anyone still on the defaults.
+     *  - `sub-back-color` is the shadow colour under mpv's default border style, and the shadow has
+     *    zero offset, so a background colour on its own is never drawn. It needs the box border
+     *    style, which is switched on only while a background is actually wanted - the box would
+     *    otherwise replace the outline for everyone.
+     */
+    private fun applySubtitleStyle() {
+        if (!initialized || isDestroyed) return
+        val textColor = normalizeSubtitleColor(subtitleColor)
+        val backColor = normalizeSubtitleColor(subtitleBackgroundColor)
+        val outlineColor = normalizeSubtitleColor(subtitleOutlineColor)
+        val hasBackground = colorIsVisible(subtitleBackgroundColor)
+        if (BuildConfig.DEBUG) {
+            Log.i(
+                TAG,
+                "applySubtitleStyle: size=$subtitleFontSize pos=$subtitlePosition text=$textColor " +
+                    "back=$backColor outline=$subtitleOutlineEnabled/$outlineColor bold=$subtitleBold",
+            )
+        }
+        MPVLib.setPropertyInt("sub-font-size", subtitleFontSize)
+        MPVLib.setPropertyInt("sub-pos", subtitlePosition)
+        MPVLib.setPropertyString("sub-color", textColor)
+        MPVLib.setPropertyString("sub-back-color", backColor)
+        MPVLib.setPropertyString("sub-bold", if (subtitleBold) "yes" else "no")
+        // Renamed in mpv 0.38; the deprecated names are still accepted, but ask for the current
+        // ones first so this keeps working when they are finally dropped.
+        setSubtitleProperty("sub-outline-color", "sub-border-color", outlineColor)
+        setSubtitleProperty("sub-outline-size", "sub-border-size", if (subtitleOutlineEnabled) "3" else "0")
+        MPVLib.setPropertyString("sub-border-style", if (hasBackground) "background-box" else "outline-and-shadow")
+        MPVLib.setPropertyString("sub-ass-override", if (subtitleAppearanceIsCustomised()) "force" else "scale")
+    }
+
+    /** Set [name], falling back to [deprecatedName] on an mpv build that does not know it yet. */
+    private fun setSubtitleProperty(name: String, deprecatedName: String, value: String) {
+        val target = if (MPVLib.getPropertyString(name) != null) name else deprecatedName
+        MPVLib.setPropertyString(target, value)
+    }
+
+    /** True once anything but sizing has been changed from the shipped defaults. */
+    private fun subtitleAppearanceIsCustomised(): Boolean =
+        subtitleBold ||
+            !subtitleColor.trim().equals(DEFAULT_SUBTITLE_COLOR, ignoreCase = true) ||
+            colorIsVisible(subtitleBackgroundColor) ||
+            !subtitleOutlineEnabled ||
+            !subtitleOutlineColor.trim().equals(DEFAULT_SUBTITLE_OUTLINE_COLOR, ignoreCase = true)
 
     private fun dispatchTracksChanged() {
         if (isDestroyed) return
@@ -615,20 +712,28 @@ class MPVView @JvmOverloads constructor(
     }
 
     /**
-     * MPV/libass expects hex colors as #AARRGGBB. The UI sends #RRGGBBAA.
-     * Convert the incoming value so color names map correctly in the player.
+     * Colours are stored the way Android writes them, "#AARRGGBB", which is also the order mpv
+     * reads - alpha first, FF opaque. A six-digit "#RRGGBB" is taken as fully opaque. Anything
+     * else is handed to mpv untouched for it to reject.
+     *
+     * This used to rotate the value from "#RRGGBBAA", which turned every chosen colour into a
+     * near-transparent one: yellow, "#FFFFEB3B", reached mpv as alpha 0x3B.
      */
     private fun normalizeSubtitleColor(color: String): String {
-        val rgba = Regex("^#([0-9a-fA-F]{8})$")
-        val match = rgba.matchEntire(color.trim())
-        if (match == null) return color
+        val hex = color.trim().removePrefix("#")
+        if (!hex.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' }) return color
+        return when (hex.length) {
+            8 -> "#$hex"
+            6 -> "#FF$hex"
+            else -> color
+        }
+    }
 
-        val hex = match.groupValues[1]
-        val red = hex.substring(0, 2)
-        val green = hex.substring(2, 4)
-        val blue = hex.substring(4, 6)
-        val alpha = hex.substring(6, 8)
-        return "#${alpha}${red}${green}${blue}"
+    /** False for a colour that would draw nothing, which is how "no background" is stored. */
+    private fun colorIsVisible(color: String): Boolean {
+        val hex = color.trim().removePrefix("#")
+        if (hex.length != 8) return true
+        return (hex.substring(0, 2).toIntOrNull(16) ?: 255) > 0
     }
 
     private fun logSubtitleState(reason: String) {

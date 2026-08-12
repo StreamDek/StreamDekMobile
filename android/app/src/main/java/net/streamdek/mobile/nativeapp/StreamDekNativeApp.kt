@@ -75,6 +75,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -250,6 +252,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -319,8 +322,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -647,10 +648,16 @@ private data class AppUiState(
   val navigationAutoCollapseSeconds: Int = 5,
   val showStreamsList: Boolean = true,
   val heroTrailerAutoplay: Boolean = true,
-  // 2160p by default: the resolver hard-gates format selection on this value, so a lower default
-  // silently discards the 4K renditions the iOS YouTube client now provides. HLS and the adaptive
-  // picker both scale down on their own, so this is a ceiling rather than a demand.
+  // 2160p by default: the resolver gates format selection on this value, so a lower default
+  // silently discards the 4K renditions YouTube publishes for some trailers. The adaptive picker
+  // takes the tallest rendition at or under it, so this is a ceiling rather than a demand.
   val heroTrailerResolution: Int = 2160,
+  /**
+   * Whether hero trailers start muted. Trailers open silent, but unmuting one is a statement about
+   * how the viewer wants trailers to sound from then on — it used to be forgotten the moment the
+   * page closed, so every title had to be unmuted again by hand.
+   */
+  val heroTrailerMuted: Boolean = true,
   /** Off by default, matching the TV app: the spotlight reads better as artwork and title alone. */
   val showHeroSynopsis: Boolean = false,
   val continueWatchingStyle: ContinueWatchingStyle = ContinueWatchingStyle.Glass,
@@ -678,6 +685,23 @@ private data class AppUiState(
   val autoPlayNextEpisode: Boolean = true,
   val preferBingeGroup: Boolean = true,
   val autoLoadSubtitles: Boolean = true,
+  /**
+   * How subtitles are drawn, and where the picker opens.
+   *
+   * These were player-local state keyed on the stream's URL, so every one of them reverted the
+   * moment a different video started: a viewer who had set their size and picked an add-on as their
+   * subtitle source had to set both again on the next episode. They live here so a choice made once
+   * is the choice from then on, and so the same values can be set from Settings.
+   */
+  val subtitleTextSize: Int = 55,
+  val subtitleVerticalOffset: Int = 92,
+  val subtitleBold: Boolean = false,
+  val subtitleTextColor: String = "#FFFFFFFF",
+  val subtitleBackgroundColor: String = "#00000000",
+  val subtitleOutline: Boolean = true,
+  val subtitleOutlineColor: String = "#FF000000",
+  /** Which tab the in-player subtitle picker opens on: the viewer's usual source of subtitles. */
+  val subtitleDefaultSource: String = "BuiltIn",
   val blurUnwatchedEpisodes: Boolean = true,
   val nextEpisodeThresholdMode: String = "minutes",
   val nextEpisodeThresholdPercent: Int = 95,
@@ -1123,17 +1147,53 @@ private class AuthEntryStore(context: Context) {
   }
 }
 
+/**
+ * Subtitle sizing bounds, shared by the settings screen, the in-player controls and the store.
+ *
+ * The numbers are mpv's own: `sub-font-size` defaults to 55, and `sub-pos` is a percentage down the
+ * frame where 100 is the very bottom. Media3 scales the same values into its own units, so one
+ * setting drives both engines.
+ */
+internal val SUBTITLE_TEXT_SIZE_RANGE = 28..84
+internal val SUBTITLE_OFFSET_RANGE = 50..110
+
+/**
+ * The colours offered for subtitle text, background and outline.
+ *
+ * A fixed palette rather than a free-form picker: these are the shades that stay legible over
+ * video, and naming them keeps the setting readable in the list instead of showing a hex code.
+ */
+internal val SUBTITLE_COLOR_CHOICES: List<Pair<String, String>> = listOf(
+  "White" to "#FFFFFFFF",
+  "Soft White" to "#FFE8E8E8",
+  "Yellow" to "#FFFFEB3B",
+  "Amber" to "#FFFFC107",
+  "Cyan" to "#FF4DD0E1",
+  "Green" to "#FF81C784",
+  "Black" to "#FF000000",
+)
+
+/** Background and outline can also be turned off entirely, which text cannot. */
+internal val SUBTITLE_FILL_CHOICES: List<Pair<String, String>> = listOf("Transparent" to "#00000000") +
+  SUBTITLE_COLOR_CHOICES.map { (name, value) -> name to value } +
+  listOf("Dimmed Black" to "#A6000000")
+
+internal fun subtitleColorLabel(value: String): String =
+  SUBTITLE_FILL_CHOICES.firstOrNull { it.second.equals(value, ignoreCase = true) }?.first ?: value
+
 private class AppSettingsStore(context: Context) {
   private val prefs = context.getSharedPreferences(APP_SETTINGS_PREFERENCES, Context.MODE_PRIVATE)
   private val appContext = context.applicationContext
   private var profilePrefs = prefs
   private val profileSettingKeys = setOf(
     "detail_page_style", "season_tab_style", "show_streams_list", "hero_trailer_autoplay", "hero_trailer_resolution",
-    "show_hero_synopsis", "continue_watching_style", "live_landscape_cards", "live_favourite_drawer_cards",
+    "hero_trailer_muted", "show_hero_synopsis", "continue_watching_style", "live_landscape_cards", "live_favourite_drawer_cards",
     "live_categories_enabled", "live_progress_bar", "mdblist_api_key", "primary_sync_service",
     "remember_last_source", "skip_intro_enabled", "skip_segments_enabled", "skip_recap_enabled", "skip_ending_enabled",
     "introdb_api_key",
     "auto_play_next_episode", "prefer_binge_group", "auto_load_subtitles", "blur_unwatched_episodes",
+    "subtitle_text_size", "subtitle_vertical_offset", "subtitle_bold", "subtitle_text_color",
+    "subtitle_background_color", "subtitle_outline", "subtitle_outline_color", "subtitle_default_source",
     "next_episode_threshold_mode", "next_episode_threshold_percent", "next_episode_threshold_minutes",
     "ratings_enabled", "external_ratings_enabled", "enabled_rating_providers", "vivid_ambient", "ambient_tint_percent",
     "default_app_catalogs_enabled", "home_catalog_rows", "fusion_badges", "show_size_badges", "show_addon_tmdb_ratings",
@@ -1181,6 +1241,7 @@ private class AppSettingsStore(context: Context) {
     showStreamsList = profilePrefs.getBoolean("show_streams_list", true),
     heroTrailerAutoplay = profilePrefs.getBoolean("hero_trailer_autoplay", true),
     heroTrailerResolution = profilePrefs.getInt("hero_trailer_resolution", 2160).coerceIn(360, 2160),
+    heroTrailerMuted = profilePrefs.getBoolean("hero_trailer_muted", true),
     showHeroSynopsis = profilePrefs.getBoolean("show_hero_synopsis", false),
     continueWatchingStyle = runCatching { ContinueWatchingStyle.valueOf(profilePrefs.getString("continue_watching_style", ContinueWatchingStyle.Glass.name) ?: ContinueWatchingStyle.Glass.name) }.getOrDefault(ContinueWatchingStyle.Glass),
     liveLandscapeCards = profilePrefs.getBoolean("live_landscape_cards", true),
@@ -1200,6 +1261,14 @@ private class AppSettingsStore(context: Context) {
     autoPlayNextEpisode = profilePrefs.getBoolean("auto_play_next_episode", true),
     preferBingeGroup = profilePrefs.getBoolean("prefer_binge_group", true),
     autoLoadSubtitles = profilePrefs.getBoolean("auto_load_subtitles", true),
+    subtitleTextSize = profilePrefs.getInt("subtitle_text_size", 55).coerceIn(SUBTITLE_TEXT_SIZE_RANGE),
+    subtitleVerticalOffset = profilePrefs.getInt("subtitle_vertical_offset", 92).coerceIn(SUBTITLE_OFFSET_RANGE),
+    subtitleBold = profilePrefs.getBoolean("subtitle_bold", false),
+    subtitleTextColor = profilePrefs.getString("subtitle_text_color", null) ?: "#FFFFFFFF",
+    subtitleBackgroundColor = profilePrefs.getString("subtitle_background_color", null) ?: "#00000000",
+    subtitleOutline = profilePrefs.getBoolean("subtitle_outline", true),
+    subtitleOutlineColor = profilePrefs.getString("subtitle_outline_color", null) ?: "#FF000000",
+    subtitleDefaultSource = profilePrefs.getString("subtitle_default_source", null) ?: "BuiltIn",
     blurUnwatchedEpisodes = profilePrefs.getBoolean("blur_unwatched_episodes", true),
     nextEpisodeThresholdMode = profilePrefs.getString("next_episode_threshold_mode", "minutes") ?: "minutes",
     nextEpisodeThresholdPercent = profilePrefs.getInt("next_episode_threshold_percent", 95).coerceIn(50, 99),
@@ -1251,6 +1320,7 @@ private class AppSettingsStore(context: Context) {
   fun saveShowStreamsList(value: Boolean) { profilePrefs.edit().putBoolean("show_streams_list", value).apply() }
   fun saveHeroTrailerAutoplay(value: Boolean) { profilePrefs.edit().putBoolean("hero_trailer_autoplay", value).apply() }
   fun saveHeroTrailerResolution(value: Int) { profilePrefs.edit().putInt("hero_trailer_resolution", value.coerceIn(360, 2160)).apply() }
+  fun saveHeroTrailerMuted(value: Boolean) { profilePrefs.edit().putBoolean("hero_trailer_muted", value).apply() }
   fun saveShowHeroSynopsis(value: Boolean) { profilePrefs.edit().putBoolean("show_hero_synopsis", value).apply() }
   fun saveContinueWatchingStyle(value: ContinueWatchingStyle) { profilePrefs.edit().putString("continue_watching_style", value.name).apply() }
   fun saveLiveLandscapeCards(value: Boolean) { profilePrefs.edit().putBoolean("live_landscape_cards", value).apply() }
@@ -1270,6 +1340,14 @@ private class AppSettingsStore(context: Context) {
   fun saveAutoPlayNextEpisode(value: Boolean) { profilePrefs.edit().putBoolean("auto_play_next_episode", value).apply() }
   fun savePreferBingeGroup(value: Boolean) { profilePrefs.edit().putBoolean("prefer_binge_group", value).apply() }
   fun saveAutoLoadSubtitles(value: Boolean) { profilePrefs.edit().putBoolean("auto_load_subtitles", value).apply() }
+  fun saveSubtitleTextSize(value: Int) { profilePrefs.edit().putInt("subtitle_text_size", value.coerceIn(SUBTITLE_TEXT_SIZE_RANGE)).apply() }
+  fun saveSubtitleVerticalOffset(value: Int) { profilePrefs.edit().putInt("subtitle_vertical_offset", value.coerceIn(SUBTITLE_OFFSET_RANGE)).apply() }
+  fun saveSubtitleBold(value: Boolean) { profilePrefs.edit().putBoolean("subtitle_bold", value).apply() }
+  fun saveSubtitleTextColor(value: String) { profilePrefs.edit().putString("subtitle_text_color", value).apply() }
+  fun saveSubtitleBackgroundColor(value: String) { profilePrefs.edit().putString("subtitle_background_color", value).apply() }
+  fun saveSubtitleOutline(value: Boolean) { profilePrefs.edit().putBoolean("subtitle_outline", value).apply() }
+  fun saveSubtitleOutlineColor(value: String) { profilePrefs.edit().putString("subtitle_outline_color", value).apply() }
+  fun saveSubtitleDefaultSource(value: String) { profilePrefs.edit().putString("subtitle_default_source", value).apply() }
   fun saveBlurUnwatchedEpisodes(value: Boolean) { profilePrefs.edit().putBoolean("blur_unwatched_episodes", value).apply() }
   fun saveNextEpisodeThresholdMode(value: String) { profilePrefs.edit().putString("next_episode_threshold_mode", value).apply() }
   fun saveNextEpisodeThresholdPercent(value: Int) { profilePrefs.edit().putInt("next_episode_threshold_percent", value.coerceIn(50, 99)).apply() }
@@ -5299,6 +5377,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setShowStreamsList(value: Boolean) { appSettingsStore.saveShowStreamsList(value); uiState = uiState.copy(showStreamsList = value); syncCloudPreferences() }
   fun setHeroTrailerAutoplay(value: Boolean) { appSettingsStore.saveHeroTrailerAutoplay(value); uiState = uiState.copy(heroTrailerAutoplay = value); syncCloudPreferences() }
   fun setHeroTrailerResolution(value: Int) { appSettingsStore.saveHeroTrailerResolution(value); uiState = uiState.copy(heroTrailerResolution = value); syncCloudPreferences() }
+  /** Local only: how loud trailers should be is a property of the device in your hand, not the account. */
+  fun setHeroTrailerMuted(value: Boolean) { appSettingsStore.saveHeroTrailerMuted(value); uiState = uiState.copy(heroTrailerMuted = value) }
   fun setShowHeroSynopsis(value: Boolean) { appSettingsStore.saveShowHeroSynopsis(value); uiState = uiState.copy(showHeroSynopsis = value); syncCloudPreferences() }
   fun setContinueWatchingStyle(style: ContinueWatchingStyle) { appSettingsStore.saveContinueWatchingStyle(style); uiState = uiState.copy(continueWatchingStyle = style); syncCloudPreferences() }
   fun setLiveLandscapeCards(value: Boolean) { appSettingsStore.saveLiveLandscapeCards(value); uiState = uiState.copy(liveLandscapeCards = value); syncCloudPreferences() }
@@ -5336,6 +5416,16 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setNextEpisodeThresholdPercent(value: Int) { appSettingsStore.saveNextEpisodeThresholdPercent(value); uiState = uiState.copy(nextEpisodeThresholdPercent = value.coerceIn(50, 99)); syncCloudPreferences() }
   fun setNextEpisodeThresholdMinutes(value: Int) { appSettingsStore.saveNextEpisodeThresholdMinutes(value); uiState = uiState.copy(nextEpisodeThresholdMinutes = value.coerceIn(1, 15)); syncCloudPreferences() }
   fun setAutoLoadSubtitles(value: Boolean) { appSettingsStore.saveAutoLoadSubtitles(value); uiState = uiState.copy(autoLoadSubtitles = value); syncCloudPreferences() }
+  // Subtitle appearance stays on the device: it is tuned to the screen being watched, and a phone
+  // and a television want different answers.
+  fun setSubtitleTextSize(value: Int) { appSettingsStore.saveSubtitleTextSize(value); uiState = uiState.copy(subtitleTextSize = value.coerceIn(SUBTITLE_TEXT_SIZE_RANGE)) }
+  fun setSubtitleVerticalOffset(value: Int) { appSettingsStore.saveSubtitleVerticalOffset(value); uiState = uiState.copy(subtitleVerticalOffset = value.coerceIn(SUBTITLE_OFFSET_RANGE)) }
+  fun setSubtitleBold(value: Boolean) { appSettingsStore.saveSubtitleBold(value); uiState = uiState.copy(subtitleBold = value) }
+  fun setSubtitleTextColor(value: String) { appSettingsStore.saveSubtitleTextColor(value); uiState = uiState.copy(subtitleTextColor = value) }
+  fun setSubtitleBackgroundColor(value: String) { appSettingsStore.saveSubtitleBackgroundColor(value); uiState = uiState.copy(subtitleBackgroundColor = value) }
+  fun setSubtitleOutline(value: Boolean) { appSettingsStore.saveSubtitleOutline(value); uiState = uiState.copy(subtitleOutline = value) }
+  fun setSubtitleOutlineColor(value: String) { appSettingsStore.saveSubtitleOutlineColor(value); uiState = uiState.copy(subtitleOutlineColor = value) }
+  fun setSubtitleDefaultSource(value: String) { appSettingsStore.saveSubtitleDefaultSource(value); uiState = uiState.copy(subtitleDefaultSource = value) }
   fun setBlurUnwatchedEpisodes(value: Boolean) { appSettingsStore.saveBlurUnwatchedEpisodes(value); uiState = uiState.copy(blurUnwatchedEpisodes = value); syncCloudPreferences() }
   fun setDetailSelectedTab(tab: String) { uiState = uiState.copy(detailSelectedTab = tab) }
   fun setRatingsEnabled(value: Boolean) { appSettingsStore.saveRatingsEnabled(value); uiState = uiState.copy(ratingsEnabled = value); syncCloudPreferences() }
@@ -6006,6 +6096,14 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     imdbId = detail.imdbId ?: detail.id.takeIf { it.startsWith("tt") },
     subtitleLanguage = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }?.subtitleLanguage?.takeIf { it.isNotBlank() } ?: "en",
     autoLoadSubtitles = uiState.autoLoadSubtitles,
+    subtitleTextSize = uiState.subtitleTextSize,
+    subtitleVerticalOffset = uiState.subtitleVerticalOffset,
+    subtitleBold = uiState.subtitleBold,
+    subtitleTextColor = uiState.subtitleTextColor,
+    subtitleBackgroundColor = uiState.subtitleBackgroundColor,
+    subtitleOutline = uiState.subtitleOutline,
+    subtitleOutlineColor = uiState.subtitleOutlineColor,
+    subtitleDefaultSource = uiState.subtitleDefaultSource,
     skipIntroEnabled = uiState.skipIntroEnabled,
     skipRecapEnabled = uiState.skipRecapEnabled,
     skipEndingEnabled = uiState.skipEndingEnabled,
@@ -6098,6 +6196,14 @@ fun StreamDekNativeApp(
     }
   }
 
+  // Measured from the window rather than the device, and re-read on every configuration change, so
+  // folding, rotating or dragging the app into a split-screen pane all land in the right layout.
+  val configuration = LocalConfiguration.current
+  val windowSize = remember(configuration.screenWidthDp, configuration.screenHeightDp) {
+    WindowSize(widthDp = configuration.screenWidthDp.dp, heightDp = configuration.screenHeightDp.dp)
+  }
+  val spacing = remember(windowSize.widthClass) { StreamDekSpacing.forWidth(windowSize.widthClass) }
+
   MaterialTheme(
     colorScheme = colorScheme,
     shapes = Shapes(
@@ -6108,6 +6214,7 @@ fun StreamDekNativeApp(
       extraLarge = RoundedCornerShape(30.dp),
     ),
   ) {
+   CompositionLocalProvider(LocalWindowSize provides windowSize, LocalStreamDekSpacing provides spacing) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
       Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Scaffold(
@@ -6148,6 +6255,9 @@ fun StreamDekNativeApp(
                 availableStreams = uiState.availableStreams,
                 handoffDevices = uiState.handoffDevices,
                 onHandoff = viewModel::handoffCurrentPlayback,
+                onSubtitleTextSizeChange = viewModel::setSubtitleTextSize,
+                onSubtitleVerticalOffsetChange = viewModel::setSubtitleVerticalOffset,
+                onSubtitleSourceChange = viewModel::setSubtitleDefaultSource,
                 onBack = viewModel::dismissPlayer,
                 onScrobble = viewModel::scrobblePlayer,
                 onProgressCheckpoint = viewModel::savePlayerProgressCheckpoint,
@@ -6184,6 +6294,7 @@ fun StreamDekNativeApp(
         }
       }
     }
+   }
   }
 }
 
@@ -6856,13 +6967,26 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
           val activeProfile = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }
           val expandedNavIconSize by animateDpAsState(if (uiState.showNavLabels) 24.dp else 36.dp, label = "expanded_nav_icon_size")
           val expandedNavProfileSize by animateDpAsState(if (uiState.showNavLabels) 28.dp else 38.dp, label = "expanded_nav_profile_size")
+          val compactWindow = LocalWindowSize.current.widthClass == WindowWidthClass.Compact
           BoxWithConstraints(
             modifier = Modifier.fillMaxWidth().height(74.dp),
-            contentAlignment = Alignment.CenterEnd,
+            // On a phone the bar fills the width, so where it is anchored only matters while it is
+            // collapsed — and there the end edge is the reachable one. Once it stops growing it is
+            // an object on the screen rather than an edge of it, and the middle is where it belongs.
+            contentAlignment = if (compactWindow) Alignment.CenterEnd else Alignment.Center,
           ) {
             val expanded = !uiState.collapsibleNavigationEnabled || navigationExpanded
+            // The floating bar is StreamDek's signature, so it stays a floating bar — but stretched
+            // across a tablet it becomes five icons marooned in a very long pill. Past a phone's
+            // width it stops growing and keeps its proportions, which reads as deliberate rather
+            // than as a phone control that was pulled out sideways.
+            val expandedNavigationWidth = if (compactWindow) {
+              maxWidth
+            } else {
+              minOf(maxWidth, MaxFloatingNavigationWidth)
+            }
             val navigationWidth by animateDpAsState(
-              targetValue = if (expanded) maxWidth else 74.dp,
+              targetValue = if (expanded) expandedNavigationWidth else 74.dp,
               animationSpec = tween(durationMillis = 420, easing = FastOutSlowInEasing),
               label = "floating_navigation_width",
             )
@@ -7140,144 +7264,157 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
             MainTab.Watchlist -> browseStateHolder.SaveableStateProvider("tab_watchlist") {
               WatchlistTab(uiState = uiState, onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onClearWatchlist = viewModel::clearWatchlist)
             }
-            MainTab.Settings -> SettingsTab(
-              uiState = uiState,
+            MainTab.Settings -> AdaptiveSettingsPanes(
               route = settingsRoute,
-              apiBaseUrl = viewModel.apiBaseUrl(),
-              onRouteChange = { setSettingsRoute(it) },
-              onSubmitProfilePin = viewModel::submitProfilePin,
-              onCancelProfilePin = viewModel::cancelProfilePinPrompt,
-              onBack = {
-                if (requireGuestProfile) {
-                  requireGuestProfile = false
-                  guestProfileCountAtEntry = -1
-                  setSettingsRoute(null)
-                  showAuth = true
-                } else popSettingsRoute()
-              },
-              onSwitchProfile = { if (uiState.session == null) setSettingsRoute(SettingsRoute.Profiles) else { setSettingsRoute(null); viewModel.showProfilePicker() } },
-              onSelectProfile = viewModel::selectProfile,
-              onCreateProfile = viewModel::createProfile,
-              onUpdateProfile = viewModel::updateProfile,
-              onDeleteProfile = viewModel::deleteProfile,
-              onMakeDefaultProfile = viewModel::makeDefaultProfile,
-              onUpdateProfilePin = viewModel::updateProfilePin,
-              onSignOut = viewModel::signOut,
-              onSignIn = { showAuth = true },
-              onAppAppearanceChange = viewModel::setAppAppearance,
-              onAppLanguageChange = { language ->
-                viewModel.setAppLanguage(language)
-                activity?.recreate()
-              },
-              onThemePresetChange = viewModel::setThemePreset,
-              onHeaderStyleChange = viewModel::setHeaderStyle,
-              onPictureInPictureEnabledChange = viewModel::setPictureInPictureEnabled,
-              onDecoderModeChange = viewModel::setDecoderMode,
-              onRenderSurfaceChange = viewModel::setRenderSurface,
-              onPlayerEngineChange = viewModel::setPlayerEngine,
-              onPreferredAudioLanguageChange = viewModel::setPreferredAudioLanguage,
-              onDetailPageStyleChange = viewModel::setDetailPageStyle,
-              onSeasonTabStyleChange = viewModel::setSeasonTabStyle,
-              onShowNavLabelsChange = viewModel::setShowNavLabels,
-              onCollapsibleNavigationEnabledChange = viewModel::setCollapsibleNavigationEnabled,
-              onNavigationAutoCollapseSecondsChange = viewModel::setNavigationAutoCollapseSeconds,
-              onSyncOnCellularChange = viewModel::setSyncOnCellular,
-              onHoldToSpeedEnabledChange = viewModel::setHoldToSpeedEnabled,
-              onHoldToSpeedMultiplierChange = viewModel::setHoldToSpeedMultiplier,
-              onSwipeToSeekEnabledChange = viewModel::setSwipeToSeekEnabled,
-              onSkipIntroEnabledChange = viewModel::setSkipIntroEnabled,
-              onSkipRecapEnabledChange = viewModel::setSkipRecapEnabled,
-              onSkipEndingEnabledChange = viewModel::setSkipEndingEnabled,
-              onIntrodbApiKeyChange = viewModel::setIntrodbApiKey,
-              onAutoPlayNextEpisodeChange = viewModel::setAutoPlayNextEpisode,
-              onPreferBingeGroupChange = viewModel::setPreferBingeGroup,
-              onNextEpisodeThresholdModeChange = viewModel::setNextEpisodeThresholdMode,
-              onNextEpisodeThresholdPercentChange = viewModel::setNextEpisodeThresholdPercent,
-              onNextEpisodeThresholdMinutesChange = viewModel::setNextEpisodeThresholdMinutes,
-              onAutoLoadSubtitlesChange = viewModel::setAutoLoadSubtitles,
-              onShowStreamsListChange = viewModel::setShowStreamsList,
-              onHeroTrailerAutoplayChange = viewModel::setHeroTrailerAutoplay,
-              onHeroTrailerResolutionChange = viewModel::setHeroTrailerResolution,
-              onShowHeroSynopsisChange = viewModel::setShowHeroSynopsis,
-              onContinueWatchingStyleChange = viewModel::setContinueWatchingStyle,
-              onLiveLandscapeCardsChange = viewModel::setLiveLandscapeCards,
-              onLiveCategoriesEnabledChange = viewModel::setLiveCategoriesEnabled,
-              onLiveProgressBarEnabledChange = viewModel::setLiveProgressBarEnabled,
-              onLiveFavouriteDrawerCardsChange = viewModel::setLiveFavouriteDrawerCards,
-              onRememberLastSourceChange = viewModel::setRememberLastSource,
-              onBlurUnwatchedEpisodesChange = viewModel::setBlurUnwatchedEpisodes,
-              onRatingsEnabledChange = viewModel::setRatingsEnabled,
-              onExternalRatingsEnabledChange = viewModel::setExternalRatingsEnabled,
-              onRatingProviderEnabledChange = viewModel::setRatingProviderEnabled,
-              onVividAmbientChange = viewModel::setVividAmbient,
-              onAmbientTintPercentChange = viewModel::setAmbientTintPercent,
-              onFusionBadgesChange = viewModel::setFusionBadgesEnabled,
-              onStreamDekFormattingChange = viewModel::setStreamDekFormattingEnabled,
-              onShowSizeBadgesChange = viewModel::setShowSizeBadges,
-              onShowAddonTmdbRatingsChange = viewModel::setShowAddonTmdbRatings,
-              onPreferredQualityChange = viewModel::setPreferredQuality,
-              onMaxFileSizeChange = viewModel::setMaxFileSizeGb,
-              onBadgePositionChange = viewModel::setBadgePosition,
-              onUpdateTorrentServerSettings = viewModel::updateTorrentServerSettings,
-              onAddFusionBadgeUrl = viewModel::addFusionBadgeUrl,
-              onRemoveFusionBadgeUrl = viewModel::removeFusionBadgeUrl,
-              onRefreshFusionBadgeUrl = { viewModel.refreshFusionBadgeUrl(it) },
-              onSetActiveFusionBadgeUrl = viewModel::setActiveFusionBadgeUrl,
-              onDefaultAppCatalogsEnabledChange = viewModel::setDefaultAppCatalogsEnabled,
-              onHomeCatalogRowEnabledChange = viewModel::setHomeCatalogRowEnabled,
-              onMoveHomeCatalogRow = viewModel::moveHomeCatalogRow,
-              onRefreshHome = { viewModel.loadHome(force = true) },
-              onRefreshAddons = viewModel::refreshAddons,
-              onInstallAddon = viewModel::installAddon,
-              onToggleAddon = viewModel::toggleAddon,
-              onUninstallAddon = viewModel::uninstallAddon,
-              onMoveAddon = viewModel::moveAddon,
-              onAddM3uPlaylist = viewModel::addM3uPlaylist,
-              onRemoveM3uPlaylist = viewModel::removeM3uPlaylist,
-              onSetM3uPlaylistEnabled = viewModel::setM3uPlaylistEnabled,
-              onMoveM3uPlaylist = viewModel::moveM3uPlaylist,
-              // Refresh is the way to go back to the provider - an ordinary load now reads each
-              // playlist's stored copy.
-              onRefreshM3uPlaylists = { viewModel.loadM3uPlaylists(forceRefresh = true) },
-              onDownloadsEnabledChange = viewModel::setDownloadsEnabled,
-              onRefreshDownloads = viewModel::refreshDownloads,
-              onRemoveDownload = viewModel::removeDownload,
-              onPlayDownload = viewModel::playDownload,
-              onOpenDownloadDetails = { entry ->
-                // Leaves Settings on the stack, so backing out of the detail returns here.
-                val mediaId = entry.media.mediaId
-                if (mediaId.isNotBlank()) {
-                  openDetail = entry.media.mediaType to mediaId
-                  viewModel.loadDetail(entry.media.mediaType, mediaId, entry.toMediaItem())
-                }
-              },
-              onRefreshDebrid = viewModel::refreshDebridAccounts,
-              onAddDebrid = viewModel::addDebridAccount,
-              onRemoveDebrid = viewModel::removeDebridAccount,
-              onSetDebridEnabled = viewModel::setDebridAccountEnabled,
-              onMoveDebrid = viewModel::moveDebridAccount,
-              onRequestTraktDeviceCode = viewModel::requestTraktDeviceCode,
-              onRefreshSyncServices = viewModel::refreshSyncServices,
-              onPrimarySyncServiceChange = viewModel::setPrimarySyncService,
-              onRequestSyncServiceDeviceCode = viewModel::requestSyncServiceDeviceCode,
-              onPollSyncServiceAuthorization = viewModel::pollSyncServiceAuthorization,
-              onConnectSyncServiceApiKey = viewModel::connectSyncServiceApiKey,
-              onDisconnectSyncService = viewModel::disconnectSyncService,
-              onPollTraktAuthorization = viewModel::pollTraktAuthorization,
-              onDisconnectTrakt = viewModel::disconnectTrakt,
-              onRefreshTrakt = viewModel::refreshTraktData,
-              onRefreshSync = viewModel::refreshConnectedServices,
-              onAutoUpdateChecksChange = viewModel::setAutoUpdateChecks,
-              onCheckForUpdates = { viewModel.checkForUpdates(manual = true) },
-              onRefreshLinkedTvs = viewModel::refreshHandoffDevices,
-              onStartUpdate = viewModel::startUpdate,
-            )
+            ) { paneRoute ->
+              SettingsTab(
+                uiState = uiState,
+                route = paneRoute,
+                apiBaseUrl = viewModel.apiBaseUrl(),
+                onRouteChange = { setSettingsRoute(it) },
+                onSubmitProfilePin = viewModel::submitProfilePin,
+                onCancelProfilePin = viewModel::cancelProfilePinPrompt,
+                onBack = {
+                  if (requireGuestProfile) {
+                    requireGuestProfile = false
+                    guestProfileCountAtEntry = -1
+                    setSettingsRoute(null)
+                    showAuth = true
+                  } else popSettingsRoute()
+                },
+                onSwitchProfile = { if (uiState.session == null) setSettingsRoute(SettingsRoute.Profiles) else { setSettingsRoute(null); viewModel.showProfilePicker() } },
+                onSelectProfile = viewModel::selectProfile,
+                onCreateProfile = viewModel::createProfile,
+                onUpdateProfile = viewModel::updateProfile,
+                onDeleteProfile = viewModel::deleteProfile,
+                onMakeDefaultProfile = viewModel::makeDefaultProfile,
+                onUpdateProfilePin = viewModel::updateProfilePin,
+                onSignOut = viewModel::signOut,
+                onSignIn = { showAuth = true },
+                onAppAppearanceChange = viewModel::setAppAppearance,
+                onAppLanguageChange = { language ->
+                  viewModel.setAppLanguage(language)
+                  activity?.recreate()
+                },
+                onThemePresetChange = viewModel::setThemePreset,
+                onHeaderStyleChange = viewModel::setHeaderStyle,
+                onPictureInPictureEnabledChange = viewModel::setPictureInPictureEnabled,
+                onDecoderModeChange = viewModel::setDecoderMode,
+                onRenderSurfaceChange = viewModel::setRenderSurface,
+                onPlayerEngineChange = viewModel::setPlayerEngine,
+                onPreferredAudioLanguageChange = viewModel::setPreferredAudioLanguage,
+                onDetailPageStyleChange = viewModel::setDetailPageStyle,
+                onSeasonTabStyleChange = viewModel::setSeasonTabStyle,
+                onShowNavLabelsChange = viewModel::setShowNavLabels,
+                onCollapsibleNavigationEnabledChange = viewModel::setCollapsibleNavigationEnabled,
+                onNavigationAutoCollapseSecondsChange = viewModel::setNavigationAutoCollapseSeconds,
+                onSyncOnCellularChange = viewModel::setSyncOnCellular,
+                onHoldToSpeedEnabledChange = viewModel::setHoldToSpeedEnabled,
+                onHoldToSpeedMultiplierChange = viewModel::setHoldToSpeedMultiplier,
+                onSwipeToSeekEnabledChange = viewModel::setSwipeToSeekEnabled,
+                onSkipIntroEnabledChange = viewModel::setSkipIntroEnabled,
+                onSkipRecapEnabledChange = viewModel::setSkipRecapEnabled,
+                onSkipEndingEnabledChange = viewModel::setSkipEndingEnabled,
+                onIntrodbApiKeyChange = viewModel::setIntrodbApiKey,
+                onAutoPlayNextEpisodeChange = viewModel::setAutoPlayNextEpisode,
+                onPreferBingeGroupChange = viewModel::setPreferBingeGroup,
+                onNextEpisodeThresholdModeChange = viewModel::setNextEpisodeThresholdMode,
+                onNextEpisodeThresholdPercentChange = viewModel::setNextEpisodeThresholdPercent,
+                onNextEpisodeThresholdMinutesChange = viewModel::setNextEpisodeThresholdMinutes,
+                onAutoLoadSubtitlesChange = viewModel::setAutoLoadSubtitles,
+                onSubtitleTextSizeChange = viewModel::setSubtitleTextSize,
+                onSubtitleVerticalOffsetChange = viewModel::setSubtitleVerticalOffset,
+                onSubtitleBoldChange = viewModel::setSubtitleBold,
+                onSubtitleTextColorChange = viewModel::setSubtitleTextColor,
+                onSubtitleBackgroundColorChange = viewModel::setSubtitleBackgroundColor,
+                onSubtitleOutlineChange = viewModel::setSubtitleOutline,
+                onSubtitleOutlineColorChange = viewModel::setSubtitleOutlineColor,
+                onSubtitleDefaultSourceChange = viewModel::setSubtitleDefaultSource,
+                onShowStreamsListChange = viewModel::setShowStreamsList,
+                onHeroTrailerAutoplayChange = viewModel::setHeroTrailerAutoplay,
+                onHeroTrailerResolutionChange = viewModel::setHeroTrailerResolution,
+                onShowHeroSynopsisChange = viewModel::setShowHeroSynopsis,
+                onContinueWatchingStyleChange = viewModel::setContinueWatchingStyle,
+                onLiveLandscapeCardsChange = viewModel::setLiveLandscapeCards,
+                onLiveCategoriesEnabledChange = viewModel::setLiveCategoriesEnabled,
+                onLiveProgressBarEnabledChange = viewModel::setLiveProgressBarEnabled,
+                onLiveFavouriteDrawerCardsChange = viewModel::setLiveFavouriteDrawerCards,
+                onRememberLastSourceChange = viewModel::setRememberLastSource,
+                onBlurUnwatchedEpisodesChange = viewModel::setBlurUnwatchedEpisodes,
+                onRatingsEnabledChange = viewModel::setRatingsEnabled,
+                onExternalRatingsEnabledChange = viewModel::setExternalRatingsEnabled,
+                onRatingProviderEnabledChange = viewModel::setRatingProviderEnabled,
+                onVividAmbientChange = viewModel::setVividAmbient,
+                onAmbientTintPercentChange = viewModel::setAmbientTintPercent,
+                onFusionBadgesChange = viewModel::setFusionBadgesEnabled,
+                onStreamDekFormattingChange = viewModel::setStreamDekFormattingEnabled,
+                onShowSizeBadgesChange = viewModel::setShowSizeBadges,
+                onShowAddonTmdbRatingsChange = viewModel::setShowAddonTmdbRatings,
+                onPreferredQualityChange = viewModel::setPreferredQuality,
+                onMaxFileSizeChange = viewModel::setMaxFileSizeGb,
+                onBadgePositionChange = viewModel::setBadgePosition,
+                onUpdateTorrentServerSettings = viewModel::updateTorrentServerSettings,
+                onAddFusionBadgeUrl = viewModel::addFusionBadgeUrl,
+                onRemoveFusionBadgeUrl = viewModel::removeFusionBadgeUrl,
+                onRefreshFusionBadgeUrl = { viewModel.refreshFusionBadgeUrl(it) },
+                onSetActiveFusionBadgeUrl = viewModel::setActiveFusionBadgeUrl,
+                onDefaultAppCatalogsEnabledChange = viewModel::setDefaultAppCatalogsEnabled,
+                onHomeCatalogRowEnabledChange = viewModel::setHomeCatalogRowEnabled,
+                onMoveHomeCatalogRow = viewModel::moveHomeCatalogRow,
+                onRefreshHome = { viewModel.loadHome(force = true) },
+                onRefreshAddons = viewModel::refreshAddons,
+                onInstallAddon = viewModel::installAddon,
+                onToggleAddon = viewModel::toggleAddon,
+                onUninstallAddon = viewModel::uninstallAddon,
+                onMoveAddon = viewModel::moveAddon,
+                onAddM3uPlaylist = viewModel::addM3uPlaylist,
+                onRemoveM3uPlaylist = viewModel::removeM3uPlaylist,
+                onSetM3uPlaylistEnabled = viewModel::setM3uPlaylistEnabled,
+                onMoveM3uPlaylist = viewModel::moveM3uPlaylist,
+                // Refresh is the way to go back to the provider - an ordinary load now reads each
+                // playlist's stored copy.
+                onRefreshM3uPlaylists = { viewModel.loadM3uPlaylists(forceRefresh = true) },
+                onDownloadsEnabledChange = viewModel::setDownloadsEnabled,
+                onRefreshDownloads = viewModel::refreshDownloads,
+                onRemoveDownload = viewModel::removeDownload,
+                onPlayDownload = viewModel::playDownload,
+                onOpenDownloadDetails = { entry ->
+                  // Leaves Settings on the stack, so backing out of the detail returns here.
+                  val mediaId = entry.media.mediaId
+                  if (mediaId.isNotBlank()) {
+                    openDetail = entry.media.mediaType to mediaId
+                    viewModel.loadDetail(entry.media.mediaType, mediaId, entry.toMediaItem())
+                  }
+                },
+                onRefreshDebrid = viewModel::refreshDebridAccounts,
+                onAddDebrid = viewModel::addDebridAccount,
+                onRemoveDebrid = viewModel::removeDebridAccount,
+                onSetDebridEnabled = viewModel::setDebridAccountEnabled,
+                onMoveDebrid = viewModel::moveDebridAccount,
+                onRequestTraktDeviceCode = viewModel::requestTraktDeviceCode,
+                onRefreshSyncServices = viewModel::refreshSyncServices,
+                onPrimarySyncServiceChange = viewModel::setPrimarySyncService,
+                onRequestSyncServiceDeviceCode = viewModel::requestSyncServiceDeviceCode,
+                onPollSyncServiceAuthorization = viewModel::pollSyncServiceAuthorization,
+                onConnectSyncServiceApiKey = viewModel::connectSyncServiceApiKey,
+                onDisconnectSyncService = viewModel::disconnectSyncService,
+                onPollTraktAuthorization = viewModel::pollTraktAuthorization,
+                onDisconnectTrakt = viewModel::disconnectTrakt,
+                onRefreshTrakt = viewModel::refreshTraktData,
+                onRefreshSync = viewModel::refreshConnectedServices,
+                onAutoUpdateChecksChange = viewModel::setAutoUpdateChecks,
+                onCheckForUpdates = { viewModel.checkForUpdates(manual = true) },
+                onRefreshLinkedTvs = viewModel::refreshHandoffDevices,
+                onStartUpdate = viewModel::startUpdate,
+              )
+            }
           }
         }
         }
       } else {
         DetailScreen(
           uiState = uiState,
+          onTrailerMutedChange = viewModel::setHeroTrailerMuted,
           onBack = {
             openDetail = null
             viewModel.clearPlayerReturnTarget()
@@ -7416,10 +7553,11 @@ private fun ProfilePickerScreen(
   val profileHazeState = rememberHazeState()
   val lightProfile = MaterialTheme.colorScheme.background.luminance() > 0.5f
   val profileForeground = MaterialTheme.colorScheme.onBackground
+  val pickerMetrics = profilePickerMetrics()
   Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
     AnimatedContent(
       targetState = heroItem,
-      modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().height(560.dp),
+      modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().height(pickerMetrics.heroHeight),
       transitionSpec = {
         fadeIn(animationSpec = tween(720)) togetherWith fadeOut(animationSpec = tween(720))
       },
@@ -7470,7 +7608,7 @@ private fun ProfilePickerScreen(
       modifier = Modifier
         .align(Alignment.BottomCenter)
         .fillMaxWidth()
-        .height(480.dp)
+        .height(pickerMetrics.scrimHeight)
         .background(
           Brush.verticalGradient(
             colorStops = arrayOf(
@@ -7485,13 +7623,15 @@ private fun ProfilePickerScreen(
       modifier = Modifier
         .align(Alignment.BottomCenter)
         .fillMaxWidth()
-        .padding(horizontal = 22.dp, vertical = 58.dp),
+        .padding(horizontal = pickerMetrics.contentPadding, vertical = 58.dp),
       horizontalAlignment = Alignment.CenterHorizontally,
       verticalArrangement = Arrangement.spacedBy(28.dp),
     ) {
       Text(
         "Who's watching?",
-        style = MaterialTheme.typography.displaySmall,
+        style = MaterialTheme.typography.displaySmall.let {
+          if (pickerMetrics.headlineScale == 1f) it else it.copy(fontSize = it.fontSize * pickerMetrics.headlineScale)
+        },
         fontWeight = FontWeight.Black,
         color = profileForeground,
       )
@@ -7512,14 +7652,18 @@ private fun ProfilePickerScreen(
         }
       } else {
         LazyRow(
-          horizontalArrangement = Arrangement.spacedBy(34.dp),
+          // Centred within whatever width is available: a handful of profiles on a wide screen
+          // should sit in the middle of it rather than hugging the leading edge, while a long list
+          // still scrolls exactly as before.
+          horizontalArrangement = Arrangement.spacedBy(pickerMetrics.avatarSpacing, Alignment.CenterHorizontally),
           contentPadding = PaddingValues(horizontal = 4.dp),
+          modifier = Modifier.fillMaxWidth(),
         ) {
           items(uiState.profiles, key = { it.id }) { profile ->
-            ProfilePickerAvatar(profile = profile, onClick = { onProfileSelected(profile.id) })
+            ProfilePickerAvatar(profile = profile, avatarSize = pickerMetrics.avatarSize, onClick = { onProfileSelected(profile.id) })
           }
           item {
-            AddProfileAvatar(onClick = onManageProfiles)
+            AddProfileAvatar(avatarSize = pickerMetrics.avatarSize, onClick = onManageProfiles)
           }
         }
         Button(
@@ -7584,7 +7728,13 @@ private fun ProfileHeroGlassPane(
         ),
     )
     Column(
-      modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 22.dp),
+      // The synopsis is prose, and prose set across the full width of a tablet is genuinely harder
+      // to read — the eye loses the start of the next line. Capping it leaves the artwork spanning
+      // the whole pane while the text stays a comfortable column against the leading edge.
+      modifier = Modifier
+        .fillMaxWidth()
+        .widthIn(max = LocalStreamDekSpacing.current.readableContentWidth)
+        .padding(horizontal = 24.dp, vertical = 22.dp),
       verticalArrangement = Arrangement.spacedBy(10.dp),
       content = content,
     )
@@ -7737,20 +7887,22 @@ private fun ProfileAvatarPicker(selectedAvatarIndex: Int, onSelect: (Int) -> Uni
 }
 
 @Composable
-private fun ProfilePickerAvatar(profile: StreamProfile, onClick: () -> Unit) {
+private fun ProfilePickerAvatar(profile: StreamProfile, avatarSize: Dp = 92.dp, onClick: () -> Unit) {
+  // The lock badge and its icon are sized against the avatar so the proportions hold as it grows.
+  val badgeSize = avatarSize * 0.28f
   Column(
     horizontalAlignment = Alignment.CenterHorizontally,
     verticalArrangement = Arrangement.spacedBy(24.dp),
-    modifier = Modifier.width(100.dp).clickable(onClick = onClick),
+    modifier = Modifier.width(avatarSize + 8.dp).clickable(onClick = onClick),
   ) {
     Box(
       modifier = Modifier
-        .size(100.dp),
+        .size(avatarSize + 8.dp),
       contentAlignment = Alignment.Center,
     ) {
       Box(
         modifier = Modifier
-          .size(92.dp)
+          .size(avatarSize)
           .clip(CircleShape)
           .background(profileAvatarColor(profile.avatarIndex)),
       ) {
@@ -7760,13 +7912,13 @@ private fun ProfilePickerAvatar(profile: StreamProfile, onClick: () -> Unit) {
         Box(
           modifier = Modifier
             .align(Alignment.BottomEnd)
-            .size(26.dp)
+            .size(badgeSize)
             .clip(CircleShape)
             .background(Color.White)
             .border(2.dp, Color.Black, CircleShape),
           contentAlignment = Alignment.Center,
         ) {
-          Icon(Icons.Rounded.Lock, contentDescription = "PIN protected", tint = Color.Black, modifier = Modifier.size(16.dp))
+          Icon(Icons.Rounded.Lock, contentDescription = "PIN protected", tint = Color.Black, modifier = Modifier.size(badgeSize * 0.62f))
         }
       }
     }
@@ -7781,15 +7933,15 @@ private fun ProfilePickerAvatar(profile: StreamProfile, onClick: () -> Unit) {
 }
 
 @Composable
-private fun AddProfileAvatar(onClick: () -> Unit) {
+private fun AddProfileAvatar(avatarSize: Dp = 92.dp, onClick: () -> Unit) {
   Column(
     horizontalAlignment = Alignment.CenterHorizontally,
     verticalArrangement = Arrangement.spacedBy(24.dp),
-    modifier = Modifier.width(112.dp).clickable(onClick = onClick),
+    modifier = Modifier.width(avatarSize + 20.dp).clickable(onClick = onClick),
   ) {
     Box(
       modifier = Modifier
-        .size(92.dp)
+        .size(avatarSize)
         .clip(CircleShape)
         .background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.08f))
         .border(2.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.28f), CircleShape),
@@ -8162,7 +8314,11 @@ private fun HomeHeroCarousel(
   ) {
     val currentPage = pagerState.currentPage.coerceIn(items.indices)
     val currentItem = items[currentPage]
-    val heroHeight = 640.dp
+    // A fixed 640dp is most of a phone's screen and all of a landscape tablet's, which leaves the
+    // spotlight filling the window with nothing beneath it — the rows that make Home worth opening
+    // end up entirely below the fold. Capping it against the window's own height keeps the next row
+    // showing, which is what invites a scroll.
+    val heroHeight = minOf(640.dp, LocalWindowSize.current.heightDp * 0.72f)
     val heroDotsLaneHeight = 26.dp
     val heroBoundaryFadeHeight = 260.dp
     val heroItemSpacing = if (maxWidth < 390.dp) 4.dp else if (showSynopsis) 8.dp else 6.dp
@@ -8454,7 +8610,7 @@ private fun NetworkBrowseScreen(network: MediaItem, headerStyle: HeaderStyle, on
 
   Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
     LazyVerticalGrid(
-      columns = GridCells.Fixed(columns),
+      columns = GridCells.Fixed(adaptiveMediaColumns(columns)),
       state = listState,
       modifier = Modifier.fillMaxSize().then(if (modernHeader) Modifier.hazeSource(headerHazeState) else Modifier),
       contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = if (modernHeader) 272.dp else 274.dp, bottom = 126.dp),
@@ -8933,12 +9089,17 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
     layout == BrowseLayout.Cards3 -> BrowseLayout.Cards2
     else -> BrowseLayout.List
   }
-  fun contentColumns(): Int = when {
+  // The chosen density, before the window has its say.
+  val compactColumns = when {
     showsList -> 1
     landscapeArtwork -> 2
     layout == BrowseLayout.Cards2 -> 2
     else -> 3
   }
+  // A text list stays one column at any width — its rows are full-width by nature, and the
+  // container's maximum readable width is what keeps them from stretching.
+  val adaptiveColumns = if (showsList) 1 else adaptiveMediaColumns(compactColumns, landscapeArtwork)
+  fun contentColumns(): Int = adaptiveColumns
   var query by rememberSaveable(row.id) { mutableStateOf("") }
   var browseSort by rememberSaveable(row.id) { mutableStateOf(BrowseSort.Original) }
   // Live TV and playlist catalogs browse as categories first, channels second — a flat list of
@@ -9150,6 +9311,14 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
   }
   val headerUpAction: (() -> Unit)? = if (selectedCategory != null) ({ selectedCategory = null }) else null
 
+  // Landscape on a tablet has width to spare and very little height, so the header stops being a
+  // band across the top and becomes a column down the side: the title, filters and search sit
+  // beside the results instead of eating the first third of a short window. Portrait keeps the
+  // banner exactly as it is, and no phone reaches this.
+  // Only the frosted header has been moved into a column so far; the classic header still draws as
+  // a band across the top, and shifting the grid across for it would leave an empty gutter beside a
+  // full-width header.
+  val sideHeader = LocalWindowSize.current.supportsTwoPanes && modernHeader
   Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
     LazyVerticalGrid(
       state = gridState,
@@ -9158,7 +9327,11 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
         .fillMaxSize()
         .background(MaterialTheme.colorScheme.background)
         .then(if (modernHeader) Modifier.hazeSource(browseHazeState) else Modifier),
-      contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = if (modernHeader) modernContentTop else classicContentTop, bottom = 126.dp),
+      contentPadding = if (sideHeader) {
+        PaddingValues(start = BrowseSideHeaderWidth + 20.dp, end = 20.dp, top = 20.dp, bottom = 126.dp)
+      } else {
+        PaddingValues(start = 20.dp, end = 20.dp, top = if (modernHeader) modernContentTop else classicContentTop, bottom = 126.dp)
+      },
       horizontalArrangement = Arrangement.spacedBy(12.dp),
       verticalArrangement = Arrangement.spacedBy(if (showsList) 6.dp else 18.dp),
     ) {
@@ -9223,14 +9396,16 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
       val lightHeader = MaterialTheme.colorScheme.background.luminance() > 0.5f
       Box(
         modifier = Modifier
-          .align(Alignment.TopCenter)
+          .align(if (sideHeader) Alignment.TopStart else Alignment.TopCenter)
           .zIndex(4f)
-          .fillMaxWidth()
+          .then(if (sideHeader) Modifier.width(BrowseSideHeaderWidth) else Modifier.fillMaxWidth())
           .statusBarsPadding()
           .padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 6.dp),
       ) {
         FrostedGlassSurface(
-          modifier = Modifier.fillMaxWidth().height(modernHeaderHeight),
+          // As a side column it takes the height its own content needs, rather than the fixed band
+          // height that only makes sense across the top.
+          modifier = Modifier.fillMaxWidth().then(if (sideHeader) Modifier else Modifier.height(modernHeaderHeight)),
           shape = RoundedCornerShape(30.dp),
           hazeStateOverride = browseHazeState,
           blurRadius = 68f,
@@ -10205,13 +10380,18 @@ private fun MediaGrid(
   onHandoffToTv: (suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt>)? = null,
 ) {
   var actionItem by remember { mutableStateOf<MediaItem?>(null) }
+  // `columns` is the density the viewer picked with the grid toggle. On a phone it is used as-is;
+  // on anything wider it is read as a card size and turned into however many of those fit, so extra
+  // width shows more artwork instead of inflating each poster.
+  val gridColumns = adaptiveMediaColumns(columns)
+  val gridGap = LocalStreamDekSpacing.current.gridGap
   Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-    items.chunked(columns).forEach { row ->
-      Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+    items.chunked(gridColumns).forEach { row ->
+      Row(horizontalArrangement = Arrangement.spacedBy(gridGap), modifier = Modifier.fillMaxWidth()) {
         row.forEach { item ->
           LibraryPosterTile(item = item, modifier = Modifier.weight(1f), showMeta = showMeta, onClick = { onOpen(item) }, onLongPress = { actionItem = item; if (continueWatchingActions) onRefreshHandoffDevices() })
         }
-        repeat(columns - row.size) { Spacer(modifier = Modifier.weight(1f)) }
+        repeat(gridColumns - row.size) { Spacer(modifier = Modifier.weight(1f)) }
       }
     }
   }
@@ -11890,7 +12070,7 @@ private fun FusionBadgeUrlsDialog(
   var newUrl by rememberSaveable { mutableStateOf("") }
   Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
     Surface(
-      modifier = Modifier.fillMaxWidth(0.96f).heightIn(max = 720.dp),
+      modifier = adaptiveDialogWidth(0.96f).heightIn(max = 720.dp),
       color = MaterialTheme.colorScheme.surface,
       shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp, bottomStart = 24.dp, bottomEnd = 24.dp),
       border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f)),
@@ -11956,7 +12136,7 @@ private fun FusionBadgeUrlsDialog(
 private fun FusionBadgePreviewDialog(source: FusionBadgeSource, onDismiss: () -> Unit) {
   Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
     Surface(
-      modifier = Modifier.fillMaxWidth(0.92f).heightIn(max = 760.dp),
+      modifier = adaptiveDialogWidth(0.92f).heightIn(max = 760.dp),
       color = MaterialTheme.colorScheme.surface,
       shape = RoundedCornerShape(24.dp),
       border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.16f)),
@@ -11980,6 +12160,74 @@ private fun FusionBadgePreviewDialog(source: FusionBadgeSource, onDismiss: () ->
         TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("Close") }
       }
     }
+  }
+}
+
+/**
+ * Settings as one column or two, depending on how much room there is.
+ *
+ * On a phone this is exactly what it always was: [pane] is called once, and choosing a category
+ * replaces the page. Given the width for it, the category list stays put on the left and choosing
+ * one changes only the right — which is how settings behave everywhere else on a tablet, and which
+ * removes the back-and-forth of leaving the list to read one switch and returning for the next.
+ *
+ * Both sides are the same composable at different routes rather than a second settings screen
+ * written for tablets. That is deliberate: every page added to Settings from now on appears in both
+ * layouts without anyone having to remember there are two.
+ */
+@Composable
+private fun AdaptiveSettingsPanes(
+  route: SettingsRoute?,
+  pane: @Composable (SettingsRoute?) -> Unit,
+) {
+  if (!LocalWindowSize.current.supportsTwoPanes) {
+    pane(route)
+    return
+  }
+  Row(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = Modifier.width(SettingsListPaneWidth)) { pane(null) }
+    Box(
+      modifier = Modifier
+        .weight(1f)
+        .fillMaxHeight()
+        .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.03f)),
+    ) {
+      if (route == null) SettingsDetailPanePlaceholder() else pane(route)
+    }
+  }
+}
+
+/**
+ * Wide enough for the longest category name and its one-line description, and no wider — the list
+ * is a means of getting to the settings, not the thing being read.
+ */
+private val SettingsListPaneWidth = 360.dp
+
+@Composable
+private fun SettingsDetailPanePlaceholder() {
+  Column(
+    modifier = Modifier.fillMaxSize().padding(32.dp),
+    verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
+    horizontalAlignment = Alignment.CenterHorizontally,
+  ) {
+    Icon(
+      Icons.Rounded.ManageAccounts,
+      contentDescription = null,
+      tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.22f),
+      modifier = Modifier.size(54.dp),
+    )
+    Text(
+      "Choose a category",
+      style = MaterialTheme.typography.titleMedium,
+      fontWeight = FontWeight.Bold,
+      color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+    )
+    Text(
+      "Pick something on the left and its settings open here.",
+      style = MaterialTheme.typography.bodyMedium,
+      color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.44f),
+      textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+    )
   }
 }
 
@@ -12030,6 +12278,14 @@ private fun SettingsTab(
   onNextEpisodeThresholdPercentChange: (Int) -> Unit,
   onNextEpisodeThresholdMinutesChange: (Int) -> Unit,
   onAutoLoadSubtitlesChange: (Boolean) -> Unit,
+  onSubtitleTextSizeChange: (Int) -> Unit,
+  onSubtitleVerticalOffsetChange: (Int) -> Unit,
+  onSubtitleBoldChange: (Boolean) -> Unit,
+  onSubtitleTextColorChange: (String) -> Unit,
+  onSubtitleBackgroundColorChange: (String) -> Unit,
+  onSubtitleOutlineChange: (Boolean) -> Unit,
+  onSubtitleOutlineColorChange: (String) -> Unit,
+  onSubtitleDefaultSourceChange: (String) -> Unit,
   onShowStreamsListChange: (Boolean) -> Unit,
   onHeroTrailerAutoplayChange: (Boolean) -> Unit,
   onHeroTrailerResolutionChange: (Int) -> Unit,
@@ -12358,7 +12614,28 @@ private fun SettingsTab(
           item {
             SettingsSection("Subtitles") {
               SettingsSwitchRow("SUB", Color(0xFFA78BFA), "Auto-Load Subtitles", "Automatically choose matching subtitles when playback starts.", uiState.autoLoadSubtitles, onAutoLoadSubtitlesChange)
+              SettingsDivider()
+              SettingsChoiceRow(
+                "SRC",
+                Color(0xFF38BDF8),
+                "Preferred Source",
+                "Which list the player's subtitle picker opens on.",
+                listOf("Built-in", "Add-ons"),
+                if (uiState.subtitleDefaultSource == "Addons") "Add-ons" else "Built-in",
+              ) { selected -> onSubtitleDefaultSourceChange(if (selected == "Add-ons") "Addons" else "BuiltIn") }
             }
+          }
+          item {
+            SubtitleAppearanceSettings(
+              uiState = uiState,
+              onTextSizeChange = onSubtitleTextSizeChange,
+              onVerticalOffsetChange = onSubtitleVerticalOffsetChange,
+              onBoldChange = onSubtitleBoldChange,
+              onTextColorChange = onSubtitleTextColorChange,
+              onBackgroundColorChange = onSubtitleBackgroundColorChange,
+              onOutlineChange = onSubtitleOutlineChange,
+              onOutlineColorChange = onSubtitleOutlineColorChange,
+            )
           }
           item { SubtitleSourcesSettings(ownerKey = settingsOwnerKey(uiState)) }
         }
@@ -14478,6 +14755,231 @@ private fun AddonDetailsDialog(addon: InstalledAddon, displayName: String, onRen
   }
 }
 
+/**
+ * How subtitles look, shown against a sample of what they will look like.
+ *
+ * The preview earns its place: size, colour and outline are all judged against video rather than
+ * read as numbers, and a viewer changing them here is not sitting in front of a playing film.
+ */
+@Composable
+private fun SubtitleAppearanceSettings(
+  uiState: AppUiState,
+  onTextSizeChange: (Int) -> Unit,
+  onVerticalOffsetChange: (Int) -> Unit,
+  onBoldChange: (Boolean) -> Unit,
+  onTextColorChange: (String) -> Unit,
+  onBackgroundColorChange: (String) -> Unit,
+  onOutlineChange: (Boolean) -> Unit,
+  onOutlineColorChange: (String) -> Unit,
+) {
+  Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Text("Appearance", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+    SubtitlePreviewCard(uiState)
+    Card(
+      colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+      shape = RoundedCornerShape(24.dp),
+    ) {
+      Column(modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
+        SettingsSliderRow(
+          icon = "SIZE",
+          iconColor = Color(0xFFA78BFA),
+          title = "Text Size",
+          subtitle = "How large subtitle text is drawn over the picture.",
+          value = uiState.subtitleTextSize,
+          range = SUBTITLE_TEXT_SIZE_RANGE,
+          valueLabel = "${uiState.subtitleTextSize}",
+          onValueChange = onTextSizeChange,
+        )
+        SettingsDivider()
+        SettingsSliderRow(
+          icon = "POS",
+          iconColor = Color(0xFF38BDF8),
+          title = "Vertical Position",
+          subtitle = "Move subtitles up away from the bottom edge, clear of on-screen controls.",
+          value = uiState.subtitleVerticalOffset,
+          range = SUBTITLE_OFFSET_RANGE,
+          valueLabel = "${uiState.subtitleVerticalOffset}",
+          onValueChange = onVerticalOffsetChange,
+        )
+        SettingsDivider()
+        SettingsSwitchRow("BOLD", Color(0xFFF97316), "Bold Text", "Use a heavier weight so subtitles hold up against bright scenes.", uiState.subtitleBold, onBoldChange)
+        SettingsDivider()
+        SubtitleColorRow("TEXT", Color(0xFF22C55E), "Text Colour", "The colour of the subtitle text itself.", SUBTITLE_COLOR_CHOICES, uiState.subtitleTextColor, onTextColorChange)
+        SettingsDivider()
+        SubtitleColorRow("FILL", Color(0xFF94A3B8), "Background", "A panel drawn behind the text. Transparent leaves the picture untouched.", SUBTITLE_FILL_CHOICES, uiState.subtitleBackgroundColor, onBackgroundColorChange)
+        SettingsDivider()
+        SettingsSwitchRow("EDGE", Color(0xFFFACC15), "Outline", "Trace subtitle text so it stays readable over pale scenes.", uiState.subtitleOutline, onOutlineChange)
+        if (uiState.subtitleOutline) {
+          SettingsDivider()
+          SubtitleColorRow("LINE", Color(0xFFEC4899), "Outline Colour", "The colour traced around each character.", SUBTITLE_COLOR_CHOICES, uiState.subtitleOutlineColor, onOutlineColorChange)
+        }
+      }
+    }
+  }
+}
+
+/** A sample line of subtitle, drawn exactly as the player will draw it. */
+@Composable
+private fun SubtitlePreviewCard(uiState: AppUiState) {
+  val textColor = Color(parseSubtitleColor(uiState.subtitleTextColor))
+  val backgroundColor = Color(parseSubtitleColor(uiState.subtitleBackgroundColor))
+  val outlineColor = Color(parseSubtitleColor(uiState.subtitleOutlineColor))
+  // mpv sizes subtitles against the video height, where 55 is its default; the preview mirrors that
+  // ratio so the slider reads the same here as it does in the player.
+  val previewSize = (uiState.subtitleTextSize / 55f * 15f).sp
+  // The preview frame stands in for the video frame, so the position slider can be read the way
+  // the player reads it: the number is how far down the picture the line sits, 100 being the very
+  // bottom edge. Past that the line runs off the frame here exactly as it would off the video.
+  val frameHeight = 168.dp
+  val density = LocalDensity.current
+  var lineHeight by remember { mutableStateOf(0.dp) }
+  val lineTop = (frameHeight * (uiState.subtitleVerticalOffset / 100f)) - lineHeight
+  Box(
+    modifier = Modifier
+      .fillMaxWidth()
+      .height(frameHeight)
+      .clip(RoundedCornerShape(24.dp))
+      .background(
+        Brush.verticalGradient(
+          listOf(Color(0xFF1E2536), Color(0xFF0B0F1A)),
+        ),
+      ),
+  ) {
+    Text(
+      "Preview",
+      modifier = Modifier.align(Alignment.TopStart).padding(horizontal = 18.dp, vertical = 14.dp),
+      style = MaterialTheme.typography.labelSmall,
+      fontWeight = FontWeight.Black,
+      letterSpacing = 1.2.sp,
+      color = Color.White.copy(alpha = 0.34f),
+    )
+    Box(
+      modifier = Modifier
+        .align(Alignment.TopCenter)
+        .offset(y = lineTop)
+        .padding(horizontal = 18.dp)
+        .onSizeChanged { lineHeight = with(density) { it.height.toDp() } }
+        .clip(RoundedCornerShape(8.dp))
+        .background(backgroundColor)
+        .padding(horizontal = 10.dp, vertical = 4.dp),
+    ) {
+      if (uiState.subtitleOutline) {
+        // Compose has no text stroke, so the outline is four offset copies behind the glyphs —
+        // enough to read as a traced edge at subtitle sizes.
+        listOf(-1f to 0f, 1f to 0f, 0f to -1f, 0f to 1f).forEach { (dx, dy) ->
+          Text(
+            SUBTITLE_PREVIEW_LINE,
+            modifier = Modifier.graphicsLayer { translationX = dx * 2.4f; translationY = dy * 2.4f },
+            color = outlineColor,
+            fontSize = previewSize,
+            fontWeight = if (uiState.subtitleBold) FontWeight.Bold else FontWeight.Medium,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+          )
+        }
+      }
+      Text(
+        SUBTITLE_PREVIEW_LINE,
+        color = textColor,
+        fontSize = previewSize,
+        fontWeight = if (uiState.subtitleBold) FontWeight.Bold else FontWeight.Medium,
+        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+      )
+    }
+  }
+}
+
+private const val SUBTITLE_PREVIEW_LINE = "The quick brown fox jumps over the lazy dog."
+
+internal fun parseSubtitleColor(value: String): Int =
+  runCatching { android.graphics.Color.parseColor(value.trim()) }.getOrDefault(android.graphics.Color.WHITE)
+
+/** A choice row that shows the chosen colour rather than only naming it. */
+@Composable
+private fun SubtitleColorRow(
+  icon: String,
+  iconColor: Color,
+  title: String,
+  subtitle: String,
+  choices: List<Pair<String, String>>,
+  selected: String,
+  onSelected: (String) -> Unit,
+) {
+  var showSheet by rememberSaveable(title) { mutableStateOf(false) }
+  Row(
+    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).clickable { showSheet = true }.padding(vertical = 10.dp),
+    horizontalArrangement = Arrangement.spacedBy(14.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    SettingsIcon(icon, iconColor)
+    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+      Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+      Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), maxLines = 3, overflow = TextOverflow.Ellipsis)
+    }
+    SubtitleColorSwatch(selected)
+    Text(subtitleColorLabel(selected), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f))
+  }
+  if (showSheet) {
+    SettingsChoiceSheet(
+      title = title,
+      options = choices.map { it.first },
+      selected = subtitleColorLabel(selected),
+      onDismiss = { showSheet = false },
+      onSelected = { label ->
+        choices.firstOrNull { it.first == label }?.let { onSelected(it.second) }
+        showSheet = false
+      },
+    )
+  }
+}
+
+@Composable
+private fun SubtitleColorSwatch(value: String) {
+  Box(
+    modifier = Modifier
+      .size(22.dp)
+      .clip(RoundedCornerShape(7.dp))
+      .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f))
+      .padding(2.dp)
+      .clip(RoundedCornerShape(5.dp))
+      .background(Color(parseSubtitleColor(value))),
+  )
+}
+
+/** A labelled slider that sits in a settings card alongside the switch and choice rows. */
+@Composable
+private fun SettingsSliderRow(
+  icon: String,
+  iconColor: Color,
+  title: String,
+  subtitle: String,
+  value: Int,
+  range: IntRange,
+  valueLabel: String,
+  onValueChange: (Int) -> Unit,
+) {
+  Column(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+      SettingsIcon(icon, iconColor)
+      Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+        Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), maxLines = 3, overflow = TextOverflow.Ellipsis)
+      }
+      Text(valueLabel, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Black)
+    }
+    androidx.compose.material3.Slider(
+      value = value.toFloat(),
+      onValueChange = { onValueChange((it + 0.5f).toInt().coerceIn(range)) },
+      valueRange = range.first.toFloat()..range.last.toFloat(),
+      colors = androidx.compose.material3.SliderDefaults.colors(
+        thumbColor = MaterialTheme.colorScheme.primary,
+        activeTrackColor = MaterialTheme.colorScheme.primary,
+        inactiveTrackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f),
+      ),
+    )
+  }
+}
+
 @Composable
 private fun SubtitleSourcesSettings(ownerKey: String) {
   val context = LocalContext.current
@@ -16320,6 +16822,7 @@ private fun DetailScreen(
   onOpenRelated: (MediaItem) -> Unit,
   onDownloadStream: (AddonStream, String) -> Unit = { _, _ -> },
   isStreamDownloadEligible: (AddonStream) -> Boolean = { false },
+  onTrailerMutedChange: (Boolean) -> Unit = {},
 ) {
   val detail = uiState.detail
   if (uiState.detailLoading || detail == null) {
@@ -16492,13 +16995,15 @@ private fun DetailScreen(
       )
     }
 
-    LazyColumn(
-      state = listState,
-      modifier = Modifier.fillMaxSize(),
-      contentPadding = PaddingValues(bottom = 132.dp),
-      verticalArrangement = Arrangement.spacedBy(26.dp),
-    ) {
-      item {
+    // A landscape tablet is wide and short, which is the wrong shape for the phone's single
+    // column: the artwork fills the window and the episodes are pushed off the bottom. Split in
+    // two, the artwork, title and actions stay on the left where they can be seen and used at
+    // any time, and the episodes, sources and cast scroll independently beside them — so
+    // choosing an episode no longer means scrolling the poster away first.
+    //
+    // An episode page takes over the whole screen, so it opts out.
+    val twoPaneDetail = LocalWindowSize.current.supportsTwoPanes && episodePage == null
+    val detailHeroPane: @Composable () -> Unit = {
         DetailHero(
           detail = detail,
           backdrop = backdrop,
@@ -16507,6 +17012,8 @@ private fun DetailScreen(
           scrollOffset = { if (listState.firstVisibleItemIndex == 0) listState.firstVisibleItemScrollOffset else 0 },
           autoPlayTrailer = uiState.heroTrailerAutoplay && trailerReleased && episodePage == null && !uiState.detailIsLive,
           trailerResolution = uiState.heroTrailerResolution,
+          trailerMuted = uiState.heroTrailerMuted,
+          onTrailerMutedChange = onTrailerMutedChange,
           hazeState = detailHazeState,
           streamCount = streamCount,
           streamLoading = uiState.streamLoading,
@@ -16541,8 +17048,8 @@ private fun DetailScreen(
           onToggleFavourite = onToggleFavourite,
           onToggleWatched = { persistMovieWatched(!movieWatched) },
         )
-      }
-
+    }
+    val detailSections: androidx.compose.foundation.lazy.LazyListScope.() -> Unit = {
       when (selectedTab) {
         DetailTab.About.name -> {
           if (!uiState.detailIsLive) {
@@ -16653,6 +17160,38 @@ private fun DetailScreen(
       }
     }
 
+    if (twoPaneDetail) {
+      Row(modifier = Modifier.fillMaxSize()) {
+        // The hero keeps the larger share: it carries the artwork and the play button.
+        Box(
+          modifier = Modifier
+            .weight(0.46f)
+            .fillMaxHeight()
+            .verticalScroll(rememberScrollState())
+            // Clears the floating navigation, which otherwise sits over the play button and the
+            // tab row at the foot of this pane.
+            .padding(bottom = 132.dp),
+        ) { detailHeroPane() }
+        LazyColumn(
+          state = listState,
+          modifier = Modifier.weight(0.54f).fillMaxHeight(),
+          contentPadding = PaddingValues(top = 26.dp, bottom = 132.dp),
+          verticalArrangement = Arrangement.spacedBy(26.dp),
+          content = detailSections,
+        )
+      }
+    } else {
+      LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 132.dp),
+        verticalArrangement = Arrangement.spacedBy(26.dp),
+      ) {
+        item { detailHeroPane() }
+        detailSections()
+      }
+    }
+
     GlassCircleButton(
       modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 26.dp, top = 18.dp),
       hazeState = detailHazeState,
@@ -16683,6 +17222,7 @@ private fun DetailScreen(
         url = url,
         backdropUrl = detail.backdrop ?: detail.poster,
         maxHeight = uiState.heroTrailerResolution,
+        alternateUrls = detail.trailerCandidateUrls(),
         onDismiss = { trailerPopupUrl = null },
         onOpenExternal = { openTrailer(context, url) },
       )
@@ -16737,6 +17277,17 @@ private fun youtubeTrailerKey(url: String): String? {
     else -> null
   }?.substringBefore('?')?.substringBefore('&')?.ifBlank { null }
 }
+
+/**
+ * The title's other videos, for the resolver to choose between.
+ *
+ * The metadata service returns these newest first, which puts the promotional run — theatre stings,
+ * ticket spots, social cutdowns — ahead of the trailer itself, so the first entry is routinely a
+ * fifteen-second notice rather than the trailer. Handing over the whole list lets the resolver
+ * pick on running time instead of on position.
+ */
+private fun MediaDetail.trailerCandidateUrls(): List<String> =
+  trailerKeys.mapNotNull { key -> key.trim().takeIf { it.isNotEmpty() }?.let { "https://www.youtube.com/watch?v=$it" } }
 
 private fun vimeoTrailerKey(url: String): String? {
   val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
@@ -16835,7 +17386,7 @@ private fun trailerEmbedHtml(url: String, autoPlay: Boolean, muted: Boolean): St
   """.trimIndent()
 }
 @Composable
-private fun TrailerDialog(title: String, url: String, backdropUrl: String?, maxHeight: Int = 720, onDismiss: () -> Unit, onOpenExternal: () -> Unit) {
+private fun TrailerDialog(title: String, url: String, backdropUrl: String?, maxHeight: Int = 720, alternateUrls: List<String> = emptyList(), onDismiss: () -> Unit, onOpenExternal: () -> Unit) {
   var trailerReady by remember(url) { mutableStateOf(false) }
   var trailerFailed by remember(url) { mutableStateOf(false) }
   Dialog(
@@ -16870,6 +17421,7 @@ private fun TrailerDialog(title: String, url: String, backdropUrl: String?, maxH
             muted = false,
             maxHeight = maxHeight,
             preferWebEmbed = false,
+            alternateUrls = alternateUrls,
             onReadyChanged = { ready -> trailerReady = ready; if (ready) trailerFailed = false },
             onLoadFailed = { trailerFailed = true },
             onEnded = onDismiss,
@@ -16961,6 +17513,7 @@ private fun TrailerPlaybackView(
   muted: Boolean = true,
   maxHeight: Int = 720,
   preferWebEmbed: Boolean = false,
+  alternateUrls: List<String> = emptyList(),
   onReadyChanged: (Boolean) -> Unit = {},
   onLoadFailed: () -> Unit = {},
   onEnded: () -> Unit = {},
@@ -17006,12 +17559,17 @@ private fun TrailerPlaybackView(
   }
 
   var nativePlaybackFailed by remember(url, maxHeight, nativeRetryKey) { mutableStateOf(false) }
+  // googlevideo hands out short-lived, effectively single-use playback links, so one that was fine
+  // when it was resolved can be refused a moment later. Re-resolving costs a single request and
+  // produces a fresh link, which is nearly always the whole fix — worth one automatic attempt
+  // before giving up on native playback and dropping to the iframe embed.
+  var freshSourceAttempted by rememberSaveable(url, maxHeight) { mutableStateOf(false) }
 
   LaunchedEffect(url, maxHeight, nativeRetryKey) {
     onReadyChanged(false)
     resolved = false
     val youtubeCookies = if (isYoutubeTrailer) android.webkit.CookieManager.getInstance().getCookie("https://www.youtube.com") else null
-    resolution = resolveTrailerPlaybackSource(url, maxHeight, youtubeCookies)
+    resolution = resolveTrailerPlaybackSource(url, maxHeight, youtubeCookies, alternateUrls)
     resolved = true
     if (resolution?.youtubeLoginRequired == true && !youtubeLoginAttempted) youtubeLoginRequired = true
   }
@@ -17054,7 +17612,14 @@ private fun TrailerPlaybackView(
     onReady = { onReadyChanged(true) },
     onError = {
       onReadyChanged(false)
-      if (isYoutubeTrailer) nativePlaybackFailed = true else onLoadFailed()
+      when {
+        isYoutubeTrailer && !freshSourceAttempted -> {
+          freshSourceAttempted = true
+          nativeRetryKey += 1
+        }
+        isYoutubeTrailer -> nativePlaybackFailed = true
+        else -> onLoadFailed()
+      }
     },
     onEnded = onEnded,
   )
@@ -17241,8 +17806,9 @@ private fun Media3TextureTrailerPlayer(
       .setBufferDurationsMs(12_000, 45_000, 1_500, 4_000)
       .setPrioritizeTimeOverSizeThresholds(true)
       .build()
-    val httpFactory = DefaultHttpDataSource.Factory().setDefaultRequestProperties(requestHeaders)
-    val dataSourceFactory = DefaultDataSource.Factory(context, httpFactory)
+    // googlevideo refuses an open-ended byte request on these URLs, which is what a progressive
+    // source issues by default — see ChunkedGoogleVideoDataSource.
+    val dataSourceFactory = trailerDataSourceFactory(context, requestHeaders)
     ExoPlayer.Builder(context).setTrackSelector(trackSelector).setLoadControl(loadControl).build().apply {
       val factory = ProgressiveMediaSource.Factory(dataSourceFactory)
       // YouTube HLS manifests come from manifest.googlevideo.com without a .m3u8
@@ -17267,15 +17833,23 @@ private fun Media3TextureTrailerPlayer(
   }
 
   DisposableEffect(player, lifecycleOwner) {
+    var playbackEnded = false
     val listener = object : Player.Listener {
       override fun onPlaybackStateChanged(playbackState: Int) {
         if (playbackState == Player.STATE_READY) latestOnReady.value()
-        if (playbackState == Player.STATE_ENDED) latestOnEnded.value()
+        if (playbackState == Player.STATE_ENDED && !playbackEnded) {
+          playbackEnded = true
+          latestOnEnded.value()
+        }
       }
       override fun onVideoSizeChanged(videoSize: VideoSize) {
         attachedContainer?.setVideoSize(videoSize)
       }
       override fun onPlayerError(error: PlaybackException) {
+        // A source that faults as it runs out has still shown the viewer the whole trailer.
+        // Reporting it would send the YouTube path off to resolve a fresh link and play the
+        // trailer through a second time.
+        if (playbackEnded) return
         latestOnError.value()
       }
     }
@@ -17422,6 +17996,8 @@ private fun ClassicDetailHero(
   isFavourite: Boolean = false,
   proxyStatus: Boolean? = null,
   onToggleFavourite: () -> Unit = {},
+  trailerMuted: Boolean = true,
+  onTrailerMutedChange: (Boolean) -> Unit = {},
 ) {
   BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
     val artworkHeight = (maxWidth * 1.18f).coerceIn(440.dp, 670.dp)
@@ -17434,8 +18010,10 @@ private fun ClassicDetailHero(
     var trailerPlaying by rememberSaveable(detail.id, "classicTrailer") { mutableStateOf(autoPlayTrailer && !detail.trailerUrl.isNullOrBlank()) }
     var trailerReady by remember(detail.id, detail.trailerUrl) { mutableStateOf(false) }
     var trailerFailed by remember(detail.id, detail.trailerUrl) { mutableStateOf(false) }
-    var trailerMuted by rememberSaveable(detail.id, "classicTrailerMuted") { mutableStateOf(true) }
     var trailerPlaybackKey by rememberSaveable(detail.id, "classicTrailerKey") { mutableIntStateOf(0) }
+    // Autoplay gets one turn per title. Set once the trailer has run to the end, been stopped, or
+    // failed - after that the hero image stays put and the replay button is the only way back.
+    var trailerAutoplayUsed by rememberSaveable(detail.id, "classicTrailerUsed") { mutableStateOf(false) }
     // Symmetric on purpose. `trailerPlaying` is seeded from autoPlayTrailer at first composition,
     // and autoPlayTrailer is held false until the page has drawn — so by the time it turns true
     // the seed has already been taken as false and rememberSaveable will not re-run. Handling only
@@ -17443,7 +18021,7 @@ private fun ClassicDetailHero(
     // button. Starting here is also what lets the gate open later without losing autoplay.
     LaunchedEffect(autoPlayTrailer) {
       if (autoPlayTrailer) {
-        if (!detail.trailerUrl.isNullOrBlank() && !trailerFailed) trailerPlaying = true
+        if (!detail.trailerUrl.isNullOrBlank() && !trailerFailed && !trailerAutoplayUsed) trailerPlaying = true
       } else {
         trailerPlaying = false
         trailerReady = false
@@ -17475,9 +18053,10 @@ private fun ClassicDetailHero(
                 autoPlay = true,
                 muted = trailerMuted,
                 maxHeight = trailerResolution,
+                alternateUrls = detail.trailerCandidateUrls(),
                 onReadyChanged = { trailerReady = it },
-                onLoadFailed = { trailerFailed = true; trailerPlaying = false },
-                onEnded = { trailerPlaying = false; trailerReady = false },
+                onLoadFailed = { trailerFailed = true; trailerPlaying = false; trailerAutoplayUsed = true },
+                onEnded = { trailerPlaying = false; trailerReady = false; trailerAutoplayUsed = true },
               )
             }
           }
@@ -17514,14 +18093,12 @@ private fun ClassicDetailHero(
           Box(
             modifier = Modifier
               .fillMaxSize()
-              .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { trailerMuted = !trailerMuted },
+              .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onTrailerMutedChange(!trailerMuted) },
           )
         }
-        if (trailerPlaying && !trailerReady && !trailerFailed) {
-          Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(color = Color.White.copy(alpha = 0.86f))
-          }
-        }
+        // No spinner while the trailer loads. The backdrop is already on screen and the trailer
+        // fades in over it when it is ready, so a spinner only announces a wait the viewer would
+        // not otherwise notice — and draws the eye to the one part of the page that is not ready.
         if (autoPlayTrailer && !detail.trailerUrl.isNullOrBlank()) {
           Row(
             modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(14.dp),
@@ -17543,11 +18120,12 @@ private fun ClassicDetailHero(
               IconButton(
                 onClick = {
                   if (trailerPlaying) {
-                    trailerMuted = !trailerMuted
+                    onTrailerMutedChange(!trailerMuted)
                   } else {
+                    // Replay keeps whatever the viewer last chose to hear; it used to force the
+                    // sound back off, which undid an unmute every time a trailer was restarted.
                     trailerFailed = false
                     trailerReady = false
-                    trailerMuted = true
                     trailerPlaybackKey += 1
                     trailerPlaying = true
                   }
@@ -17578,6 +18156,7 @@ private fun ClassicDetailHero(
                   onClick = {
                     trailerPlaying = false
                     trailerReady = false
+                    trailerAutoplayUsed = true
                   },
                 ) {
                   Icon(Icons.Rounded.Close, contentDescription = "Stop trailer", tint = trailerControlContent)
@@ -17715,11 +18294,14 @@ private fun DetailHero(
   isFavourite: Boolean = false,
   proxyStatus: Boolean? = null,
   onToggleFavourite: () -> Unit = {},
+  trailerMuted: Boolean = true,
+  onTrailerMutedChange: (Boolean) -> Unit = {},
 ) {
   if (style == DetailPageStyle.Classic) {
     ClassicDetailHero(
       detail, backdrop, metadataLine, scrollOffset, autoPlayTrailer, trailerResolution, hazeState, streamCount, streamLoading, primaryPlayLabel, selectedTab, showEpisodes, showStreamsList, inWatchlist, showMediaActions, showWatchedAction, watched, ratingsEnabled, externalRatingsEnabled, enabledRatingProviders, overview, overviewExpanded, onOverviewExpandedChange, onPlay, onTrailer, onAbout, onStreams, onEpisodes, onSave, onToggleWatched,
       showFavouriteAction = showFavouriteAction, isFavourite = isFavourite, proxyStatus = proxyStatus, onToggleFavourite = onToggleFavourite,
+      trailerMuted = trailerMuted, onTrailerMutedChange = onTrailerMutedChange,
     )
     return
   }
@@ -17733,8 +18315,14 @@ private fun DetailHero(
     var trailerReady by remember(detail.id, detail.trailerUrl) { mutableStateOf(false) }
     var trailerFailed by remember(detail.id, detail.trailerUrl) { mutableStateOf(false) }
     var trailerPlaying by rememberSaveable(detail.id, detail.trailerUrl) { mutableStateOf(autoPlayTrailer && !detail.trailerUrl.isNullOrBlank()) }
-    var trailerMuted by rememberSaveable(detail.id, detail.trailerUrl) { mutableStateOf(true) }
     var trailerPlaybackKey by rememberSaveable(detail.id, detail.trailerUrl) { mutableIntStateOf(0) }
+    // Autoplay gets one turn per title. Set once the trailer has run to the end, been stopped, or
+    // failed - after that the hero image stays put and the replay button is the only way back.
+    //
+    // It has to survive this composable leaving the composition, which the hero does every time it
+    // is scrolled out of the list: the effect below runs again on the way back in, and without this
+    // it restarted a trailer the viewer had already watched to the end.
+    var trailerAutoplayUsed by rememberSaveable(detail.id, detail.trailerUrl) { mutableStateOf(false) }
     // Symmetric on purpose. `trailerPlaying` is seeded from autoPlayTrailer at first composition,
     // and autoPlayTrailer is held false until the page has drawn — so by the time it turns true
     // the seed has already been taken as false and rememberSaveable will not re-run. Handling only
@@ -17742,7 +18330,7 @@ private fun DetailHero(
     // button. Starting here is also what lets the gate open later without losing autoplay.
     LaunchedEffect(autoPlayTrailer) {
       if (autoPlayTrailer) {
-        if (!detail.trailerUrl.isNullOrBlank() && !trailerFailed) trailerPlaying = true
+        if (!detail.trailerUrl.isNullOrBlank() && !trailerFailed && !trailerAutoplayUsed) trailerPlaying = true
       } else {
         trailerPlaying = false
         trailerReady = false
@@ -17784,9 +18372,10 @@ private fun DetailHero(
               autoPlay = true,
               muted = trailerMuted,
               maxHeight = trailerResolution,
+              alternateUrls = detail.trailerCandidateUrls(),
               onReadyChanged = { trailerReady = it },
-              onLoadFailed = { trailerFailed = true; trailerPlaying = false },
-              onEnded = { trailerPlaying = false; trailerReady = false },
+              onLoadFailed = { trailerFailed = true; trailerPlaying = false; trailerAutoplayUsed = true },
+              onEnded = { trailerPlaying = false; trailerReady = false; trailerAutoplayUsed = true },
             )
           }
         }
@@ -17794,14 +18383,12 @@ private fun DetailHero(
           Box(
             modifier = Modifier
               .fillMaxSize()
-              .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { trailerMuted = !trailerMuted },
+              .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onTrailerMutedChange(!trailerMuted) },
           )
         }
-        if (trailerPlaying && !trailerReady && !trailerFailed) {
-          Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(color = Color.White.copy(alpha = 0.86f))
-          }
-        }
+        // No spinner while the trailer loads. The backdrop is already on screen and the trailer
+        // fades in over it when it is ready, so a spinner only announces a wait the viewer would
+        // not otherwise notice — and draws the eye to the one part of the page that is not ready.
         if (autoPlayTrailer && !detail.trailerUrl.isNullOrBlank()) {
           Row(
             modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(14.dp),
@@ -17822,10 +18409,11 @@ private fun DetailHero(
               ) {
               IconButton(
                 onClick = {
-                  if (trailerPlaying) trailerMuted = !trailerMuted else {
+                  if (trailerPlaying) onTrailerMutedChange(!trailerMuted) else {
+                    // Replay keeps whatever the viewer last chose to hear; it used to force the
+                    // sound back off, which undid an unmute every time a trailer was restarted.
                     trailerFailed = false
                     trailerReady = false
-                    trailerMuted = true
                     trailerPlaybackKey += 1
                     trailerPlaying = true
                   }
@@ -17852,7 +18440,7 @@ private fun DetailHero(
                 fillColorOverride = if (lightDetail) null else Color.White,
                 showEdgeGradient = false,
               ) {
-                IconButton(onClick = { trailerPlaying = false; trailerReady = false }) {
+                IconButton(onClick = { trailerPlaying = false; trailerReady = false; trailerAutoplayUsed = true }) {
                   Icon(Icons.Rounded.Close, contentDescription = "Stop trailer", tint = trailerControlContent)
                 }
               }
@@ -18362,7 +18950,7 @@ private fun PersonDetailDialog(person: PersonDetail, onDismiss: () -> Unit, onOp
     properties = DialogProperties(usePlatformDefaultWidth = false),
   ) {
     Surface(
-      modifier = Modifier.fillMaxWidth(0.94f),
+      modifier = adaptiveDialogWidth(0.94f),
       color = MaterialTheme.colorScheme.surface,
       shape = RoundedCornerShape(28.dp),
       border = BorderStroke(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.12f)),
@@ -19031,7 +19619,9 @@ private fun FusionBadgeRow(stream: AddonStream, uiState: AppUiState, modifier: M
 private fun PosterCard(item: MediaItem, showMeta: Boolean = true, dimmed: Boolean = false, onClick: () -> Unit, onLongPress: () -> Unit = {}) {
   Column(
     modifier = Modifier
-      .width(138.dp)
+      // A scrolling row already answers a wider window by showing more of itself, so this grows
+      // only slightly — just enough that a poster is not a postage stamp on a 13-inch screen.
+      .width(homeRowPosterWidth())
       .alpha(if (dimmed) 0.4f else 1f)
       .pointerInput(item.id, item.type) { detectTapGestures(onTap = { onClick() }, onLongPress = { onLongPress() }) },
     verticalArrangement = Arrangement.spacedBy(8.dp),

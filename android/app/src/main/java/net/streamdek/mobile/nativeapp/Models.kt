@@ -454,6 +454,20 @@ data class PlayerSession(
   val imdbId: String? = null,
   val subtitleLanguage: String = "en",
   val autoLoadSubtitles: Boolean = true,
+  /**
+   * Subtitle appearance, carried in from settings.
+   *
+   * The player used to hold these itself, keyed on the stream URL, so they reset to the defaults on
+   * every new video. Arriving with the session means a viewer's choices survive the next episode.
+   */
+  val subtitleTextSize: Int = 55,
+  val subtitleVerticalOffset: Int = 92,
+  val subtitleBold: Boolean = false,
+  val subtitleTextColor: String = "#FFFFFFFF",
+  val subtitleBackgroundColor: String = "#00000000",
+  val subtitleOutline: Boolean = true,
+  val subtitleOutlineColor: String = "#FF000000",
+  val subtitleDefaultSource: String = "BuiltIn",
   val skipIntroEnabled: Boolean = true,
   val skipRecapEnabled: Boolean = true,
   val skipEndingEnabled: Boolean = true,

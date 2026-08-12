@@ -33,7 +33,13 @@
         android:name="android.support.FILE_PROVIDER_PATHS"
         android:resource="@xml/file_provider_paths" />
     </provider>
-    <activity android:name=".MainActivity" android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode|smallestScreenSize" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize" android:theme="@style/Theme.App.SplashScreen" android:exported="true" android:screenOrientation="portrait" android:supportsPictureInPicture="true">
+    <!-- No screenOrientation lock here: a tablet's natural orientation is landscape, and a fixed
+         portrait activity is the single thing that most makes an app feel like it was never meant
+         for the device. Phones are still held to portrait, but at runtime by window width (see
+         MainActivity.applyOrientationPolicy) so the restriction lifts exactly where it should.
+         resizeableActivity is stated rather than left to the default so split-screen and
+         freeform/desktop windowing are explicit guarantees rather than an inherited accident. -->
+    <activity android:name=".MainActivity" android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode|smallestScreenSize|density" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize" android:theme="@style/Theme.App.SplashScreen" android:exported="true" android:resizeableActivity="true" android:supportsPictureInPicture="true">
       <intent-filter>
         <action android:name="android.intent.action.MAIN"/>
         <category android:name="android.intent.category.LAUNCHER"/>

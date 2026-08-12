@@ -210,6 +210,10 @@ fun NativePlayerScreen(
   onClearFavourites: () -> Unit = {},
   downloadsEnabled: Boolean = false,
   onDownloadStream: (AddonStream) -> Unit = {},
+  /** Adjustments made from the player's own controls, so they outlive this session. */
+  onSubtitleTextSizeChange: (Int) -> Unit = {},
+  onSubtitleVerticalOffsetChange: (Int) -> Unit = {},
+  onSubtitleSourceChange: (String) -> Unit = {},
 ) {
   val playerContext = LocalContext.current
   val playerScope = rememberCoroutineScope()
@@ -249,20 +253,27 @@ fun NativePlayerScreen(
   fun activeSetSubtitleTrack(id: Int) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleTrack(id) else playerView?.setSubtitleTrack(id) }
   fun activeSetSubtitleFontSize(size: Int) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleFontSize(size) else playerView?.setSubtitleFontSize(size) }
   fun activeSetSubtitlePosition(position: Int) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitlePosition(position) else playerView?.setSubtitlePosition(position) }
+  fun activeSetSubtitleBackgroundColor(color: String) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleBackgroundColor(color) else playerView?.setSubtitleBackgroundColor(color) }
+  fun activeSetSubtitleOutline(enabled: Boolean, color: String) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleOutline(enabled, color) else playerView?.setSubtitleOutline(enabled, color) }
+  fun activeSetSubtitleBold(bold: Boolean) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleBold(bold) else playerView?.setSubtitleBold(bold) }
   fun activeSetSubtitleDelay(seconds: Double) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleDelay(seconds) else playerView?.setSubtitleDelay(seconds) }
   fun activeSetSpeed(speed: Double) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSpeed(speed) else playerView?.setSpeed(speed) }
   var resizeMode by rememberSaveable(session.url) { mutableStateOf("cover") }
   var playbackSpeed by rememberSaveable(session.url) { mutableFloatStateOf(1f) }
   var activePanel by rememberSaveable(session.url) { mutableStateOf(PlayerPanel.None) }
   var subtitleDelay by rememberSaveable(session.url) { mutableFloatStateOf(0f) }
-  var subtitleSize by rememberSaveable(session.url) { mutableIntStateOf(55) }
-  var subtitlePosition by rememberSaveable(session.url) { mutableIntStateOf(92) }
-  var subtitleColor by rememberSaveable(session.url) { mutableStateOf("#FFFFFFFF") }
+  // Seeded from settings rather than from a constant, and keyed on the setting rather than on the
+  // stream, so a size or colour chosen once carries into the next episode instead of resetting.
+  var subtitleSize by remember(session.subtitleTextSize) { mutableIntStateOf(session.subtitleTextSize) }
+  var subtitlePosition by remember(session.subtitleVerticalOffset) { mutableIntStateOf(session.subtitleVerticalOffset) }
+  var subtitleColor by remember(session.subtitleTextColor) { mutableStateOf(session.subtitleTextColor) }
   var selectedAudioTrackId by remember(session.url) { mutableStateOf<Int?>(null) }
   var selectedSubtitleTrackId by remember(session.url) { mutableStateOf<Int?>(null) }
   var preferredAudioTrackKey by remember(session.url) { mutableStateOf<String?>(null) }
   var preferredSubtitleTrackKey by remember(session.url) { mutableStateOf<String?>(null) }
-  var subtitleTab by rememberSaveable(session.url) { mutableStateOf(SubtitlePanelTab.BuiltIn) }
+  var subtitleTab by remember(session.subtitleDefaultSource) {
+    mutableStateOf(SubtitlePanelTab.entries.firstOrNull { it.name == session.subtitleDefaultSource } ?: SubtitlePanelTab.BuiltIn)
+  }
   var subtitleDisabledByUser by remember(session.url) { mutableStateOf(false) }
   var userPickedAudio by remember(session.url) { mutableStateOf(false) }
   var userPickedSubtitle by remember(session.url) { mutableStateOf(false) }
@@ -447,6 +458,9 @@ fun NativePlayerScreen(
     val decorView = activity?.window?.decorView
     val previousSystemUi = decorView?.systemUiVisibility ?: 0
     MainActivity.pipShouldEnter = session.pictureInPictureEnabled
+    // Claimed before the rotation is requested: the activity re-applies its own orientation policy
+    // on configuration changes, and the rotation asked for here arrives as one of those.
+    MainActivity.playerOwnsOrientation = true
     activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
     decorView?.systemUiVisibility = (
       View.SYSTEM_UI_FLAG_FULLSCREEN or
@@ -458,6 +472,7 @@ fun NativePlayerScreen(
       )
     onDispose {
       MainActivity.pipShouldEnter = false
+      MainActivity.playerOwnsOrientation = false
       activity?.requestedOrientation = previous
       activity?.window?.let { window ->
         val attributes = window.attributes
@@ -1273,7 +1288,12 @@ fun NativePlayerScreen(
                 .weight(1f)
                 .clip(RoundedCornerShape(20.dp))
                 .background(if (selected) Color.White else Color.Transparent)
-                .clickable { subtitleTab = tab }
+                .clickable {
+                  subtitleTab = tab
+                  // Style is a set of controls, not a place subtitles come from, so it is not
+                  // remembered as the picker's landing tab.
+                  if (tab != SubtitlePanelTab.Style) onSubtitleSourceChange(tab.name)
+                }
                 .padding(vertical = 11.dp),
               contentAlignment = Alignment.Center,
             ) { Text(if (tab == SubtitlePanelTab.BuiltIn) "Built-in" else tab.name, color = if (selected) Color.Black else Color.White.copy(alpha = 0.72f), fontWeight = FontWeight.Bold) }
@@ -1320,16 +1340,29 @@ fun NativePlayerScreen(
             }
           }
           SubtitlePanelTab.Style -> {
+            // Applied live as the slider moves, saved when it is let go: writing to preferences on
+            // every frame of a drag would be dozens of commits for one adjustment.
             Text("Subtitle size: $subtitleSize", color = Color.White.copy(alpha = 0.72f))
-            Slider(value = subtitleSize.toFloat(), valueRange = 28f..84f, onValueChange = {
-              subtitleSize = it.toInt()
-              activeSetSubtitleFontSize(subtitleSize)
-            })
+            Slider(
+              value = subtitleSize.toFloat(),
+              valueRange = 28f..84f,
+              onValueChange = {
+                subtitleSize = it.toInt()
+                activeSetSubtitleFontSize(subtitleSize)
+              },
+              onValueChangeFinished = { onSubtitleTextSizeChange(subtitleSize) },
+            )
             Text("Position: $subtitlePosition", color = Color.White.copy(alpha = 0.72f))
-            Slider(value = subtitlePosition.toFloat(), valueRange = 50f..110f, onValueChange = {
-              subtitlePosition = it.toInt()
-              activeSetSubtitlePosition(subtitlePosition)
-            })
+            Slider(
+              value = subtitlePosition.toFloat(),
+              valueRange = 50f..110f,
+              onValueChange = {
+                subtitlePosition = it.toInt()
+                activeSetSubtitlePosition(subtitlePosition)
+              },
+              onValueChangeFinished = { onSubtitleVerticalOffsetChange(subtitlePosition) },
+            )
+            Text("Colour, outline and background are in Settings > Subtitles.", color = Color.White.copy(alpha = 0.52f), fontSize = 11.5.sp)
             Text("Delay: ${"%.1f".format(subtitleDelay)}s", color = Color.White.copy(alpha = 0.72f))
             Slider(value = subtitleDelay, valueRange = -5f..5f, onValueChange = {
               subtitleDelay = it
@@ -1571,6 +1604,9 @@ private fun PlayerSurface(
             setSubtitleFontSize(subtitleSize)
             setSubtitlePosition(subtitlePosition)
             setSubtitleColor(subtitleColor)
+            setSubtitleBackgroundColor(session.subtitleBackgroundColor)
+            setSubtitleOutline(session.subtitleOutline, session.subtitleOutlineColor)
+            setSubtitleBold(session.subtitleBold)
             setHeaders(session.requestHeaders)
             setDrmClearKeys(session.drmLicenseType, session.drmClearKeys)
             setPreferredAudioLanguage(session.preferredAudioLanguage)
@@ -1602,6 +1638,9 @@ private fun PlayerSurface(
           view.setSubtitleFontSize(subtitleSize)
           view.setSubtitlePosition(subtitlePosition)
           view.setSubtitleColor(subtitleColor)
+          view.setSubtitleBackgroundColor(session.subtitleBackgroundColor)
+          view.setSubtitleOutline(session.subtitleOutline, session.subtitleOutlineColor)
+          view.setSubtitleBold(session.subtitleBold)
         },
       )
     } else {
@@ -1624,6 +1663,9 @@ private fun PlayerSurface(
             setSubtitleFontSize(subtitleSize)
             setSubtitlePosition(subtitlePosition)
             setSubtitleColor(subtitleColor)
+            setSubtitleBackgroundColor(session.subtitleBackgroundColor)
+            setSubtitleOutline(session.subtitleOutline, session.subtitleOutlineColor)
+            setSubtitleBold(session.subtitleBold)
             setHeaders(session.requestHeaders)
             setPreferredAudioLanguage(session.preferredAudioLanguage)
             setSource(session.url)
@@ -1650,6 +1692,9 @@ private fun PlayerSurface(
           view.setSubtitleFontSize(subtitleSize)
           view.setSubtitlePosition(subtitlePosition)
           view.setSubtitleColor(subtitleColor)
+          view.setSubtitleBackgroundColor(session.subtitleBackgroundColor)
+          view.setSubtitleOutline(session.subtitleOutline, session.subtitleOutlineColor)
+          view.setSubtitleBold(session.subtitleBold)
         },
       )
     }

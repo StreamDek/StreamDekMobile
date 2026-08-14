@@ -49,6 +49,14 @@ def apiBaseUrl = loadEnvValue("STREAMDEK_API_URL", "https://api.streamdek.net")
 // unauthenticated rate limit rather than StreamDek's own allowance.
 def introdbApiKey = loadEnvValue("STREAMDEK_INTRODB_API_KEY", "")
 
+// Premiumize's OAuth client id, for signing in without typing an API key.
+//
+// Not a secret: a phone or a television is a public OAuth client, so anything compiled in can be
+// read straight back out of the package. Premiumize's device flow asks only for this id, and the
+// client secret issued alongside it is deliberately not built into the app — there is nowhere in a
+// shipped binary it could be kept. Blank simply hides the option and leaves key entry working.
+def premiumizeClientId = loadEnvValue("STREAMDEK_PREMIUMIZE_CLIENT_ID", "")
+
 android {
     namespace = "net.streamdek.mobile"
     compileSdk = 36
@@ -81,6 +89,7 @@ android {
 
         buildConfigField "String", "API_BASE_URL", "\"${apiBaseUrl}\""
         buildConfigField "String", "INTRODB_API_KEY", "\"${introdbApiKey}\""
+        buildConfigField "String", "PREMIUMIZE_CLIENT_ID", "\"${premiumizeClientId}\""
     }
 
     signingConfigs {

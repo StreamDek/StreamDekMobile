@@ -328,6 +328,9 @@ import androidx.media3.exoplayer.hls.HlsMediaSource
 import net.streamdek.mobile.debrid.DebridFailureCode
 import net.streamdek.mobile.debrid.DebridKeyStore
 import net.streamdek.mobile.debrid.DebridManager
+import net.streamdek.mobile.debrid.PremiumizeOAuth
+import net.streamdek.mobile.debrid.RealDebridClient
+import net.streamdek.mobile.debrid.RealDebridDeviceAuth
 import net.streamdek.mobile.usenet.UsenetPlayback
 import net.streamdek.mobile.torrent.TorrentServerConfig
 import net.streamdek.mobile.torrent.TorrentServerService
@@ -543,6 +546,20 @@ private data class AuthFormState(
   val newPassword: String = "",
 )
 
+/**
+ * The half-finished state of a device sign-in, as the viewer sees it.
+ *
+ * [outcome] is set once there is nothing left to wait for, so the card can say how it ended
+ * instead of vanishing and leaving the viewer wondering whether it worked.
+ */
+data class DebridSignInPrompt(
+  val providerLabel: String,
+  val userCode: String,
+  val verificationUrl: String,
+  val waiting: Boolean = true,
+  val outcome: String? = null,
+)
+
 private data class AppUiState(
   val booting: Boolean = true,
   val rememberedEmail: String = "",
@@ -679,6 +696,22 @@ private data class AppUiState(
    * database, which is the same answer everywhere.
    */
   val debridCloudSync: Boolean = true,
+  /**
+   * A device sign-in the viewer is part-way through.
+   *
+   * Held in state rather than announced and forgotten: the code has to be read off this screen,
+   * typed somewhere else, and still be here when the viewer comes back. A toast is gone before
+   * any of that is possible.
+   */
+  val debridSignIn: DebridSignInPrompt? = null,
+  /**
+   * Why there are no sources, when the answer is knowable and permanent.
+   *
+   * An empty list reads identically whether the search is still running, every add-on failed, or
+   * the title is one no add-on can be asked about — and only the last of those is worth telling
+   * someone, because waiting or refreshing will never change it.
+   */
+  val streamsUnavailableReason: String? = null,
   /** Which tracking service feeds Home rows and Continue Watching. The rest mirror writes only. */
   val primarySyncService: String = SyncService.Trakt.id,
   val liveFavouriteDrawerCards: Boolean = false,
@@ -3186,7 +3219,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
     if (uiState.addonsLoading) {
       pendingStreamLoad = PendingStreamLoad(detail.id, episode)
-      uiState = uiState.copy(streamLoading = true, pendingStreamSources = 0, selectedEpisode = episode, errorMessage = null)
+      uiState = uiState.copy(streamLoading = true, pendingStreamSources = 0, selectedEpisode = episode, errorMessage = null, streamsUnavailableReason = null)
       return
     }
     pendingStreamLoad = null
@@ -3283,7 +3316,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       )
     }
 
-    uiState = uiState.copy(streamLoading = true, pendingStreamSources = totalSources, availableStreams = emptyList(), selectedEpisode = episode, errorMessage = null)
+    uiState = uiState.copy(streamLoading = true, pendingStreamSources = totalSources, availableStreams = emptyList(), selectedEpisode = episode, errorMessage = null, streamsUnavailableReason = null)
 
     viewModelScope.launch {
       if (pluginSourceCount > 0) {
@@ -3511,6 +3544,13 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val baseId = directId.substringBefore(":")
     // Local add-ons only ever fetch directly from the device (there's no backend copy to try
     // first), so they always go straight to the on-device fetch below.
+    // Recorded rather than passed over: this is the one empty result that will still be empty
+    // tomorrow, and the viewer is otherwise left refreshing a list that can never fill.
+    if (requiresImdbId && !isLocalAddon && !baseId.matches(IMDB_ID_PATTERN)) {
+      uiState = uiState.copy(
+        streamsUnavailableReason = "No sources for this title. Add-ons look titles up by their IMDb id, and this one has none listed — refreshing will not change that.",
+      )
+    }
     if (isLocalAddon || !requiresImdbId || baseId.matches(IMDB_ID_PATTERN)) {
       if (useServerSideStreams) delay(180L)
       for (candidateType in typeCandidates.take(3)) {
@@ -4668,10 +4708,15 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     viewModelScope.launch {
       apiClient.fetchDebridKeys(session)
         .onSuccess { keys ->
-          DebridKeyStore.save(
-            getApplication(),
-            keys.map { DebridKeyStore.StoredKey(it.provider, it.apiKey, it.priority, it.enabled) },
-          )
+          // A credential this device signed in for itself outranks the account's copy of it.
+          // Real-Debrid's device sign-in stores a token plus the material that renews it, and only
+          // the token is ever posted to the account — so taking the server's version wholesale
+          // would drop the renewal material and leave a credential dead within the hour.
+          val selfRenewing = DebridKeyStore.load(getApplication()).filter { it.refreshToken != null }
+          val fromAccount = keys
+            .filterNot { key -> selfRenewing.any { it.provider == key.provider } }
+            .map { DebridKeyStore.StoredKey(it.provider, it.apiKey, it.priority, it.enabled, it.username) }
+          DebridKeyStore.save(getApplication(), selfRenewing + fromAccount)
           deviceDebridManager = null
         }
         .onFailure { android.util.Log.w("StreamDekDebrid", "Could not sync premium service keys: ${it.message}") }
@@ -4710,6 +4755,148 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
    * whole point of the setting — and is possible at all because the device now has the same
    * provider clients the server has.
    */
+  /** Whether this build can offer Premiumize sign-in; a blank client id hides the option. */
+  fun premiumizeSignInAvailable(): Boolean =
+    PremiumizeOAuth.isConfigured(BuildConfig.PREMIUMIZE_CLIENT_ID)
+
+  /**
+   * Signs in to Real-Debrid by code, reporting progress through [uiState].
+   *
+   * A code rather than a browser redirect, because Real-Debrid's flow is a device flow — and it
+   * works the same on a phone, where the viewer simply opens the page in another tab.
+   */
+  fun startRealDebridSignIn() {
+    viewModelScope.launch {
+      uiState = uiState.copy(debridLoading = true, errorMessage = null, debridSignIn = null)
+      val started = runCatching { RealDebridDeviceAuth.start() }.getOrElse {
+        uiState = uiState.copy(debridLoading = false, errorMessage = it.message ?: "Real-Debrid could not be reached.")
+        return@launch
+      }
+      uiState = uiState.copy(
+        debridLoading = false,
+        debridSignIn = DebridSignInPrompt(
+          providerLabel = "Real-Debrid",
+          userCode = started.userCode,
+          verificationUrl = started.verificationUrl,
+        ),
+      )
+
+      val deadline = System.currentTimeMillis() + started.expiresInSeconds * 1000L
+      while (System.currentTimeMillis() < deadline) {
+        delay(started.intervalSeconds * 1000L)
+        // Dismissed while waiting — stop polling rather than reviving a card the viewer closed.
+        if (uiState.debridSignIn == null) return@launch
+        when (val poll = RealDebridDeviceAuth.poll(started.deviceCode)) {
+          is RealDebridDeviceAuth.Poll.Authorized -> {
+            storeRealDebridCredentials(poll.credentials)
+            return@launch
+          }
+          RealDebridDeviceAuth.Poll.Pending -> Unit
+          is RealDebridDeviceAuth.Poll.Failed -> {
+            uiState = uiState.copy(debridSignIn = uiState.debridSignIn?.copy(waiting = false, outcome = poll.message))
+            return@launch
+          }
+        }
+      }
+      uiState = uiState.copy(
+        debridSignIn = uiState.debridSignIn?.copy(
+          waiting = false,
+          outcome = "That code expired before it was approved. Start again for a new one.",
+        ),
+      )
+    }
+  }
+
+  /** Closes the sign-in card, which also stops the polling loop watching it. */
+  fun dismissDebridSignIn() { uiState = uiState.copy(debridSignIn = null) }
+
+  /**
+   * Stores a Real-Debrid sign-in.
+   *
+   * Always kept on the device, whatever the cloud setting says, because the renewal material has
+   * nowhere else to live: the server's account record holds a single key, and a token without the
+   * credentials that renew it stops working within the hour. The token is still posted to the
+   * account when cloud sync is on, so the service shows up on other devices.
+   */
+  private suspend fun storeRealDebridCredentials(credentials: RealDebridDeviceAuth.Credentials) {
+    val existing = DebridKeyStore.load(getApplication()).filterNot { it.provider == "real-debrid" }
+    val username = runCatching { RealDebridClient(credentials.accessToken).validate() }.getOrNull()?.username
+    DebridKeyStore.save(
+      getApplication(),
+      existing + DebridKeyStore.StoredKey(
+        provider = "real-debrid",
+        apiKey = credentials.accessToken,
+        priority = existing.size,
+        enabled = true,
+        username = username,
+        refreshToken = credentials.refreshToken,
+        oauthClientId = credentials.clientId,
+        oauthClientSecret = credentials.clientSecret,
+      ),
+    )
+    deviceDebridManager = null
+    if (uiState.debridCloudSync) {
+      uiState.session?.let { session -> apiClient.addDebridAccount(session, "real-debrid", credentials.accessToken) }
+      refreshDebridAccounts()
+    }
+    uiState = uiState.copy(
+      debridLoading = false,
+      debridAccounts = if (uiState.debridCloudSync) uiState.debridAccounts else localDebridAccounts(),
+      debridSignIn = uiState.debridSignIn?.copy(
+        waiting = false,
+        outcome = "Connected${username?.let { " as $it" }.orEmpty()}.",
+      ),
+    )
+  }
+
+  /** The verifier for the attempt in flight. Held only in memory — that is what makes it a proof. */
+  private var premiumizeChallenge: PremiumizeOAuth.Challenge? = null
+
+  /**
+   * Opens Premiumize's approval page, returning the URL for the caller to launch.
+   *
+   * The verifier stays here; only its hash travels, so a redirect intercepted on the way back is
+   * worth nothing without this process.
+   */
+  fun beginPremiumizeSignIn(): String {
+    val challenge = PremiumizeOAuth.newChallenge()
+    premiumizeChallenge = challenge
+    return PremiumizeOAuth.authorizeUrl(BuildConfig.PREMIUMIZE_CLIENT_ID, challenge)
+  }
+
+  /**
+   * Finishes the sign-in once the browser hands back.
+   *
+   * A redirect whose state does not match the attempt in flight is dropped without a word to the
+   * provider — that is the case state exists to catch, and reporting it would only tell whoever
+   * sent it that the app was listening.
+   */
+  fun completePremiumizeSignIn(redirect: String) {
+    val challenge = premiumizeChallenge ?: return
+    val code = PremiumizeOAuth.codeFromRedirect(redirect, challenge.state) ?: run {
+      premiumizeChallenge = null
+      uiState = uiState.copy(errorMessage = "Premiumize sign-in was not completed.")
+      return
+    }
+    premiumizeChallenge = null
+    viewModelScope.launch {
+      uiState = uiState.copy(debridLoading = true, errorMessage = null)
+      val token = runCatching {
+        PremiumizeOAuth.exchange(BuildConfig.PREMIUMIZE_CLIENT_ID, code, challenge.verifier)
+      }.getOrElse { error ->
+        uiState = uiState.copy(debridLoading = false, errorMessage = error.message ?: "Premiumize sign-in failed.")
+        return@launch
+      }
+      // From here it is an ordinary credential: Premiumize takes this token through the same
+      // header as a typed key, so both storage paths work on it unchanged.
+      if (uiState.debridCloudSync) {
+        addDebridAccount("premiumize", token)
+      } else {
+        addDebridAccountOnDevice("premiumize", token)
+      }
+    }
+  }
+
   private fun addDebridAccountOnDevice(provider: String, apiKey: String) {
     val client = DebridManager.build(provider, apiKey) ?: return
     viewModelScope.launch {
@@ -6397,11 +6584,21 @@ private class NativeAppViewModelFactory(
 fun StreamDekNativeApp(
   pendingAddonManifestUrl: String? = null,
   onAddonManifestConsumed: () -> Unit = {},
+  pendingPremiumizeRedirect: String? = null,
+  onPremiumizeRedirectConsumed: () -> Unit = {},
 ) {
   val context = androidx.compose.ui.platform.LocalContext.current.applicationContext as Application
   val viewModel = viewModel<NativeAppViewModel>(factory = NativeAppViewModelFactory(context))
   val snackbarHostState = remember { SnackbarHostState() }
   val uiState = viewModel.uiState
+  // Handled here rather than on the settings screen: the browser hands control back to
+  // whatever the app was showing, which after a trip out to Premiumize is rarely the screen
+  // the sign-in started from.
+  LaunchedEffect(pendingPremiumizeRedirect) {
+    val redirect = pendingPremiumizeRedirect ?: return@LaunchedEffect
+    viewModel.completePremiumizeSignIn(redirect)
+    onPremiumizeRedirectConsumed()
+  }
   LaunchedEffect(uiState.playerSession?.url, uiState.session?.user?.uid) {
     if (uiState.playerSession != null) viewModel.refreshHandoffDevices()
   }
@@ -6980,6 +7177,7 @@ private fun NavigationCaretCue() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: String?, onAddonManifestConsumed: () -> Unit) {
+  val launchContext = androidx.compose.ui.platform.LocalContext.current
   val uiState = viewModel.uiState
   var selectedTab by rememberSaveable { mutableStateOf(MainTab.Home) }
   var previousTab by rememberSaveable { mutableStateOf(MainTab.Home) }
@@ -7631,6 +7829,22 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
                 onSetDebridEnabled = viewModel::setDebridAccountEnabled,
                 onMoveDebrid = viewModel::moveDebridAccount,
                 onSetDebridCloudSync = viewModel::setDebridCloudSync,
+                onPremiumizeSignIn = if (viewModel.premiumizeSignInAvailable()) {
+                  {
+                    // Handed to the browser rather than shown in a WebView: an OAuth page in
+                    // an embedded view is exactly what a password manager will not fill and
+                    // what a viewer cannot check the address bar of.
+                    runCatching {
+                      launchContext.startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse(viewModel.beginPremiumizeSignIn()))
+                          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                      )
+                    }
+                    Unit
+                  }
+                } else null,
+                onRealDebridSignIn = { viewModel.startRealDebridSignIn() },
+                onDismissDebridSignIn = { viewModel.dismissDebridSignIn() },
                 onRequestTraktDeviceCode = viewModel::requestTraktDeviceCode,
                 onRefreshSyncServices = viewModel::refreshSyncServices,
                 onPrimarySyncServiceChange = viewModel::setPrimarySyncService,
@@ -12579,6 +12793,9 @@ private fun SettingsTab(
   onSetDebridEnabled: (String, Boolean) -> Unit,
   onMoveDebrid: (String, Int) -> Unit,
   onSetDebridCloudSync: (Boolean) -> Unit,
+  onPremiumizeSignIn: (() -> Unit)?,
+  onRealDebridSignIn: (() -> Unit)?,
+  onDismissDebridSignIn: (() -> Unit)?,
   onRequestTraktDeviceCode: () -> Unit,
   onRefreshSyncServices: () -> Unit,
   onPrimarySyncServiceChange: (String) -> Unit,
@@ -13078,7 +13295,7 @@ private fun SettingsTab(
           }
         }
         SettingsRoute.Plugins -> item { PluginsSettingsSummary() }
-        SettingsRoute.Debrid -> item { DebridSettingsSummary(uiState, onRefreshDebrid, onAddDebrid, onRemoveDebrid, onSetDebridEnabled, onMoveDebrid, onSetDebridCloudSync) }
+        SettingsRoute.Debrid -> item { DebridSettingsSummary(uiState, onRefreshDebrid, onAddDebrid, onRemoveDebrid, onSetDebridEnabled, onMoveDebrid, onSetDebridCloudSync, onPremiumizeSignIn, onRealDebridSignIn, onDismissDebridSignIn) }
         SettingsRoute.SyncServices -> {
           item { SyncServicesSettingsSummary(uiState, onRouteChange, onRefreshSyncServices, onPrimarySyncServiceChange) }
           item {
@@ -16549,11 +16766,117 @@ private val DebridProviderOptions = listOf(
 private fun debridProviderLabel(provider: String): String =
   DebridProviderOptions.firstOrNull { it.first == provider }?.second ?: provider
 
+/**
+ * The two steps of a device sign-in, kept on screen until they are done.
+ *
+ * Laid out as instructions rather than as a status line, because the viewer has to act on it: open
+ * a page on something else, and type a code they are still reading from here. Both halves are
+ * therefore doing rather than telling — the address is a button that opens it, and the code is a
+ * button that copies it — since a code read off a phone screen and typed by hand is exactly where
+ * this goes wrong.
+ */
 @Composable
-private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Unit, onAddDebrid: (String, String) -> Unit, onRemoveDebrid: (String) -> Unit, onSetDebridEnabled: (String, Boolean) -> Unit, onMoveDebrid: (String, Int) -> Unit, onSetDebridCloudSync: (Boolean) -> Unit) {
+private fun DebridSignInCard(prompt: DebridSignInPrompt, onDismiss: () -> Unit) {
+  val context = LocalContext.current
+  val clipboard = LocalClipboardManager.current
+  var copied by remember(prompt.userCode) { mutableStateOf(false) }
+  val finished = !prompt.waiting
+
+  Surface(
+    modifier = Modifier.fillMaxWidth(),
+    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+    shape = RoundedCornerShape(18.dp),
+    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+  ) {
+    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+      Text(
+        "Finish signing in to ${prompt.providerLabel}",
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.Black,
+        color = MaterialTheme.colorScheme.onSurface,
+      )
+
+      if (!finished) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+          Text("1. Open this page", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f))
+          OutlinedButton(
+            onClick = {
+              runCatching {
+                context.startActivity(
+                  Intent(Intent.ACTION_VIEW, Uri.parse(prompt.verificationUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+              }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(999.dp),
+          ) {
+            Text(prompt.verificationUrl.removePrefix("https://").removePrefix("http://"), fontWeight = FontWeight.SemiBold)
+          }
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+          Text("2. Enter this code", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f))
+          Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(14.dp),
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+              horizontalArrangement = Arrangement.spacedBy(10.dp),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Text(
+                prompt.userCode,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Black,
+                // Spaced out because this is read off a screen and typed on another device, where
+                // a mistaken character costs the whole attempt.
+                letterSpacing = 3.sp,
+                color = MaterialTheme.colorScheme.primary,
+              )
+              TextButton(onClick = {
+                clipboard.setText(androidx.compose.ui.text.AnnotatedString(prompt.userCode))
+                copied = true
+              }) {
+                Text(if (copied) "Copied" else "Copy", fontWeight = FontWeight.Bold)
+              }
+            }
+          }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+          CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+          Text(
+            "Waiting for you to approve it…",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+          )
+        }
+      } else {
+        Text(
+          prompt.outcome.orEmpty(),
+          style = MaterialTheme.typography.bodyMedium,
+          color = MaterialTheme.colorScheme.onSurface,
+        )
+      }
+
+      TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) {
+        Text(if (finished) "Done" else "Cancel", fontWeight = FontWeight.SemiBold)
+      }
+    }
+  }
+}
+
+@Composable
+private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Unit, onAddDebrid: (String, String) -> Unit, onRemoveDebrid: (String) -> Unit, onSetDebridEnabled: (String, Boolean) -> Unit, onMoveDebrid: (String, Int) -> Unit, onSetDebridCloudSync: (Boolean) -> Unit, onPremiumizeSignIn: (() -> Unit)? = null, onRealDebridSignIn: (() -> Unit)? = null, onDismissDebridSignIn: (() -> Unit)? = null) {
   val providerOptions = DebridProviderOptions
   var selectedProvider by rememberSaveable { mutableStateOf(providerOptions.first().first) }
   var apiKey by rememberSaveable(selectedProvider) { mutableStateOf("") }
+  /** Whether the chosen service has a sign-in of its own, making the key field redundant. */
+  val signsInWithoutKey = (selectedProvider == "real-debrid" && onRealDebridSignIn != null) ||
+    (selectedProvider == "premiumize" && onPremiumizeSignIn != null)
   val accounts = uiState.debridAccounts.sortedBy { it.priority }
   Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
     SettingsSection("Connect a Service") {
@@ -16563,9 +16886,43 @@ private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Un
           FilterChip(selected = provider.first == selectedProvider, onClick = { selectedProvider = provider.first }, label = { Text(provider.second) })
         }
       }
-      OutlinedTextField(value = apiKey, onValueChange = { apiKey = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, placeholder = { InputGuideText("Access key") })
+      if (selectedProvider == "real-debrid" && onRealDebridSignIn != null) {
+        Text(
+          "Real-Debrid can sign you in with a short code instead of an access key.",
+          color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
+          style = MaterialTheme.typography.bodySmall,
+        )
+        Button(onClick = onRealDebridSignIn, enabled = !uiState.debridLoading, shape = RoundedCornerShape(999.dp)) {
+          Text("Sign in with Real-Debrid", fontWeight = FontWeight.SemiBold)
+        }
+      }
+      uiState.debridSignIn?.let { prompt ->
+        // Spaced by hand: SettingsSection stacks its children flush, so without this the card sits
+        // hard against whatever follows it.
+        Box(modifier = Modifier.padding(top = 14.dp, bottom = 4.dp)) {
+          DebridSignInCard(prompt = prompt, onDismiss = onDismissDebridSignIn ?: {})
+        }
+      }
+      if (selectedProvider == "premiumize" && onPremiumizeSignIn != null) {
+        Text(
+          "Premiumize can sign you in without an access key: approve it in your browser and you are returned here.",
+          color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
+          style = MaterialTheme.typography.bodySmall,
+        )
+        Button(onClick = onPremiumizeSignIn, enabled = !uiState.debridLoading, shape = RoundedCornerShape(999.dp)) {
+          Text("Sign in with Premiumize", fontWeight = FontWeight.SemiBold)
+        }
+      }
+      // Hidden for a service that signs in instead. Offering a key field beside a sign-in button
+      // asks the viewer to choose between two ways of doing the same thing, and for these two the
+      // key is the worse one — there is nothing to paste unless they went and found it themselves.
+      if (!signsInWithoutKey) {
+        OutlinedTextField(value = apiKey, onValueChange = { apiKey = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, placeholder = { InputGuideText("Access key") })
+      }
       Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Button(onClick = { val trimmed = apiKey.trim(); if (trimmed.isNotEmpty()) { onAddDebrid(selectedProvider, trimmed); apiKey = "" } }, enabled = apiKey.isNotBlank() && !uiState.debridLoading, shape = RoundedCornerShape(999.dp)) { Text("Connect") }
+        if (!signsInWithoutKey) {
+          Button(onClick = { val trimmed = apiKey.trim(); if (trimmed.isNotEmpty()) { onAddDebrid(selectedProvider, trimmed); apiKey = "" } }, enabled = apiKey.isNotBlank() && !uiState.debridLoading, shape = RoundedCornerShape(999.dp)) { Text("Connect") }
+        }
         OutlinedButton(onClick = onRefreshDebrid, shape = RoundedCornerShape(999.dp)) { Text("Refresh") }
       }
     }
@@ -16574,11 +16931,11 @@ private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Un
         "KEY",
         Color(0xFF8B5CF6),
         "Save Keys to Your StreamDek Account",
-        "Your access keys are stored encrypted in your StreamDek account, so signing in on your TV " +
-          "brings your services with you and you only enter each key once. Turn this off to keep them " +
-          "on this device only — encrypted here and sent to no one but the service itself. Nothing is " +
-          "lost either way: keys already saved are copied to this device before anything is removed, " +
-          "but with this off you will need to enter them again on every other device.",
+        "On: your keys are stored, encrypted, in your StreamDek account — sign in on your TV or " +
+          "another phone and your services are already there, so you only enter each key once. " +
+          "Off: they stay on this device alone and StreamDek keeps no copy of them, but every other " +
+          "device needs its own keys entered separately. Switching off copies your keys to this " +
+          "device before removing them from your account, so nothing is lost either way.",
         uiState.debridCloudSync,
         onSetDebridCloudSync,
         enabled = !uiState.debridLoading,
@@ -19419,7 +19776,15 @@ private fun StreamListContent(
     return
   }
   if (uiState.availableStreams.isEmpty()) {
-    Text("Searching sources automatically. If none appear, refresh the Sources tab.", modifier = Modifier.padding(horizontal = horizontalPadding), color = streamForeground.copy(alpha = 0.68f), style = MaterialTheme.typography.bodyMedium)
+    // A known, permanent reason replaces the "keep waiting" wording, which would otherwise send
+    // someone off refreshing a list that cannot fill.
+    Text(
+      uiState.streamsUnavailableReason
+        ?: "Searching sources automatically. If none appear, refresh the Sources tab.",
+      modifier = Modifier.padding(horizontal = horizontalPadding),
+      color = streamForeground.copy(alpha = 0.68f),
+      style = MaterialTheme.typography.bodyMedium,
+    )
     return
   }
   Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {

@@ -18,8 +18,20 @@ private const val LIBRARY_CACHE_TTL_MS = 60_000L
  *
  * Auth: Authorization: Bearer {apiKey}
  */
-internal class RealDebridClient(private val apiKey: String) : DebridProviderClient {
+internal class RealDebridClient(
+  apiKey: String,
+  /**
+   * Renews an expired token, or null for a typed API key, which never expires.
+   *
+   * Real-Debrid's device sign-in issues a token good for about an hour. Without this, an account
+   * connected that way plays perfectly today and is silently dead tomorrow — so a call that comes
+   * back unauthorised renews once and tries again before reporting anything.
+   */
+  private val renew: (suspend () -> String?)? = null,
+) : DebridProviderClient {
   override val name = "real-debrid"
+
+  @Volatile private var apiKey: String = apiKey
 
   private var libraryCache: Pair<Set<String>, Long>? = null
 
@@ -27,6 +39,25 @@ internal class RealDebridClient(private val apiKey: String) : DebridProviderClie
     Request.Builder()
       .url(DebridHttp.url(BASE, path, query))
       .header("Authorization", "Bearer $apiKey")
+
+  /**
+   * Runs a call, and if the token has expired, renews it once and runs it again.
+   *
+   * Once only: a second failure means the credential is finished rather than stale, and retrying
+   * past that turns one dead account into a loop against Real-Debrid.
+   */
+  private suspend fun <T> authorized(call: suspend () -> T): T = try {
+    call()
+  } catch (error: DebridHttpException) {
+    val renewer = renew
+    if ((error.statusCode == 401 || error.statusCode == 403) && renewer != null) {
+      val fresh = renewer() ?: throw error
+      apiKey = fresh
+      call()
+    } else {
+      throw error
+    }
+  }
 
   override suspend fun validate(): DebridValidation = runCatching {
     val data = DebridHttp.json(request("/user").get().build())
@@ -79,15 +110,17 @@ internal class RealDebridClient(private val apiKey: String) : DebridProviderClie
 
   /** POST /torrents/addMagnet (form-encoded) -> { id, uri } */
   override suspend fun addMagnet(magnetLink: String): String {
-    val data = DebridHttp.json(
-      request("/torrents/addMagnet").post(DebridHttp.form("magnet" to magnetLink)).build(),
-    )
+    val data = authorized {
+      DebridHttp.json(
+        request("/torrents/addMagnet").post(DebridHttp.form("magnet" to magnetLink)).build(),
+      )
+    }
     return data.optString("id").ifBlank { throw IllegalStateException("Real-Debrid: no torrent id returned") }
   }
 
   /** GET /torrents/info/{id} */
   override suspend fun getTorrentInfo(torrentId: String): DebridTorrentInfo =
-    mapTorrentInfo(DebridHttp.json(request("/torrents/info/$torrentId").get().build()))
+    mapTorrentInfo(authorized { DebridHttp.json(request("/torrents/info/$torrentId").get().build()) })
 
   /**
    * Select the files, wait for the links to appear, then unrestrict them.
@@ -114,9 +147,11 @@ internal class RealDebridClient(private val apiKey: String) : DebridProviderClie
 
   /** POST /unrestrict/link (form-encoded) -> { download, filename, filesize, mimeType } */
   override suspend fun unrestrictLink(url: String): DebridStreamLink {
-    val data = DebridHttp.json(
-      request("/unrestrict/link").post(DebridHttp.form("link" to url)).build(),
-    )
+    val data = authorized {
+      DebridHttp.json(
+        request("/unrestrict/link").post(DebridHttp.form("link" to url)).build(),
+      )
+    }
     return DebridStreamLink(
       url = data.optString("download"),
       filename = data.optString("filename"),

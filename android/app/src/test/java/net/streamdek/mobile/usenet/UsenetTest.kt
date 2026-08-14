@@ -1,6 +1,7 @@
 package net.streamdek.mobile.usenet
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -161,5 +162,66 @@ class UsenetTest {
         assertNull(parseByteRange("bytes=1000-", 1000))
         assertNull(parseByteRange("bytes=500-499", 1000))
         assertNull(parseByteRange("bytes=0-", 0))
+    }
+
+    @Test
+    fun `a real AIOStreams server entry parses`() {
+        // Exactly what AIOStreams delivers: a connection-count suffix on the path, and a password
+        // carrying characters that must be escaped to survive the URI at all.
+        val server = parseNntpServer("nntps://ZS6U24A6W937:K!mempire19%23@news.sunnyusenet.com:563/15")
+        assertEquals("news.sunnyusenet.com", server?.host)
+        assertEquals(563, server?.port)
+        assertEquals(true, server?.useTls)
+        assertEquals("ZS6U24A6W937", server?.username)
+        assertEquals("K!mempire19#", server?.password)
+    }
+
+    // -- packed posts --------------------------------------------------------------------------
+
+    private fun nzbOf(vararg subjects: String): String = buildString {
+        append("<nzb>")
+        subjects.forEachIndexed { index, subject ->
+            // Real NZBs quote the filename inside the subject as an entity, as this must too.
+            append("<file subject=\"${subject.replace("\"", "&quot;")}\"><groups><group>a.b.c</group></groups><segments>")
+            append("<segment number=\"1\" bytes=\"1000\">m$index@x</segment>")
+            append("</segments></file>")
+        }
+        append("</nzb>")
+    }
+
+    @Test
+    fun `an obfuscated split archive is recognised as packed`() {
+        // What AIOStreams actually delivers: numbered parts with the names obfuscated away.
+        val nzb = parseNzb(
+            nzbOf(
+                "\"7a7dc041d0023dcbfdbdae941456a486.10\" yEnc (1/581)",
+                "\"7a7dc041d0023dcbfdbdae941456a486.11\" yEnc (1/581)",
+                "\"7a7dc041d0023dcbfdbdae941456a486.par2\" yEnc (1/2)",
+            ),
+        )
+        assertTrue(nzb.isPackedArchive())
+    }
+
+    @Test
+    fun `a rar set is recognised as packed`() {
+        val nzb = parseNzb(nzbOf("\"Some.Film.2024.part01.rar\" yEnc (1/99)", "\"Some.Film.2024.r00\" yEnc (1/99)"))
+        assertTrue(nzb.isPackedArchive())
+    }
+
+    @Test
+    fun `a post holding the video itself is not packed`() {
+        val nzb = parseNzb(
+            nzbOf("\"Some.Film.2024.1080p.WEB.mkv\" yEnc (1/900)", "\"Some.Film.2024.nfo\" yEnc (1/1)"),
+        )
+        assertFalse(nzb.isPackedArchive())
+    }
+
+    @Test
+    fun `video names are told apart from archive parts`() {
+        assertTrue(isPlayableVideoName("Some.Film.mkv"))
+        assertTrue(isPlayableVideoName("SOME.FILM.MP4"))
+        assertFalse(isPlayableVideoName("Some.Film.part01.rar"))
+        assertFalse(isPlayableVideoName("7a7dc041d0023dcbfdbdae941456a486.10"))
+        assertFalse(isPlayableVideoName("Some.Film.001"))
     }
 }

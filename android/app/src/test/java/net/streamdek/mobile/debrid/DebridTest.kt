@@ -215,4 +215,59 @@ class DebridTest {
     assertEquals(1024L, parseSizeToBytes("1 KB"))
     assertEquals(0L, parseSizeToBytes("not a size"))
   }
+
+  // -- Premiumize PKCE ---------------------------------------------------------------------
+
+  @Test
+  fun `the S256 challenge matches the published PKCE test vector`() {
+    // RFC 7636 appendix B. If this drifts, every authorization is rejected at the token
+    // exchange with nothing on screen to explain why.
+    val verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+    val challenge = PremiumizeOAuth.challengeFor(verifier)
+    assertEquals("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", challenge)
+  }
+
+  @Test
+  fun `a fresh verifier is the length and alphabet the spec allows`() {
+    val challenge = PremiumizeOAuth.newChallenge()
+    assertTrue(challenge.verifier.length in 43..128)
+    assertTrue(challenge.verifier.all { it.isLetterOrDigit() || it in "-._~" })
+    // Padding would be rejected: the challenge travels in a URL.
+    assertFalse(challenge.challenge.contains("="))
+    assertTrue(challenge.state.isNotBlank())
+  }
+
+  @Test
+  fun `two attempts never share a verifier`() {
+    assertTrue(PremiumizeOAuth.newChallenge().verifier != PremiumizeOAuth.newChallenge().verifier)
+  }
+
+  @Test
+  fun `the authorize url carries the challenge and never the verifier`() {
+    val challenge = PremiumizeOAuth.newChallenge()
+    val url = PremiumizeOAuth.authorizeUrl("47770900", challenge)
+    assertTrue(url.startsWith("https://www.premiumize.me/authorize"))
+    assertTrue(url.contains("code_challenge_method=S256"))
+    assertTrue(url.contains("client_id=47770900"))
+    // The point of PKCE: only the hash travels on the first redirect.
+    assertFalse(url.contains(challenge.verifier))
+  }
+
+  @Test
+  fun `a redirect with the wrong state is refused`() {
+    val redirect = "streamdek://premiumize/callback?code=abc123&state=somebody-elses"
+    assertNull(PremiumizeOAuth.codeFromRedirect(redirect, "ours"))
+  }
+
+  @Test
+  fun `a matching redirect yields the code`() {
+    val redirect = "streamdek://premiumize/callback?code=abc123&state=ours"
+    assertEquals("abc123", PremiumizeOAuth.codeFromRedirect(redirect, "ours"))
+  }
+
+  @Test
+  fun `a redirect carrying an error rather than a code yields nothing`() {
+    val redirect = "streamdek://premiumize/callback?error=access_denied&state=ours"
+    assertNull(PremiumizeOAuth.codeFromRedirect(redirect, "ours"))
+  }
 }

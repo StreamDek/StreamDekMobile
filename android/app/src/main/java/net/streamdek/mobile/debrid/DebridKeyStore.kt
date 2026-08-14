@@ -44,6 +44,17 @@ internal object DebridKeyStore {
     val enabled: Boolean,
     /** Who the provider says this key belongs to, for the settings card to show. */
     val username: String? = null,
+    /**
+     * What a signed-in provider needs to renew itself when its credential expires.
+     *
+     * Empty for a typed API key, which never expires and needs none of it. Real-Debrid's device
+     * sign-in issues a token lasting about an hour along with its own client credentials, and
+     * without these stored beside it the account would stop working overnight with nothing on
+     * screen to explain why.
+     */
+    val refreshToken: String? = null,
+    val oauthClientId: String? = null,
+    val oauthClientSecret: String? = null,
   )
 
   /**
@@ -61,6 +72,9 @@ internal object DebridKeyStore {
         key.priority.toString(),
         if (key.enabled) "1" else "0",
         key.username.orEmpty(),
+        key.refreshToken.orEmpty(),
+        key.oauthClientId.orEmpty(),
+        key.oauthClientSecret.orEmpty(),
       ).joinToString("\t")
     }
     val prefs = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
@@ -94,6 +108,9 @@ internal object DebridKeyStore {
         priority = parts[2].toIntOrNull() ?: 0,
         enabled = parts[3] == "1",
         username = parts.getOrNull(4)?.takeIf { it.isNotBlank() },
+        refreshToken = parts.getOrNull(5)?.takeIf { it.isNotBlank() },
+        oauthClientId = parts.getOrNull(6)?.takeIf { it.isNotBlank() },
+        oauthClientSecret = parts.getOrNull(7)?.takeIf { it.isNotBlank() },
       )
     }.sortedBy { it.priority }.toList()
   }

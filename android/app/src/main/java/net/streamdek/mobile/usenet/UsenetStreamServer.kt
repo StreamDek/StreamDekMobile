@@ -244,7 +244,17 @@ object UsenetPlayback {
         val servers = serverUris.mapNotNull(::parseNntpServer)
         require(servers.isNotEmpty()) { "This usenet source did not name a news server to read from." }
         val nzb = downloadNzb(nzbUrl)
-        val file = parseNzb(nzb).primaryVideoFile()
+        val document = parseNzb(nzb)
+        // Refused up front rather than assembled and handed over. A packed post used to produce
+        // one archive part, which the player could make nothing of: it stalled for the length of
+        // the range timeout and then failed with nothing to explain why. Saying so immediately is
+        // the honest answer until unpacking exists.
+        if (document.isPackedArchive()) {
+            throw PackedUsenetPostException(
+                "This usenet post is packed into archives, which StreamDek cannot play yet. Try another source.",
+            )
+        }
+        val file = document.primaryVideoFile()
             ?: throw IOException("This usenet post contains no playable file.")
 
         currentSessionId?.let(server::release)

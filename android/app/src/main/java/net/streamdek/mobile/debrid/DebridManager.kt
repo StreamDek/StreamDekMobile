@@ -38,8 +38,39 @@ class DebridManager private constructor(private val providers: List<DebridProvid
       val clients = DebridKeyStore.load(context)
         .filter { it.enabled && it.apiKey.isNotBlank() }
         .sortedBy { it.priority }
-        .mapNotNull { stored -> build(stored.provider, stored.apiKey) }
+        .mapNotNull { stored ->
+          if (stored.provider == "real-debrid" && stored.refreshToken != null) {
+            RealDebridClient(stored.apiKey) { renewRealDebrid(context, stored) }
+          } else {
+            build(stored.provider, stored.apiKey)
+          }
+        }
       return DebridManager(clients)
+    }
+
+    /**
+     * Renews a Real-Debrid token and writes it back, so the next launch starts with a live one.
+     *
+     * Persisting matters as much as renewing: a token refreshed only in memory would be renewed
+     * again on every cold start, and the refresh token Real-Debrid hands back each time would be
+     * thrown away with it.
+     */
+    private suspend fun renewRealDebrid(context: Context, stored: DebridKeyStore.StoredKey): String? {
+      val clientId = stored.oauthClientId ?: return null
+      val clientSecret = stored.oauthClientSecret ?: return null
+      val refreshToken = stored.refreshToken ?: return null
+      val renewed = runCatching {
+        RealDebridDeviceAuth.refresh(clientId, clientSecret, refreshToken)
+      }.getOrElse {
+        Log.w(TAG, "Real-Debrid token could not be renewed: ${it.message}")
+        return null
+      }
+      val updated = DebridKeyStore.load(context).map { key ->
+        if (key.provider != "real-debrid") key
+        else key.copy(apiKey = renewed.accessToken, refreshToken = renewed.refreshToken)
+      }
+      DebridKeyStore.save(context, updated)
+      return renewed.accessToken
     }
 
     fun build(provider: String, apiKey: String): DebridProviderClient? = when (provider) {

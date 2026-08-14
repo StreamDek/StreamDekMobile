@@ -368,6 +368,22 @@ data class DebridAccount(
   val username: String?,
 )
 
+/**
+ * One premium service credential, as handed back to this device so it can call the provider
+ * itself.
+ *
+ * Only travels between StreamDek and the signed-in device that owns it, and is never held in
+ * [AppUiState] — it goes straight into the device's encrypted key store. The encrypted copy stays
+ * on the server so the same account still syncs to a TV.
+ */
+data class DebridKey(
+  val provider: String,
+  val apiKey: String,
+  val priority: Int,
+  val enabled: Boolean,
+  val username: String? = null,
+)
+
 data class DebridResolvedStream(
   val provider: String,
   val url: String,

@@ -9,6 +9,7 @@ import android.util.Base64
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -26,6 +27,7 @@ import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
 import androidx.media3.exoplayer.drm.FrameworkMediaDrm
 import androidx.media3.exoplayer.drm.LocalMediaDrmCallback
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
@@ -53,6 +55,10 @@ class ExoPlaybackView @JvmOverloads constructor(
   var onErrorCallback: ((message: String) -> Unit)? = null
   var onTracksChangedCallback: ((List<MpvTrackInfo>, List<MpvTrackInfo>, Int?, Int?) -> Unit)? = null
   var onStallChangedCallback: ((Boolean) -> Unit)? = null
+
+  // Shared by every player this view builds, so a live channel switch or an engine retry keeps the
+  // estimate it has already gathered instead of starting from the built-in default again.
+  private val bandwidthMeter = DefaultBandwidthMeter.Builder(context).build()
 
   private var exoPlayer: ExoPlayer? = null
   // A source change on an already-playing instance (live channel switch) prepares the new
@@ -197,6 +203,34 @@ class ExoPlaybackView @JvmOverloads constructor(
   fun setDecoderMode(mode: String?) = Unit
   fun setRenderSurface(mode: String?) = Unit
 
+  /**
+   * A snapshot of what Media3 is pulling, for the player's info panel.
+   *
+   * The transfer rate is the shared bandwidth meter's estimate rather than a byte count of our
+   * own: it already smooths across the chunked requests an adaptive source makes, and a raw count
+   * would read as zero for the whole gap between one chunk and the next.
+   */
+  fun playbackStats(): PlaybackStats {
+    val active = exoPlayer ?: return PlaybackStats()
+    val videoFormat = active.videoFormat
+    val audioFormat = active.audioFormat
+    val estimateBps = bandwidthMeter.bitrateEstimate.takeIf { it > 0L }?.toDouble()
+    val bufferedAhead = (active.bufferedPosition - active.currentPosition)
+      .takeIf { it > 0L && active.bufferedPosition != C.TIME_UNSET }
+      ?.div(1000.0)
+    return PlaybackStats(
+      bytesPerSecond = estimateBps?.div(8.0),
+      videoBitrateBps = videoFormat?.bitrate?.takeIf { it != Format.NO_VALUE }?.toDouble(),
+      width = active.videoSize.width,
+      height = active.videoSize.height,
+      videoCodec = videoFormat?.codecs ?: videoFormat?.sampleMimeType?.substringAfter('/'),
+      audioCodec = audioFormat?.codecs ?: audioFormat?.sampleMimeType?.substringAfter('/'),
+      audioChannels = audioFormat?.channelCount?.takeIf { it != Format.NO_VALUE },
+      frameRate = videoFormat?.frameRate?.takeIf { it > 0f && it != Format.NO_VALUE.toFloat() }?.toDouble(),
+      bufferedSeconds = bufferedAhead,
+    )
+  }
+
   fun setAudioTrack(trackId: Int) = applyTrackSelection(audioSelections[trackId])
 
   fun setSubtitleTrack(trackId: Int) {
@@ -330,6 +364,7 @@ class ExoPlaybackView @JvmOverloads constructor(
     val active = ExoPlayer.Builder(context)
       .setRenderersFactory(renderers)
       .setMediaSourceFactory(mediaSourceFactory)
+      .setBandwidthMeter(bandwidthMeter)
       .build()
     // Media3 picks the media source implementation for this URL's content type reflectively,
     // inside setMediaItem, on the calling thread - so a type whose module isn't on the classpath

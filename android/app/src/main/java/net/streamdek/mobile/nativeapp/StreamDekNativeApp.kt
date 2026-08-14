@@ -141,6 +141,7 @@ import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
+import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material.icons.automirrored.rounded.VolumeOff
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.DragHandle
@@ -619,6 +620,8 @@ private data class AppUiState(
   val downloads: List<DownloadEntry> = emptyList(),
   val debridLoading: Boolean = false,
   val debridAccounts: List<DebridAccount> = emptyList(),
+  val debridNoticeMessage: String? = null,
+  val debridNoticeIsError: Boolean = false,
   val traktLoading: Boolean = false,
   val traktStatus: TraktStatus = TraktStatus(false, null),
   val traktContinueWatching: List<TraktItem> = emptyList(),
@@ -4603,22 +4606,44 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   fun refreshDebridAccounts() {
+    loadDebridAccounts("Premium services refreshed.")
+  }
+
+  private fun loadDebridAccounts(successMessage: String? = null) {
     // With the keys kept off StreamDek's servers there is nothing to fetch: this device holds the
     // only copy, so it is also the list.
     if (!uiState.debridCloudSync) {
-      uiState = uiState.copy(debridLoading = false, debridAccounts = localDebridAccounts())
+      uiState = uiState.copy(
+        debridLoading = false,
+        debridAccounts = localDebridAccounts(),
+        debridNoticeMessage = successMessage,
+        debridNoticeIsError = false,
+      )
       return
     }
     val session = uiState.session ?: return
     launchWork(
-      onStart = { uiState = uiState.copy(debridLoading = true, errorMessage = null) },
+      onStart = { uiState = uiState.copy(debridLoading = true, debridNoticeMessage = null, debridNoticeIsError = false) },
       block = { apiClient.fetchDebridAccounts(session) },
       onSuccess = { accounts ->
-        uiState = uiState.copy(debridLoading = false, debridAccounts = accounts.sortedBy { it.priority })
+        uiState = uiState.copy(
+          debridLoading = false,
+          debridAccounts = accounts.sortedBy { it.priority },
+          debridNoticeMessage = successMessage,
+          debridNoticeIsError = false,
+        )
         syncDebridKeys()
       },
-      onFailure = { message -> uiState = uiState.copy(debridLoading = false, errorMessage = message) },
+      onFailure = { message -> showDebridNotice(message, isError = true, loading = false) },
     )
+  }
+
+  private fun showDebridNotice(message: String?, isError: Boolean = false, loading: Boolean = uiState.debridLoading) {
+    uiState = uiState.copy(debridLoading = loading, debridNoticeMessage = message, debridNoticeIsError = isError)
+  }
+
+  fun dismissDebridNotice() {
+    uiState = uiState.copy(debridNoticeMessage = null, debridNoticeIsError = false)
   }
 
   /** The connected services as this device holds them, for when the keys are not in the cloud. */
@@ -4644,14 +4669,14 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   fun setDebridCloudSync(enabled: Boolean) {
     val session = uiState.session ?: return
     appSettingsStore.saveDebridCloudSync(enabled)
-    uiState = uiState.copy(debridCloudSync = enabled, errorMessage = null)
+    uiState = uiState.copy(debridCloudSync = enabled, debridNoticeMessage = null, debridNoticeIsError = false)
 
     viewModelScope.launch {
       uiState = uiState.copy(debridLoading = true)
       if (enabled) {
         val local = DebridKeyStore.load(getApplication())
         local.forEach { key -> apiClient.addDebridAccount(session, key.provider, key.apiKey) }
-        refreshDebridAccounts()
+        loadDebridAccounts("Premium-service keys are now synced with your StreamDek account.")
         return@launch
       }
 
@@ -4671,14 +4696,20 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         uiState = uiState.copy(
           debridCloudSync = true,
           debridLoading = false,
-          errorMessage = "Could not copy your keys to this device, so they were left in the cloud. Check your connection and try again.",
+          debridNoticeMessage = "Could not copy your keys to this device, so they were left in the cloud. Check your connection and try again.",
+          debridNoticeIsError = true,
         )
         return@launch
       }
 
       local.forEach { key -> apiClient.removeDebridAccount(session, key.provider) }
       deviceDebridManager = null
-      uiState = uiState.copy(debridLoading = false, debridAccounts = localDebridAccounts())
+      uiState = uiState.copy(
+        debridLoading = false,
+        debridAccounts = localDebridAccounts(),
+        debridNoticeMessage = "Premium-service keys are now kept on this device only.",
+        debridNoticeIsError = false,
+      )
     }
   }
 
@@ -4745,7 +4776,12 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   fun addDebridAccount(provider: String, apiKey: String) {
     if (!uiState.debridCloudSync) { addDebridAccountOnDevice(provider, apiKey); return }
     val session = uiState.session ?: return
-    launchWork(onStart = { uiState = uiState.copy(debridLoading = true) }, block = { apiClient.addDebridAccount(session, provider, apiKey) }, onSuccess = { refreshDebridAccounts() })
+    launchWork(
+      onStart = { uiState = uiState.copy(debridLoading = true, debridNoticeMessage = null, debridNoticeIsError = false) },
+      block = { apiClient.addDebridAccount(session, provider, apiKey) },
+      onSuccess = { message -> loadDebridAccounts(message?.takeIf { it.isNotBlank() } ?: "${debridProviderLabel(provider)} connected.") },
+      onFailure = { message -> showDebridNotice(message, isError = true, loading = false) },
+    )
   }
 
   /**
@@ -4767,9 +4803,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
    */
   fun startRealDebridSignIn() {
     viewModelScope.launch {
-      uiState = uiState.copy(debridLoading = true, errorMessage = null, debridSignIn = null)
+      uiState = uiState.copy(debridLoading = true, debridNoticeMessage = null, debridNoticeIsError = false, debridSignIn = null)
       val started = runCatching { RealDebridDeviceAuth.start() }.getOrElse {
-        uiState = uiState.copy(debridLoading = false, errorMessage = it.message ?: "Real-Debrid could not be reached.")
+        showDebridNotice(it.message ?: "Real-Debrid could not be reached.", isError = true, loading = false)
         return@launch
       }
       uiState = uiState.copy(
@@ -4837,7 +4873,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     deviceDebridManager = null
     if (uiState.debridCloudSync) {
       uiState.session?.let { session -> apiClient.addDebridAccount(session, "real-debrid", credentials.accessToken) }
-      refreshDebridAccounts()
+      loadDebridAccounts()
     }
     uiState = uiState.copy(
       debridLoading = false,
@@ -4864,6 +4900,16 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     return PremiumizeOAuth.authorizeUrl(BuildConfig.PREMIUMIZE_CLIENT_ID, challenge)
   }
 
+  fun premiumizeBrowserLaunchFailed(error: Throwable) {
+    premiumizeChallenge = null
+    showDebridNotice(
+      error.message?.takeIf { it.isNotBlank() }
+        ?: "No browser could be opened for Premiumize sign-in.",
+      isError = true,
+      loading = false,
+    )
+  }
+
   /**
    * Finishes the sign-in once the browser hands back.
    *
@@ -4875,16 +4921,16 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val challenge = premiumizeChallenge ?: return
     val code = PremiumizeOAuth.codeFromRedirect(redirect, challenge.state) ?: run {
       premiumizeChallenge = null
-      uiState = uiState.copy(errorMessage = "Premiumize sign-in was not completed.")
+      showDebridNotice("Premiumize sign-in was not completed.", isError = true, loading = false)
       return
     }
     premiumizeChallenge = null
     viewModelScope.launch {
-      uiState = uiState.copy(debridLoading = true, errorMessage = null)
+      uiState = uiState.copy(debridLoading = true, debridNoticeMessage = null, debridNoticeIsError = false)
       val token = runCatching {
         PremiumizeOAuth.exchange(BuildConfig.PREMIUMIZE_CLIENT_ID, code, challenge.verifier)
       }.getOrElse { error ->
-        uiState = uiState.copy(debridLoading = false, errorMessage = error.message ?: "Premiumize sign-in failed.")
+        showDebridNotice(error.message ?: "Premiumize sign-in failed.", isError = true, loading = false)
         return@launch
       }
       // From here it is an ordinary credential: Premiumize takes this token through the same
@@ -4900,10 +4946,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private fun addDebridAccountOnDevice(provider: String, apiKey: String) {
     val client = DebridManager.build(provider, apiKey) ?: return
     viewModelScope.launch {
-      uiState = uiState.copy(debridLoading = true, errorMessage = null)
+      uiState = uiState.copy(debridLoading = true, debridNoticeMessage = null, debridNoticeIsError = false)
       val validation = runCatching { client.validate() }.getOrNull()
       if (validation?.valid != true) {
-        uiState = uiState.copy(debridLoading = false, errorMessage = "Invalid access key — the service rejected it.")
+        showDebridNotice("Invalid access key — the service rejected it.", isError = true, loading = false)
         return@launch
       }
       val existing = DebridKeyStore.load(getApplication()).filterNot { it.provider == provider }
@@ -4911,9 +4957,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         existing + DebridKeyStore.StoredKey(provider, apiKey, existing.size, true, validation.username),
       )
       if (validation.premium == false) {
-        uiState = uiState.copy(
-          errorMessage = "Connected, but this account is not premium. Torrent downloads need a premium subscription with this service.",
-        )
+        showDebridNotice("Connected, but this account is not premium. Torrent downloads need a premium subscription with this service.", isError = true, loading = false)
+      } else {
+        showDebridNotice("${debridProviderLabel(provider)} connected.", loading = false)
       }
     }
   }
@@ -4921,10 +4967,16 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   fun removeDebridAccount(provider: String) {
     if (!uiState.debridCloudSync) {
       applyLocalDebridKeys(DebridKeyStore.load(getApplication()).filterNot { it.provider == provider })
+      showDebridNotice("${debridProviderLabel(provider)} disconnected.", loading = false)
       return
     }
     val session = uiState.session ?: return
-    launchWork(onStart = {}, block = { apiClient.removeDebridAccount(session, provider) }, onSuccess = { refreshDebridAccounts() })
+    launchWork(
+      onStart = { dismissDebridNotice() },
+      block = { apiClient.removeDebridAccount(session, provider) },
+      onSuccess = { loadDebridAccounts("${debridProviderLabel(provider)} disconnected.") },
+      onFailure = { message -> showDebridNotice(message, isError = true, loading = false) },
+    )
   }
 
   fun setDebridAccountEnabled(provider: String, enabled: Boolean) {
@@ -4934,6 +4986,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           if (key.provider == provider) key.copy(enabled = enabled) else key
         },
       )
+      showDebridNotice("${debridProviderLabel(provider)} ${if (enabled) "enabled" else "disabled"}.", loading = false)
       return
     }
     val session = uiState.session ?: return
@@ -4942,13 +4995,14 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       debridAccounts = previous.map { account ->
         if (account.provider == provider) account.copy(enabled = enabled) else account
       },
-      errorMessage = null,
+      debridNoticeMessage = null,
+      debridNoticeIsError = false,
     )
     launchWork(
       onStart = {},
       block = { apiClient.setDebridAccountEnabled(session, provider, enabled) },
-      onSuccess = { refreshDebridAccounts() },
-      onFailure = { message -> uiState = uiState.copy(debridAccounts = previous, errorMessage = message) },
+      onSuccess = { loadDebridAccounts("${debridProviderLabel(provider)} ${if (enabled) "enabled" else "disabled"}.") },
+      onFailure = { message -> uiState = uiState.copy(debridAccounts = previous, debridNoticeMessage = message, debridNoticeIsError = true) },
     )
   }
   fun moveDebridAccount(provider: String, delta: Int) {
@@ -4959,10 +5013,12 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       if (index < 0 || index == target) return
       stored.add(target, stored.removeAt(index))
       applyLocalDebridKeys(stored)
+      showDebridNotice("Premium service priority updated.", loading = false)
       return
     }
     val session = uiState.session ?: return
     val current = uiState.debridAccounts.sortedBy { it.priority }.toMutableList()
+    val previous = current.toList()
     val index = current.indexOfFirst { it.provider == provider }
     val target = (index + delta).coerceIn(0, current.lastIndex)
     if (index < 0 || index == target) return
@@ -4970,7 +5026,12 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     current.add(target, item)
     val reordered = current.mapIndexed { priority, account -> account.copy(priority = priority) }
     uiState = uiState.copy(debridAccounts = reordered)
-    launchWork(onStart = {}, block = { apiClient.reorderDebridAccounts(session, reordered.map { it.provider }) }, onSuccess = { refreshDebridAccounts() })
+    launchWork(
+      onStart = { dismissDebridNotice() },
+      block = { apiClient.reorderDebridAccounts(session, reordered.map { it.provider }) },
+      onSuccess = { loadDebridAccounts("Premium service priority updated.") },
+      onFailure = { message -> uiState = uiState.copy(debridAccounts = previous, debridNoticeMessage = message, debridNoticeIsError = true) },
+    )
   }
 
   fun requestTraktDeviceCode() {
@@ -5160,7 +5221,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         uiState = uiState.copy(syncRefreshing = false, infoMessage = "Cloud settings refreshed.")
         refreshProfiles(showLoading = false, refreshScopedData = false)
         refreshAddons()
-        refreshDebridAccounts()
+        loadDebridAccounts()
         refreshTraktData()
         refreshSyncServices()
         loadHome(force = true)
@@ -5308,34 +5369,38 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     launchWork(
       onStart = { uiState = uiState.copy(traktLoading = true, errorMessage = null) },
       block = {
-        val trending = apiClient.fetchTraktTrending().getOrElse { emptyList() }
-        if (session == null || profileId == null) {
-          Result.success(TraktDashboardState(TraktStatus(false, null), emptyList(), emptyList(), emptyList(), trending))
-        } else {
-          val status = apiClient.fetchTraktStatus(session, profileId).getOrElse { TraktStatus(false, null) }
-          // One service feeds Home; the others only mirror writes. Reading from more than one
-          // would produce duplicate rows and contradictory progress with no principled winner.
-          val primary = uiState.primarySyncService
-          val primaryIsTrakt = primary == SyncService.Trakt.id
-          val primaryStatus = syncServiceStatus(uiState, primary)
-          val primaryConnected = if (primaryIsTrakt) status.connected else primaryStatus.connected
-          val cw = when {
-            !primaryConnected -> emptyList()
-            primaryIsTrakt -> apiClient.fetchTraktContinueWatching(session, profileId).getOrElse { emptyList() }
-            // MDBList has no playback API; skipping the call avoids a guaranteed round-trip
-            // failure on every dashboard refresh.
-            !primaryStatus.supportsPlayback -> emptyList()
-            else -> apiClient.fetchSyncServicePlayback(session, profileId, primary).getOrElse { emptyList() }
+        coroutineScope {
+          val trendingDeferred = async { apiClient.fetchTraktTrending().getOrElse { emptyList() } }
+          if (session == null || profileId == null) {
+            Result.success(TraktDashboardState(TraktStatus(false, null), emptyList(), emptyList(), emptyList(), trendingDeferred.await()))
+          } else {
+            // These calls do not depend on one another. The old serial chain made Continue Watching
+            // wait behind Trending, connection status, watchlist, and recommendations on launch.
+            val primary = uiState.primarySyncService
+            val primaryIsTrakt = primary == SyncService.Trakt.id
+            val traktStatusDeferred = async { apiClient.fetchTraktStatus(session, profileId).getOrElse { TraktStatus(false, null) } }
+            val primaryStatusDeferred = async {
+              if (primaryIsTrakt) SyncServiceStatus()
+              else apiClient.fetchSyncServiceStatus(session, profileId, primary).getOrElse { SyncServiceStatus() }
+            }
+            val continueWatchingDeferred = async {
+              if (primaryIsTrakt) apiClient.fetchTraktContinueWatching(session, profileId).getOrElse { emptyList() }
+              else apiClient.fetchSyncServicePlayback(session, profileId, primary).getOrElse { emptyList() }
+            }
+            val watchlistDeferred = async {
+              if (primaryIsTrakt) apiClient.fetchTraktWatchlist(session, profileId).getOrElse { emptyList() }
+              else apiClient.fetchSyncServiceWatchlist(session, profileId, primary).getOrElse { emptyList() }
+            }
+            val recommendationsDeferred = async { apiClient.fetchTraktRecommendations(session, profileId).getOrElse { emptyList() } }
+
+            val status = traktStatusDeferred.await()
+            val primaryStatus = if (primaryIsTrakt) SyncServiceStatus(connected = status.connected) else primaryStatusDeferred.await()
+            val primaryConnected = if (primaryIsTrakt) status.connected else primaryStatus.connected
+            val cw = continueWatchingDeferred.await().takeIf { primaryConnected && primaryStatus.supportsPlayback } ?: emptyList()
+            val wl = watchlistDeferred.await().takeIf { primaryConnected && primaryStatus.supportsWatchlist } ?: emptyList()
+            val recs = recommendationsDeferred.await().takeIf { status.connected } ?: emptyList()
+            Result.success(TraktDashboardState(status, cw, wl, recs, trendingDeferred.await()))
           }
-          val wl = when {
-            !primaryConnected -> emptyList()
-            primaryIsTrakt -> apiClient.fetchTraktWatchlist(session, profileId).getOrElse { emptyList() }
-            !primaryStatus.supportsWatchlist -> emptyList()
-            else -> apiClient.fetchSyncServiceWatchlist(session, profileId, primary).getOrElse { emptyList() }
-          }
-          // Recommendations stay with Trakt: it is the only service that provides them.
-          val recs = if (status.connected) apiClient.fetchTraktRecommendations(session, profileId).getOrElse { emptyList() } else emptyList()
-          Result.success(TraktDashboardState(status, cw, wl, recs, trending))
         }
       },
       onSuccess = { dashboard ->
@@ -6175,7 +6240,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     uiState = uiState.copy(mergedWatchlist = loadLocalWatchlist(), favouriteChannels = loadLocalFavouriteChannels(), localContinueWatching = loadLocalContinueWatching(), localResumeEntries = loadResumeEntries())
     if (uiState.session != null) {
       refreshProfiles()
-      refreshDebridAccounts()
+      loadDebridAccounts()
     }
     if (uiState.autoUpdateChecksEnabled && uiState.availableUpdate == null) checkForUpdates(manual = false)
   }
@@ -6629,6 +6694,20 @@ fun StreamDekNativeApp(
     if (!message.isNullOrBlank()) {
       snackbarHostState.showSnackbar(message)
       viewModel.clearTransientMessage()
+    }
+  }
+
+  LaunchedEffect(uiState.debridNoticeMessage) {
+    if (!uiState.debridNoticeMessage.isNullOrBlank()) {
+      delay(30_000)
+      viewModel.dismissDebridNotice()
+    }
+  }
+
+  LaunchedEffect(uiState.debridSignIn?.outcome) {
+    if (!uiState.debridSignIn?.outcome.isNullOrBlank()) {
+      delay(30_000)
+      viewModel.dismissDebridSignIn()
     }
   }
 
@@ -7839,12 +7918,13 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
                         Intent(Intent.ACTION_VIEW, Uri.parse(viewModel.beginPremiumizeSignIn()))
                           .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                       )
-                    }
+                    }.onFailure(viewModel::premiumizeBrowserLaunchFailed)
                     Unit
                   }
                 } else null,
                 onRealDebridSignIn = { viewModel.startRealDebridSignIn() },
                 onDismissDebridSignIn = { viewModel.dismissDebridSignIn() },
+                onDismissDebridNotice = { viewModel.dismissDebridNotice() },
                 onRequestTraktDeviceCode = viewModel::requestTraktDeviceCode,
                 onRefreshSyncServices = viewModel::refreshSyncServices,
                 onPrimarySyncServiceChange = viewModel::setPrimarySyncService,
@@ -8519,10 +8599,26 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
     }
   }
   val pagerState = rememberPagerState(pageCount = { heroItems.size })
+  val listState = rememberLazyListState()
+  val heroAtTop by remember(listState) {
+    derivedStateOf {
+      listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
+    }
+  }
 
-  LaunchedEffect(heroItems.size, pagerState.settledPage) {
+  LaunchedEffect(heroItems.size, pagerState.settledPage, heroAtTop) {
     if (heroItems.size <= 1) return@LaunchedEffect
+    if (!heroAtTop) {
+      // LazyColumn can dispose the HorizontalPager while an automatic or dot-selected animation is
+      // between pages. PagerState survives that disposal, including its fractional offset, which
+      // used to restore as two half-width backdrops when the viewer returned to the top. Queue a
+      // synchronous snap for the pager's next measure so an off-screen interruption can never be
+      // preserved as a visual state.
+      pagerState.requestScrollToPage(pagerState.currentPage.coerceIn(heroItems.indices))
+      return@LaunchedEffect
+    }
     delay(5500)
+    if (!heroAtTop) return@LaunchedEffect
     val nextPage = (pagerState.settledPage + 1) % heroItems.size
     pagerState.animateScrollToPage(nextPage)
   }
@@ -8578,7 +8674,6 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
     }
   }
   val heroBackdrop = heroItems.getOrNull(pagerState.currentPage.coerceIn(0, (heroItems.size - 1).coerceAtLeast(0)))
-  val listState = rememberLazyListState()
 
   // Track the last handled signal so re-entering composition (e.g. returning from a
   // detail page with restored scroll state) doesn't replay an old scroll-to-top.
@@ -12796,6 +12891,7 @@ private fun SettingsTab(
   onPremiumizeSignIn: (() -> Unit)?,
   onRealDebridSignIn: (() -> Unit)?,
   onDismissDebridSignIn: (() -> Unit)?,
+  onDismissDebridNotice: () -> Unit,
   onRequestTraktDeviceCode: () -> Unit,
   onRefreshSyncServices: () -> Unit,
   onPrimarySyncServiceChange: (String) -> Unit,
@@ -13295,7 +13391,7 @@ private fun SettingsTab(
           }
         }
         SettingsRoute.Plugins -> item { PluginsSettingsSummary() }
-        SettingsRoute.Debrid -> item { DebridSettingsSummary(uiState, onRefreshDebrid, onAddDebrid, onRemoveDebrid, onSetDebridEnabled, onMoveDebrid, onSetDebridCloudSync, onPremiumizeSignIn, onRealDebridSignIn, onDismissDebridSignIn) }
+        SettingsRoute.Debrid -> item { DebridSettingsSummary(uiState, onRefreshDebrid, onAddDebrid, onRemoveDebrid, onSetDebridEnabled, onMoveDebrid, onSetDebridCloudSync, onPremiumizeSignIn, onRealDebridSignIn, onDismissDebridSignIn, onDismissDebridNotice) }
         SettingsRoute.SyncServices -> {
           item { SyncServicesSettingsSummary(uiState, onRouteChange, onRefreshSyncServices, onPrimarySyncServiceChange) }
           item {
@@ -16870,7 +16966,7 @@ private fun DebridSignInCard(prompt: DebridSignInPrompt, onDismiss: () -> Unit) 
 }
 
 @Composable
-private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Unit, onAddDebrid: (String, String) -> Unit, onRemoveDebrid: (String) -> Unit, onSetDebridEnabled: (String, Boolean) -> Unit, onMoveDebrid: (String, Int) -> Unit, onSetDebridCloudSync: (Boolean) -> Unit, onPremiumizeSignIn: (() -> Unit)? = null, onRealDebridSignIn: (() -> Unit)? = null, onDismissDebridSignIn: (() -> Unit)? = null) {
+private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Unit, onAddDebrid: (String, String) -> Unit, onRemoveDebrid: (String) -> Unit, onSetDebridEnabled: (String, Boolean) -> Unit, onMoveDebrid: (String, Int) -> Unit, onSetDebridCloudSync: (Boolean) -> Unit, onPremiumizeSignIn: (() -> Unit)? = null, onRealDebridSignIn: (() -> Unit)? = null, onDismissDebridSignIn: (() -> Unit)? = null, onDismissDebridNotice: () -> Unit) {
   val providerOptions = DebridProviderOptions
   var selectedProvider by rememberSaveable { mutableStateOf(providerOptions.first().first) }
   var apiKey by rememberSaveable(selectedProvider) { mutableStateOf("") }
@@ -16879,6 +16975,32 @@ private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Un
     (selectedProvider == "premiumize" && onPremiumizeSignIn != null)
   val accounts = uiState.debridAccounts.sortedBy { it.priority }
   Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
+    uiState.debridNoticeMessage?.let { message ->
+      val noticeColor = if (uiState.debridNoticeIsError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+      Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = noticeColor.copy(alpha = 0.10f),
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, noticeColor.copy(alpha = 0.28f)),
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth().padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+          Icon(
+            if (uiState.debridNoticeIsError) Icons.Rounded.Warning else Icons.Rounded.Info,
+            contentDescription = null,
+            tint = noticeColor,
+            modifier = Modifier.size(20.dp),
+          )
+          Text(message, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodyMedium)
+          IconButton(onClick = onDismissDebridNotice, modifier = Modifier.size(36.dp)) {
+            Icon(Icons.Rounded.Close, contentDescription = "Dismiss notification", tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.70f), modifier = Modifier.size(18.dp))
+          }
+        }
+      }
+    }
     SettingsSection("Connect a Service") {
       Text("Service", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
       LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -20948,15 +21070,6 @@ private fun GlassCard(modifier: Modifier = Modifier, containerAlpha: Float = 0.8
     Column(modifier = Modifier.fillMaxWidth(), content = content)
   }
 }
-
-
-
-
-
-
-
-
-
 
 
 

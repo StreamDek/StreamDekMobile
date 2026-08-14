@@ -25,7 +25,13 @@ class MainActivity : ComponentActivity() {
 
   private val pendingAddonManifestUrl = mutableStateOf<String?>(null)
 
+  /** The redirect Premiumize sends the browser back with, waiting to be exchanged for a token. */
+  private val pendingPremiumizeRedirect = mutableStateOf<String?>(null)
+
   companion object {
+    /** Matches the redirect registered with Premiumize; see PremiumizeOAuth.REDIRECT_URI. */
+    private const val PREMIUMIZE_REDIRECT_PREFIX = "streamdek://premiumize/callback"
+
     @JvmStatic
     var pipShouldEnter: Boolean = false
 
@@ -92,6 +98,8 @@ class MainActivity : ComponentActivity() {
       StreamDekNativeApp(
         pendingAddonManifestUrl = pendingAddonManifestUrl.value,
         onAddonManifestConsumed = { pendingAddonManifestUrl.value = null },
+        pendingPremiumizeRedirect = pendingPremiumizeRedirect.value,
+        onPremiumizeRedirectConsumed = { pendingPremiumizeRedirect.value = null },
       )
     }
   }
@@ -104,6 +112,14 @@ class MainActivity : ComponentActivity() {
 
   private fun handleDeepLink(intent: Intent?) {
     if (intent?.action != Intent.ACTION_VIEW) return
-    pendingAddonManifestUrl.value = normalizeAddonManifestUrl(intent.dataString ?: return)
+    val link = intent.dataString ?: return
+    // Premiumize handing the browser back after sign-in. Routed before the add-on handling
+    // because it is a callback rather than something to install, and normalising it as a manifest
+    // URL would swallow it silently.
+    if (link.startsWith(PREMIUMIZE_REDIRECT_PREFIX, ignoreCase = true)) {
+      pendingPremiumizeRedirect.value = link
+      return
+    }
+    pendingAddonManifestUrl.value = normalizeAddonManifestUrl(link)
   }
 }

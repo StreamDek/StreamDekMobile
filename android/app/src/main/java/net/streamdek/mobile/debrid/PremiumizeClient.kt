@@ -11,7 +11,10 @@ private const val BASE = "https://www.premiumize.me/api"
  * Premiumize.
  * Docs: https://www.premiumize.me/api
  *
- * Auth: apikey query param on every request.
+ * Auth: `Authorization: Bearer`, which Premiumize accepts for a typed API key and for a token from
+ * the device sign-in alike. That is what lets [PremiumizeDeviceAuth] exist without anything
+ * downstream needing to know which of the two it is holding. The older `apikey` query parameter
+ * works only for the former, so it is not used.
  *
  * The odd one out: a cached magnet resolves to its links in the same call that adds it, so there
  * is nothing to poll and no torrent id to hold. That result is carried in the "torrent id" as
@@ -21,7 +24,9 @@ internal class PremiumizeClient(private val apiKey: String) : DebridProviderClie
   override val name = "premiumize"
 
   private fun request(path: String, query: Map<String, String> = emptyMap()) =
-    Request.Builder().url(DebridHttp.url(BASE, path, mapOf("apikey" to apiKey) + query))
+    Request.Builder()
+      .url(DebridHttp.url(BASE, path, query))
+      .header("Authorization", "Bearer $apiKey")
 
   override suspend fun validate(): DebridValidation = runCatching {
     val data = DebridHttp.json(request("/account/info").get().build())
@@ -36,14 +41,11 @@ internal class PremiumizeClient(private val apiKey: String) : DebridProviderClie
   /** POST /cache/check, body items[0]=HASH… -> { response: [true|false, …] } */
   override suspend fun checkCache(infoHashes: List<String>, names: Map<String, String>): Map<String, Boolean> {
     if (infoHashes.isEmpty()) return emptyMap()
-    val fields = mutableListOf("apikey" to apiKey)
+    val fields = mutableListOf<Pair<String, String>>()
     infoHashes.forEachIndexed { index, hash -> fields.add("items[$index]" to hash) }
     val answers = runCatching {
       DebridHttp.json(
-        Request.Builder()
-          .url(DebridHttp.url(BASE, "/cache/check"))
-          .post(DebridHttp.form(*fields.toTypedArray()))
-          .build(),
+        request("/cache/check").post(DebridHttp.form(*fields.toTypedArray())).build(),
       ).optJSONArray("response") ?: JSONArray()
     }.getOrElse { JSONArray() }
 

@@ -19,6 +19,15 @@ import org.w3c.dom.Element
  * credentials, ever reaches a StreamDek server.
  */
 
+/**
+ * The post is a split archive rather than a video this assembler can read.
+ *
+ * Typed so the caller can tell it apart from a source that failed: nothing is wrong with the
+ * post or the connection, it is simply a shape not supported yet, and the viewer should be told
+ * to pick another source rather than to try again.
+ */
+class PackedUsenetPostException(message: String) : IllegalStateException(message)
+
 /** A news server to pull articles from, as parsed out of an add-on's `servers` entry. */
 data class NntpServer(
     val host: String,
@@ -98,9 +107,32 @@ data class NzbDocument(val files: List<NzbFile>) {
         return (playable.ifEmpty { files }).maxByOrNull { it.encodedBytes }
     }
 
+    /**
+     * Whether this post is an archive split across its files rather than the video itself.
+     *
+     * The overwhelming majority of usenet posts are packed: the release is RAR'd and spread over
+     * dozens or hundreds of parts, often with the names obfuscated to bare numbers —
+     * `7a7dc041….10`, `….101`, and so on. Nothing here unpacks them, and picking the largest part
+     * and playing it produces a fragment of an archive that no player can read.
+     *
+     * Judged by what is *not* there rather than by naming every archive convention: a post this
+     * assembler can play contains a video file, so a candidate that is not one means packed. That
+     * catches `.rar`, `.r00`, `.001` and the numeric obfuscation together, and cannot be fooled by
+     * a scheme nobody has thought of yet.
+     */
+    fun isPackedArchive(): Boolean = primaryVideoFile()?.let { !isPlayableVideoName(it.filename ?: it.subject) } ?: false
+
     companion object {
         private val SUPPORTING_FILE_MARKERS = listOf(".par2", ".nfo", ".sfv", ".srr", ".jpg", ".png", ".txt")
     }
+}
+
+/** Video containers this assembler can hand a player directly. */
+private val PLAYABLE_VIDEO_EXTENSIONS = listOf(".mkv", ".mp4", ".m4v", ".avi", ".mov", ".ts", ".webm", ".wmv", ".m2ts")
+
+internal fun isPlayableVideoName(name: String): Boolean {
+    val lower = name.lowercase(Locale.US).trim()
+    return PLAYABLE_VIDEO_EXTENSIONS.any { lower.endsWith(it) }
 }
 
 /**

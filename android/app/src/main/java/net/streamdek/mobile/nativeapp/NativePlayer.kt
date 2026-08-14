@@ -58,7 +58,9 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.HideSource
 import androidx.compose.material.icons.rounded.HighQuality
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.DeleteSweep
@@ -122,6 +124,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import java.util.Locale
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -147,7 +150,7 @@ import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.FastRewind
 import kotlin.math.roundToInt
 
-private enum class PlayerPanel { None, Sources, Audio, Subtitles, Speed, Engine }
+private enum class PlayerPanel { None, Sources, Audio, Subtitles, Speed, Engine, Info }
 private enum class PlayerAdjustmentKind { Brightness, Volume }
 
 internal fun adjustedPlayerLevel(initial: Float, totalDragY: Float, playerHeight: Float): Float =
@@ -261,6 +264,7 @@ fun NativePlayerScreen(
   var resizeMode by rememberSaveable(session.url) { mutableStateOf("cover") }
   var playbackSpeed by rememberSaveable(session.url) { mutableFloatStateOf(1f) }
   var activePanel by rememberSaveable(session.url) { mutableStateOf(PlayerPanel.None) }
+  var playbackStats by remember(session.url) { mutableStateOf<PlaybackStats?>(null) }
   var subtitleDelay by rememberSaveable(session.url) { mutableFloatStateOf(0f) }
   // Seeded from settings rather than from a constant, and keyed on the setting rather than on the
   // stream, so a size or colour chosen once carries into the next episode instead of resetting.
@@ -509,6 +513,20 @@ fun NativePlayerScreen(
     if (isLoading) {
       showControls = false
       activePanel = PlayerPanel.None
+    }
+  }
+
+  // The engines are polled rather than made to push, and only while the panel that reads them is
+  // open — a transfer rate is a moving number that nothing else on screen depends on, so paying
+  // for it every second of a two-hour film to answer a question nobody asked is waste.
+  LaunchedEffect(activePanel, activeEngine, exoPlayerView, playerView) {
+    if (activePanel != PlayerPanel.Info) {
+      playbackStats = null
+      return@LaunchedEffect
+    }
+    while (true) {
+      playbackStats = if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.playbackStats() else playerView?.playbackStats()
+      delay(1_000)
     }
   }
 
@@ -1181,6 +1199,14 @@ fun NativePlayerScreen(
         isFavourite = isFavourite,
         onToggleFavourite = onToggleFavourite,
         onHandoff = { handoffError = null; handoffPickerVisible = true },
+        onLock = {
+          controlsLocked = true
+          showUnlockControl = true
+          unlockActivityVersion += 1
+          showControls = false
+          showPausedInfo = false
+          activePanel = PlayerPanel.None
+        },
         modifier = Modifier.align(Alignment.TopStart),
       )
     }
@@ -1249,15 +1275,7 @@ fun NativePlayerScreen(
         onAudio = { keepControlsVisible(); activePanel = PlayerPanel.Audio },
         onSources = { keepControlsVisible(); activePanel = PlayerPanel.Sources },
         onEngine = { keepControlsVisible(); activePanel = PlayerPanel.Engine },
-
-        onLock = {
-          controlsLocked = true
-          showUnlockControl = true
-          unlockActivityVersion += 1
-          showControls = false
-          showPausedInfo = false
-          activePanel = PlayerPanel.None
-        },
+        onInfo = { keepControlsVisible(); activePanel = PlayerPanel.Info },
       )
     }
 
@@ -1436,6 +1454,14 @@ fun NativePlayerScreen(
             )
           }
         }
+      }
+      PlayerPanel.Info -> PlayerModalPanel(title = "Stream info", onClose = { activePanel = PlayerPanel.None }) {
+        PlayerStreamInfo(
+          session = session,
+          stats = playbackStats,
+          engine = activeEngine,
+          duration = duration,
+        )
       }
       PlayerPanel.None -> Unit
     }
@@ -2063,7 +2089,7 @@ private fun PlayerBottomControls(
   onAudio: () -> Unit,
   onSources: () -> Unit,
   onEngine: () -> Unit,
-  onLock: () -> Unit,
+  onInfo: () -> Unit,
 ) {
   // A live channel with no seekable window reports no duration, so there is no bar to draw and
   // nothing to drag. The elapsed time and a LIVE marker still answer what the toggle was asked
@@ -2139,7 +2165,9 @@ private fun PlayerBottomControls(
         }
         PlayerDockButton("Sources", Icons.Rounded.GridView, onSources)
         PlayerDockButton("Engine", Icons.Rounded.Tune, onEngine)
-        PlayerDockButton("Lock", Icons.Rounded.Lock, onLock)
+        // Lock moved up beside the handoff control in the header, so the dock has room for this
+        // without growing wide enough to wrap on a phone.
+        PlayerDockButton("Info", Icons.Rounded.Info, onInfo)
       }
     }
   }
@@ -2170,6 +2198,7 @@ private fun androidx.compose.foundation.layout.BoxScope.PlayerTopHeader(
   isFavourite: Boolean = false,
   onToggleFavourite: () -> Unit = {},
   onHandoff: () -> Unit = {},
+  onLock: () -> Unit = {},
 ) {
   Row(
     modifier = modifier
@@ -2213,6 +2242,20 @@ private fun androidx.compose.foundation.layout.BoxScope.PlayerTopHeader(
           Text(text = detailLine, color = Color.White.copy(alpha = 0.72f), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
       }
+    }
+    // Lock sits beside handoff rather than in the bottom dock, which is where the info control
+    // now is. Both are one-tap actions on the session rather than settings, so they belong to the
+    // same group.
+    Box(
+      modifier = Modifier
+        .size(44.dp)
+        .clip(CircleShape)
+        .background(Color.White.copy(alpha = 0.10f))
+        .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+        .clickable(onClick = onLock),
+      contentAlignment = Alignment.Center,
+    ) {
+      Icon(Icons.Rounded.LockOpen, contentDescription = "Lock the controls", tint = Color.White)
     }
     // Live streams get the same handoff control as VOD, and it sits to the left of the
     // favourites star because it is declared first in this Row.
@@ -2359,6 +2402,99 @@ private fun PlayerModalPanel(title: String, onClose: () -> Unit, trailing: @Comp
     }
   }
 }
+/**
+ * What is playing and how it is arriving.
+ *
+ * Split into what the source said about itself (provider, transport, advertised size and quality)
+ * and what the engine is actually seeing (resolution, codecs, transfer rate). Those two disagree
+ * often enough — a 1080p-labelled release that decodes at 720p, a "cached" source crawling at
+ * 200 KB/s — that collapsing them into one list would hide the disagreement worth seeing.
+ */
+@Composable
+private fun PlayerStreamInfo(
+  session: PlayerSession,
+  stats: PlaybackStats?,
+  engine: ActivePlaybackEngine,
+  duration: Double,
+) {
+  val stream = session.currentStream
+  val transport = remember(stream, session.url) { streamTransport(stream, session.url) }
+  val sourceRows = buildList {
+    streamProviderLabel(stream, session.sourceLabel)?.let { add("Provider" to it) }
+    add("Delivery" to transport.label)
+    session.sizeLabel?.takeIf { it.isNotBlank() }?.let { add("Size" to it) }
+    session.qualityLabel?.takeIf { it.isNotBlank() }?.let { add("Quality" to it) }
+    stream?.filename?.takeIf { it.isNotBlank() }?.let { add("File" to it) }
+    if (session.isLive) add("Route" to if (session.isProxied) "Proxied" else "Direct")
+  }
+  val playbackRows = buildList {
+    formatTransferRate(stats?.bytesPerSecond)?.let { add("Speed" to it) }
+    formatResolution(stats?.width ?: 0, stats?.height ?: 0)?.let { add("Resolution" to it) }
+    val videoLine = listOfNotNull(
+      prettyCodecName(stats?.videoCodec),
+      formatBitrate(stats?.videoBitrateBps),
+      stats?.frameRate?.let { String.format(Locale.US, "%.0f fps", it) },
+    ).joinToString(" · ")
+    if (videoLine.isNotBlank()) add("Video" to videoLine)
+    val audioLine = listOfNotNull(
+      prettyCodecName(stats?.audioCodec),
+      stats?.audioChannels?.let { channels -> if (channels > 2) "${channels}ch" else if (channels == 2) "Stereo" else "Mono" },
+    ).joinToString(" · ")
+    if (audioLine.isNotBlank()) add("Audio" to audioLine)
+    stats?.bufferedSeconds?.let { add("Buffered" to String.format(Locale.US, "%.0f s ahead", it)) }
+    stats?.hardwareDecoder?.let { add("Decoder" to it) }
+    add("Engine" to if (engine == ActivePlaybackEngine.Media3) "ExoPlayer" else "mpv")
+    if (duration > 0.0) add("Runtime" to formatClock(duration))
+  }
+  Column(verticalArrangement = Arrangement.spacedBy(18.dp), modifier = Modifier.fillMaxWidth()) {
+    PlayerInfoSection("Source", sourceRows)
+    PlayerInfoSection("Playback", playbackRows)
+    if (stats == null) {
+      Text(
+        "Reading playback details from the engine…",
+        color = Color.White.copy(alpha = 0.52f),
+        style = MaterialTheme.typography.bodySmall,
+      )
+    }
+  }
+}
+
+@Composable
+private fun PlayerInfoSection(heading: String, rows: List<Pair<String, String>>) {
+  if (rows.isEmpty()) return
+  Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+    Text(
+      heading.uppercase(Locale.US),
+      color = Color.White.copy(alpha = 0.44f),
+      fontSize = 11.sp,
+      fontWeight = FontWeight.Bold,
+      letterSpacing = 1.2.sp,
+    )
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .clip(RoundedCornerShape(18.dp))
+        .background(Color.White.copy(alpha = 0.06f))
+        .padding(horizontal = 16.dp, vertical = 14.dp),
+      verticalArrangement = Arrangement.spacedBy(11.dp),
+    ) {
+      rows.forEach { (label, value) ->
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.Top) {
+          Text(label, color = Color.White.copy(alpha = 0.56f), style = MaterialTheme.typography.bodyMedium)
+          Text(
+            value,
+            color = Color.White,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1f),
+          )
+        }
+      }
+    }
+  }
+}
+
 @Composable
 private fun PlayerOptionRow(label: String, selected: Boolean, onClick: () -> Unit) {
   Row(

@@ -11,6 +11,7 @@ import dev.jdtech.mpv.MPVLib
 import java.io.File
 import java.io.FileOutputStream
 import net.streamdek.mobile.BuildConfig
+import net.streamdek.mobile.nativeapp.PlaybackStats
 import net.streamdek.mobile.nativeapp.normalizePreferredAudioLanguage
 import net.streamdek.mobile.nativeapp.preferredAudioLanguageTags
 
@@ -423,6 +424,42 @@ class MPVView @JvmOverloads constructor(
     fun setVolume(volume: Double) {
         if (!initialized || isDestroyed) return
         MPVLib.setPropertyDouble("volume", (volume * 100.0).coerceIn(0.0, 100.0))
+    }
+
+    /**
+     * A snapshot of what mpv is pulling, for the player's info panel.
+     *
+     * `cache-speed` is mpv's own measure of bytes arriving at the demuxer, so it reads the same way
+     * whether the source is a remote HTTP server or this device's loopback torrent server.
+     */
+    fun playbackStats(): PlaybackStats {
+        if (!initialized || isDestroyed) return PlaybackStats()
+        val selectedAudioTrackId = MPVLib.getPropertyInt("aid")
+        var audioCodec: String? = null
+        var audioChannels: Int? = null
+        val trackCount = (MPVLib.getPropertyInt("track-list/count") ?: 0).coerceAtLeast(0)
+        for (index in 0 until trackCount) {
+            if (MPVLib.getPropertyString("track-list/$index/type")?.trim() != "audio") continue
+            if (MPVLib.getPropertyInt("track-list/$index/id") != selectedAudioTrackId) continue
+            audioCodec = MPVLib.getPropertyString("track-list/$index/codec")?.trim()?.takeIf { it.isNotEmpty() }
+            audioChannels = MPVLib.getPropertyInt("track-list/$index/demux-channel-count")?.takeIf { it > 0 }
+            break
+        }
+        return PlaybackStats(
+            bytesPerSecond = MPVLib.getPropertyDouble("cache-speed")?.takeIf { it > 0.0 },
+            videoBitrateBps = MPVLib.getPropertyDouble("video-bitrate")?.takeIf { it > 0.0 },
+            width = MPVLib.getPropertyInt("width") ?: 0,
+            height = MPVLib.getPropertyInt("height") ?: 0,
+            videoCodec = MPVLib.getPropertyString("video-codec")?.trim()?.takeIf { it.isNotEmpty() }
+                ?: MPVLib.getPropertyString("video-format")?.trim()?.takeIf { it.isNotEmpty() },
+            audioCodec = audioCodec,
+            audioChannels = audioChannels,
+            frameRate = MPVLib.getPropertyDouble("container-fps")?.takeIf { it > 0.0 }
+                ?: MPVLib.getPropertyDouble("estimated-vf-fps")?.takeIf { it > 0.0 },
+            bufferedSeconds = MPVLib.getPropertyDouble("demuxer-cache-duration")?.takeIf { it > 0.0 },
+            hardwareDecoder = MPVLib.getPropertyString("hwdec-current")?.trim()
+                ?.takeIf { it.isNotEmpty() && !it.equals("no", ignoreCase = true) },
+        )
     }
 
     fun setResizeMode(mode: String?) {

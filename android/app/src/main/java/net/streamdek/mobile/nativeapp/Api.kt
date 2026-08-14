@@ -1821,14 +1821,26 @@ class StreamDekApiClient(context: Context? = null) {
   /**
    * Which of [infoHashes] the user's own debrid providers already hold, as hash -> provider names.
    *
-   * Only hashes leave the device and no add-on is involved, so this works the same whether the
-   * streams themselves came from StreamDek's servers or straight from an add-on.
+   * Only hashes and release names leave the device and no add-on is involved, so this works the
+   * same whether the streams themselves came from StreamDek's servers or straight from an add-on.
+   *
+   * [releaseNames] maps a hash to what that release is called. Optional, and only one provider
+   * reads it: Deepbrid publishes no info-hash anywhere in its API, so a hash alone is a question
+   * it cannot answer and it has to report everything as uncached. The name lets it compare against
+   * what the account already holds. Every other provider matches on the hash and ignores it.
    */
-  suspend fun fetchDebridCachedHashes(session: AuthSession, infoHashes: List<String>): Result<Map<String, List<String>>> =
+  suspend fun fetchDebridCachedHashes(
+    session: AuthSession,
+    infoHashes: List<String>,
+    releaseNames: Map<String, String> = emptyMap(),
+  ): Result<Map<String, List<String>>> =
     withContext(Dispatchers.IO) {
       runCatching {
         if (infoHashes.isEmpty()) return@runCatching emptyMap()
         val payload = JSONObject().put("infoHashes", JSONArray(infoHashes))
+        if (releaseNames.isNotEmpty()) {
+          payload.put("names", JSONObject().apply { releaseNames.forEach { (hash, name) -> put(hash, name) } })
+        }
         val response = executeJson("/debrid/cache-check", payload, session = session)
         ensureOk(response, "Failed to check debrid cache")
         val cachedBy = response.json.optJSONObject("cachedBy") ?: JSONObject()
@@ -1859,6 +1871,42 @@ class StreamDekApiClient(context: Context? = null) {
       buildList {
         for (index in 0 until accounts.length()) {
           add(parseDebridAccount(accounts.optJSONObject(index) ?: JSONObject()))
+        }
+      }
+    }
+  }
+
+  /**
+   * This account's own premium-service keys, so the device can reach those services itself.
+   *
+   * Fetched only when the account streams directly. The keys go straight into the device's
+   * encrypted store and are never held in UI state or written to a log; the server keeps its
+   * encrypted copy so the same account still syncs to a TV.
+   */
+  suspend fun fetchDebridKeys(session: AuthSession): Result<List<DebridKey>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(
+        Request.Builder()
+          .url("$apiBaseUrl/debrid/accounts/keys")
+          .headers(authHeaders(session))
+          .build(),
+      )
+      ensureOk(response, "Failed to load premium service keys")
+      val accounts = response.json.optJSONArray("accounts") ?: JSONArray()
+      buildList {
+        for (index in 0 until accounts.length()) {
+          val entry = accounts.optJSONObject(index) ?: continue
+          val provider = entry.optString("provider").takeIf { it.isNotBlank() } ?: continue
+          val apiKey = entry.optString("apiKey").takeIf { it.isNotBlank() } ?: continue
+          add(
+            DebridKey(
+              provider = provider,
+              apiKey = apiKey,
+              priority = entry.optInt("priority"),
+              enabled = entry.optBoolean("enabled", true),
+              username = entry.optString("username").ifBlank { null },
+            ),
+          )
         }
       }
     }

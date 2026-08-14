@@ -325,6 +325,9 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
+import net.streamdek.mobile.debrid.DebridFailureCode
+import net.streamdek.mobile.debrid.DebridKeyStore
+import net.streamdek.mobile.debrid.DebridManager
 import net.streamdek.mobile.usenet.UsenetPlayback
 import net.streamdek.mobile.torrent.TorrentServerConfig
 import net.streamdek.mobile.torrent.TorrentServerService
@@ -667,6 +670,15 @@ private data class AppUiState(
   /** When false (the default) the device queries add-ons itself rather than asking StreamDek's
    * servers to do it, so an add-on sees this user's IP and never the shared server one. */
   val serverSideStreamsEnabled: Boolean = false,
+  /**
+   * Whether premium-service keys are kept in StreamDek's database as well as on this device.
+   *
+   * On by default, because that is where every existing account's keys already are and turning it
+   * off is a deliberate choice with a cost: the keys stop syncing to a TV. Held per device as this
+   * device's memory of the choice — what actually decides it is whether the keys are in the
+   * database, which is the same answer everywhere.
+   */
+  val debridCloudSync: Boolean = true,
   /** Which tracking service feeds Home rows and Continue Watching. The rest mirror writes only. */
   val primarySyncService: String = SyncService.Trakt.id,
   val liveFavouriteDrawerCards: Boolean = false,
@@ -1242,6 +1254,7 @@ private class AppSettingsStore(context: Context) {
     heroTrailerAutoplay = profilePrefs.getBoolean("hero_trailer_autoplay", true),
     heroTrailerResolution = profilePrefs.getInt("hero_trailer_resolution", 2160).coerceIn(360, 2160),
     heroTrailerMuted = profilePrefs.getBoolean("hero_trailer_muted", true),
+    debridCloudSync = prefs.getBoolean("debrid_cloud_sync", true),
     showHeroSynopsis = profilePrefs.getBoolean("show_hero_synopsis", false),
     continueWatchingStyle = runCatching { ContinueWatchingStyle.valueOf(profilePrefs.getString("continue_watching_style", ContinueWatchingStyle.Glass.name) ?: ContinueWatchingStyle.Glass.name) }.getOrDefault(ContinueWatchingStyle.Glass),
     liveLandscapeCards = profilePrefs.getBoolean("live_landscape_cards", true),
@@ -1321,6 +1334,8 @@ private class AppSettingsStore(context: Context) {
   fun saveHeroTrailerAutoplay(value: Boolean) { profilePrefs.edit().putBoolean("hero_trailer_autoplay", value).apply() }
   fun saveHeroTrailerResolution(value: Int) { profilePrefs.edit().putInt("hero_trailer_resolution", value.coerceIn(360, 2160)).apply() }
   fun saveHeroTrailerMuted(value: Boolean) { profilePrefs.edit().putBoolean("hero_trailer_muted", value).apply() }
+  /** Device-scoped: this device's record of where the account holder wants their keys kept. */
+  fun saveDebridCloudSync(value: Boolean) { prefs.edit().putBoolean("debrid_cloud_sync", value).apply() }
   fun saveShowHeroSynopsis(value: Boolean) { profilePrefs.edit().putBoolean("show_hero_synopsis", value).apply() }
   fun saveContinueWatchingStyle(value: ContinueWatchingStyle) { profilePrefs.edit().putString("continue_watching_style", value.name).apply() }
   fun saveLiveLandscapeCards(value: Boolean) { profilePrefs.edit().putBoolean("live_landscape_cards", value).apply() }
@@ -2206,6 +2221,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   fun signOut() {
     sessionStore.clear()
+    // The premium service keys belong to the account that just left, not to the device.
+    DebridKeyStore.clear(getApplication())
+    deviceDebridManager = null
     uiState = appSettingsStore.applyTo(AppUiState(booting = false, rememberedEmail = authEntryStore.loadEmail(), mergedWatchlist = watchlistStore.load(GUEST_OWNER_KEY), favouriteChannels = favouriteChannelStore.load(GUEST_OWNER_KEY)))
     bootstrapAfterAuth(forceHome = true)
   }
@@ -3390,8 +3408,26 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       .mapNotNull { it.infoHash?.trim()?.takeIf(String::isNotEmpty)?.lowercase() }
       .distinct()
     if (hashes.isEmpty()) return
+    // Sent alongside the hashes for Deepbrid's benefit: it identifies nothing by hash, so a name
+    // is the only thing it can match against what the account already holds. The filename is the
+    // release name when an add-on supplies one; the stream's own title is the usable fallback.
+    val releaseNames = uiState.availableStreams
+      .mapNotNull { stream ->
+        val hash = stream.infoHash?.trim()?.takeIf(String::isNotEmpty)?.lowercase() ?: return@mapNotNull null
+        val name = stream.filename?.takeIf(String::isNotBlank) ?: stream.title?.takeIf(String::isNotBlank) ?: return@mapNotNull null
+        hash to name
+      }
+      .toMap()
     viewModelScope.launch {
-      apiClient.fetchDebridCachedHashes(session, hashes).onSuccess { cached ->
+      // Same split as playback: a device that streams directly asks its own providers, so no list
+      // of what this viewer is looking at goes anywhere it does not have to.
+      val deviceDebrid = deviceDebrid()
+      val answer = if (deviceDebrid != null) {
+        runCatching { deviceDebrid.checkCacheAll(hashes, releaseNames) }
+      } else {
+        apiClient.fetchDebridCachedHashes(session, hashes, releaseNames)
+      }
+      answer.onSuccess { cached ->
         if (generation != streamRequestGeneration || cached.isEmpty()) return@onSuccess
         val decorated = uiState.availableStreams.map { stream ->
           val providers = stream.infoHash?.trim()?.lowercase()?.let(cached::get).orEmpty()
@@ -3658,14 +3694,37 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
     val maxSizeBytes = uiState.maxFileSizeGb.takeIf { it > 0 }?.toLong()?.times(1024L * 1024L * 1024L)
     if (uiState.session != null && uiState.debridAccounts.any { it.enabled }) {
-      apiClient.resolveStream(uiState.session!!, playbackStream, maxSizeBytes)
-        .onFailure { error ->
-          lastFailure = error
-          (error as? DebridDownloadingException)?.let { debridDownloading = it }
-        }
-        .getOrNull()?.url?.takeIf { it.isNotBlank() }?.let { resolvedUrl ->
+      // Streaming directly means this device talks to its own premium services, so the provider
+      // sees the viewer's address rather than one StreamDek server address shared by everyone.
+      // The server path is kept for accounts set to go through it, and as the fallback for a
+      // device that has no keys stored yet — a first run, or a sync that has not landed.
+      val deviceDebrid = deviceDebrid()
+
+      if (deviceDebrid != null) {
+        val magnet = buildTorrentMagnet(infoHash, playbackStream.filename)
+        val resolution = deviceDebrid.resolve(infoHash, magnet, playbackStream.filename)
+        resolution.stream?.link?.url?.takeIf { it.isNotBlank() }?.let { resolvedUrl ->
           return@runCatching ResolvedPlayback(resolvedUrl, playbackStream)
         }
+        // "Downloading" outranks whatever else went wrong: if any provider took the magnet, the
+        // useful thing to say is that it is on its way, not that some other service errored first.
+        val downloading = resolution.failures.firstOrNull { it.code == DebridFailureCode.Downloading }
+        if (downloading != null) {
+          debridDownloading = DebridDownloadingException(downloading.message)
+          lastFailure = debridDownloading
+        } else {
+          resolution.failures.firstOrNull()?.let { lastFailure = IllegalStateException(it.message) }
+        }
+      } else {
+        apiClient.resolveStream(uiState.session!!, playbackStream, maxSizeBytes)
+          .onFailure { error ->
+            lastFailure = error
+            (error as? DebridDownloadingException)?.let { debridDownloading = it }
+          }
+          .getOrNull()?.url?.takeIf { it.isNotBlank() }?.let { resolvedUrl ->
+            return@runCatching ResolvedPlayback(resolvedUrl, playbackStream)
+          }
+      }
     }
 
     val torrentSettings = uiState.torrentServerSettings
@@ -4504,21 +4563,192 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   fun refreshDebridAccounts() {
+    // With the keys kept off StreamDek's servers there is nothing to fetch: this device holds the
+    // only copy, so it is also the list.
+    if (!uiState.debridCloudSync) {
+      uiState = uiState.copy(debridLoading = false, debridAccounts = localDebridAccounts())
+      return
+    }
     val session = uiState.session ?: return
     launchWork(
       onStart = { uiState = uiState.copy(debridLoading = true, errorMessage = null) },
       block = { apiClient.fetchDebridAccounts(session) },
-      onSuccess = { accounts -> uiState = uiState.copy(debridLoading = false, debridAccounts = accounts.sortedBy { it.priority }) },
+      onSuccess = { accounts ->
+        uiState = uiState.copy(debridLoading = false, debridAccounts = accounts.sortedBy { it.priority })
+        syncDebridKeys()
+      },
       onFailure = { message -> uiState = uiState.copy(debridLoading = false, errorMessage = message) },
     )
   }
 
+  /** The connected services as this device holds them, for when the keys are not in the cloud. */
+  private fun localDebridAccounts(): List<DebridAccount> =
+    DebridKeyStore.load(getApplication()).map { key ->
+      DebridAccount(provider = key.provider, enabled = key.enabled, priority = key.priority, username = key.username)
+    }
+
+  private fun applyLocalDebridKeys(keys: List<DebridKeyStore.StoredKey>) {
+    DebridKeyStore.save(getApplication(), keys.mapIndexed { index, key -> key.copy(priority = index) })
+    deviceDebridManager = null
+    uiState = uiState.copy(debridLoading = false, debridAccounts = localDebridAccounts())
+  }
+
+  /**
+   * Moves the account's keys between StreamDek's database and this device alone.
+   *
+   * Turning it on uploads what the device holds, so the same services appear on a TV signed in to
+   * the same account. Turning it off deletes the stored copies — but never before checking that
+   * this device actually has each key, because until then the database holds the only copy and
+   * removing it first would lose the credential outright with nothing to restore it from.
+   */
+  fun setDebridCloudSync(enabled: Boolean) {
+    val session = uiState.session ?: return
+    appSettingsStore.saveDebridCloudSync(enabled)
+    uiState = uiState.copy(debridCloudSync = enabled, errorMessage = null)
+
+    viewModelScope.launch {
+      uiState = uiState.copy(debridLoading = true)
+      if (enabled) {
+        val local = DebridKeyStore.load(getApplication())
+        local.forEach { key -> apiClient.addDebridAccount(session, key.provider, key.apiKey) }
+        refreshDebridAccounts()
+        return@launch
+      }
+
+      // Make sure the device has its own copy of everything before anything is deleted.
+      if (DebridKeyStore.load(getApplication()).isEmpty()) {
+        apiClient.fetchDebridKeys(session)
+          .onSuccess { keys ->
+            DebridKeyStore.save(
+              getApplication(),
+              keys.map { DebridKeyStore.StoredKey(it.provider, it.apiKey, it.priority, it.enabled, it.username) },
+            )
+          }
+      }
+      val local = DebridKeyStore.load(getApplication())
+      if (local.isEmpty() && uiState.debridAccounts.isNotEmpty()) {
+        appSettingsStore.saveDebridCloudSync(true)
+        uiState = uiState.copy(
+          debridCloudSync = true,
+          debridLoading = false,
+          errorMessage = "Could not copy your keys to this device, so they were left in the cloud. Check your connection and try again.",
+        )
+        return@launch
+      }
+
+      local.forEach { key -> apiClient.removeDebridAccount(session, key.provider) }
+      deviceDebridManager = null
+      uiState = uiState.copy(debridLoading = false, debridAccounts = localDebridAccounts())
+    }
+  }
+
+  /**
+   * Brings this device's copy of the premium-service keys up to date.
+   *
+   * Only for accounts that stream directly: those are the ones whose device does the talking, and
+   * a key is not worth holding on a device that will never use it. An account set to go through
+   * StreamDek's servers has its device copy cleared instead, so switching modes does not leave a
+   * working credential behind on the handset.
+   *
+   * Failure is deliberately quiet. The keys are a performance and privacy improvement over asking
+   * the server, not a prerequisite for playback — [resolvePlayback] falls back to the server path
+   * when the device has nothing stored, so a failed sync costs nothing a viewer would notice.
+   */
+  private fun syncDebridKeys() {
+    val session = uiState.session ?: return
+    // Nothing to sync when the keys are not in the cloud — and nothing to clear either. This
+    // device holds the only copy, so fetching an empty server list and writing it over the store
+    // would destroy the credentials outright.
+    if (!uiState.debridCloudSync) return
+    if (uiState.serverSideStreamsEnabled || uiState.debridAccounts.isEmpty()) {
+      DebridKeyStore.clear(getApplication())
+      deviceDebridManager = null
+      return
+    }
+    viewModelScope.launch {
+      apiClient.fetchDebridKeys(session)
+        .onSuccess { keys ->
+          DebridKeyStore.save(
+            getApplication(),
+            keys.map { DebridKeyStore.StoredKey(it.provider, it.apiKey, it.priority, it.enabled) },
+          )
+          deviceDebridManager = null
+        }
+        .onFailure { android.util.Log.w("StreamDekDebrid", "Could not sync premium service keys: ${it.message}") }
+    }
+  }
+
+  /**
+   * The device's own premium services, held rather than rebuilt per call.
+   *
+   * Each provider memoises what its account holds — Real-Debrid pages through its whole library to
+   * answer a cache check — and a manager built fresh for every stream list would throw that away
+   * and pay for it again on the next publish. Dropped whenever the keys change, so a disconnected
+   * service stops being asked immediately.
+   */
+  private var deviceDebridManager: DebridManager? = null
+
+  private fun deviceDebrid(): DebridManager? {
+    // Keys kept off the cloud mean the server has nothing to resolve with, so the device does the
+    // work whatever the streaming mode says — otherwise turning off cloud sync would silently
+    // break playback for an account set to go through the servers.
+    if (uiState.serverSideStreamsEnabled && uiState.debridCloudSync) return null
+    val existing = deviceDebridManager ?: DebridManager.fromStoredKeys(getApplication()).also { deviceDebridManager = it }
+    return existing.takeIf { it.hasProviders }
+  }
+
   fun addDebridAccount(provider: String, apiKey: String) {
+    if (!uiState.debridCloudSync) { addDebridAccountOnDevice(provider, apiKey); return }
     val session = uiState.session ?: return
     launchWork(onStart = { uiState = uiState.copy(debridLoading = true) }, block = { apiClient.addDebridAccount(session, provider, apiKey) }, onSuccess = { refreshDebridAccounts() })
   }
-  fun removeDebridAccount(provider: String) { val session = uiState.session ?: return; launchWork(onStart = {}, block = { apiClient.removeDebridAccount(session, provider) }, onSuccess = { refreshDebridAccounts() }) }
+
+  /**
+   * Connects a service without the key ever leaving the device.
+   *
+   * The key is checked against the provider from here rather than by StreamDek, which is the
+   * whole point of the setting — and is possible at all because the device now has the same
+   * provider clients the server has.
+   */
+  private fun addDebridAccountOnDevice(provider: String, apiKey: String) {
+    val client = DebridManager.build(provider, apiKey) ?: return
+    viewModelScope.launch {
+      uiState = uiState.copy(debridLoading = true, errorMessage = null)
+      val validation = runCatching { client.validate() }.getOrNull()
+      if (validation?.valid != true) {
+        uiState = uiState.copy(debridLoading = false, errorMessage = "Invalid access key — the service rejected it.")
+        return@launch
+      }
+      val existing = DebridKeyStore.load(getApplication()).filterNot { it.provider == provider }
+      applyLocalDebridKeys(
+        existing + DebridKeyStore.StoredKey(provider, apiKey, existing.size, true, validation.username),
+      )
+      if (validation.premium == false) {
+        uiState = uiState.copy(
+          errorMessage = "Connected, but this account is not premium. Torrent downloads need a premium subscription with this service.",
+        )
+      }
+    }
+  }
+
+  fun removeDebridAccount(provider: String) {
+    if (!uiState.debridCloudSync) {
+      applyLocalDebridKeys(DebridKeyStore.load(getApplication()).filterNot { it.provider == provider })
+      return
+    }
+    val session = uiState.session ?: return
+    launchWork(onStart = {}, block = { apiClient.removeDebridAccount(session, provider) }, onSuccess = { refreshDebridAccounts() })
+  }
+
   fun setDebridAccountEnabled(provider: String, enabled: Boolean) {
+    if (!uiState.debridCloudSync) {
+      applyLocalDebridKeys(
+        DebridKeyStore.load(getApplication()).map { key ->
+          if (key.provider == provider) key.copy(enabled = enabled) else key
+        },
+      )
+      return
+    }
     val session = uiState.session ?: return
     val previous = uiState.debridAccounts
     uiState = uiState.copy(
@@ -4535,6 +4765,15 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     )
   }
   fun moveDebridAccount(provider: String, delta: Int) {
+    if (!uiState.debridCloudSync) {
+      val stored = DebridKeyStore.load(getApplication()).toMutableList()
+      val index = stored.indexOfFirst { it.provider == provider }
+      val target = (index + delta).coerceIn(0, (stored.size - 1).coerceAtLeast(0))
+      if (index < 0 || index == target) return
+      stored.add(target, stored.removeAt(index))
+      applyLocalDebridKeys(stored)
+      return
+    }
     val session = uiState.session ?: return
     val current = uiState.debridAccounts.sortedBy { it.priority }.toMutableList()
     val index = current.indexOfFirst { it.provider == provider }
@@ -7391,6 +7630,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
                 onRemoveDebrid = viewModel::removeDebridAccount,
                 onSetDebridEnabled = viewModel::setDebridAccountEnabled,
                 onMoveDebrid = viewModel::moveDebridAccount,
+                onSetDebridCloudSync = viewModel::setDebridCloudSync,
                 onRequestTraktDeviceCode = viewModel::requestTraktDeviceCode,
                 onRefreshSyncServices = viewModel::refreshSyncServices,
                 onPrimarySyncServiceChange = viewModel::setPrimarySyncService,
@@ -12338,6 +12578,7 @@ private fun SettingsTab(
   onRemoveDebrid: (String) -> Unit,
   onSetDebridEnabled: (String, Boolean) -> Unit,
   onMoveDebrid: (String, Int) -> Unit,
+  onSetDebridCloudSync: (Boolean) -> Unit,
   onRequestTraktDeviceCode: () -> Unit,
   onRefreshSyncServices: () -> Unit,
   onPrimarySyncServiceChange: (String) -> Unit,
@@ -12837,7 +13078,7 @@ private fun SettingsTab(
           }
         }
         SettingsRoute.Plugins -> item { PluginsSettingsSummary() }
-        SettingsRoute.Debrid -> item { DebridSettingsSummary(uiState, onRefreshDebrid, onAddDebrid, onRemoveDebrid, onSetDebridEnabled, onMoveDebrid) }
+        SettingsRoute.Debrid -> item { DebridSettingsSummary(uiState, onRefreshDebrid, onAddDebrid, onRemoveDebrid, onSetDebridEnabled, onMoveDebrid, onSetDebridCloudSync) }
         SettingsRoute.SyncServices -> {
           item { SyncServicesSettingsSummary(uiState, onRouteChange, onRefreshSyncServices, onPrimarySyncServiceChange) }
           item {
@@ -13632,7 +13873,7 @@ internal fun settingsRouteKeywords(route: SettingsRoute): String = when (route) 
   SettingsRoute.Addons -> "addon add-on catalog channel provider install configure source manifest stremio"
   SettingsRoute.Plugins -> "plugin source provider repository javascript cloudstream cs3 extension collection scraper"
   SettingsRoute.M3uPlaylists -> "m3u m3u8 iptv playlist url link xtream provider channels live vod refresh import"
-  SettingsRoute.Debrid -> "premium debrid real debrid alldebrid premiumize torbox debrid-link deepbrid account cached"
+  SettingsRoute.Debrid -> "premium debrid real debrid alldebrid premiumize torbox debrid-link deepbrid account cached api key keys cloud sync store device only"
   SettingsRoute.PeerToPeer -> "peer to peer p2p torrent magnet seed cache storage engine background service"
   SettingsRoute.SyncServices -> "sync services tracking tracker trakt simkl mdblist scrobble watchlist history connect cellular mobile data"
   SettingsRoute.Trakt -> "trakt scrobble watchlist history sync"
@@ -16309,7 +16550,7 @@ private fun debridProviderLabel(provider: String): String =
   DebridProviderOptions.firstOrNull { it.first == provider }?.second ?: provider
 
 @Composable
-private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Unit, onAddDebrid: (String, String) -> Unit, onRemoveDebrid: (String) -> Unit, onSetDebridEnabled: (String, Boolean) -> Unit, onMoveDebrid: (String, Int) -> Unit) {
+private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Unit, onAddDebrid: (String, String) -> Unit, onRemoveDebrid: (String) -> Unit, onSetDebridEnabled: (String, Boolean) -> Unit, onMoveDebrid: (String, Int) -> Unit, onSetDebridCloudSync: (Boolean) -> Unit) {
   val providerOptions = DebridProviderOptions
   var selectedProvider by rememberSaveable { mutableStateOf(providerOptions.first().first) }
   var apiKey by rememberSaveable(selectedProvider) { mutableStateOf("") }
@@ -16326,6 +16567,29 @@ private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Un
       Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Button(onClick = { val trimmed = apiKey.trim(); if (trimmed.isNotEmpty()) { onAddDebrid(selectedProvider, trimmed); apiKey = "" } }, enabled = apiKey.isNotBlank() && !uiState.debridLoading, shape = RoundedCornerShape(999.dp)) { Text("Connect") }
         OutlinedButton(onClick = onRefreshDebrid, shape = RoundedCornerShape(999.dp)) { Text("Refresh") }
+      }
+    }
+    SettingsSection("Where Your Keys Are Kept") {
+      SettingsSwitchRow(
+        "KEY",
+        Color(0xFF8B5CF6),
+        "Save Keys to Your StreamDek Account",
+        "Your access keys are stored encrypted in your StreamDek account, so signing in on your TV " +
+          "brings your services with you and you only enter each key once. Turn this off to keep them " +
+          "on this device only — encrypted here and sent to no one but the service itself. Nothing is " +
+          "lost either way: keys already saved are copied to this device before anything is removed, " +
+          "but with this off you will need to enter them again on every other device.",
+        uiState.debridCloudSync,
+        onSetDebridCloudSync,
+        enabled = !uiState.debridLoading,
+      )
+      if (!uiState.debridCloudSync) {
+        Text(
+          "Kept on this device only. Your services are reached from this device directly, whichever " +
+            "streaming mode your account is set to — StreamDek's servers have no key to use on your behalf.",
+          color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+          style = MaterialTheme.typography.bodySmall,
+        )
       }
     }
     if (accounts.isEmpty()) {
@@ -17446,66 +17710,6 @@ private fun TrailerDialog(title: String, url: String, backdropUrl: String?, maxH
 }
 
 @Composable
-private fun YoutubeLoginDialog(onDismiss: () -> Unit, onRetry: () -> Unit) {
-  Dialog(
-    onDismissRequest = onDismiss,
-    properties = DialogProperties(usePlatformDefaultWidth = false),
-  ) {
-    Surface(
-      modifier = Modifier.fillMaxWidth(0.88f).fillMaxHeight(0.66f).heightIn(max = 520.dp),
-      color = MaterialTheme.colorScheme.surface,
-      contentColor = MaterialTheme.colorScheme.onSurface,
-      shape = RoundedCornerShape(20.dp),
-      border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)),
-    ) {
-      Column(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 11.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-          Text("Sign in to YouTube", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
-          Text(
-            "This sign-in is used only for trailers. StreamDek never receives or stores your login details; YouTube keeps the session inside its secure web page.",
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
-            style = MaterialTheme.typography.bodySmall,
-          )
-        }
-        AndroidView(
-          modifier = Modifier.fillMaxWidth().weight(1f),
-          factory = { context ->
-            WebView(context).apply {
-              setBackgroundColor(android.graphics.Color.WHITE)
-              webChromeClient = WebChromeClient()
-              webViewClient = WebViewClient()
-              settings.javaScriptEnabled = true
-              settings.domStorageEnabled = true
-              settings.userAgentString = WebSettings.getDefaultUserAgent(context)
-              settings.cacheMode = WebSettings.LOAD_DEFAULT
-              val cookieManager = android.webkit.CookieManager.getInstance()
-              cookieManager.setAcceptCookie(true)
-              cookieManager.setAcceptThirdPartyCookies(this, true)
-              loadUrl("https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2F")
-            }
-          },
-          onRelease = { webView ->
-            webView.stopLoading()
-            webView.loadUrl("about:blank")
-            webView.destroy()
-          },
-        )
-        Row(
-          modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 9.dp),
-          horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          TextButton(onClick = onDismiss) { Text("Cancel") }
-          Button(onClick = onRetry, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
-            Text("Retry trailer", fontWeight = FontWeight.Bold)
-          }
-        }
-      }
-    }
-  }
-}
-
-@Composable
 private fun TrailerPlaybackView(
   url: String,
   modifier: Modifier = Modifier,
@@ -17521,26 +17725,9 @@ private fun TrailerPlaybackView(
   val isYoutubeTrailer = youtubeTrailerKey(url) != null
   val isVimeoTrailer = vimeoTrailerKey(url) != null
   val context = LocalContext.current
-  val youtubeSessionPrefs = remember(context) { context.getSharedPreferences("streamdek_youtube_trailers", Context.MODE_PRIVATE) }
-  var youtubeLoginRequired by rememberSaveable(url) { mutableStateOf(false) }
-  var youtubeLoginAttempted by rememberSaveable(url) { mutableStateOf(youtubeSessionPrefs.getBoolean("signed_in_session", false)) }
   var nativeRetryKey by rememberSaveable(url) { mutableIntStateOf(0) }
   var resolution by remember(url, maxHeight) { mutableStateOf<TrailerPlaybackResolution?>(null) }
   var resolved by remember(url, maxHeight) { mutableStateOf(false) }
-
-  if (youtubeLoginRequired) {
-    YoutubeLoginDialog(
-      onDismiss = { youtubeLoginRequired = false; onReadyChanged(false); onLoadFailed() },
-      onRetry = {
-        android.webkit.CookieManager.getInstance().flush()
-        youtubeSessionPrefs.edit().putBoolean("signed_in_session", true).apply()
-        youtubeLoginRequired = false
-        youtubeLoginAttempted = true
-        nativeRetryKey += 1
-        onReadyChanged(false)
-      },
-    )
-  }
 
   if (!isYoutubeTrailer && isVimeoTrailer && preferWebEmbed) {
     LaunchedEffect(url, autoPlay, muted) { onReadyChanged(false) }
@@ -17571,15 +17758,15 @@ private fun TrailerPlaybackView(
     val youtubeCookies = if (isYoutubeTrailer) android.webkit.CookieManager.getInstance().getCookie("https://www.youtube.com") else null
     resolution = resolveTrailerPlaybackSource(url, maxHeight, youtubeCookies, alternateUrls)
     resolved = true
-    if (resolution?.youtubeLoginRequired == true && !youtubeLoginAttempted) youtubeLoginRequired = true
   }
 
   val source = resolution?.source
   // When native extraction fails (YouTube regularly changes its internal API and
   // bot-checks even signed-in requests), fall back to the official iframe embed —
-  // it keeps playing no matter what happens to the extraction path.
-  val useYoutubeWebFallback = isYoutubeTrailer && resolved && !youtubeLoginRequired &&
-    (nativePlaybackFailed || source == null)
+  // it keeps playing no matter what happens to the extraction path. A video the player API
+  // reported as needing sign-in lands here too: the embed plays age-gated and bot-walled
+  // trailers the API refused, and it is the reason nothing is asked of the viewer.
+  val useYoutubeWebFallback = isYoutubeTrailer && resolved && (nativePlaybackFailed || source == null)
   if (useYoutubeWebFallback) {
     TrailerWebView(
       url = url,
@@ -17587,7 +17774,11 @@ private fun TrailerPlaybackView(
       autoPlay = autoPlay,
       muted = muted,
       onReadyChanged = onReadyChanged,
-      onLoginRequired = { if (!youtubeLoginAttempted) youtubeLoginRequired = true else onLoadFailed() },
+      // Treated as an ordinary failure. YouTube reports its "confirm you're not a bot" wall
+      // through the same signal as a genuine age gate, and that wall is about a proof-of-origin
+      // token rather than about who is asking — so a sign-in prompt could not answer it, and the
+      // one that used to open here simply reappeared on every trailer.
+      onLoginRequired = onLoadFailed,
       onLoadFailed = onLoadFailed,
       onEnded = onEnded,
       controlledEmbed = true,
@@ -17595,7 +17786,7 @@ private fun TrailerPlaybackView(
     return
   }
   if (source == null) {
-    if (resolved && resolution?.youtubeLoginRequired != true && !isYoutubeTrailer) {
+    if (resolved && !isYoutubeTrailer) {
       LaunchedEffect(url, nativeRetryKey) { onLoadFailed() }
     }
     Box(modifier = modifier)

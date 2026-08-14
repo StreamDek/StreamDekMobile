@@ -329,7 +329,7 @@ import androidx.media3.exoplayer.hls.HlsMediaSource
 import net.streamdek.mobile.debrid.DebridFailureCode
 import net.streamdek.mobile.debrid.DebridKeyStore
 import net.streamdek.mobile.debrid.DebridManager
-import net.streamdek.mobile.debrid.PremiumizeOAuth
+import net.streamdek.mobile.debrid.PremiumizeDeviceAuth
 import net.streamdek.mobile.debrid.RealDebridClient
 import net.streamdek.mobile.debrid.RealDebridDeviceAuth
 import net.streamdek.mobile.usenet.UsenetPlayback
@@ -4793,7 +4793,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
    */
   /** Whether this build can offer Premiumize sign-in; a blank client id hides the option. */
   fun premiumizeSignInAvailable(): Boolean =
-    PremiumizeOAuth.isConfigured(BuildConfig.PREMIUMIZE_CLIENT_ID)
+    BuildConfig.PREMIUMIZE_CLIENT_ID.isNotBlank()
 
   /**
    * Signs in to Real-Debrid by code, reporting progress through [uiState].
@@ -4885,61 +4885,47 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     )
   }
 
-  /** The verifier for the attempt in flight. Held only in memory — that is what makes it a proof. */
-  private var premiumizeChallenge: PremiumizeOAuth.Challenge? = null
-
-  /**
-   * Opens Premiumize's approval page, returning the URL for the caller to launch.
-   *
-   * The verifier stays here; only its hash travels, so a redirect intercepted on the way back is
-   * worth nothing without this process.
-   */
-  fun beginPremiumizeSignIn(): String {
-    val challenge = PremiumizeOAuth.newChallenge()
-    premiumizeChallenge = challenge
-    return PremiumizeOAuth.authorizeUrl(BuildConfig.PREMIUMIZE_CLIENT_ID, challenge)
-  }
-
-  fun premiumizeBrowserLaunchFailed(error: Throwable) {
-    premiumizeChallenge = null
-    showDebridNotice(
-      error.message?.takeIf { it.isNotBlank() }
-        ?: "No browser could be opened for Premiumize sign-in.",
-      isError = true,
-      loading = false,
-    )
-  }
-
-  /**
-   * Finishes the sign-in once the browser hands back.
-   *
-   * A redirect whose state does not match the attempt in flight is dropped without a word to the
-   * provider — that is the case state exists to catch, and reporting it would only tell whoever
-   * sent it that the app was listening.
-   */
-  fun completePremiumizeSignIn(redirect: String) {
-    val challenge = premiumizeChallenge ?: return
-    val code = PremiumizeOAuth.codeFromRedirect(redirect, challenge.state) ?: run {
-      premiumizeChallenge = null
-      showDebridNotice("Premiumize sign-in was not completed.", isError = true, loading = false)
-      return
-    }
-    premiumizeChallenge = null
+  /** Starts Premiumize's documented browser-pairing flow, which never needs a client secret. */
+  fun startPremiumizeSignIn() {
     viewModelScope.launch {
-      uiState = uiState.copy(debridLoading = true, debridNoticeMessage = null, debridNoticeIsError = false)
-      val token = runCatching {
-        PremiumizeOAuth.exchange(BuildConfig.PREMIUMIZE_CLIENT_ID, code, challenge.verifier)
-      }.getOrElse { error ->
-        showDebridNotice(error.message ?: "Premiumize sign-in failed.", isError = true, loading = false)
+      uiState = uiState.copy(debridLoading = true, debridNoticeMessage = null, debridNoticeIsError = false, debridSignIn = null)
+      val started = runCatching { PremiumizeDeviceAuth.start(BuildConfig.PREMIUMIZE_CLIENT_ID) }.getOrElse { error ->
+        showDebridNotice(error.message ?: "Premiumize could not be reached.", isError = true, loading = false)
         return@launch
       }
-      // From here it is an ordinary credential: Premiumize takes this token through the same
-      // header as a typed key, so both storage paths work on it unchanged.
-      if (uiState.debridCloudSync) {
-        addDebridAccount("premiumize", token)
-      } else {
-        addDebridAccountOnDevice("premiumize", token)
+      uiState = uiState.copy(
+        debridLoading = false,
+        debridSignIn = DebridSignInPrompt("Premiumize", started.userCode, started.verificationUrl),
+      )
+
+      val deadline = System.currentTimeMillis() + started.expiresInSeconds * 1000L
+      var intervalSeconds = started.intervalSeconds
+      while (System.currentTimeMillis() < deadline) {
+        delay(intervalSeconds * 1000L)
+        if (uiState.debridSignIn == null) return@launch
+        when (val poll = PremiumizeDeviceAuth.poll(BuildConfig.PREMIUMIZE_CLIENT_ID, started.deviceCode)) {
+          is PremiumizeDeviceAuth.Poll.Authorized -> {
+            if (uiState.debridCloudSync) addDebridAccount("premiumize", poll.accessToken)
+            else addDebridAccountOnDevice("premiumize", poll.accessToken)
+            uiState = uiState.copy(
+              debridSignIn = uiState.debridSignIn?.copy(waiting = false, outcome = "Connected."),
+            )
+            return@launch
+          }
+          PremiumizeDeviceAuth.Poll.Pending -> Unit
+          PremiumizeDeviceAuth.Poll.SlowDown -> intervalSeconds = (intervalSeconds + 5).coerceAtMost(60)
+          is PremiumizeDeviceAuth.Poll.Failed -> {
+            uiState = uiState.copy(debridSignIn = uiState.debridSignIn?.copy(waiting = false, outcome = poll.message))
+            return@launch
+          }
+        }
       }
+      uiState = uiState.copy(
+        debridSignIn = uiState.debridSignIn?.copy(
+          waiting = false,
+          outcome = "That code expired before it was approved. Start again for a new one.",
+        ),
+      )
     }
   }
 
@@ -6649,21 +6635,11 @@ private class NativeAppViewModelFactory(
 fun StreamDekNativeApp(
   pendingAddonManifestUrl: String? = null,
   onAddonManifestConsumed: () -> Unit = {},
-  pendingPremiumizeRedirect: String? = null,
-  onPremiumizeRedirectConsumed: () -> Unit = {},
 ) {
   val context = androidx.compose.ui.platform.LocalContext.current.applicationContext as Application
   val viewModel = viewModel<NativeAppViewModel>(factory = NativeAppViewModelFactory(context))
   val snackbarHostState = remember { SnackbarHostState() }
   val uiState = viewModel.uiState
-  // Handled here rather than on the settings screen: the browser hands control back to
-  // whatever the app was showing, which after a trip out to Premiumize is rarely the screen
-  // the sign-in started from.
-  LaunchedEffect(pendingPremiumizeRedirect) {
-    val redirect = pendingPremiumizeRedirect ?: return@LaunchedEffect
-    viewModel.completePremiumizeSignIn(redirect)
-    onPremiumizeRedirectConsumed()
-  }
   LaunchedEffect(uiState.playerSession?.url, uiState.session?.user?.uid) {
     if (uiState.playerSession != null) viewModel.refreshHandoffDevices()
   }
@@ -7909,18 +7885,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
                 onMoveDebrid = viewModel::moveDebridAccount,
                 onSetDebridCloudSync = viewModel::setDebridCloudSync,
                 onPremiumizeSignIn = if (viewModel.premiumizeSignInAvailable()) {
-                  {
-                    // Handed to the browser rather than shown in a WebView: an OAuth page in
-                    // an embedded view is exactly what a password manager will not fill and
-                    // what a viewer cannot check the address bar of.
-                    runCatching {
-                      launchContext.startActivity(
-                        Intent(Intent.ACTION_VIEW, Uri.parse(viewModel.beginPremiumizeSignIn()))
-                          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                      )
-                    }.onFailure(viewModel::premiumizeBrowserLaunchFailed)
-                    Unit
-                  }
+                  { viewModel.startPremiumizeSignIn() }
                 } else null,
                 onRealDebridSignIn = { viewModel.startRealDebridSignIn() },
                 onDismissDebridSignIn = { viewModel.dismissDebridSignIn() },
@@ -17027,7 +16992,7 @@ private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Un
       }
       if (selectedProvider == "premiumize" && onPremiumizeSignIn != null) {
         Text(
-          "Premiumize can sign you in without an access key: approve it in your browser and you are returned here.",
+          "Premiumize can sign you in without an access key: open its secure page and approve the short pairing code.",
           color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
           style = MaterialTheme.typography.bodySmall,
         )
@@ -21070,8 +21035,6 @@ private fun GlassCard(modifier: Modifier = Modifier, containerAlpha: Float = 0.8
     Column(modifier = Modifier.fillMaxWidth(), content = content)
   }
 }
-
-
 
 
 

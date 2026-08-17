@@ -20,7 +20,7 @@ This repository is the detached `StreamDekMobile-Kotlin` line. The old React Nat
 Example:
 
 ```env
-STREAMDEK_API_URL=http://192.168.0.2:3000
+STREAMDEK_API_URL=http://192.168.x.x:3000
 ```
 
 ## Build
@@ -43,24 +43,21 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 
 ## Production release
 
-Production Android releases are published from StreamDek/StreamDekMobile by
-.github/workflows/release.yml. Pushing a semantic version tag such as v2.0.4
+Production Android releases are published from StreamDek/repo by
+.github/workflows/release.yml. Pushing a semantic version tag such as vX.Y.Z
 builds the signed APK, creates the GitHub Release, generates latest.json, and
 uploads that update manifest to the backend VPS.
 
-The Android package name is permanently net.streamdek.mobile. Do not change the
+The Android package name is permanently com.example.mobile. Do not change the
 application ID or UPDATE_PACKAGE_NAME; existing installations and in-app
 updates depend on that identity and the production signing key remaining stable.
 
 ### One-time GitHub configuration
 
-Configure these Actions values in StreamDek/StreamDekMobile:
+Configure these Actions values in Repository:
 
 - Repository variable or secret: STREAMDEK_API_URL
-- Secrets: ANDROID_KEYSTORE_BASE64, ANDROID_STORE_PASSWORD,
-  ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD
-- Deployment secrets: SSH_HOST, SSH_USER, SSH_PRIVATE_KEY, SSH_PORT,
-  and DEPLOY_PATH
+- Secrets: ANDROID_KEYSTORE_BASE64, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD, and DEPLOY_PATH
 
 DEPLOY_PATH is the backend checkout directory on the VPS. The workflow writes
 the mobile manifest to:
@@ -73,7 +70,7 @@ The backend mounts release-manifests at /app/release-manifests and serves the
 file through:
 
 ~~~text
-https://api.streamdek.net/public/updates/android-mobile/latest
+https://api.example.com/public/updates/android-mobile/latest
 ~~~
 
 ### Prepare a release
@@ -140,7 +137,7 @@ The package field in the manifest must always be:
 ~~~json
 {
   "platform": "android-mobile",
-  "packageName": "net.streamdek.mobile"
+  "packageName": "com.example.mobile"
 }
 ~~~
 
@@ -152,7 +149,7 @@ workflow, GitHub Release, public manifest, and installed APK:
 ~~~powershell
 gh run list --repo StreamDek/StreamDekMobile --workflow release.yml --limit 3
 gh release view vX.Y.Z --repo StreamDek/StreamDekMobile --json url,assets,publishedAt
-curl.exe -sS "https://api.streamdek.net/public/updates/android-mobile/latest?verify=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
+curl.exe -sS "https://api.example.com/public/updates/android-mobile/latest?verify=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
 ~~~
 
 Check that the public manifest has the intended versionCode, versionName,
@@ -178,12 +175,12 @@ set the same inputs CI uses and run the generator against an existing APK:
 
 ~~~powershell
 $env:UPDATE_PLATFORM='android-mobile'
-$env:UPDATE_PACKAGE_NAME='net.streamdek.mobile'
+$env:UPDATE_PACKAGE_NAME='com.example.mobile'
 $env:UPDATE_VERSION_CODE='43'
-$env:UPDATE_VERSION_NAME='2.0.4'
-$env:UPDATE_ASSET_NAME='streamdek-v2.0.4.apk'
+$env:UPDATE_VERSION_NAME='X.X.X'
+$env:UPDATE_ASSET_NAME='appname-vX.X.X.apk'
 $env:UPDATE_APK_PATH='android/app/build/outputs/apk/release/app-release.apk'
-$env:UPDATE_APK_URL='https://github.com/StreamDek/StreamDekMobile/releases/download/v2.0.4/streamdek-v2.0.4.apk'
+$env:UPDATE_APK_URL='https://github.com/project/mobile/releases/download/vX.X.X/appname-vX.X.X.apk'
 $env:UPDATE_MANIFEST_OUTPUT_PATH='android/app/build/outputs/update-test/latest.json'
 $env:UPDATE_REQUIRED='false'
 node scripts/generate-update-manifest.js
@@ -206,4 +203,3 @@ do not move or reuse a published tag for different code.
 ## Notes
 
 - The repository is Kotlin/Android-only.
-- The original mixed mobile repo remains separate in `C:\Dev\StreamDekMobile`.

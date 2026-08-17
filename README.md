@@ -9,7 +9,6 @@ This repository is the detached `StreamDekMobile-Kotlin` line. The old React Nat
 - Native app UI in `android/app/src/main/java/net/streamdek/mobile/nativeapp/`
 - Android entrypoint in `android/app/src/main/java/net/streamdek/mobile/MainActivity.kt`
 - Native MPV playback via `android/app/src/main/java/net/streamdek/mobile/mpv/MPVView.kt`
-- Native torrent streaming service under `android/app/src/main/java/net/streamdek/mobile/torrent/`
 
 ## Requirements
 

@@ -30,6 +30,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.FastOutLinearInEasing
@@ -71,6 +72,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -194,6 +197,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHostState
@@ -212,6 +216,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -333,8 +338,9 @@ import net.streamdek.mobile.debrid.PremiumizeDeviceAuth
 import net.streamdek.mobile.debrid.RealDebridClient
 import net.streamdek.mobile.debrid.RealDebridDeviceAuth
 import net.streamdek.mobile.usenet.UsenetPlayback
-import net.streamdek.mobile.torrent.TorrentServerConfig
-import net.streamdek.mobile.torrent.TorrentServerService
+import net.streamdek.mobile.peer.PeerStreamConfig
+import net.streamdek.mobile.peer.PeerStreamService
+import net.streamdek.mobile.peer.SwarmStats
 
 
 private enum class MainTab { Home, Search, Continue, Watchlist, Settings }
@@ -343,6 +349,110 @@ private enum class DetailTab { About, Episodes, Streams }
 private enum class DetailPageStyle { Classic, Centered }
 private enum class SeasonTabStyle { Regular, Posters }
 private enum class ContinueWatchingStyle { Cinematic, Glass, Ticket, Mini, Stacked }
+
+/**
+ * How artwork appears behind a page.
+ *
+ * Normal leaves the theme background alone. Cinematic is the blurred backdrop this app has always
+ * drawn. Dominant takes the artwork's main colour and paints the page with it, giving each title an
+ * identity of its own without a photograph competing with the text on top of it.
+ *
+ * Shared by the home screen and title pages, which offer different subsets of it: home has no one
+ * subject to take a colour from — it is a grid of many titles — so Dominant is a title-page choice.
+ */
+internal enum class BackgroundMode { Normal, Cinematic, Dominant }
+
+/**
+ * A panel colour for a section sitting on [pageColor].
+ *
+ * Lifted slightly away from the page rather than tinted toward black or white: a section band has
+ * to read as its own surface without becoming a slab, and on an arbitrary page colour the only way
+ * to do both is to stay that colour and move its lightness. The direction follows the page, so it
+ * separates on a dark page and on a light one alike.
+ */
+internal fun sectionSurfaceColor(pageColor: Color): Color {
+  val hsv = FloatArray(3)
+  android.graphics.Color.RGBToHSV(
+    (pageColor.red * 255).toInt().coerceIn(0, 255),
+    (pageColor.green * 255).toInt().coerceIn(0, 255),
+    (pageColor.blue * 255).toInt().coerceIn(0, 255),
+    hsv,
+  )
+  hsv[2] = if (pageColor.luminance() > 0.5f) hsv[2] * 0.94f else (hsv[2] + 0.10f).coerceAtMost(0.62f)
+  // Held back a little, so the band never reads as a more saturated stripe than the page it sits on.
+  hsv[1] = hsv[1] * 0.92f
+  return Color(android.graphics.Color.HSVToColor(hsv))
+}
+
+/**
+ * The Background Mode setting, wherever it appears.
+ *
+ * Takes the modes to offer rather than deciding them, so the home screen and title pages share one
+ * implementation and differ only in the list they pass — which is the whole difference between them.
+ */
+@Composable
+private fun BackgroundModeRow(
+  subtitle: String,
+  options: List<BackgroundMode>,
+  selected: BackgroundMode,
+  onSelected: (BackgroundMode) -> Unit,
+) {
+  SettingsChoiceRow(
+    "BG",
+    Color(0xFFA78BFA),
+    "Background Mode",
+    subtitle,
+    options.map { it.name },
+    selected.name,
+  ) { chosen ->
+    onSelected(runCatching { BackgroundMode.valueOf(chosen) }.getOrDefault(BackgroundMode.Cinematic))
+  }
+}
+
+/** A title page offers every mode. */
+internal val titleBackgroundModes: List<BackgroundMode> = BackgroundMode.values().toList()
+
+/** The home screen offers the two that make sense for a grid. */
+internal val homeBackgroundModes: List<BackgroundMode> = listOf(BackgroundMode.Normal, BackgroundMode.Cinematic)
+
+/**
+ * The page colour taken from a title's artwork, once it has been sampled.
+ *
+ * Sampling happens off the composition and the result is cached per image, so scrolling a page or
+ * returning to one costs nothing. Returns null while the work is in flight and if it fails, which
+ * leaves the caller on the theme background rather than flashing a colour in partway through.
+ */
+@Composable
+internal fun rememberDominantBackgroundColor(artworkUrl: String?, enabled: Boolean): Color? {
+  val context = LocalContext.current
+  var color by remember(artworkUrl, enabled) { mutableStateOf<Color?>(null) }
+  val themeBackground = MaterialTheme.colorScheme.background
+  val lightTheme = themeBackground.luminance() > 0.5f
+  LaunchedEffect(artworkUrl, enabled, lightTheme) {
+    color = if (!enabled) null else DominantColor.forArtwork(context, artworkUrl, lightTheme)
+  }
+  // Always animated, and always from the theme background — including the very first frame after
+  // the colour is worked out. Returning the settled colour the instant it arrived made the page
+  // change in one step, which reads as a glitch rather than as artwork being taken in.
+  val animated by animateColorAsState(
+    targetValue = color ?: themeBackground,
+    animationSpec = tween(durationMillis = 650, easing = FastOutSlowInEasing),
+    label = "page_background",
+  )
+  return if (color == null) null else animated
+}
+
+internal fun backgroundModeLabel(mode: BackgroundMode): String = when (mode) {
+  BackgroundMode.Normal -> "Normal"
+  BackgroundMode.Cinematic -> "Cinematic"
+  BackgroundMode.Dominant -> "Dominant Color"
+}
+
+internal fun backgroundModeDescription(mode: BackgroundMode): String = when (mode) {
+  BackgroundMode.Normal -> "Keep the usual page background."
+  BackgroundMode.Cinematic -> "Blur the backdrop behind the page."
+  BackgroundMode.Dominant -> "Match the page background to the main color from the backdrop."
+}
 private enum class AppAppearance { System, Dark, Light }
 private enum class AppThemePreset { Monochrome, Ocean, Emerald, Amber, Crimson, Rose, Violet, White }
 private enum class HeaderStyle { Classic, Modern }
@@ -646,6 +756,17 @@ private data class AppUiState(
   val handoffDevices: List<LinkedTvDevice> = emptyList(),
   val playerLaunching: Boolean = false,
   val playerLaunchingLabel: String? = null,
+  /**
+   * The torrent being warmed up, so the launch screen reports the swarm behind *this* source and a
+   * premium stream does not inherit the numbers from an earlier peer-to-peer one.
+   */
+  val playerLaunchingPeerHash: String? = null,
+  /**
+   * Why a premium service turned a source down, shown briefly while playback carries on trying
+   * elsewhere. Separate from [errorMessage]: this is not a failure, it is an explanation — the
+   * attempt is still running when it appears.
+   */
+  val playbackNotice: String? = null,
   val liveChannelSwitching: Boolean = false,
   val liveChannelSwitchingLabel: String? = null,
   // Owner key of a guest identity with local data (watchlist/favourites/add-ons) found
@@ -664,6 +785,19 @@ private data class AppUiState(
   val renderSurface: String = "Standard",
   val playerEngine: String = "Auto",
   val preferredAudioLanguage: String = "en",
+  /** Fallback spoken language, for a release that carries nothing in the preferred one. */
+  val secondaryAudioLanguage: String = Languages.NONE,
+  val preferredSubtitleLanguage: String = "en",
+  val secondarySubtitleLanguage: String = Languages.NONE,
+  /**
+   * Prefer a forced track when the audio is already in the subtitle language — the signs-and-songs
+   * subtitles rather than a full transcript of dialogue the viewer can already hear.
+   */
+  val useForcedSubtitles: Boolean = false,
+  /** Hide subtitle tracks that are in neither preferred language. */
+  val showOnlyPreferredSubtitleLanguages: Boolean = false,
+  /** How much add-ons are asked for: "preferred", "all" or "off". */
+  val addonSubtitleLoading: String = ADDON_SUBTITLE_LOADING_PREFERRED,
   val detailPageStyle: DetailPageStyle = DetailPageStyle.Classic,
   val seasonTabStyle: SeasonTabStyle = SeasonTabStyle.Regular,
   val showNavLabels: Boolean = true,
@@ -675,6 +809,15 @@ private data class AppUiState(
   // silently discards the 4K renditions YouTube publishes for some trailers. The adaptive picker
   // takes the tallest rendition at or under it, so this is a ceiling rather than a demand.
   val heroTrailerResolution: Int = 2160,
+  /**
+   * How long a title page is left alone before its trailer starts, in seconds.
+   *
+   * Synced, and the same value the television and the web portal read: a household that has decided
+   * how soon trailers should begin has decided it for the account, not for one device. Held to
+   * 0-5 seconds on the way in and on the way out, so a value written from anywhere cannot leave a
+   * page sitting still waiting for something minutes away.
+   */
+  val heroTrailerDelaySeconds: Int = DEFAULT_TRAILER_DELAY_SECONDS,
   /**
    * Whether hero trailers start muted. Trailers open silent, but unmuting one is a statement about
    * how the viewer wants trailers to sound from then on — it used to be forgotten the moment the
@@ -754,16 +897,31 @@ private data class AppUiState(
   val nextEpisodeThresholdMode: String = "minutes",
   val nextEpisodeThresholdPercent: Int = 95,
   val nextEpisodeThresholdMinutes: Int = 2,
-  val torrentServerSettings: TorrentServerSettings = TorrentServerSettings(),
-  val torrentServerStatus: TorrentServerStatus = TorrentServerStatus(),
+  val peerStreamSettings: PeerStreamSettings = PeerStreamSettings(),
+  val peerStreamStatus: PeerStreamStatus = PeerStreamStatus(),
   val ratingsEnabled: Boolean = true,
   val externalRatingsEnabled: Boolean = true,
   val enabledRatingProviders: Set<String> = DEFAULT_RATING_PROVIDER_IDS,
   val mdblistApiKey: String = "",
   val vividAmbient: Boolean = true,
+  /**
+   * Seeded from [vividAmbient] on first run and kept in its own right afterwards — the old boolean
+   * could only say blurred-or-not, and there are three answers now.
+   */
+  val detailBackgroundMode: BackgroundMode = BackgroundMode.Cinematic,
+  /** The home screen's own choice, never Dominant — see [homeBackgroundModes]. */
+  val homeBackgroundMode: BackgroundMode = BackgroundMode.Cinematic,
+  /** How often the trailer cache clears itself, in hours. Zero switches it off. */
+  val trailerCacheClearHours: Int = DEFAULT_TRAILER_CACHE_CLEAR_HOURS,
+  val trailerCacheSizeBytes: Long = 0L,
+  val trailerCacheLastClearedAt: Long = 0L,
   val ambientTintPercent: Int = 100,
   val defaultAppCatalogsEnabled: Boolean = true,
   val homeCatalogRows: List<HomeCatalogRow> = emptyList(),
+  /** The default catalogs the backend offers, in its preferred order. */
+  val catalogDefinitions: List<CatalogDefinition> = fallbackCatalogDefinitions,
+  /** Where each default row's "View All" carries on from, by row id. */
+  val catalogNextPages: Map<String, Int> = emptyMap(),
   val fusionBadgesEnabled: Boolean = true,
   /**
    * Whether stream rows are rebuilt into StreamDek's own two-line layout instead of showing what
@@ -798,7 +956,7 @@ private data class HomeRow(
   val items: List<MediaItem>,
 )
 
-private data class HomeCatalogRow(
+internal data class HomeCatalogRow(
   val id: String,
   val title: String,
   val subtitle: String,
@@ -1235,6 +1393,7 @@ private class AppSettingsStore(context: Context) {
   private var profilePrefs = prefs
   private val profileSettingKeys = setOf(
     "detail_page_style", "season_tab_style", "show_streams_list", "hero_trailer_autoplay", "hero_trailer_resolution",
+    "hero_trailer_delay_seconds",
     "hero_trailer_muted", "show_hero_synopsis", "continue_watching_style", "live_landscape_cards", "live_favourite_drawer_cards",
     "live_categories_enabled", "live_progress_bar", "mdblist_api_key", "primary_sync_service",
     "remember_last_source", "skip_intro_enabled", "skip_segments_enabled", "skip_recap_enabled", "skip_ending_enabled",
@@ -1280,6 +1439,12 @@ private class AppSettingsStore(context: Context) {
     renderSurface = normalizeRenderSurfaceSetting(prefs.getString("render_surface", "Standard") ?: "Standard"),
     playerEngine = normalizePlayerEngineSetting(prefs.getString("player_engine", "Auto") ?: "Auto"),
     preferredAudioLanguage = normalizePreferredAudioLanguage(prefs.getString("preferred_audio_language", "en")),
+    secondaryAudioLanguage = Languages.normalize(prefs.getString("secondary_audio_language", Languages.NONE)),
+    preferredSubtitleLanguage = Languages.normalize(prefs.getString("preferred_subtitle_language", "en")),
+    secondarySubtitleLanguage = Languages.normalize(prefs.getString("secondary_subtitle_language", Languages.NONE)),
+    useForcedSubtitles = prefs.getBoolean("use_forced_subtitles", false),
+    showOnlyPreferredSubtitleLanguages = prefs.getBoolean("show_only_preferred_subtitle_languages", false),
+    addonSubtitleLoading = prefs.getString("addon_subtitle_loading", ADDON_SUBTITLE_LOADING_PREFERRED) ?: ADDON_SUBTITLE_LOADING_PREFERRED,
     detailPageStyle = runCatching { DetailPageStyle.valueOf(profilePrefs.getString("detail_page_style", DetailPageStyle.Classic.name) ?: DetailPageStyle.Classic.name) }.getOrDefault(DetailPageStyle.Classic),
     seasonTabStyle = runCatching { SeasonTabStyle.valueOf(profilePrefs.getString("season_tab_style", SeasonTabStyle.Regular.name) ?: SeasonTabStyle.Regular.name) }.getOrDefault(SeasonTabStyle.Regular),
     showNavLabels = prefs.getBoolean("show_nav_labels", true),
@@ -1289,6 +1454,8 @@ private class AppSettingsStore(context: Context) {
     showStreamsList = profilePrefs.getBoolean("show_streams_list", true),
     heroTrailerAutoplay = profilePrefs.getBoolean("hero_trailer_autoplay", true),
     heroTrailerResolution = profilePrefs.getInt("hero_trailer_resolution", 2160).coerceIn(360, 2160),
+    heroTrailerDelaySeconds = profilePrefs.getInt("hero_trailer_delay_seconds", DEFAULT_TRAILER_DELAY_SECONDS)
+      .coerceIn(0, MAX_TRAILER_DELAY_SECONDS),
     heroTrailerMuted = profilePrefs.getBoolean("hero_trailer_muted", true),
     debridCloudSync = prefs.getBoolean("debrid_cloud_sync", true),
     showHeroSynopsis = profilePrefs.getBoolean("show_hero_synopsis", false),
@@ -1322,7 +1489,7 @@ private class AppSettingsStore(context: Context) {
     nextEpisodeThresholdMode = profilePrefs.getString("next_episode_threshold_mode", "minutes") ?: "minutes",
     nextEpisodeThresholdPercent = profilePrefs.getInt("next_episode_threshold_percent", 95).coerceIn(50, 99),
     nextEpisodeThresholdMinutes = profilePrefs.getInt("next_episode_threshold_minutes", 2).coerceIn(1, 15),
-    torrentServerSettings = TorrentServerSettings(
+    peerStreamSettings = PeerStreamSettings(
       enabled = prefs.getBoolean("torrent_enabled", true),
       streamingMode = prefs.getString("torrent_streaming_mode", "server") ?: "server",
       profile = prefs.getString("torrent_profile", "default") ?: "default",
@@ -1335,6 +1502,21 @@ private class AppSettingsStore(context: Context) {
     enabledRatingProviders = parseRatingProviderIds(profilePrefs.getString("enabled_rating_providers", null)),
     mdblistApiKey = profilePrefs.getString("mdblist_api_key", "") ?: "",
     vividAmbient = profilePrefs.getBoolean("vivid_ambient", true),
+    detailBackgroundMode = runCatching {
+      BackgroundMode.valueOf(
+        profilePrefs.getString("detail_background_mode", null)
+        // No stored mode means an account from before this setting existed: whatever its blurred
+        // backdrop was set to is the mode it should carry on with.
+          ?: if (profilePrefs.getBoolean("vivid_ambient", true)) BackgroundMode.Cinematic.name else BackgroundMode.Normal.name,
+      )
+    }.getOrDefault(BackgroundMode.Cinematic),
+    homeBackgroundMode = runCatching {
+      BackgroundMode.valueOf(
+        profilePrefs.getString("home_background_mode", null)
+          ?: if (profilePrefs.getBoolean("vivid_ambient", true)) BackgroundMode.Cinematic.name else BackgroundMode.Normal.name,
+      )
+    }.getOrDefault(BackgroundMode.Cinematic).takeIf { it in homeBackgroundModes } ?: BackgroundMode.Cinematic,
+    trailerCacheClearHours = profilePrefs.getInt("trailer_cache_clear_hours", DEFAULT_TRAILER_CACHE_CLEAR_HOURS),
     ambientTintPercent = profilePrefs.getInt("ambient_tint_percent", 100).coerceIn(20, 100),
     defaultAppCatalogsEnabled = profilePrefs.getBoolean("default_app_catalogs_enabled", true),
     homeCatalogRows = parseHomeCatalogRows(profilePrefs.getString("home_catalog_rows", null)),
@@ -1360,6 +1542,12 @@ private class AppSettingsStore(context: Context) {
   fun saveRenderSurface(value: String) { prefs.edit().putString("render_surface", normalizeRenderSurfaceSetting(value)).apply() }
   fun savePlayerEngine(value: String) { prefs.edit().putString("player_engine", normalizePlayerEngineSetting(value)).apply() }
   fun savePreferredAudioLanguage(value: String) { prefs.edit().putString("preferred_audio_language", normalizePreferredAudioLanguage(value)).apply() }
+  fun saveSecondaryAudioLanguage(value: String) { prefs.edit().putString("secondary_audio_language", Languages.normalize(value)).apply() }
+  fun savePreferredSubtitleLanguage(value: String) { prefs.edit().putString("preferred_subtitle_language", Languages.normalize(value)).apply() }
+  fun saveSecondarySubtitleLanguage(value: String) { prefs.edit().putString("secondary_subtitle_language", Languages.normalize(value)).apply() }
+  fun saveUseForcedSubtitles(value: Boolean) { prefs.edit().putBoolean("use_forced_subtitles", value).apply() }
+  fun saveShowOnlyPreferredSubtitleLanguages(value: Boolean) { prefs.edit().putBoolean("show_only_preferred_subtitle_languages", value).apply() }
+  fun saveAddonSubtitleLoading(value: String) { prefs.edit().putString("addon_subtitle_loading", value).apply() }
   fun saveDetailPageStyle(value: DetailPageStyle) { profilePrefs.edit().putString("detail_page_style", value.name).apply() }
   fun saveSeasonTabStyle(value: SeasonTabStyle) { profilePrefs.edit().putString("season_tab_style", value.name).apply() }
   fun saveShowNavLabels(value: Boolean) { prefs.edit().putBoolean("show_nav_labels", value).apply() }
@@ -1369,6 +1557,7 @@ private class AppSettingsStore(context: Context) {
   fun saveShowStreamsList(value: Boolean) { profilePrefs.edit().putBoolean("show_streams_list", value).apply() }
   fun saveHeroTrailerAutoplay(value: Boolean) { profilePrefs.edit().putBoolean("hero_trailer_autoplay", value).apply() }
   fun saveHeroTrailerResolution(value: Int) { profilePrefs.edit().putInt("hero_trailer_resolution", value.coerceIn(360, 2160)).apply() }
+  fun saveHeroTrailerDelaySeconds(value: Int) { profilePrefs.edit().putInt("hero_trailer_delay_seconds", value.coerceIn(0, MAX_TRAILER_DELAY_SECONDS)).apply() }
   fun saveHeroTrailerMuted(value: Boolean) { profilePrefs.edit().putBoolean("hero_trailer_muted", value).apply() }
   /** Device-scoped: this device's record of where the account holder wants their keys kept. */
   fun saveDebridCloudSync(value: Boolean) { prefs.edit().putBoolean("debrid_cloud_sync", value).apply() }
@@ -1403,7 +1592,7 @@ private class AppSettingsStore(context: Context) {
   fun saveNextEpisodeThresholdMode(value: String) { profilePrefs.edit().putString("next_episode_threshold_mode", value).apply() }
   fun saveNextEpisodeThresholdPercent(value: Int) { profilePrefs.edit().putInt("next_episode_threshold_percent", value.coerceIn(50, 99)).apply() }
   fun saveNextEpisodeThresholdMinutes(value: Int) { profilePrefs.edit().putInt("next_episode_threshold_minutes", value.coerceIn(1, 15)).apply() }
-  fun saveTorrentServerSettings(value: TorrentServerSettings) {
+  fun savePeerStreamSettings(value: PeerStreamSettings) {
     prefs.edit()
       .putBoolean("torrent_enabled", value.enabled)
       .putString("torrent_streaming_mode", value.streamingMode)
@@ -1419,8 +1608,11 @@ private class AppSettingsStore(context: Context) {
   // Profile-scoped: a tracking key belongs to the profile using it, not to the whole account.
   fun saveMdblistApiKey(value: String) { profilePrefs.edit().putString("mdblist_api_key", value.trim()).apply() }
   fun saveVividAmbient(value: Boolean) { profilePrefs.edit().putBoolean("vivid_ambient", value).apply() }
+  fun saveDetailBackgroundMode(value: BackgroundMode) { profilePrefs.edit().putString("detail_background_mode", value.name).apply() }
+  fun saveHomeBackgroundMode(value: BackgroundMode) { profilePrefs.edit().putString("home_background_mode", value.name).apply() }
   fun saveAmbientTintPercent(value: Int) { profilePrefs.edit().putInt("ambient_tint_percent", value.coerceIn(20, 100)).apply() }
   fun saveDefaultAppCatalogsEnabled(value: Boolean) { profilePrefs.edit().putBoolean("default_app_catalogs_enabled", value).apply() }
+  fun saveTrailerCacheClearHours(value: Int) { profilePrefs.edit().putInt("trailer_cache_clear_hours", value).apply() }
   fun saveHomeCatalogRows(rows: List<HomeCatalogRow>) { profilePrefs.edit().putString("home_catalog_rows", serializeHomeCatalogRows(rows)).apply() }
   fun saveFusionBadges(value: Boolean) { profilePrefs.edit().putBoolean("fusion_badges", value).apply() }
   fun saveStreamDekFormatting(value: Boolean) { profilePrefs.edit().putBoolean("streamdek_stream_formatting", value).apply() }
@@ -1481,7 +1673,7 @@ internal fun normalizePlayerEngineSetting(raw: String): String = when (raw.trim(
   else -> "Auto"
 }
 
-private fun TorrentServerSettings.toServiceConfig(): TorrentServerConfig = TorrentServerConfig(
+private fun PeerStreamSettings.toServiceConfig(): PeerStreamConfig = PeerStreamConfig(
   enabled = enabled,
   streamingMode = streamingMode,
   profile = profile,
@@ -1490,16 +1682,16 @@ private fun TorrentServerSettings.toServiceConfig(): TorrentServerConfig = Torre
   runAsForegroundService = runAsForegroundService,
 )
 
-private fun torrentServerStatusFromSnapshot(snapshot: Map<String, Any>, fallback: TorrentServerSettings): TorrentServerStatus {
+private fun peerStreamStatusFromSnapshot(snapshot: Map<String, Any>, fallback: PeerStreamSettings): PeerStreamStatus {
   val port = (snapshot["port"] as? Number)?.toInt() ?: fallback.port
-  return TorrentServerStatus(
+  return PeerStreamStatus(
     isOnline = snapshot["isOnline"] as? Boolean ?: false,
     isForeground = snapshot["isForeground"] as? Boolean ?: false,
     requestedForeground = snapshot["requestedForeground"] as? Boolean ?: fallback.runAsForegroundService,
     port = port,
     url = snapshot["url"] as? String ?: "http://127.0.0.1:$port",
     cacheDirectory = snapshot["cacheDirectory"] as? String ?: "",
-    torrentStoreDirectory = snapshot["torrentStoreDirectory"] as? String ?: "",
+    peerStoreDirectory = snapshot["peerStoreDirectory"] as? String ?: "",
     cacheUsageBytes = (snapshot["cacheUsageBytes"] as? Number)?.toLong() ?: 0L,
     profile = snapshot["profile"] as? String ?: fallback.profile,
     cacheSizeGb = (snapshot["cacheSizeGb"] as? Number)?.toInt() ?: fallback.cacheSizeGb,
@@ -1510,11 +1702,125 @@ private fun torrentServerStatusFromSnapshot(snapshot: Map<String, Any>, fallback
   )
 }
 
-private fun buildTorrentMagnet(infoHash: String, filename: String?): String {
-  val normalized = infoHash.trim()
-  val displayName = filename?.takeIf { it.isNotBlank() }?.let { "&dn=${Uri.encode(it)}" }.orEmpty()
-  return "magnet:?xt=urn:btih:$normalized$displayName"
+/**
+ * Bumped when trailer state is cleared; read by everything that resolves or plays a trailer.
+ *
+ * Observable global state rather than a parameter or a composition local: three screens raise
+ * trailers through two layers of composables, and a reset that only some of them noticed would be
+ * worse than none — the page would re-resolve while the WebView beneath it kept the failing session.
+ * Reading it in a composable subscribes that composable, so a bump reaches every trailer surface
+ * currently on screen and nothing else.
+ */
+internal object TrailerResetSignal {
+  private val state = androidx.compose.runtime.mutableIntStateOf(0)
+
+  @Composable
+  fun current(): Int = state.intValue
+
+  fun bump() {
+    state.intValue += 1
+  }
 }
+
+/** How much subtitle add-ons are asked for. */
+internal const val ADDON_SUBTITLE_LOADING_PREFERRED = "preferred"
+internal const val ADDON_SUBTITLE_LOADING_ALL = "all"
+internal const val ADDON_SUBTITLE_LOADING_OFF = "off"
+
+internal val addonSubtitleLoadingChoices: List<Pair<String, String>> = listOf(
+  ADDON_SUBTITLE_LOADING_PREFERRED to "Preferred languages",
+  ADDON_SUBTITLE_LOADING_ALL to "All languages",
+  ADDON_SUBTITLE_LOADING_OFF to "Off",
+)
+
+internal fun addonSubtitleLoadingLabel(value: String): String =
+  addonSubtitleLoadingChoices.firstOrNull { it.first == value }?.second ?: "Preferred languages"
+
+/**
+ * The subtitle languages a viewer has asked for, most wanted first, with nothing repeated.
+ *
+ * "None" as the secondary means exactly that, so it contributes nothing rather than an empty string
+ * that would match every untagged track.
+ */
+internal fun preferredSubtitleLanguages(primary: String, secondary: String): List<String> =
+  listOf(primary, secondary)
+    .map(Languages::normalize)
+    .filter { it.isNotEmpty() && it != Languages.NONE && it != Languages.ORIGINAL }
+    .distinct()
+
+/**
+ * How long a notice stays up before it withdraws on its own.
+ *
+ * A provider refusal is given twelve seconds because it names a service and a reason the viewer may
+ * want to act on; an error is given ten, and a plain confirmation five — long enough to read, short
+ * enough not to sit over the player.
+ */
+private const val PLAYBACK_NOTICE_DURATION_MS = 12_000L
+private const val APP_NOTICE_ERROR_DURATION_MS = 10_000L
+private const val APP_NOTICE_DURATION_MS = 5_000L
+
+/** Trailer cache housekeeping: daily, at nine in the morning. */
+internal const val DEFAULT_TRAILER_CACHE_CLEAR_HOURS = 24
+internal const val TRAILER_CACHE_CLEAR_HOUR_OF_DAY = 9
+
+/** The intervals offered for automatic trailer-cache clearing, as hours to label. */
+internal val trailerCacheClearChoices: List<Pair<Int, String>> = listOf(
+  12 to "Every 12 hours",
+  24 to "Every 24 hours",
+  48 to "Every 48 hours",
+)
+
+internal fun trailerCacheClearLabel(hours: Int): String =
+  trailerCacheClearChoices.firstOrNull { it.first == hours }?.second ?: "Every $hours hours"
+
+/** What the trailer cache currently holds, and when it was last thrown away. */
+internal fun trailerCacheStatusLabel(sizeBytes: Long, lastClearedAt: Long): String {
+  val size = if (sizeBytes <= 0L) "Nothing stored" else formatBytesLabel(sizeBytes)
+  if (lastClearedAt <= 0L) return "$size · never cleared"
+  val hoursAgo = ((System.currentTimeMillis() - lastClearedAt) / 3_600_000L).toInt()
+  val cleared = when {
+    hoursAgo <= 0 -> "cleared less than an hour ago"
+    hoursAgo == 1 -> "cleared an hour ago"
+    hoursAgo < 24 -> "cleared $hoursAgo hours ago"
+    hoursAgo < 48 -> "cleared yesterday"
+    else -> "cleared ${hoursAgo / 24} days ago"
+  }
+  return "$size · $cleared"
+}
+
+/**
+ * What to tell the viewer when premium services turn a source down.
+ *
+ * Keeps each service's own words — providers explain a dead subscription, a torrent limit and
+ * refused content in prose rather than in codes, so the text is the only thing that distinguishes
+ * "renew your subscription" from "delete a torrent" from "this one is never going to work".
+ * Two at most: the point is to explain, not to list.
+ */
+private fun debridRejectionNotice(failures: List<net.streamdek.mobile.debrid.DebridFailure>): String? {
+  val meaningful = failures.filter {
+    it.code != net.streamdek.mobile.debrid.DebridFailureCode.NotConfigured &&
+      it.code != net.streamdek.mobile.debrid.DebridFailureCode.Downloading &&
+      it.message.isNotBlank()
+  }
+  if (meaningful.isEmpty()) return null
+  val listed = meaningful.take(2).joinToString(" · ") { failure ->
+    "${debridProviderLabel(failure.provider)}: ${failure.message.trim().removeSuffix(".").take(90)}"
+  }
+  return if (meaningful.size > 2) "$listed · and ${meaningful.size - 2} more" else listed
+}
+
+/** How long playback waits for the local torrent engine to come up: 250ms x 80 = twenty seconds. */
+private const val TORRENT_SERVER_READY_POLL_MS = 250L
+private const val TORRENT_SERVER_READY_ATTEMPTS = 80
+
+/**
+ * The magnet handed to the local engine and to the premium services.
+ *
+ * Carries the add-on's own announce list (or the public fallback) rather than the hash alone —
+ * see [buildMagnetLink]. A trackerless magnet is why torrent sources found no peers.
+ */
+private fun buildPeerMagnet(stream: AddonStream, infoHash: String): String =
+  buildMagnetLink(infoHash, stream.filename, stream.sources)
 
 
 private data class ThemeAccentPalette(
@@ -1854,7 +2160,25 @@ private fun AddonManifest.providesMetaFor(type: String): Boolean {
 private const val DETAIL_SOURCES_DELAY_MS = 450L
 
 /** Measured from the page having content, not from navigation — see the gate in MediaDetailScreen. */
-private const val DETAIL_TRAILER_DELAY_MS = 700L
+/**
+ * How long a title page is left alone before its trailer starts, and the range it is held to.
+ *
+ * The same numbers the television and the web portal use, because it is the same synced setting.
+ * The ceiling is a product decision: past about five seconds the viewer has finished with the page
+ * and the trailer lands as an interruption rather than as the next thing.
+ */
+const val DEFAULT_TRAILER_DELAY_SECONDS = 3
+const val MAX_TRAILER_DELAY_SECONDS = 5
+
+private fun trailerDelayLabel(seconds: Int): String = when (seconds) {
+  0 -> "Immediately"
+  1 -> "1 second"
+  else -> "$seconds seconds"
+}
+
+/** Read back through the same labels rather than by parsing them, so the two cannot drift apart. */
+private fun trailerDelaySecondsFrom(label: String): Int =
+  (0..MAX_TRAILER_DELAY_SECONDS).firstOrNull { trailerDelayLabel(it) == label } ?: DEFAULT_TRAILER_DELAY_SECONDS
 
 /** TMDB artwork recovered for a tracking-service row that arrived without any. */
 private data class TrackingArtwork(val poster: String?, val backdrop: String?)
@@ -1901,13 +2225,68 @@ private fun parseHomeCatalogRows(raw: String?): List<HomeCatalogRow> {
 
 private fun isBuiltinHomeCatalog(id: String): Boolean = !id.startsWith("addon:")
 
-private fun builtinHomeCatalogCandidates(): List<HomeCatalogRow> = listOf(
-  HomeCatalogRow("new_movies", "New Movies", "Provided by StreamDek", builtin = true),
-  HomeCatalogRow("new_series", "New Series", "Provided by StreamDek", builtin = true),
-  HomeCatalogRow("streaming_networks", "Streaming Networks", "Provided by StreamDek", builtin = true),
-  HomeCatalogRow("trending_movies", "Trending Movies", "Provided by StreamDek", builtin = true),
-  HomeCatalogRow("trending_series", "Trending Series", "Provided by StreamDek", builtin = true),
+/**
+ * The default catalogs, as the app believes them to be before the backend's registry arrives.
+ *
+ * The backend owns the real list — this is what the row-management screen and the home layout
+ * fall back to when the manifest request has not landed yet or failed, so a viewer never sees an
+ * empty "Home rows" screen. Ids and order match the server registry; titles are only a fallback,
+ * since the manifest's titles win the moment it loads.
+ */
+internal val fallbackCatalogDefinitions: List<CatalogDefinition> = listOf(
+  Triple("trending_movies", "Trending Movies", "movie"),
+  Triple("trending_series", "Trending Series", "tv"),
+  Triple("new_movies", "New Movies", "movie"),
+  Triple("in_theatres", "In Theatres", "movie"),
+  Triple("new_series", "New Series", "tv"),
+  Triple("tmdb_airing_today", "TMDB Airing Today", "tv"),
+  Triple("streaming_networks", "Streaming Networks", "network"),
+  Triple("tmdb_popular_movies", "TMDB Popular Movies", "movie"),
+  Triple("tmdb_popular_series", "TMDB Popular Series", "tv"),
+  Triple("top_100_movies", "Top 100 Movies", "movie"),
+  Triple("top_100_series", "Top 100 Series", "tv"),
+  Triple("acclaimed_this_year", "Critically Acclaimed", "movie"),
+  Triple("action_movies", "Action & Adventure", "movie"),
+  Triple("comedy_movies", "Comedy Movies", "movie"),
+  Triple("crime_series", "Crime Series", "tv"),
+  Triple("horror_movies", "Horror Movies", "movie"),
+  Triple("scifi_movies", "Sci-Fi & Fantasy", "movie"),
+  Triple("animated_movies", "Animated Movies", "movie"),
+  Triple("animated_series", "Animated Series", "tv"),
+  Triple("anime_series", "Anime", "tv"),
+  Triple("family_movies", "Family Movies", "movie"),
+  Triple("family_series", "Family Series", "tv"),
+  Triple("studio_a24", "A24", "movie"),
+  Triple("studio_blumhouse", "Blumhouse", "movie"),
+  Triple("studio_20th_century", "20th Century", "movie"),
+  Triple("documentary_movies", "Documentaries", "movie"),
+  Triple("hidden_gems_movies", "Hidden Gems", "movie"),
+  Triple("classic_movies", "Timeless Classics", "movie"),
+).map { (id, title, mediaType) ->
+  CatalogDefinition(
+    id = id,
+    title = title,
+    mediaType = mediaType,
+    group = "default",
+    previewLimit = 20,
+    maxItems = if (id.startsWith("top_100")) 100 else null,
+    paginated = mediaType != "network",
+  )
+}
+
+/** The five rows StreamDek shipped before the catalog registry, used to spot an old saved layout. */
+private val legacyDefaultCatalogIds = setOf(
+  "new_movies",
+  "new_series",
+  "streaming_networks",
+  "trending_movies",
+  "trending_series",
 )
+
+internal fun builtinHomeCatalogCandidates(definitions: List<CatalogDefinition>): List<HomeCatalogRow> =
+  definitions.ifEmpty { fallbackCatalogDefinitions }.map { definition ->
+    HomeCatalogRow(definition.id, definition.title, "Provided by StreamDek", builtin = true)
+  }
 
 private fun addonHomeCatalogTitle(addonName: String, catalogName: String, type: String, needsDifferentiator: Boolean): String {
   val cleaned = cleanAddonCatalogLabel(catalogName, addonName)
@@ -1923,7 +2302,7 @@ private fun addonHomeCatalogTitle(addonName: String, catalogName: String, type: 
   }"
 }
 
-private fun addonHomeCatalogCandidates(addons: List<InstalledAddon>): List<HomeCatalogRow> {
+internal fun addonHomeCatalogCandidates(addons: List<InstalledAddon>): List<HomeCatalogRow> {
   val enabledAddons = addons.filter { it.enabled }.sortedBy { it.position }
   val duplicateCatalogNames = enabledAddons
     .flatMap { addon -> addon.manifest.catalogs.map { catalog -> catalog.name.trim().lowercase() to catalog.type.trim().lowercase() } }
@@ -1955,35 +2334,75 @@ private fun isLiveHomeCatalogRowId(id: String): Boolean {
   return rawType in setOf("tv", "channel", "live", "iptv", "sport", "sports", "events")
 }
 
-private fun mergeHomeCatalogRows(existing: List<HomeCatalogRow>, addons: List<InstalledAddon>): List<HomeCatalogRow> {
-  val candidates = (builtinHomeCatalogCandidates() + addonHomeCatalogCandidates(addons)).associateBy { it.id }
-  val merged = mutableListOf<HomeCatalogRow>()
-  existing.forEach { persisted ->
-    val candidate = candidates[persisted.id] ?: return@forEach
-    merged.add(candidate.copy(enabled = persisted.enabled))
-  }
-  candidates.values.forEach { candidate ->
-    if (merged.none { it.id == candidate.id }) {
-      if (isLiveHomeCatalogRowId(candidate.id)) {
-        // New live TV rows default to sitting just below Streaming Networks.
-        // Users can still re-arrange them from the Home rows settings page —
-        // persisted arrangements above always win.
-        var insertAt = merged.indexOfFirst { it.id == "streaming_networks" } + 1
-        if (insertAt <= 0) {
-          insertAt = merged.size
-        } else {
-          while (insertAt < merged.size && isLiveHomeCatalogRowId(merged[insertAt].id)) insertAt++
-        }
-        merged.add(insertAt, candidate)
-      } else {
-        merged.add(candidate)
-      }
+internal fun mergeHomeCatalogRows(
+  existing: List<HomeCatalogRow>,
+  addons: List<InstalledAddon>,
+  definitions: List<CatalogDefinition> = fallbackCatalogDefinitions,
+): List<HomeCatalogRow> {
+  val builtins = builtinHomeCatalogCandidates(definitions)
+  val candidates = (builtins + addonHomeCatalogCandidates(addons)).associateBy { it.id }
+  // A layout saved before the catalog registry existed knows nothing but the original five rows,
+  // so honouring its order would bury twenty-five new rows underneath them. Those five carried no
+  // deliberate arrangement worth keeping — but a viewer who switched one off meant it, and one who
+  // lifted an add-on row above them meant that too, so the registry order is adopted underneath
+  // whatever the viewer put on top, and the off switches are carried across.
+  val savedBuiltinIds = existing.filter { isBuiltinHomeCatalog(it.id) }.map { it.id }
+  val isLegacyLayout = savedBuiltinIds.isNotEmpty() && savedBuiltinIds.all { it in legacyDefaultCatalogIds }
+  val persisted = if (isLegacyLayout) {
+    val disabled = existing.filterNot { it.enabled }.map { it.id }.toSet()
+    val addonRows = existing.filterNot { isBuiltinHomeCatalog(it.id) }.mapNotNull { row -> candidates[row.id]?.copy(enabled = row.enabled) }
+    val pinnedToTop = existing.indexOfFirst { isBuiltinHomeCatalog(it.id) }.let { firstBuiltin ->
+      existing.take(firstBuiltin).count { !isBuiltinHomeCatalog(it.id) }
     }
+    addonRows.take(pinnedToTop) +
+      builtins.map { candidate -> candidate.copy(enabled = candidate.id !in disabled) } +
+      addonRows.drop(pinnedToTop)
+  } else {
+    existing.mapNotNull { row -> candidates[row.id]?.copy(enabled = row.enabled) }
+  }
+
+  val merged = persisted.toMutableList()
+  val builtinOrder = builtins.withIndex().associate { (index, row) -> row.id to index }
+  candidates.values.forEach { candidate ->
+    if (merged.any { it.id == candidate.id }) return@forEach
+    val insertAt = when {
+      // New live TV rows default to sitting just below Streaming Networks.
+      // Users can still re-arrange them from the Home rows settings page —
+      // persisted arrangements above always win.
+      isLiveHomeCatalogRowId(candidate.id) -> {
+        var index = merged.indexOfFirst { it.id == "streaming_networks" } + 1
+        if (index <= 0) {
+          merged.size
+        } else {
+          while (index < merged.size && isLiveHomeCatalogRowId(merged[index].id)) index++
+          index
+        }
+      }
+      // A default row added by a later backend deploy lands beside its registry neighbours rather
+      // than at the bottom, so the intended discovery order survives without disturbing rows the
+      // viewer has already moved: directly after the last row the registry puts ahead of it, or
+      // else in front of the first row the registry puts behind it.
+      builtinOrder.containsKey(candidate.id) -> {
+        val position = builtinOrder.getValue(candidate.id)
+        val after = merged.withIndex()
+          .filter { (_, row) -> builtinOrder[row.id]?.let { it < position } == true }
+          .maxByOrNull { (_, row) -> builtinOrder.getValue(row.id) }
+          ?.index
+        if (after != null) {
+          after + 1
+        } else {
+          merged.indexOfFirst { row -> builtinOrder[row.id]?.let { it > position } == true }
+            .takeIf { it >= 0 } ?: merged.size
+        }
+      }
+      else -> merged.size
+    }
+    merged.add(insertAt, candidate)
   }
   return if (merged.isEmpty()) candidates.values.toList() else merged
 }
 
-private fun applyHomeCatalogLayout(sections: List<MediaSection>, rows: List<HomeCatalogRow>, defaultBuiltinsEnabled: Boolean): List<MediaSection> {
+internal fun applyHomeCatalogLayout(sections: List<MediaSection>, rows: List<HomeCatalogRow>, defaultBuiltinsEnabled: Boolean): List<MediaSection> {
   val sectionMap = sections.associateBy { it.id }
   return rows.mapNotNull { row ->
     if (!row.enabled) return@mapNotNull null
@@ -2244,11 +2663,88 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     // .cs3 providers only exist for as long as their classes are loaded, so anything the user
     // already enabled has to be re-loaded on every cold start before it can answer a stream request.
     refreshProfileCloudStreamPlugins()
-    syncTorrentServer()
+    syncPeerEngine()
+    runTrailerCacheHousekeeping()
     restore()
   }
 
   fun clearTransientMessage() { uiState = uiState.copy(errorMessage = null, infoMessage = null) }
+
+  fun clearPlaybackNotice() { uiState = uiState.copy(playbackNotice = null) }
+
+  /**
+   * Clears the trailer cache when its schedule says it is due, on the way in.
+   *
+   * Checked at launch rather than through a background worker: the state it clears only matters to a
+   * viewer who is about to watch something, and a job that wakes the process to delete cookies would
+   * cost battery for no one's benefit.
+   */
+  private fun runTrailerCacheHousekeeping() {
+    val app = getApplication<Application>()
+    viewModelScope.launch {
+      // WebView and CookieManager are main-thread only, which is where this already runs.
+      if (TrailerCache.isClearDue(app, uiState.trailerCacheClearHours, TRAILER_CACHE_CLEAR_HOUR_OF_DAY)) {
+        TrailerCache.clear(app, "scheduled every ${uiState.trailerCacheClearHours}h")
+        resetTrailerMemory()
+      }
+      refreshTrailerCacheStatus()
+    }
+  }
+
+  /**
+   * Drops what a clear cannot reach on its own: the resolver's decisions, KinoCheck's answers, and
+   * whatever the open page and its WebView are still holding.
+   *
+   * This is the difference between a clear that works and a clear that works after an app restart.
+   */
+  private fun resetTrailerMemory() {
+    resetKinocheckHttpClient()
+    resetTrailerResolverMemory()
+    TrailerResetSignal.bump()
+  }
+
+  private fun refreshTrailerCacheStatus() {
+    val app = getApplication<Application>()
+    viewModelScope.launch {
+      val size = withContext(Dispatchers.IO) { TrailerCache.sizeBytes(app) }
+      uiState = uiState.copy(
+        trailerCacheSizeBytes = size,
+        trailerCacheLastClearedAt = TrailerCache.lastClearedAt(app),
+      )
+    }
+  }
+
+  fun setTrailerCacheClearHours(hours: Int) {
+    appSettingsStore.saveTrailerCacheClearHours(hours)
+    uiState = uiState.copy(trailerCacheClearHours = hours)
+    syncCloudPreferences()
+  }
+
+  /**
+   * Clears trailer state now, at the viewer's request.
+   *
+   * The manual route exists because this is the fix for a trailer that has stopped playing, and
+   * waiting until nine in the morning is not a fix. Clearing app data by hand did the same thing but
+   * took settings, watchlist and premium keys with it.
+   */
+  fun clearTrailerCacheNow() {
+    val app = getApplication<Application>()
+    viewModelScope.launch {
+      val freed = TrailerCache.clear(app, "requested from settings")
+      resetTrailerMemory()
+      refreshTrailerCacheStatus()
+      // Names what went, so the row is visibly answering rather than leaving the viewer to wonder
+      // whether the tap registered — the whole reason they are on this screen is that trailers are
+      // not playing, and "nothing appeared to happen" is the worst possible response to that.
+      uiState = uiState.copy(
+        infoMessage = if (freed > 0L) {
+          "Trailer cache cleared — ${formatBytesLabel(freed)} and stored site data removed."
+        } else {
+          "Trailer cache cleared — stored site data removed."
+        },
+      )
+    }
+  }
 
   fun rememberAuthEmail(email: String) {
     authEntryStore.saveEmail(email)
@@ -2305,8 +2801,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       saveCurrentPlaybackSnapshot(it)
       scrobbleCurrentPlayer("pause", it)
     }
-    uiState = uiState.copy(playerSession = null, playerLaunching = false, playerLaunchingLabel = null, streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null)
-    stopOnDemandTorrentServer()
+    uiState = uiState.copy(playerSession = null, playerLaunching = false, playerLaunchingLabel = null, playerLaunchingPeerHash = null, streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null)
+    stopOnDemandPeerEngine()
     // Closes the news server connections and drops the partially assembled file. A no-op unless
     // what just stopped was a usenet source.
     UsenetPlayback.release()
@@ -2314,14 +2810,23 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   fun cancelPlayerLaunch() {
     playbackRequestGeneration += 1
-    uiState = uiState.copy(playerLaunching = false, playerLaunchingLabel = null, streamLoading = false, returnToDetailAfterPlayer = false, playerReturnEpisodeId = null)
+    uiState = uiState.copy(playerLaunching = false, playerLaunchingLabel = null, playerLaunchingPeerHash = null, streamLoading = false, returnToDetailAfterPlayer = false, playerReturnEpisodeId = null)
   }
 
   fun setBrowseRow(row: HomeRow?) {
     uiState = if (row == null) {
       uiState.copy(browseRow = null, browseLoadedItems = emptyList(), browseReturnItemId = null)
     } else {
-      uiState.copy(browseRow = row, browseLoadedItems = row.items, browseReturnItemId = null)
+      // Opening a row starts again from what the home preview holds, so the paging cursor has to
+      // go back to where that preview stopped. Left where the last visit finished, a second visit
+      // would show twenty items and then jump straight to page six.
+      val restart = uiState.allHomeSections.firstOrNull { it.id == row.id }?.nextPage
+      uiState.copy(
+        browseRow = row,
+        browseLoadedItems = row.items,
+        browseReturnItemId = null,
+        catalogNextPages = if (restart != null) uiState.catalogNextPages + (row.id to restart) else uiState.catalogNextPages,
+      )
     }
   }
 
@@ -2359,7 +2864,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     uiState = uiState.copy(
       detail = snapshot.detail, detailIsLive = snapshot.detailIsLive, detailFallbackItem = snapshot.fallbackItem,
       selectedEpisode = snapshot.selectedEpisode, availableStreams = snapshot.availableStreams, playerSession = snapshot.playerSession,
-      streamLoading = false, playerLaunching = false, playerLaunchingLabel = null,
+      streamLoading = false, playerLaunching = false, playerLaunchingLabel = null, playerLaunchingPeerHash = null,
       liveChannelSwitching = false, liveChannelSwitchingLabel = null, errorMessage = null,
     )
     liveChannelSwitchSnapshot = null
@@ -2688,12 +3193,31 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     if (uiState.homeSections.isNotEmpty() && !force) return
     launchWork(
       onStart = { uiState = uiState.copy(homeLoading = true, errorMessage = null) },
-      block = { apiClient.fetchHomeSections(uiState.session, uiState.addons, uiState.activeProfileId) },
-      onSuccess = { sections ->
-        val mergedRows = mergeHomeCatalogRows(uiState.homeCatalogRows, uiState.addons)
+      block = {
+        // The registry says which default rows exist; the viewer's saved layout says which of
+        // them to actually fetch, so switching rows off makes the home request smaller rather
+        // than fetching thirty rows and throwing most of them away.
+        val definitions = apiClient.fetchCatalogManifest().getOrElse { error ->
+          android.util.Log.w("StreamDekCatalogs", "catalog manifest unavailable, using built-in defaults", error)
+          emptyList()
+        }
+        val rows = mergeHomeCatalogRows(uiState.homeCatalogRows, uiState.addons, definitions.ifEmpty { uiState.catalogDefinitions })
+        val wantedIds = if (!uiState.defaultAppCatalogsEnabled) {
+          emptyList()
+        } else {
+          rows.filter { it.builtin && it.enabled }.map { it.id }
+        }
+        apiClient
+          .fetchHomeSections(uiState.session, uiState.addons, uiState.activeProfileId, catalogIds = wantedIds)
+          .map { sections -> Triple(sections, definitions, rows) }
+      },
+      onSuccess = { (sections, definitions, rows) ->
+        val mergedRows = if (definitions.isEmpty()) rows else mergeHomeCatalogRows(uiState.homeCatalogRows, uiState.addons, definitions)
         uiState = uiState.copy(
           homeLoading = false,
           allHomeSections = sections,
+          catalogDefinitions = definitions.ifEmpty { uiState.catalogDefinitions },
+          catalogNextPages = sections.mapNotNull { section -> section.nextPage?.let { section.id to it } }.toMap(),
           homeCatalogRows = mergedRows,
           homeSections = applyHomeCatalogLayout(sections, mergedRows, uiState.defaultAppCatalogsEnabled),
         )
@@ -2867,11 +3391,23 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         }
       }
     } else {
-      val page = (skip / 20) + 1
-      android.util.Log.d("StreamDekPaging", "loadMoreRowItems row=$rowId: built-in path page=$page skip=$skip")
-      apiClient.fetchMoreBuiltInSection(rowId, page)
-        .onFailure { android.util.Log.w("StreamDekPaging", "fetchMoreBuiltInSection failed row=$rowId", it) }
-        .onSuccess { android.util.Log.d("StreamDekPaging", "fetchMoreBuiltInSection row=$rowId page=$page returned ${it.size}") }
+      // Default catalog rows page by page number. The cursor comes from the backend rather than
+      // from the item count: a home preview is not always exactly one page (a row short on titles
+      // the viewer has not already seen reads further into its catalog), so dividing by the page
+      // size would either re-request a page or skip one.
+      val page = uiState.catalogNextPages[rowId] ?: ((skip / CATALOG_PAGE_SIZE) + 1)
+      android.util.Log.d("StreamDekPaging", "loadMoreRowItems row=$rowId: default catalog path page=$page skip=$skip")
+      apiClient.fetchCatalogPage(rowId, page)
+        .onFailure { android.util.Log.w("StreamDekPaging", "fetchCatalogPage failed row=$rowId page=$page", it) }
+        .onSuccess { result ->
+          android.util.Log.d("StreamDekPaging", "fetchCatalogPage row=$rowId page=$page returned ${result.items.size}")
+          // Only a page that produced something moves the cursor on; an empty answer means the
+          // end of the catalog, and "View All" stops asking.
+          if (result.items.isNotEmpty()) {
+            uiState = uiState.copy(catalogNextPages = uiState.catalogNextPages + (rowId to page + 1))
+          }
+        }
+        .map { it.items }
         .getOrDefault(emptyList())
     }
     if (uiState.browseRow?.id == rowId && fetched.isNotEmpty()) {
@@ -3744,8 +4280,18 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       val deviceDebrid = deviceDebrid()
 
       if (deviceDebrid != null) {
-        val magnet = buildTorrentMagnet(infoHash, playbackStream.filename)
+        val magnet = buildPeerMagnet(playbackStream, infoHash)
+        android.util.Log.d(
+          "StreamDekDebrid",
+          "resolving $infoHash on device via ${deviceDebrid.providerNames} with ${streamTrackers(playbackStream.sources).size} tracker(s)",
+        )
         val resolution = deviceDebrid.resolve(infoHash, magnet, playbackStream.filename)
+        // Said out loud rather than swallowed: a service refusing a source for its own reasons — a
+        // dead subscription, a torrent limit, content it will not touch — is something the viewer
+        // can act on, and it used to be visible only if every other route failed too.
+        debridRejectionNotice(resolution.failures)?.let { notice ->
+          uiState = uiState.copy(playbackNotice = notice)
+        }
         resolution.stream?.link?.url?.takeIf { it.isNotBlank() }?.let { resolvedUrl ->
           return@runCatching ResolvedPlayback(resolvedUrl, playbackStream)
         }
@@ -3763,6 +4309,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           .onFailure { error ->
             lastFailure = error
             (error as? DebridDownloadingException)?.let { debridDownloading = it }
+            error.message?.takeIf { it.isNotBlank() }?.let { message ->
+              uiState = uiState.copy(playbackNotice = "Premium services: ${message.take(140)}")
+            }
           }
           .getOrNull()?.url?.takeIf { it.isNotBlank() }?.let { resolvedUrl ->
             return@runCatching ResolvedPlayback(resolvedUrl, playbackStream)
@@ -3770,23 +4319,39 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       }
     }
 
-    val torrentSettings = uiState.torrentServerSettings
+    val torrentSettings = uiState.peerStreamSettings
+    android.util.Log.d(
+      "StreamDekPeer",
+      "debrid produced nothing for $infoHash; peer-to-peer mode=${torrentSettings.streamingMode} enabled=${torrentSettings.enabled}",
+    )
     if (torrentSettings.streamingMode == "server") {
-      ensureTorrentServerReady(torrentSettings.toServiceConfig())
-        .onFailure { lastFailure = it }
+      ensurePeerEngineReady(torrentSettings.toServiceConfig())
+        .onFailure {
+          android.util.Log.w("StreamDekPeer", "engine did not come up: ${it.message}")
+          lastFailure = it
+        }
         .getOrNull()?.let { activeConfig ->
-          return@runCatching ResolvedPlayback(
-            TorrentServerService.createTorrentProxyUrl(
+          // Warming the torrent up is allowed to fail without taking the whole attempt down with
+          // it: the backend path below is a genuine second chance, and letting this throw straight
+          // out of resolvePlayback meant a local engine that could not find peers also skipped it.
+          runCatching {
+            PeerStreamService.createPeerProxyUrl(
               activeConfig,
               infoHash,
-              buildTorrentMagnet(infoHash, playbackStream.filename),
+              buildPeerMagnet(playbackStream, infoHash),
               playbackStream.filename,
-            ),
-            playbackStream,
-          )
+            )
+          }
+            .onFailure {
+              android.util.Log.w("StreamDekPeer", "local engine could not prepare $infoHash: ${it.message}")
+              lastFailure = it
+            }
+            .getOrNull()?.let { proxyUrl ->
+              return@runCatching ResolvedPlayback(proxyUrl, playbackStream)
+            }
         }
 
-      apiClient.streamTorrent(playbackStream)
+      apiClient.streamViaBackend(playbackStream)
         .onFailure { lastFailure = it }
         .getOrNull()?.takeIf { it.isNotBlank() }?.let { backendUrl ->
           return@runCatching ResolvedPlayback(backendUrl, playbackStream)
@@ -3794,7 +4359,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
 
     throw debridDownloading
-      ?: IllegalStateException(lastFailure?.message ?: "This torrent could not be resolved. Enable the local torrent server or try another source.")
+      ?: IllegalStateException(lastFailure?.message ?: "This source could not be resolved. Enable the local torrent server or try another source.")
   }
 
   fun playStream(
@@ -3814,6 +4379,12 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           returnToDetailAfterPlayer = true,
           playerLaunching = true,
           playerLaunchingLabel = buildSourceLabel(stream) ?: stream.addonName,
+          // Only a source with no direct link of its own can end up in the torrent engine, so this
+          // is what the launch screen watches the swarm for.
+          playerLaunchingPeerHash = stream.infoHash?.takeIf { hash ->
+            hash.isNotBlank() && stream.url?.startsWith("magnet:", ignoreCase = true) != false
+          },
+          playbackNotice = null,
           playerReturnEpisodeId = if (returnToEpisodeStreams) selectedEpisode?.id else null,
         )
       },
@@ -3850,7 +4421,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         pendingDirectContinueFallback?.let { showDetails ->
           pendingDirectContinueFallback = null
           pendingDirectContinueEntry = null
-          uiState = uiState.copy(playerLaunching = false, playerLaunchingLabel = null, streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null, errorMessage = null)
+          uiState = uiState.copy(playerLaunching = false, playerLaunchingLabel = null, playerLaunchingPeerHash = null, streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null, errorMessage = null)
           showDetails()
           return@failure
         }
@@ -3860,7 +4431,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           uiState = uiState.copy(infoMessage = failedChannel?.let { "Could not load $it. Kept the current channel playing." } ?: message)
           return@failure
         }
-        uiState = uiState.copy(playerLaunching = false, playerLaunchingLabel = null, streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null, errorMessage = message)
+        uiState = uiState.copy(playerLaunching = false, playerLaunchingLabel = null, playerLaunchingPeerHash = null, streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null, errorMessage = message)
       },
     )
   }
@@ -4170,7 +4741,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       },
       onSuccess = { addons ->
         val merged = mergeWithLocalAddons(addons)
-        val mergedRows = mergeHomeCatalogRows(uiState.homeCatalogRows, merged)
+        val mergedRows = mergeHomeCatalogRows(uiState.homeCatalogRows, merged, uiState.catalogDefinitions)
         uiState = uiState.copy(
           addonsLoading = false,
           addons = merged,
@@ -5253,6 +5824,20 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     seasonTabStyle?.let(appSettingsStore::saveSeasonTabStyle)
     preferences.heroTrailerAutoplay?.let(appSettingsStore::saveHeroTrailerAutoplay)
     preferences.heroTrailerResolution?.let(appSettingsStore::saveHeroTrailerResolution)
+    preferences.heroTrailerDelaySeconds?.let(appSettingsStore::saveHeroTrailerDelaySeconds)
+    preferences.trailerCacheClearHours?.let(appSettingsStore::saveTrailerCacheClearHours)
+    preferences.detailBackgroundMode?.let { mode ->
+      runCatching { BackgroundMode.valueOf(mode) }.getOrNull()?.let(appSettingsStore::saveDetailBackgroundMode)
+    }
+    preferences.homeBackgroundMode?.let { mode ->
+      runCatching { BackgroundMode.valueOf(mode) }.getOrNull()?.takeIf { it in homeBackgroundModes }?.let(appSettingsStore::saveHomeBackgroundMode)
+    }
+    preferences.secondaryAudioLanguage?.let(appSettingsStore::saveSecondaryAudioLanguage)
+    preferences.preferredSubtitleLanguage?.let(appSettingsStore::savePreferredSubtitleLanguage)
+    preferences.secondarySubtitleLanguage?.let(appSettingsStore::saveSecondarySubtitleLanguage)
+    preferences.useForcedSubtitles?.let(appSettingsStore::saveUseForcedSubtitles)
+    preferences.showOnlyPreferredSubtitleLanguages?.let(appSettingsStore::saveShowOnlyPreferredSubtitleLanguages)
+    preferences.addonSubtitleLoading?.let(appSettingsStore::saveAddonSubtitleLoading)
     preferences.ratingsEnabled?.let(appSettingsStore::saveRatingsEnabled)
     preferences.externalRatingsEnabled?.let(appSettingsStore::saveExternalRatingsEnabled)
     ratingProviders?.let(appSettingsStore::saveEnabledRatingProviders)
@@ -5312,6 +5897,17 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       seasonTabStyle = seasonTabStyle ?: uiState.seasonTabStyle,
       heroTrailerAutoplay = preferences.heroTrailerAutoplay ?: uiState.heroTrailerAutoplay,
       heroTrailerResolution = preferences.heroTrailerResolution?.coerceIn(360, 2160) ?: uiState.heroTrailerResolution,
+      trailerCacheClearHours = preferences.trailerCacheClearHours ?: uiState.trailerCacheClearHours,
+      detailBackgroundMode = preferences.detailBackgroundMode?.let { mode -> runCatching { BackgroundMode.valueOf(mode) }.getOrNull() } ?: uiState.detailBackgroundMode,
+      homeBackgroundMode = preferences.homeBackgroundMode?.let { mode -> runCatching { BackgroundMode.valueOf(mode) }.getOrNull() }?.takeIf { it in homeBackgroundModes } ?: uiState.homeBackgroundMode,
+      secondaryAudioLanguage = preferences.secondaryAudioLanguage?.let(Languages::normalize) ?: uiState.secondaryAudioLanguage,
+      preferredSubtitleLanguage = preferences.preferredSubtitleLanguage?.let(Languages::normalize) ?: uiState.preferredSubtitleLanguage,
+      secondarySubtitleLanguage = preferences.secondarySubtitleLanguage?.let(Languages::normalize) ?: uiState.secondarySubtitleLanguage,
+      useForcedSubtitles = preferences.useForcedSubtitles ?: uiState.useForcedSubtitles,
+      showOnlyPreferredSubtitleLanguages = preferences.showOnlyPreferredSubtitleLanguages ?: uiState.showOnlyPreferredSubtitleLanguages,
+      addonSubtitleLoading = preferences.addonSubtitleLoading ?: uiState.addonSubtitleLoading,
+      heroTrailerDelaySeconds = preferences.heroTrailerDelaySeconds?.coerceIn(0, MAX_TRAILER_DELAY_SECONDS)
+        ?: uiState.heroTrailerDelaySeconds,
       ratingsEnabled = preferences.ratingsEnabled ?: uiState.ratingsEnabled,
       externalRatingsEnabled = preferences.externalRatingsEnabled ?: uiState.externalRatingsEnabled,
       enabledRatingProviders = ratingProviders ?: uiState.enabledRatingProviders,
@@ -5346,6 +5942,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       autoUpdateChecksEnabled = preferences.autoUpdateChecksEnabled ?: uiState.autoUpdateChecksEnabled,
     )
     if (homeCatalogRows != null) uiState = uiState.copy(homeSections = applyHomeCatalogLayout(uiState.allHomeSections, homeCatalogRows, uiState.defaultAppCatalogsEnabled))
+    // Another device may have switched rows on that this one never fetched.
+    refreshHomeIfCatalogsMissing()
     if (fusionBadgeUrls != null) refreshFusionBadgeSources()
     uiState.detail?.let(::refreshExternalRatings)
   }
@@ -5773,6 +6371,16 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       seasonTabStyle = uiState.seasonTabStyle.name,
       heroTrailerAutoplay = uiState.heroTrailerAutoplay,
       heroTrailerResolution = uiState.heroTrailerResolution,
+      heroTrailerDelaySeconds = uiState.heroTrailerDelaySeconds,
+      trailerCacheClearHours = uiState.trailerCacheClearHours,
+      detailBackgroundMode = uiState.detailBackgroundMode.name,
+      homeBackgroundMode = uiState.homeBackgroundMode.name,
+      secondaryAudioLanguage = uiState.secondaryAudioLanguage,
+      preferredSubtitleLanguage = uiState.preferredSubtitleLanguage,
+      secondarySubtitleLanguage = uiState.secondarySubtitleLanguage,
+      useForcedSubtitles = uiState.useForcedSubtitles,
+      showOnlyPreferredSubtitleLanguages = uiState.showOnlyPreferredSubtitleLanguages,
+      addonSubtitleLoading = uiState.addonSubtitleLoading,
       ratingsEnabled = uiState.ratingsEnabled,
       externalRatingsEnabled = uiState.externalRatingsEnabled,
       enabledRatingProviders = uiState.enabledRatingProviders.sorted(),
@@ -5854,6 +6462,12 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setShowStreamsList(value: Boolean) { appSettingsStore.saveShowStreamsList(value); uiState = uiState.copy(showStreamsList = value); syncCloudPreferences() }
   fun setHeroTrailerAutoplay(value: Boolean) { appSettingsStore.saveHeroTrailerAutoplay(value); uiState = uiState.copy(heroTrailerAutoplay = value); syncCloudPreferences() }
   fun setHeroTrailerResolution(value: Int) { appSettingsStore.saveHeroTrailerResolution(value); uiState = uiState.copy(heroTrailerResolution = value); syncCloudPreferences() }
+  fun setHeroTrailerDelaySeconds(value: Int) {
+    val clamped = value.coerceIn(0, MAX_TRAILER_DELAY_SECONDS)
+    appSettingsStore.saveHeroTrailerDelaySeconds(clamped)
+    uiState = uiState.copy(heroTrailerDelaySeconds = clamped)
+    syncCloudPreferences()
+  }
   /** Local only: how loud trailers should be is a property of the device in your hand, not the account. */
   fun setHeroTrailerMuted(value: Boolean) { appSettingsStore.saveHeroTrailerMuted(value); uiState = uiState.copy(heroTrailerMuted = value) }
   fun setShowHeroSynopsis(value: Boolean) { appSettingsStore.saveShowHeroSynopsis(value); uiState = uiState.copy(showHeroSynopsis = value); syncCloudPreferences() }
@@ -5903,6 +6517,39 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setSubtitleOutline(value: Boolean) { appSettingsStore.saveSubtitleOutline(value); uiState = uiState.copy(subtitleOutline = value) }
   fun setSubtitleOutlineColor(value: String) { appSettingsStore.saveSubtitleOutlineColor(value); uiState = uiState.copy(subtitleOutlineColor = value) }
   fun setSubtitleDefaultSource(value: String) { appSettingsStore.saveSubtitleDefaultSource(value); uiState = uiState.copy(subtitleDefaultSource = value) }
+  fun setSecondaryAudioLanguage(value: String) {
+    val normalized = Languages.normalize(value)
+    appSettingsStore.saveSecondaryAudioLanguage(normalized)
+    uiState = uiState.copy(secondaryAudioLanguage = normalized)
+    syncCloudPreferences()
+  }
+  fun setPreferredSubtitleLanguage(value: String) {
+    val normalized = Languages.normalize(value)
+    appSettingsStore.savePreferredSubtitleLanguage(normalized)
+    uiState = uiState.copy(preferredSubtitleLanguage = normalized)
+    syncCloudPreferences()
+  }
+  fun setSecondarySubtitleLanguage(value: String) {
+    val normalized = Languages.normalize(value)
+    appSettingsStore.saveSecondarySubtitleLanguage(normalized)
+    uiState = uiState.copy(secondarySubtitleLanguage = normalized)
+    syncCloudPreferences()
+  }
+  fun setUseForcedSubtitles(value: Boolean) {
+    appSettingsStore.saveUseForcedSubtitles(value)
+    uiState = uiState.copy(useForcedSubtitles = value)
+    syncCloudPreferences()
+  }
+  fun setShowOnlyPreferredSubtitleLanguages(value: Boolean) {
+    appSettingsStore.saveShowOnlyPreferredSubtitleLanguages(value)
+    uiState = uiState.copy(showOnlyPreferredSubtitleLanguages = value)
+    syncCloudPreferences()
+  }
+  fun setAddonSubtitleLoading(value: String) {
+    appSettingsStore.saveAddonSubtitleLoading(value)
+    uiState = uiState.copy(addonSubtitleLoading = value)
+    syncCloudPreferences()
+  }
   fun setBlurUnwatchedEpisodes(value: Boolean) { appSettingsStore.saveBlurUnwatchedEpisodes(value); uiState = uiState.copy(blurUnwatchedEpisodes = value); syncCloudPreferences() }
   fun setDetailSelectedTab(tab: String) { uiState = uiState.copy(detailSelectedTab = tab) }
   fun setRatingsEnabled(value: Boolean) { appSettingsStore.saveRatingsEnabled(value); uiState = uiState.copy(ratingsEnabled = value); syncCloudPreferences() }
@@ -5921,16 +6568,41 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     uiState.detail?.let(::refreshExternalRatings)
   }
   fun setVividAmbient(value: Boolean) { appSettingsStore.saveVividAmbient(value); uiState = uiState.copy(vividAmbient = value); syncCloudPreferences() }
+  fun setHomeBackgroundMode(value: BackgroundMode) {
+    appSettingsStore.saveHomeBackgroundMode(value)
+    uiState = uiState.copy(homeBackgroundMode = value)
+    syncCloudPreferences()
+  }
+  fun setDetailBackgroundMode(value: BackgroundMode) {
+    appSettingsStore.saveDetailBackgroundMode(value)
+    // The old boolean is kept in step, so a client that only understands it still behaves sensibly.
+    appSettingsStore.saveVividAmbient(value == BackgroundMode.Cinematic)
+    uiState = uiState.copy(detailBackgroundMode = value, vividAmbient = value == BackgroundMode.Cinematic)
+    syncCloudPreferences()
+  }
   fun setAmbientTintPercent(value: Int) { val clamped = value.coerceIn(20, 100); appSettingsStore.saveAmbientTintPercent(clamped); uiState = uiState.copy(ambientTintPercent = clamped); syncCloudPreferences() }
+  /**
+   * A default row is only fetched while it is switched on, so switching one back on has nothing
+   * to show until home is loaded again. Turning rows off never needs a refetch — the rows already
+   * in hand are simply not laid out.
+   */
+  private fun refreshHomeIfCatalogsMissing() {
+    val wanted = uiState.homeCatalogRows.filter { it.builtin && it.enabled }.map { it.id }
+    if (!uiState.defaultAppCatalogsEnabled || wanted.isEmpty()) return
+    if (wanted.any { id -> uiState.allHomeSections.none { it.id == id } }) loadHome(force = true)
+  }
+
   fun setDefaultAppCatalogsEnabled(value: Boolean) {
     appSettingsStore.saveDefaultAppCatalogsEnabled(value)
     uiState = uiState.copy(defaultAppCatalogsEnabled = value, homeSections = applyHomeCatalogLayout(uiState.allHomeSections, uiState.homeCatalogRows, value))
+    refreshHomeIfCatalogsMissing()
     syncCloudPreferences()
   }
   fun setHomeCatalogRowEnabled(rowId: String, enabled: Boolean) {
     val rows = uiState.homeCatalogRows.map { if (it.id == rowId) it.copy(enabled = enabled) else it }
     appSettingsStore.saveHomeCatalogRows(rows)
     uiState = uiState.copy(homeCatalogRows = rows, homeSections = applyHomeCatalogLayout(uiState.allHomeSections, rows, uiState.defaultAppCatalogsEnabled))
+    if (enabled) refreshHomeIfCatalogsMissing()
     syncCloudPreferences()
   }
   fun moveHomeCatalogRow(rowId: String, delta: Int) {
@@ -5951,11 +6623,11 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setPreferredQuality(value: String) { appSettingsStore.savePreferredQuality(value); uiState = uiState.copy(preferredQuality = value); syncCloudPreferences() }
   fun setMaxFileSizeGb(value: Int) { appSettingsStore.saveMaxFileSizeGb(value); uiState = uiState.copy(maxFileSizeGb = value); syncCloudPreferences() }
   fun setBadgePosition(value: String) { appSettingsStore.saveBadgePosition(value); uiState = uiState.copy(badgePosition = value); syncCloudPreferences() }
-  fun updateTorrentServerSettings(transform: (TorrentServerSettings) -> TorrentServerSettings) {
-    val updated = transform(uiState.torrentServerSettings)
-    appSettingsStore.saveTorrentServerSettings(updated)
-    uiState = uiState.copy(torrentServerSettings = updated)
-    syncTorrentServer()
+  fun updatePeerStreamSettings(transform: (PeerStreamSettings) -> PeerStreamSettings) {
+    val updated = transform(uiState.peerStreamSettings)
+    appSettingsStore.savePeerStreamSettings(updated)
+    uiState = uiState.copy(peerStreamSettings = updated)
+    syncPeerEngine()
   }
 
   fun addFusionBadgeUrl(url: String) {
@@ -6027,13 +6699,13 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   }
 
 
-  private fun syncTorrentServer() {
+  private fun syncPeerEngine() {
     val app = getApplication<Application>()
-    val config = uiState.torrentServerSettings.toServiceConfig()
+    val config = uiState.peerStreamSettings.toServiceConfig()
     val shouldRun = config.enabled && config.streamingMode == "server" &&
-      (config.runAsForegroundService || (uiState.playerSession != null && TorrentServerService.isOnline))
+      (config.runAsForegroundService || (uiState.playerSession != null && PeerStreamService.isOnline))
     if (shouldRun) {
-      val intent = TorrentServerService.createIntent(app, config)
+      val intent = PeerStreamService.createIntent(app, config)
       val notificationsAllowed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         ContextCompat.checkSelfPermission(app, android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED
       } else {
@@ -6046,20 +6718,20 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       }
       scheduleTorrentStatusRefresh()
     } else {
-      runCatching { app.stopService(TorrentServerService.createIntent(app, config)) }
-      TorrentServerService.markStopped()
+      runCatching { app.stopService(PeerStreamService.createIntent(app, config)) }
+      PeerStreamService.markStopped()
     }
-    refreshTorrentServerStatus()
+    refreshPeerStreamStatus()
   }
 
-  private fun stopOnDemandTorrentServer() {
-    val config = uiState.torrentServerSettings.toServiceConfig()
+  private fun stopOnDemandPeerEngine() {
+    val config = uiState.peerStreamSettings.toServiceConfig()
     if (config.runAsForegroundService) return
     torrentStatusRefreshJob?.cancel()
     val app = getApplication<Application>()
-    runCatching { app.stopService(TorrentServerService.createIntent(app, config)) }
-    TorrentServerService.markStopped()
-    refreshTorrentServerStatus()
+    runCatching { app.stopService(PeerStreamService.createIntent(app, config)) }
+    PeerStreamService.markStopped()
+    refreshPeerStreamStatus()
   }
 
   private fun scheduleTorrentStatusRefresh() {
@@ -6067,14 +6739,14 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     torrentStatusRefreshJob = viewModelScope.launch {
       repeat(6) { attempt ->
         delay(if (attempt == 0) 250L else 500L)
-        refreshTorrentServerStatus()
+        refreshPeerStreamStatus()
       }
     }
   }
 
-  private suspend fun ensureTorrentServerReady(config: TorrentServerConfig): Result<TorrentServerConfig> {
+  private suspend fun ensurePeerEngineReady(config: PeerStreamConfig): Result<PeerStreamConfig> {
     val app = getApplication<Application>()
-    val intent = TorrentServerService.createIntent(app, config)
+    val intent = PeerStreamService.createIntent(app, config)
     runCatching {
       val notificationsAllowed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         ContextCompat.checkSelfPermission(app, android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -6087,25 +6759,28 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
         app.startService(intent)
       }
     }.onFailure {
-      refreshTorrentServerStatus()
+      refreshPeerStreamStatus()
       return Result.failure(it)
     }
-    repeat(12) {
-      delay(250L)
-      if (TorrentServerService.isOnline) {
-        refreshTorrentServerStatus()
-        return Result.success(config.copy(port = TorrentServerService.activePort))
+    // Starting a libtorrent session, measuring the cache and binding a socket is now done off the
+    // service's main thread, which means it takes as long as it takes: the old three-second window
+    // was shorter than a cold start and reported a working engine as one that never came up.
+    repeat(TORRENT_SERVER_READY_ATTEMPTS) {
+      delay(TORRENT_SERVER_READY_POLL_MS)
+      if (PeerStreamService.isOnline) {
+        refreshPeerStreamStatus()
+        return Result.success(config.copy(port = PeerStreamService.activePort))
       }
     }
-    refreshTorrentServerStatus()
-    return Result.failure(IllegalStateException(TorrentServerService.lastStartupError?.ifBlank { null } ?: "Local torrent server did not come online in time."))
+    refreshPeerStreamStatus()
+    return Result.failure(IllegalStateException(PeerStreamService.lastStartupError?.ifBlank { null } ?: "Local torrent server did not come online in time."))
   }
 
-  private fun refreshTorrentServerStatus() {
+  private fun refreshPeerStreamStatus() {
     uiState = uiState.copy(
-      torrentServerStatus = torrentServerStatusFromSnapshot(
-        TorrentServerService.snapshot(uiState.torrentServerSettings.toServiceConfig()),
-        uiState.torrentServerSettings,
+      peerStreamStatus = peerStreamStatusFromSnapshot(
+        PeerStreamService.snapshot(uiState.peerStreamSettings.toServiceConfig()),
+        uiState.peerStreamSettings,
       ),
     )
   }
@@ -6206,7 +6881,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   }
 
   private fun bootstrapAfterAuth(forceHome: Boolean = false) {
-    syncTorrentServer()
+    syncPeerEngine()
     uiState.session?.let { session ->
       viewModelScope.launch {
         apiClient.fetchCloudPlaybackPreferences(session, uiState.activeProfileId).onSuccess { preferences ->
@@ -6571,7 +7246,17 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     resumePercent = resumePercent,
     currentStream = stream,
     imdbId = detail.imdbId ?: detail.id.takeIf { it.startsWith("tt") },
-    subtitleLanguage = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }?.subtitleLanguage?.takeIf { it.isNotBlank() } ?: "en",
+    // The profile's own choice still wins where one is set — a per-profile subtitle language is a
+    // family arrangement, not a device setting — and the app-level preference stands in otherwise.
+    subtitleLanguage = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }
+      ?.subtitleLanguage?.takeIf { it.isNotBlank() }
+      ?.let(Languages::normalize)
+      ?: uiState.preferredSubtitleLanguage,
+    secondarySubtitleLanguage = uiState.secondarySubtitleLanguage,
+    secondaryAudioLanguage = uiState.secondaryAudioLanguage,
+    useForcedSubtitles = uiState.useForcedSubtitles,
+    showOnlyPreferredSubtitleLanguages = uiState.showOnlyPreferredSubtitleLanguages,
+    addonSubtitleLoading = uiState.addonSubtitleLoading,
     autoLoadSubtitles = uiState.autoLoadSubtitles,
     subtitleTextSize = uiState.subtitleTextSize,
     subtitleVerticalOffset = uiState.subtitleVerticalOffset,
@@ -6638,7 +7323,6 @@ fun StreamDekNativeApp(
 ) {
   val context = androidx.compose.ui.platform.LocalContext.current.applicationContext as Application
   val viewModel = viewModel<NativeAppViewModel>(factory = NativeAppViewModelFactory(context))
-  val snackbarHostState = remember { SnackbarHostState() }
   val uiState = viewModel.uiState
   LaunchedEffect(uiState.playerSession?.url, uiState.session?.user?.uid) {
     if (uiState.playerSession != null) viewModel.refreshHandoffDevices()
@@ -6665,12 +7349,20 @@ fun StreamDekNativeApp(
     onDispose {}
   }
 
+  // Transient messages all withdraw on their own; the banner's close button does it sooner. An
+  // error is given longer than a confirmation, since it usually asks the viewer to do something.
   LaunchedEffect(uiState.errorMessage, uiState.infoMessage) {
     val message = uiState.errorMessage ?: uiState.infoMessage
-    if (!message.isNullOrBlank()) {
-      snackbarHostState.showSnackbar(message)
-      viewModel.clearTransientMessage()
-    }
+    if (message.isNullOrBlank()) return@LaunchedEffect
+    delay(if (uiState.errorMessage != null) APP_NOTICE_ERROR_DURATION_MS else APP_NOTICE_DURATION_MS)
+    viewModel.clearTransientMessage()
+  }
+
+  // Withdraws on its own after twelve seconds; the banner's own close button does it sooner.
+  LaunchedEffect(uiState.playbackNotice) {
+    if (uiState.playbackNotice.isNullOrBlank()) return@LaunchedEffect
+    delay(PLAYBACK_NOTICE_DURATION_MS)
+    viewModel.clearPlaybackNotice()
   }
 
   LaunchedEffect(uiState.debridNoticeMessage) {
@@ -6710,21 +7402,6 @@ fun StreamDekNativeApp(
       Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Scaffold(
           containerColor = Color.Transparent,
-          snackbarHost = {
-            SnackbarHost(
-              hostState = snackbarHostState,
-              modifier = Modifier.padding(horizontal = 16.dp, vertical = 104.dp),
-              snackbar = { data ->
-                Snackbar(
-                  snackbarData = data,
-                  shape = RoundedCornerShape(20.dp),
-                  containerColor = MaterialTheme.colorScheme.surface,
-                  contentColor = MaterialTheme.colorScheme.onSurface,
-                  actionColor = MaterialTheme.colorScheme.primary,
-                )
-              },
-            )
-          },
         ) { padding ->
           // The player replaces the whole main scene, so hold the main scene's
           // saveable state (scroll positions, browse page state) while it is away.
@@ -6740,7 +7417,7 @@ fun StreamDekNativeApp(
           ) { state ->
             when {
               state.first -> SplashScene()
-              state.second && uiState.playerSession == null -> PlayerLaunchScreen(uiState.playerLaunchingLabel, viewModel::cancelPlayerLaunch)
+              state.second && uiState.playerSession == null -> PlayerLaunchScreen(uiState.playerLaunchingLabel, uiState.playerLaunchingPeerHash, viewModel::cancelPlayerLaunch)
               state.second && uiState.playerSession != null -> { NativePlayerScreen(
                 session = uiState.playerSession,
                 availableStreams = uiState.availableStreams,
@@ -6782,6 +7459,22 @@ fun StreamDekNativeApp(
               }
             }
           }
+          // Sits above the scene rather than inside it so it reads the same over the launch screen,
+          // the player and the home grid — the three places a premium service can refuse a source.
+          AppNoticeStack(
+            notices = buildList {
+              uiState.playbackNotice?.takeIf { it.isNotBlank() }?.let {
+                add(AppNotice("playback", "Premium service declined this source", it, AppNoticeTone.Warning, viewModel::clearPlaybackNotice))
+              }
+              uiState.errorMessage?.takeIf { it.isNotBlank() }?.let {
+                add(AppNotice("error", "Something went wrong", it, AppNoticeTone.Error, viewModel::clearTransientMessage))
+              }
+              uiState.infoMessage?.takeIf { it.isNotBlank() }?.let {
+                add(AppNotice("info", null, it, AppNoticeTone.Info, viewModel::clearTransientMessage))
+              }
+            },
+            modifier = Modifier.align(Alignment.TopCenter),
+          )
         }
       }
     }
@@ -6789,9 +7482,110 @@ fun StreamDekNativeApp(
   }
 }
 
+/** What a notice is about, which decides its colour. */
+internal enum class AppNoticeTone { Info, Warning, Error }
+
+/** One transient message: who it is from, what it says, and how to make it go away. */
+internal data class AppNotice(
+  val id: String,
+  val title: String?,
+  val message: String,
+  val tone: AppNoticeTone,
+  val onDismiss: () -> Unit,
+)
+
+/**
+ * Every transient message in the app, at the top of the screen.
+ *
+ * One presentation for all of them. They used to arrive as a snackbar at the bottom, under the
+ * navigation bar and the player controls, styled by Material rather than by StreamDek — and the
+ * premium-service notice had its own separate look on top. Coming down from the top puts them where
+ * the viewer is already looking during playback, and keeps them clear of the controls at the bottom.
+ *
+ * Stacked rather than queued: a playback attempt can produce a provider refusal and an error at the
+ * same moment, and showing them one after the other hides the first behind a wait.
+ */
 @Composable
-private fun PlayerLaunchScreen(sourceLabel: String?, onBack: () -> Unit) {
+private fun AppNoticeStack(notices: List<AppNotice>, modifier: Modifier = Modifier) {
+  Column(
+    modifier = modifier.statusBarsPadding().padding(horizontal = 14.dp, vertical = 10.dp).widthIn(max = 560.dp),
+    verticalArrangement = Arrangement.spacedBy(8.dp),
+  ) {
+    notices.forEach { notice ->
+      key(notice.id) {
+        AppNoticeBanner(notice = notice)
+      }
+    }
+  }
+}
+
+@Composable
+private fun AppNoticeBanner(notice: AppNotice) {
+  // Held so the text does not blank out while the banner is sliding away.
+  var shown by remember { mutableStateOf(notice) }
+  LaunchedEffect(notice.message) { shown = notice }
+  var visible by remember { mutableStateOf(false) }
+  LaunchedEffect(Unit) { visible = true }
+  AnimatedVisibility(
+    visible = visible,
+    enter = fadeIn() + slideInVertically { -it },
+    exit = fadeOut() + slideOutVertically { -it },
+  ) {
+    val container = when (shown.tone) {
+      AppNoticeTone.Error -> MaterialTheme.colorScheme.errorContainer
+      AppNoticeTone.Warning -> MaterialTheme.colorScheme.errorContainer
+      AppNoticeTone.Info -> MaterialTheme.colorScheme.surfaceVariant
+    }
+    val content = when (shown.tone) {
+      AppNoticeTone.Error, AppNoticeTone.Warning -> MaterialTheme.colorScheme.onErrorContainer
+      AppNoticeTone.Info -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(
+      modifier = Modifier.fillMaxWidth(),
+      shape = RoundedCornerShape(18.dp),
+      color = container,
+      contentColor = content,
+      tonalElevation = 6.dp,
+      shadowElevation = 10.dp,
+    ) {
+      Row(
+        modifier = Modifier.padding(start = 16.dp, end = 6.dp, top = 12.dp, bottom = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+      ) {
+        Icon(
+          if (shown.tone == AppNoticeTone.Info) Icons.Rounded.Info else Icons.Rounded.Warning,
+          contentDescription = null,
+          modifier = Modifier.size(20.dp),
+        )
+        Column(modifier = Modifier.weight(1f)) {
+          shown.title?.let {
+            Text(it, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Black)
+          }
+          Text(shown.message, style = MaterialTheme.typography.bodySmall, maxLines = 4, overflow = TextOverflow.Ellipsis)
+        }
+        IconButton(onClick = notice.onDismiss) {
+          Icon(Icons.Rounded.Close, contentDescription = "Dismiss", modifier = Modifier.size(20.dp))
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun PlayerLaunchScreen(sourceLabel: String?, peerHash: String?, onBack: () -> Unit) {
   BackHandler(onBack = onBack)
+  // A source warming up is the one wait with no upper bound: metadata has to come from peers before
+  // there is a file to read at all. Polled here rather than pushed, because the engine runs in a
+  // service and this screen is only on show while the wait lasts.
+  var swarm by remember(peerHash) { mutableStateOf<SwarmStats?>(null) }
+  LaunchedEffect(peerHash) {
+    if (peerHash.isNullOrBlank()) return@LaunchedEffect
+    while (true) {
+      swarm = withContext(Dispatchers.IO) { runCatching { PeerStreamService.latestSwarmStats(peerHash) }.getOrNull() }
+      delay(700)
+    }
+  }
   Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
     GlassCircleButton(
       onClick = onBack,
@@ -6800,17 +7594,45 @@ private fun PlayerLaunchScreen(sourceLabel: String?, onBack: () -> Unit) {
       Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = Color.White)
     }
     Column(
-      modifier = Modifier.align(Alignment.Center),
+      // Bounded rather than free: a release name is long, and with nothing holding it in it ran to
+      // both edges of the screen — further on a tablet than on a phone, where a centred block of
+      // text that wide stops reading as one.
+      modifier = Modifier.align(Alignment.Center).padding(horizontal = 32.dp).widthIn(max = 520.dp),
       horizontalAlignment = Alignment.CenterHorizontally,
       verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
       CircularProgressIndicator(color = Color.White, strokeWidth = 3.dp, modifier = Modifier.size(42.dp))
-      Text("Preparing stream", color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
+      Text(
+        swarm?.let { if (it.hasMetadata) "Buffering from peers" else "Finding peers" } ?: "Preparing stream",
+        color = Color.White,
+        style = MaterialTheme.typography.titleLarge,
+        fontWeight = FontWeight.Black,
+      )
       sourceLabel?.takeIf { it.isNotBlank() }?.let {
-        Text(it, color = Color.White.copy(alpha = 0.64f), style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(it, color = Color.White.copy(alpha = 0.64f), style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+      }
+      swarm?.let { stats ->
+        Text(
+          swarmProgressLabel(stats),
+          color = Color.White.copy(alpha = 0.78f),
+          style = MaterialTheme.typography.bodyMedium,
+          fontWeight = FontWeight.Bold,
+          textAlign = TextAlign.Center,
+        )
       }
     }
   }
+}
+
+/**
+ * The one-line swarm readout: what stage the torrent is at, how many peers are behind it and how
+ * fast it is arriving. "0 seeds - 0 peers" is the useful case — it says the wait is for peers that
+ * are not there, rather than leaving a spinner to imply progress that is not happening.
+ */
+private fun swarmProgressLabel(stats: SwarmStats): String {
+  val stage = if (stats.hasMetadata) "Downloading" else "Fetching metadata…"
+  val rate = formatBytesLabel(stats.downloadRateBytesPerSecond.toLong().coerceAtLeast(0L))
+  return "$stage · ${stats.seeds} seeds · ${stats.peers} peers · $rate/s"
 }
 
 @Composable
@@ -7728,7 +8550,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
           }
         } else if (browseRow != null) {
           browseStateHolder.SaveableStateProvider("browse_row_${browseRow.id}") {
-            BrowseSectionScreen(row = browseRow, loadedItems = uiState.browseLoadedItems, returnItemId = uiState.browseReturnItemId, headerStyle = uiState.headerStyle, liveLandscapeCards = uiState.liveLandscapeCards, categoriesEnabled = uiState.liveCategoriesEnabled, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel, onBack = { viewModel.setBrowseRow(null) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { viewModel.rememberBrowseReturnItem(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onToggleWatchlist = viewModel::toggleWatchlist, onToggleFavourite = viewModel::toggleFavouriteChannel, onClearFavourites = viewModel::clearFavouriteChannels, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, onMarkWatched = viewModel::markWatched, onLoadMore = viewModel::loadMoreRowItems)
+            BrowseSectionScreen(row = browseRow, loadedItems = uiState.browseLoadedItems, returnItemId = uiState.browseReturnItemId, headerStyle = uiState.headerStyle, liveLandscapeCards = uiState.liveLandscapeCards, categoriesEnabled = uiState.liveCategoriesEnabled, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel, onBack = { viewModel.setBrowseRow(null) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { viewModel.rememberBrowseReturnItem(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onToggleWatchlist = viewModel::toggleWatchlist, onToggleFavourite = viewModel::toggleFavouriteChannel, onClearFavourites = viewModel::clearFavouriteChannels, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, onMarkWatched = viewModel::markWatched, pageableRowIds = pageableCatalogRowIds(uiState.catalogDefinitions), onLoadMore = viewModel::loadMoreRowItems)
           }
         } else {
           AnimatedContent(
@@ -7825,6 +8647,17 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
                 onShowStreamsListChange = viewModel::setShowStreamsList,
                 onHeroTrailerAutoplayChange = viewModel::setHeroTrailerAutoplay,
                 onHeroTrailerResolutionChange = viewModel::setHeroTrailerResolution,
+                onHeroTrailerDelaySecondsChange = viewModel::setHeroTrailerDelaySeconds,
+                onTrailerCacheClearHoursChange = viewModel::setTrailerCacheClearHours,
+                onDetailBackgroundModeChange = viewModel::setDetailBackgroundMode,
+                onHomeBackgroundModeChange = viewModel::setHomeBackgroundMode,
+                onSecondaryAudioLanguageChange = viewModel::setSecondaryAudioLanguage,
+                onPreferredSubtitleLanguageChange = viewModel::setPreferredSubtitleLanguage,
+                onSecondarySubtitleLanguageChange = viewModel::setSecondarySubtitleLanguage,
+                onUseForcedSubtitlesChange = viewModel::setUseForcedSubtitles,
+                onShowOnlyPreferredSubtitleLanguagesChange = viewModel::setShowOnlyPreferredSubtitleLanguages,
+                onAddonSubtitleLoadingChange = viewModel::setAddonSubtitleLoading,
+                onClearTrailerCacheNow = viewModel::clearTrailerCacheNow,
                 onShowHeroSynopsisChange = viewModel::setShowHeroSynopsis,
                 onContinueWatchingStyleChange = viewModel::setContinueWatchingStyle,
                 onLiveLandscapeCardsChange = viewModel::setLiveLandscapeCards,
@@ -7845,7 +8678,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
                 onPreferredQualityChange = viewModel::setPreferredQuality,
                 onMaxFileSizeChange = viewModel::setMaxFileSizeGb,
                 onBadgePositionChange = viewModel::setBadgePosition,
-                onUpdateTorrentServerSettings = viewModel::updateTorrentServerSettings,
+                onUpdatePeerStreamSettings = viewModel::updatePeerStreamSettings,
                 onAddFusionBadgeUrl = viewModel::addFusionBadgeUrl,
                 onRemoveFusionBadgeUrl = viewModel::removeFusionBadgeUrl,
                 onRefreshFusionBadgeUrl = { viewModel.refreshFusionBadgeUrl(it) },
@@ -8507,7 +9340,7 @@ private fun homeHeroMediaKey(item: MediaItem): String = "${if (isSeriesType(item
 private fun profileSwitcherHeroItems(sections: List<MediaSection>): List<MediaItem> {
   // Preferred sources first, then any remaining sections as a fallback, so the
   // hero keeps working even when the user disables or re-arranges builtin rows.
-  val preferred = listOf("trending_movies", "trending_series", "new_movies", "new_series")
+  val preferred = listOf("trending_movies", "trending_series", "new_movies", "in_theatres", "new_series")
     .flatMap { sectionId -> sections.firstOrNull { it.id == sectionId }?.items.orEmpty() }
   val fallback = sections.flatMap { it.items }
   return (preferred + fallback)
@@ -8524,6 +9357,9 @@ private fun mixedHeroItems(sections: List<MediaSection>, continueWatching: List<
     section("new_series"),
     section("trending_movies"),
     section("trending_series"),
+    // What is in cinemas right now is the most current thing the catalog knows about, and it is
+    // the one bucket here that is not already the opening rows of the home screen.
+    section("in_theatres"),
     continueWatching,
     watchlist,
   )
@@ -8653,7 +9489,7 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
   PullToRefreshBox(isRefreshing = uiState.homeLoading, onRefresh = onReload, modifier = Modifier.fillMaxSize()) {
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
     val lightMode = MaterialTheme.colorScheme.background.luminance() > 0.5f
-    if (uiState.vividAmbient && heroBackdrop != null) {
+    if (uiState.homeBackgroundMode == BackgroundMode.Cinematic && heroBackdrop != null) {
       AsyncImage(
         model = heroBackdrop.backdrop ?: heroBackdrop.poster,
         contentDescription = null,
@@ -9332,7 +10168,12 @@ private fun AdaptivePageTitle(
   )
 }
 
-private val builtInPageableRowIds = setOf("new_movies", "new_series", "trending_movies", "trending_series")
+/**
+ * Default catalog rows "View All" can page through, taken from the backend registry: everything
+ * except the streaming-networks tiles, which are a fixed list of services rather than a catalog.
+ */
+internal fun pageableCatalogRowIds(definitions: List<CatalogDefinition>): Set<String> =
+  definitions.filter { it.paginated }.mapTo(mutableSetOf()) { it.id }
 
 // ---------------------------------------------------------------------------------------------
 // Live TV / playlist categories
@@ -9564,7 +10405,7 @@ private fun browseCategoryAccent(name: String): Color = when (name) {
 }
 
 @Composable
-private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, returnItemId: String?, headerStyle: HeaderStyle, liveLandscapeCards: Boolean, categoriesEnabled: Boolean = true, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onBack: () -> Unit, onOpen: (MediaItem) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onClearFavourites: () -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, onLoadMore: (suspend (String, MediaItem?, Int) -> List<MediaItem>)? = null) {
+private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, returnItemId: String?, headerStyle: HeaderStyle, liveLandscapeCards: Boolean, categoriesEnabled: Boolean = true, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onBack: () -> Unit, onOpen: (MediaItem) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onClearFavourites: () -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, pageableRowIds: Set<String> = emptySet(), onLoadMore: (suspend (String, MediaItem?, Int) -> List<MediaItem>)? = null) {
   fun isFavourite(item: MediaItem): Boolean = favouriteItems.hasFavouriteChannel(item)
   var filter by rememberSaveable(row.id) { mutableStateOf(MediaFilter.All) }
   var layout by rememberSaveable(row.id) { mutableStateOf(BrowseLayout.Cards3) }
@@ -9634,7 +10475,7 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
       onLoadMore != null && !isM3uRow && row.items.isNotEmpty() &&
         (
           row.items.last().let { it.sourceAddonId != null && it.sourceCatalogType != null && it.sourceCatalogId != null } ||
-            row.id in builtInPageableRowIds
+            row.id in pageableRowIds
         ),
     )
   }
@@ -12803,6 +13644,17 @@ private fun SettingsTab(
   onShowStreamsListChange: (Boolean) -> Unit,
   onHeroTrailerAutoplayChange: (Boolean) -> Unit,
   onHeroTrailerResolutionChange: (Int) -> Unit,
+  onHeroTrailerDelaySecondsChange: (Int) -> Unit,
+  onTrailerCacheClearHoursChange: (Int) -> Unit,
+  onDetailBackgroundModeChange: (BackgroundMode) -> Unit,
+  onHomeBackgroundModeChange: (BackgroundMode) -> Unit,
+  onSecondaryAudioLanguageChange: (String) -> Unit,
+  onPreferredSubtitleLanguageChange: (String) -> Unit,
+  onSecondarySubtitleLanguageChange: (String) -> Unit,
+  onUseForcedSubtitlesChange: (Boolean) -> Unit,
+  onShowOnlyPreferredSubtitleLanguagesChange: (Boolean) -> Unit,
+  onAddonSubtitleLoadingChange: (String) -> Unit,
+  onClearTrailerCacheNow: () -> Unit,
   onShowHeroSynopsisChange: (Boolean) -> Unit,
   onContinueWatchingStyleChange: (ContinueWatchingStyle) -> Unit,
   onLiveLandscapeCardsChange: (Boolean) -> Unit,
@@ -12823,7 +13675,7 @@ private fun SettingsTab(
   onPreferredQualityChange: (String) -> Unit,
   onMaxFileSizeChange: (Int) -> Unit,
   onBadgePositionChange: (String) -> Unit,
-  onUpdateTorrentServerSettings: ((TorrentServerSettings) -> TorrentServerSettings) -> Unit,
+  onUpdatePeerStreamSettings: ((PeerStreamSettings) -> PeerStreamSettings) -> Unit,
   onAddFusionBadgeUrl: (String) -> Unit,
   onRemoveFusionBadgeUrl: (String) -> Unit,
   onRefreshFusionBadgeUrl: (String) -> Unit,
@@ -13058,7 +13910,7 @@ private fun SettingsTab(
           SettingsDivider()
           SettingsNavRow("DB", Color(0xFF38BDF8), "Premium Services", if (uiState.debridAccounts.isEmpty()) "Connect a supported premium service" else "${uiState.debridAccounts.size} services connected", onClick = { onRouteChange(SettingsRoute.Debrid) })
           SettingsDivider()
-          SettingsNavRow("P2P", Color(0xFF94A3B8), "Peer-to-Peer", if (uiState.torrentServerSettings.enabled) "On - ${uiState.torrentServerStatus.cacheSizeGb} GB cache limit" else "Off", onClick = { onRouteChange(SettingsRoute.PeerToPeer) })
+          SettingsNavRow("P2P", Color(0xFF94A3B8), "Peer-to-Peer", if (uiState.peerStreamSettings.enabled) "On - ${uiState.peerStreamStatus.cacheSizeGb} GB cache limit" else "Off", onClick = { onRouteChange(SettingsRoute.PeerToPeer) })
         }
       }
       item {
@@ -13131,6 +13983,79 @@ private fun SettingsTab(
         }
         SettingsRoute.Subtitles -> {
           item {
+            SettingsSection("Subtitle and Audio") {
+              LanguageChoiceRow(
+                "AUD",
+                Color(0xFFF59E0B),
+                "Preferred Audio Language",
+                "The spoken language to choose when a release offers more than one.",
+                Languages.audioOptions(),
+                uiState.preferredAudioLanguage,
+                onPreferredAudioLanguageChange,
+              )
+              SettingsDivider()
+              LanguageChoiceRow(
+                "AUD2",
+                Color(0xFFFBBF24),
+                "Secondary Audio Language",
+                "Used when a release carries nothing in the preferred language.",
+                listOf(Languages.NONE) + Languages.all.map { it.code },
+                uiState.secondaryAudioLanguage,
+                onSecondaryAudioLanguageChange,
+              )
+              SettingsDivider()
+              LanguageChoiceRow(
+                "SUB1",
+                Color(0xFFA78BFA),
+                "Preferred Language",
+                "The subtitle language to choose first.",
+                Languages.subtitleOptions(includeNone = false),
+                uiState.preferredSubtitleLanguage,
+                onPreferredSubtitleLanguageChange,
+              )
+              SettingsDivider()
+              LanguageChoiceRow(
+                "SUB2",
+                Color(0xFFC4B5FD),
+                "Secondary Preferred Language",
+                "Used when nothing is available in the preferred subtitle language.",
+                Languages.subtitleOptions(includeNone = true),
+                uiState.secondarySubtitleLanguage,
+                onSecondarySubtitleLanguageChange,
+              )
+              SettingsDivider()
+              SettingsSwitchRow(
+                "FRC",
+                Color(0xFF38BDF8),
+                "Use Forced Subtitles",
+                "Prefer forced subtitles when audio matches the subtitle language; if unavailable, select nothing.",
+                uiState.useForcedSubtitles,
+                onUseForcedSubtitlesChange,
+              )
+              SettingsDivider()
+              SettingsSwitchRow(
+                "ONLY",
+                Color(0xFF22C55E),
+                "Show Only Preferred Languages",
+                "Only show subtitles matching your preferred subtitle languages.",
+                uiState.showOnlyPreferredSubtitleLanguages,
+                onShowOnlyPreferredSubtitleLanguagesChange,
+              )
+              SettingsDivider()
+              SettingsChoiceRow(
+                "ADD",
+                Color(0xFF60A5FA),
+                "Addon Subtitle Loading",
+                "How much to ask subtitle add-ons for.",
+                addonSubtitleLoadingChoices.map { it.second },
+                addonSubtitleLoadingLabel(uiState.addonSubtitleLoading),
+              ) { selected ->
+                addonSubtitleLoadingChoices.firstOrNull { it.second == selected }
+                  ?.let { onAddonSubtitleLoadingChange(it.first) }
+              }
+            }
+          }
+          item {
             SettingsSection("Subtitles") {
               SettingsSwitchRow("SUB", Color(0xFFA78BFA), "Auto-Load Subtitles", "Automatically choose matching subtitles when playback starts.", uiState.autoLoadSubtitles, onAutoLoadSubtitlesChange)
               SettingsDivider()
@@ -13166,10 +14091,6 @@ private fun SettingsTab(
             SettingsSection("Home Screen") {
               SettingsNavRow("GRID", Color(0xFF38BDF8), "Home Rows", "Choose which rows appear on Home and drag to reorder them.", value = "${uiState.homeCatalogRows.count { it.enabled }}", onClick = { onRouteChange(SettingsRoute.HomeLayout) })
               SettingsDivider()
-              SettingsChoiceRow("LAY", Color(0xFF22D3EE), "Page Style", "Choose how media pages and the Home spotlight are arranged.", DetailPageStyle.values().map { it.name }, uiState.detailPageStyle.name) { selected ->
-                onDetailPageStyleChange(DetailPageStyle.valueOf(selected))
-              }
-              SettingsDivider()
               SettingsChoiceRow("PLAY", Color(0xFF22C55E), "Continue Watching Style", "Choose how continue watching cards appear on Home.", ContinueWatchingStyle.values().map { it.name }, uiState.continueWatchingStyle.name) { selected ->
                 onContinueWatchingStyleChange(ContinueWatchingStyle.valueOf(selected))
               }
@@ -13179,7 +14100,12 @@ private fun SettingsTab(
           }
           item {
             SettingsSection("Ambient Background") {
-              SettingsSwitchRow("AMB", Color(0xFFA78BFA), "Ambient Background", "Show a colourful ambient glow behind home and detail screens.", uiState.vividAmbient, onVividAmbientChange)
+              BackgroundModeRow(
+                subtitle = "Choose how artwork appears behind the home screen.",
+                options = homeBackgroundModes,
+                selected = uiState.homeBackgroundMode,
+                onSelected = onHomeBackgroundModeChange,
+              )
               SettingsDivider()
               AmbientTintSlider(percent = uiState.ambientTintPercent, enabled = uiState.vividAmbient, onPercentChange = onAmbientTintPercentChange)
             }
@@ -13209,10 +14135,65 @@ private fun SettingsTab(
         SettingsRoute.HomeLayout -> item { CatalogHomeLayoutSettings(uiState, onDefaultAppCatalogsEnabledChange, onHomeCatalogRowEnabledChange, onMoveHomeCatalogRow, dragScrollBy = { delta -> settingsListState.scrollBy(delta) }) }
         SettingsRoute.TitlePages -> {
           item {
+            // Lives here rather than under Home Screen, which is where it used to sit: it only ever
+            // controlled the title page's layout, so it was filed under a screen it does not affect.
+            SettingsSection("Layout") {
+              SettingsChoiceRow("LAY", Color(0xFF22D3EE), "Title Page Style", "Choose how a title's page is arranged.", DetailPageStyle.values().map { it.name }, uiState.detailPageStyle.name) { selected ->
+                onDetailPageStyleChange(DetailPageStyle.valueOf(selected))
+              }
+            }
+          }
+          item {
+            SettingsSection("Appearance") {
+              BackgroundModeRow(
+                subtitle = "Choose how artwork appears behind metadata pages.",
+                options = titleBackgroundModes,
+                selected = uiState.detailBackgroundMode,
+                onSelected = onDetailBackgroundModeChange,
+              )
+            }
+          }
+          item {
             SettingsSection("Trailers") {
               SettingsSwitchRow("TRL", Color(0xFF22C55E), "Play Trailers Automatically", "Play a trailer at the top of a title page when one is available.", uiState.heroTrailerAutoplay, onHeroTrailerAutoplayChange)
               SettingsDivider()
               SettingsChoiceRow("HD", Color(0xFF38BDF8), "Trailer Quality", "Choose the best video quality trailers may use.", listOf("360p", "720p", "1080p", "2160p"), "${uiState.heroTrailerResolution}p") { selected -> onHeroTrailerResolutionChange(selected.removeSuffix("p").toInt()) }
+              // The wait belongs to the viewer rather than to the page. Same value the television
+              // and the portal read, so choosing it once settles it everywhere.
+              SettingsChoiceRow(
+                "WAIT",
+                Color(0xFFF59E0B),
+                "Trailer Start Delay",
+                "How long a title page is left alone before its trailer begins.",
+                (0..MAX_TRAILER_DELAY_SECONDS).map(::trailerDelayLabel),
+                trailerDelayLabel(uiState.heroTrailerDelaySeconds.coerceIn(0, MAX_TRAILER_DELAY_SECONDS)),
+              ) { selected ->
+                onHeroTrailerDelaySecondsChange(trailerDelaySecondsFrom(selected))
+              }
+              SettingsDivider()
+              // Trailers come from a source that decides for itself whether the caller looks like a
+              // browser, and it keeps that judgement in cookies and site storage the player leaves
+              // behind. Once that state sours, trailers stop playing until it is thrown away —
+              // clearing the app's cache does not reach it, and clearing app data takes everything
+              // else with it. Hence a scheduled clear of the trailer's own state.
+              SettingsChoiceRow(
+                "TC",
+                Color(0xFFF97316),
+                "Clear Trailer Cache",
+                "Trailers can stop playing when the stored playback state goes stale. StreamDek clears it on this schedule, at 9am.",
+                trailerCacheClearChoices.map { it.second },
+                trailerCacheClearLabel(uiState.trailerCacheClearHours),
+              ) { selected ->
+                trailerCacheClearChoices.firstOrNull { it.second == selected }?.let { onTrailerCacheClearHoursChange(it.first) }
+              }
+              SettingsDivider()
+              SettingsNavRow(
+                "NOW",
+                Color(0xFFEF4444),
+                "Clear Trailer Cache Now",
+                trailerCacheStatusLabel(uiState.trailerCacheSizeBytes, uiState.trailerCacheLastClearedAt),
+                onClick = onClearTrailerCacheNow,
+              )
             }
           }
           item {
@@ -13277,8 +14258,6 @@ private fun SettingsTab(
             SettingsSection("Player") {
               SettingsChoiceRow("PLY", Color(0xFF22C55E), "Default Player", "Automatic starts with Media3 and switches to mpv if a source cannot play.", listOf("Auto", "Media3", "MPV"), uiState.playerEngine, onPlayerEngineChange)
               SettingsDivider()
-              SettingsChoiceRow("AUD", Color(0xFFF59E0B), "Default Audio", "Choose the spoken language StreamDek should prefer when a video offers more than one.", listOf("en", "original", "es", "fr", "de", "it", "pt", "ja", "ko", "hi", "ta", "zh", "vi"), uiState.preferredAudioLanguage, onPreferredAudioLanguageChange)
-              SettingsDivider()
               SettingsSwitchRow("PIP", Color(0xFF6366F1), "Floating Player", "Keep the video in a small window when you leave StreamDek.", uiState.pictureInPictureEnabled, onPictureInPictureEnabledChange)
             }
           }
@@ -13313,32 +14292,32 @@ private fun SettingsTab(
         SettingsRoute.PeerToPeer -> {
           item {
             SettingsSection("Peer-to-Peer Playback") {
-              SettingsSwitchRow("TOR", Color(0xFF22C55E), "Enable Peer-to-Peer Playback", "Play torrent or magnet sources through this phone when no direct web stream is available. Video data is temporary, not a saved download.", uiState.torrentServerSettings.enabled, onCheckedChange = { enabled ->
-                onUpdateTorrentServerSettings { current -> current.copy(enabled = enabled) }
+              SettingsSwitchRow("TOR", Color(0xFF22C55E), "Enable Peer-to-Peer Playback", "Play peer-to-peer or magnet sources through this phone when no direct web stream is available. Video data is temporary, not a saved download.", uiState.peerStreamSettings.enabled, onCheckedChange = { enabled ->
+                onUpdatePeerStreamSettings { current -> current.copy(enabled = enabled) }
               })
               SettingsDivider()
-              SettingsChoiceRow("SRV", Color(0xFF38BDF8), "Source Handling", "Built-in engine supports peer-to-peer sources. Web links only ignores torrent and magnet sources.", listOf("Built-in engine", "Web links only"), if (uiState.torrentServerSettings.streamingMode == "server") "Built-in engine" else "Web links only") {
-                onUpdateTorrentServerSettings { current -> current.copy(streamingMode = if (it == "Built-in engine") "server" else "regular_http") }
+              SettingsChoiceRow("SRV", Color(0xFF38BDF8), "Source Handling", "Built-in engine supports peer-to-peer sources. Web links only ignores peer-to-peer and magnet sources.", listOf("Built-in engine", "Web links only"), if (uiState.peerStreamSettings.streamingMode == "server") "Built-in engine" else "Web links only") {
+                onUpdatePeerStreamSettings { current -> current.copy(streamingMode = if (it == "Built-in engine") "server" else "regular_http") }
               }
               SettingsDivider()
-              SettingsChoiceRow("PRF", Color(0xFF22C55E), "Startup Profile", "Balanced works well for most people. Battery saver uses less power; faster choices may use more battery and data.", listOf("Balanced", "Battery saver", "Fast", "Fastest"), when (uiState.torrentServerSettings.profile) { "soft" -> "Battery saver"; "fast" -> "Fast"; "ultra_fast" -> "Fastest"; else -> "Balanced" }) {
-                onUpdateTorrentServerSettings { current -> current.copy(profile = when (it) { "Battery saver" -> "soft"; "Fast" -> "fast"; "Fastest" -> "ultra_fast"; else -> "default" }) }
+              SettingsChoiceRow("PRF", Color(0xFF22C55E), "Startup Profile", "Balanced works well for most people. Battery saver uses less power; faster choices may use more battery and data.", listOf("Balanced", "Battery saver", "Fast", "Fastest"), when (uiState.peerStreamSettings.profile) { "soft" -> "Battery saver"; "fast" -> "Fast"; "ultra_fast" -> "Fastest"; else -> "Balanced" }) {
+                onUpdatePeerStreamSettings { current -> current.copy(profile = when (it) { "Battery saver" -> "soft"; "Fast" -> "fast"; "Fastest" -> "ultra_fast"; else -> "default" }) }
               }
               SettingsDivider()
-              SettingsChoiceRow("CCH", Color(0xFFF59E0B), "Temporary Storage Limit", "Choose how much device storage the playback cache may use. StreamDek removes old temporary data as needed.", listOf("2", "5", "10", "20"), uiState.torrentServerSettings.cacheSizeGb.toString()) {
-                onUpdateTorrentServerSettings { current -> current.copy(cacheSizeGb = it.toInt()) }
+              SettingsChoiceRow("CCH", Color(0xFFF59E0B), "Temporary Storage Limit", "Choose how much device storage the playback cache may use. StreamDek removes old temporary data as needed.", listOf("2", "5", "10", "20"), uiState.peerStreamSettings.cacheSizeGb.toString()) {
+                onUpdatePeerStreamSettings { current -> current.copy(cacheSizeGb = it.toInt()) }
               }
               SettingsDivider()
-              SettingsSwitchRow("BG", Color(0xFFEC4899), "Keep Engine Ready", "Keep peer-to-peer playback ready while StreamDek is in the background.", uiState.torrentServerSettings.runAsForegroundService, onCheckedChange = { enabled ->
-                onUpdateTorrentServerSettings { current -> current.copy(runAsForegroundService = enabled) }
+              SettingsSwitchRow("BG", Color(0xFFEC4899), "Keep Engine Ready", "Keep peer-to-peer playback ready while StreamDek is in the background.", uiState.peerStreamSettings.runAsForegroundService, onCheckedChange = { enabled ->
+                onUpdatePeerStreamSettings { current -> current.copy(runAsForegroundService = enabled) }
               })
               SettingsDivider()
-              TorrentServerStatusRow(uiState.torrentServerStatus)
+              PeerStreamStatusRow(uiState.peerStreamStatus)
               SettingsDivider()
-              SettingsInfoRow("Storage Used", "${uiState.torrentServerStatus.cacheSizeGb} GB", formatBytesLabel(uiState.torrentServerStatus.cacheUsageBytes))
-              uiState.torrentServerStatus.lastStartupError.takeIf { it.isNotBlank() }?.let { message ->
+              SettingsInfoRow("Storage Used", "${uiState.peerStreamStatus.cacheSizeGb} GB", formatBytesLabel(uiState.peerStreamStatus.cacheUsageBytes))
+              uiState.peerStreamStatus.lastStartupError.takeIf { it.isNotBlank() }?.let { message ->
                 SettingsDivider()
-                SettingsInfoRow("Playback Problem", message, uiState.torrentServerStatus.lifecycleState.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() })
+                SettingsInfoRow("Playback Problem", message, uiState.peerStreamStatus.lifecycleState.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() })
               }
             }
           }
@@ -14135,17 +15114,17 @@ internal fun searchSettingsRoutes(rawQuery: String): List<SettingsRoute> {
 }
 
 internal fun settingsRouteKeywords(route: SettingsRoute): String = when (route) {
-  SettingsRoute.Player -> "player engine mpv media3 exoplayer audio language dub pip picture in picture floating " +
+  SettingsRoute.Player -> "player engine mpv media3 exoplayer pip picture in picture floating " +
     "gesture gestures hold speed swipe seek scrub decoder hardware software compatibility display surface video will not play"
   SettingsRoute.SkipAndAutoplay -> "autoplay auto play skip intro recap ending credits next episode binge threshold introdb intro db api key"
-  SettingsRoute.Subtitles -> "subtitle subtitles caption captions language source position style"
+  SettingsRoute.Subtitles -> "subtitle subtitles caption captions language languages audio preferred secondary forced show only addon loading source position style"
   SettingsRoute.Streams -> "streams stream results source quality resolution 4k 1080p size limit filter badges labels " +
     "formatting remember last source list"
   SettingsRoute.Downloads -> "download downloads offline saved save storage remove delete watch offline"
   SettingsRoute.Appearance -> "appearance language theme colour color dark light mode header navigation labels collapse font"
-  SettingsRoute.HomeScreen -> "home screen rows spotlight hero synopsis continue watching page style ambient glow background"
+  SettingsRoute.HomeScreen -> "home screen rows spotlight hero synopsis continue watching ambient glow background"
   SettingsRoute.HomeLayout -> "layout rows reorder drag order arrange home catalog sections which rows"
-  SettingsRoute.TitlePages -> "title detail page trailer autoplay season tabs episode artwork blur spoiler ratings"
+  SettingsRoute.TitlePages -> "title detail page style layout trailer autoplay season tabs episode artwork blur spoiler ratings trailer cache clear schedule stale"
   SettingsRoute.Ratings -> "rating ratings imdb tmdb rotten tomatoes metacritic mdblist badge score"
   SettingsRoute.LiveTv -> "live tv channel channels iptv category categories group landscape cards favourite favorite drawer progress bar"
   SettingsRoute.Addons -> "addon add-on catalog channel provider install configure source manifest stremio"
@@ -14191,7 +15170,7 @@ internal fun settingsRouteTitle(route: SettingsRoute): String = when (route) {
 }
 
 internal fun settingsRouteSubtitle(route: SettingsRoute): String = when (route) {
-  SettingsRoute.Player -> "Choose the player, audio language, gestures, and what to try when a video will not play."
+  SettingsRoute.Player -> "Choose the player, gestures, and what to try when a video will not play."
   SettingsRoute.SkipAndAutoplay -> "Choose what can be skipped and when the next episode starts."
   SettingsRoute.Subtitles -> "Choose automatic subtitles and manage the sources StreamDek searches."
   SettingsRoute.Streams -> "Choose the quality StreamDek prefers and how stream results are labelled."
@@ -14206,7 +15185,7 @@ internal fun settingsRouteSubtitle(route: SettingsRoute): String = when (route) 
   SettingsRoute.Plugins -> "Add plugin and CloudStream collections, and choose the streaming sources they provide."
   SettingsRoute.M3uPlaylists -> "Add IPTV M3U or M3U8 playlist URLs and choose which ones are on."
   SettingsRoute.Debrid -> "Connect premium services and choose which one StreamDek tries first."
-  SettingsRoute.PeerToPeer -> "Play torrent and magnet sources through this phone, and limit what they store."
+  SettingsRoute.PeerToPeer -> "Play peer-to-peer and magnet sources through this phone, and limit what they store."
   SettingsRoute.SyncServices -> "Connect Trakt, SIMKL, or MDBList to the profile you are using."
   SettingsRoute.Trakt -> "Connect Trakt and keep the current profile up to date."
   SettingsRoute.Simkl -> "Connect SIMKL and keep the current profile up to date."
@@ -14357,7 +15336,7 @@ private fun SettingsInfoRow(title: String, value: String, subtitle: String) {
 }
 
 @Composable
-private fun TorrentServerStatusRow(status: TorrentServerStatus) {
+private fun PeerStreamStatusRow(status: PeerStreamStatus) {
   Row(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
     Box(modifier = Modifier.size(18.dp).clip(CircleShape).background(if (status.isOnline) Color(0xFF22C55E) else Color(0xFF64748B)))
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -14453,6 +15432,133 @@ private fun SettingsChoiceRow(icon: String, iconColor: Color, title: String, sub
   }
 }
 
+/**
+ * A language picker.
+ *
+ * Its own composable rather than a [SettingsChoiceRow] because the option list is every ISO
+ * language: a sheet of 180-odd rows is only usable with a search field, and the row itself has to
+ * show the language's name while storing its code.
+ */
+@Composable
+private fun LanguageChoiceRow(
+  icon: String,
+  iconColor: Color,
+  title: String,
+  subtitle: String,
+  options: List<String>,
+  selected: String,
+  onSelected: (String) -> Unit,
+) {
+  var showSheet by rememberSaveable(title) { mutableStateOf(false) }
+  SettingsNavRow(
+    icon = icon,
+    iconColor = iconColor,
+    title = title,
+    subtitle = subtitle,
+    value = Languages.label(selected),
+    onClick = { showSheet = true },
+  )
+  if (showSheet) {
+    LanguageChoiceSheet(
+      title = title,
+      options = options,
+      selected = Languages.normalize(selected),
+      onDismiss = { showSheet = false },
+      onSelected = {
+        onSelected(it)
+        showSheet = false
+      },
+    )
+  }
+}
+
+@Composable
+private fun LanguageChoiceSheet(
+  title: String,
+  options: List<String>,
+  selected: String,
+  onDismiss: () -> Unit,
+  onSelected: (String) -> Unit,
+) {
+  var query by rememberSaveable(title) { mutableStateOf("") }
+  // Matched on the name rather than the code, since that is what the viewer is reading — but a
+  // typed "de" or "ger" still finds German, because some people know the codes.
+  val matches = remember(options, query) {
+    val trimmed = query.trim()
+    if (trimmed.isEmpty()) options else options.filter { code ->
+      Languages.label(code).contains(trimmed, ignoreCase = true) || code.startsWith(trimmed, ignoreCase = true) ||
+        Languages.tags(code).any { it.equals(trimmed, ignoreCase = true) }
+    }
+  }
+  Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Box(
+      modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.66f)).clickable(onClick = onDismiss),
+      contentAlignment = Alignment.BottomCenter,
+    ) {
+      Surface(
+        // Capped rather than edge to edge. A phone is narrower than this so nothing changes there,
+        // but on a tablet a full-width sheet stretches every language row across the window and
+        // leaves its code stranded at the far edge, yards from the name it belongs to.
+        modifier = Modifier.fillMaxWidth().widthIn(max = 640.dp).heightIn(max = 680.dp).clickable(enabled = false, onClick = {}),
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)),
+      ) {
+        Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+          Text(title, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+          OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            placeholder = { Text("Search languages") },
+            leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+            shape = RoundedCornerShape(16.dp),
+          )
+          if (matches.isEmpty()) {
+            Text(
+              "No language matches \"${query.trim()}\".",
+              color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
+              style = MaterialTheme.typography.bodyMedium,
+            )
+          }
+          LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            items(matches, key = { it }) { option ->
+              val isSelected = selected == Languages.normalize(option)
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .clip(RoundedCornerShape(18.dp))
+                  .background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f))
+                  .border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.86f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f), RoundedCornerShape(18.dp))
+                  .clickable { onSelected(option) }
+                  .padding(horizontal = 18.dp, vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+              ) {
+                Text(
+                  Languages.label(option),
+                  modifier = Modifier.weight(1f),
+                  color = MaterialTheme.colorScheme.onSurface,
+                  style = MaterialTheme.typography.titleMedium,
+                  fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                )
+                if (option != Languages.ORIGINAL && option != Languages.NONE) {
+                  Text(
+                    option.uppercase(),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                    style = MaterialTheme.typography.labelMedium,
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 @Composable
 private fun SettingsChoiceSheet(title: String, options: List<String>, selected: String, onDismiss: () -> Unit, onSelected: (String) -> Unit) {
   Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -14464,14 +15570,16 @@ private fun SettingsChoiceSheet(title: String, options: List<String>, selected: 
       contentAlignment = Alignment.BottomCenter,
     ) {
       Surface(
-        modifier = Modifier.fillMaxWidth().heightIn(max = 680.dp).clickable(enabled = false, onClick = {}),
+        // Same cap as the language sheet: the style previews inside are laid out two to a row, and
+        // across a tablet's full width each one stretches into a band rather than a card.
+        modifier = Modifier.fillMaxWidth().widthIn(max = 640.dp).heightIn(max = 680.dp).clickable(enabled = false, onClick = {}),
         color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)),
       ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
           Text(title, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-          if (title == "Continue Watching Style" || title == "Page Style") {
+          if (title == "Continue Watching Style" || title == "Title Page Style") {
             options.chunked(2).forEach { rowOptions ->
               Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 rowOptions.forEach { option ->
@@ -14666,27 +15774,12 @@ private fun PageStyleSkeletonPreview(style: DetailPageStyle, selected: Boolean) 
 }
 
 private fun settingsOptionLabel(title: String, option: String): String = when {
+  title == "Background Mode" -> runCatching { backgroundModeLabel(BackgroundMode.valueOf(option)) }.getOrDefault(option)
   title == "Language" -> supportedAppLanguages[normalizeAppLanguage(option)] ?: "English"
   title == "Default Player" -> when (option) {
     "Auto" -> "Auto"
     "Media3" -> "ExoPlayer"
     "MPV" -> "libmpv"
-    else -> option
-  }
-  title == "Default Audio" -> when (option) {
-    "en" -> "English"
-    "original" -> "Original / video default"
-    "es" -> "Spanish"
-    "fr" -> "French"
-    "de" -> "German"
-    "it" -> "Italian"
-    "pt" -> "Portuguese"
-    "ja" -> "Japanese"
-    "ko" -> "Korean"
-    "hi" -> "Hindi"
-    "ta" -> "Tamil"
-    "zh" -> "Chinese"
-    "vi" -> "Vietnamese"
     else -> option
   }
   title == "Max File Size" && option == "0" -> "Unlimited"
@@ -14738,7 +15831,7 @@ private fun settingsOptionLabel(title: String, option: String): String = when {
     ContinueWatchingStyle.Stacked.name -> "Poster"
     else -> option
   }
-  title == "Page Style" -> when (option) {
+  title == "Title Page Style" -> when (option) {
     DetailPageStyle.Classic.name -> "Classic"
     DetailPageStyle.Centered.name -> "Centered"
     else -> option
@@ -14747,6 +15840,7 @@ private fun settingsOptionLabel(title: String, option: String): String = when {
 }
 
 private fun settingsOptionDescription(title: String, option: String): String? = when (title) {
+  "Background Mode" -> runCatching { backgroundModeDescription(BackgroundMode.valueOf(option)) }.getOrNull()
   "Language" -> when (normalizeAppLanguage(option)) {
     "en" -> "English"
     "es" -> "Español · Spanish"
@@ -14784,7 +15878,7 @@ private fun settingsOptionDescription(title: String, option: String): String? = 
     ContinueWatchingStyle.Stacked.name -> "Artwork-first poster card."
     else -> null
   }
-  "Page Style" -> "Use the $option layout on media pages."
+  "Title Page Style" -> "Use the $option layout on media pages."
   "Season Tabs" -> if (option == SeasonTabStyle.Posters.name) "Show image tabs for seasons." else "Use compact regular season tabs."
   else -> null
 }
@@ -15210,6 +16304,40 @@ private fun DetailRow(label: String, value: String) {
   }
 }
 
+/**
+ * A URL worth having rather than just reading: the address is shown in full, and can be taken.
+ *
+ * An add-on is identified by where it came from — two installs with the same name are told apart by
+ * their address and nothing else — but an address is only useful somewhere: pasted into another
+ * device's install box, or opened to see what is actually there. Printing it and leaving the viewer
+ * to copy it off the screen by hand is what makes a long signed manifest URL unusable.
+ *
+ * The text wraps rather than ellipsising for the same reason. The distinguishing part of these is
+ * often the very end.
+ */
+@Composable
+private fun DetailUrlRow(label: String, url: String) {
+  val clipboard = LocalClipboardManager.current
+  val context = LocalContext.current
+  Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f))
+    Text(url, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.86f))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+      OutlinedButton(
+        onClick = {
+          clipboard.setText(AnnotatedString(url))
+          android.widget.Toast.makeText(context, "Address copied", android.widget.Toast.LENGTH_SHORT).show()
+        },
+        shape = RoundedCornerShape(999.dp),
+      ) { Text("Copy") }
+      OutlinedButton(
+        onClick = { openExternalUrl(context, url) },
+        shape = RoundedCornerShape(999.dp),
+      ) { Text("Open") }
+    }
+  }
+}
+
 @Composable
 private fun AddonDetailsDialog(addon: InstalledAddon, displayName: String, onRenamed: () -> Unit, onDismiss: () -> Unit) {
   var nameField by remember(addon.id) { mutableStateOf(displayName) }
@@ -15254,6 +16382,13 @@ private fun AddonDetailsDialog(addon: InstalledAddon, displayName: String, onRen
         SettingsDivider()
         DetailRow("Version", addon.manifest.version)
         addon.manifest.description?.takeIf { it.isNotBlank() }?.let { DetailRow("About", it) }
+        // Where this one came from. The manifest address is the install itself — it is what was
+        // added, what identifies it against another copy of the same add-on, and what has to be
+        // typed into the next device — so it is the address shown, with the others standing in only
+        // if an install recorded no manifest URL.
+        listOfNotNull(addon.manifestUrl, addon.transportUrl, addon.url, addon.baseUrl)
+          .firstOrNull { it.isNotBlank() }
+          ?.let { DetailUrlRow("Address", it) }
         DetailRow(
           "Setup",
           when {
@@ -16353,6 +17488,11 @@ private fun PluginRepoDetailsDialog(repository: PluginRepo, providers: List<Plug
 
         DetailRow("Version", repository.version)
         repository.description?.takeIf { it.isNotBlank() }?.let { DetailRow("Description", it) }
+        // The collection's address, which is the collection: it is what was added, what the app
+        // refreshes against, and what somebody has to be given to install the same plugins
+        // elsewhere. The dialog knew it all along — it keys the rename override on it — and was the
+        // one place a viewer could not read it back out.
+        DetailUrlRow("Address", repository.url)
         DetailRow("Status", if (repository.enabled) "On" else "Off")
         if (providers.isNotEmpty()) {
           Text("Sources (${providers.size})", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
@@ -17531,6 +18671,8 @@ private fun DetailScreen(
   onDownloadStream: (AddonStream, String) -> Unit = { _, _ -> },
   isStreamDownloadEligible: (AddonStream) -> Boolean = { false },
   onTrailerMutedChange: (Boolean) -> Unit = {},
+  /** Autoplay is on but its start delay has not elapsed yet. */
+  trailerAutoplayPending: Boolean = false,
 ) {
   val detail = uiState.detail
   if (uiState.detailLoading || detail == null) {
@@ -17654,13 +18796,17 @@ private fun DetailScreen(
   // at navigation can elapse while the page is still empty on a slow detail fetch, which puts the
   // trailer right back into contention with everything else. It deliberately does not wait on
   // sources — those can take many seconds, and the trailer is what makes the page feel alive.
+  //
+  // How long the wait is belongs to the viewer now, and to the account rather than to this device.
+  // Measuring it from content still matters at every setting: at zero the trailer starts as soon as
+  // there is a page, which is the earliest that is not simply competing with the page being built.
   var trailerReleased by remember(detail.id) { mutableStateOf(false) }
   LaunchedEffect(detail.id, uiState.detailLoading) {
     if (uiState.detailLoading) {
       trailerReleased = false
       return@LaunchedEffect
     }
-    delay(DETAIL_TRAILER_DELAY_MS)
+    delay(uiState.heroTrailerDelaySeconds.coerceIn(0, MAX_TRAILER_DELAY_SECONDS) * 1_000L)
     trailerReleased = true
   }
   val listState = rememberLazyListState()
@@ -17672,8 +18818,16 @@ private fun DetailScreen(
     }
   }
   val lightMode = MaterialTheme.colorScheme.background.luminance() > 0.5f
-  Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-    if (uiState.vividAmbient) {
+  // Read from the artwork rather than the theme when the viewer has asked for it. Null until the
+  // image has been sampled, and null forever if it cannot be — the page then simply keeps the theme
+  // background, which looks deliberate where an arbitrary colour would look broken.
+  val dominant = rememberDominantBackgroundColor(
+    artworkUrl = backdrop,
+    enabled = uiState.detailBackgroundMode == BackgroundMode.Dominant,
+  )
+  val pageBackground = dominant ?: MaterialTheme.colorScheme.background
+  Box(modifier = Modifier.fillMaxSize().background(pageBackground)) {
+    if (uiState.detailBackgroundMode == BackgroundMode.Cinematic) {
       AsyncImage(
         model = backdrop,
         contentDescription = null,
@@ -17715,6 +18869,7 @@ private fun DetailScreen(
         DetailHero(
           detail = detail,
           backdrop = backdrop,
+          pageBackground = dominant,
           metadataLine = metadataLine,
           style = uiState.detailPageStyle,
           scrollOffset = { if (listState.firstVisibleItemIndex == 0) listState.firstVisibleItemScrollOffset else 0 },
@@ -17722,6 +18877,8 @@ private fun DetailScreen(
           trailerResolution = uiState.heroTrailerResolution,
           trailerMuted = uiState.heroTrailerMuted,
           onTrailerMutedChange = onTrailerMutedChange,
+          // Same condition as autoPlayTrailer above, minus the delay having elapsed.
+          trailerAutoplayPending = uiState.heroTrailerAutoplay && !trailerReleased && episodePage == null && !uiState.detailIsLive,
           hazeState = detailHazeState,
           streamCount = streamCount,
           streamLoading = uiState.streamLoading,
@@ -17931,6 +19088,7 @@ private fun DetailScreen(
         backdropUrl = detail.backdrop ?: detail.poster,
         maxHeight = uiState.heroTrailerResolution,
         alternateUrls = detail.trailerCandidateUrls(),
+        preferredUrl = rememberKinocheckTrailerUrl(detail),
         onDismiss = { trailerPopupUrl = null },
         onOpenExternal = { openTrailer(context, url) },
       )
@@ -17996,6 +19154,24 @@ private fun youtubeTrailerKey(url: String): String? {
  */
 private fun MediaDetail.trailerCandidateUrls(): List<String> =
   trailerKeys.mapNotNull { key -> key.trim().takeIf { it.isNotEmpty() }?.let { "https://www.youtube.com/watch?v=$it" } }
+
+/**
+ * KinoCheck's trailer for this title, once it has answered.
+ *
+ * Null until then and null if they do not carry it, and the trailer path treats null as "use the
+ * metadata service's list" — so the lookup never delays or blocks playback. It is a composable
+ * rather than a call at each site because three screens raise trailers and they should all ask the
+ * same question.
+ */
+@Composable
+private fun rememberKinocheckTrailerUrl(detail: MediaDetail): String? {
+  val context = LocalContext.current
+  val resetToken = TrailerResetSignal.current()
+  val key by produceState<String?>(null, detail.id, detail.type, resetToken) {
+    value = kinocheckTrailerKey(detail.id, detail.type, context)
+  }
+  return key?.let { "https://www.youtube.com/watch?v=$it" }
+}
 
 private fun vimeoTrailerKey(url: String): String? {
   val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
@@ -18094,7 +19270,7 @@ private fun trailerEmbedHtml(url: String, autoPlay: Boolean, muted: Boolean): St
   """.trimIndent()
 }
 @Composable
-private fun TrailerDialog(title: String, url: String, backdropUrl: String?, maxHeight: Int = 720, alternateUrls: List<String> = emptyList(), onDismiss: () -> Unit, onOpenExternal: () -> Unit) {
+private fun TrailerDialog(title: String, url: String, backdropUrl: String?, maxHeight: Int = 720, alternateUrls: List<String> = emptyList(), preferredUrl: String? = null, onDismiss: () -> Unit, onOpenExternal: () -> Unit) {
   var trailerReady by remember(url) { mutableStateOf(false) }
   var trailerFailed by remember(url) { mutableStateOf(false) }
   Dialog(
@@ -18130,6 +19306,7 @@ private fun TrailerDialog(title: String, url: String, backdropUrl: String?, maxH
             maxHeight = maxHeight,
             preferWebEmbed = false,
             alternateUrls = alternateUrls,
+            preferredUrl = preferredUrl,
             onReadyChanged = { ready -> trailerReady = ready; if (ready) trailerFailed = false },
             onLoadFailed = { trailerFailed = true },
             onEnded = onDismiss,
@@ -18162,6 +19339,8 @@ private fun TrailerPlaybackView(
   maxHeight: Int = 720,
   preferWebEmbed: Boolean = false,
   alternateUrls: List<String> = emptyList(),
+  /** KinoCheck's pick, tried ahead of the metadata service's list. See [resolveTrailerPlaybackSource]. */
+  preferredUrl: String? = null,
   onReadyChanged: (Boolean) -> Unit = {},
   onLoadFailed: () -> Unit = {},
   onEnded: () -> Unit = {},
@@ -18169,9 +19348,12 @@ private fun TrailerPlaybackView(
   val isYoutubeTrailer = youtubeTrailerKey(url) != null
   val isVimeoTrailer = vimeoTrailerKey(url) != null
   val context = LocalContext.current
-  var nativeRetryKey by rememberSaveable(url) { mutableIntStateOf(0) }
-  var resolution by remember(url, maxHeight) { mutableStateOf<TrailerPlaybackResolution?>(null) }
-  var resolved by remember(url, maxHeight) { mutableStateOf(false) }
+  // Keyed into everything below, so clearing trailer state re-resolves the trailer already on screen
+  // rather than waiting for the app to be restarted.
+  val trailerResetToken = TrailerResetSignal.current()
+  var nativeRetryKey by rememberSaveable(url, trailerResetToken) { mutableIntStateOf(0) }
+  var resolution by remember(url, maxHeight, trailerResetToken) { mutableStateOf<TrailerPlaybackResolution?>(null) }
+  var resolved by remember(url, maxHeight, trailerResetToken) { mutableStateOf(false) }
 
   if (!isYoutubeTrailer && isVimeoTrailer && preferWebEmbed) {
     LaunchedEffect(url, autoPlay, muted) { onReadyChanged(false) }
@@ -18196,11 +19378,25 @@ private fun TrailerPlaybackView(
   // before giving up on native playback and dropping to the iframe embed.
   var freshSourceAttempted by rememberSaveable(url, maxHeight) { mutableStateOf(false) }
 
-  LaunchedEffect(url, maxHeight, nativeRetryKey) {
+  // Keyed on the preferred URL as well, so a trailer already showing from the metadata service's
+  // list is replaced once KinoCheck answers with the real one.
+  LaunchedEffect(url, maxHeight, nativeRetryKey, preferredUrl) {
     onReadyChanged(false)
     resolved = false
-    val youtubeCookies = if (isYoutubeTrailer) android.webkit.CookieManager.getInstance().getCookie("https://www.youtube.com") else null
-    resolution = resolveTrailerPlaybackSource(url, maxHeight, youtubeCookies, alternateUrls)
+    // Deliberately never the viewer's cookies.
+    //
+    // These were read out of the WebView the iframe fallback runs in — cookies this app creates
+    // itself by playing one trailer through the embed. Today they reach nothing: the resolver only
+    // attaches them for the WEB and TVHTML5 clients, and neither is in the client list any more. But
+    // that is the whole danger. TVHTML5 used to be in that list, and when one of these cookies
+    // existed it was tried ahead of IOS, answered `status=OK`, and handed back a URL that 403'd the
+    // moment the player fetched it — so one visit to the embed silently broke every trailer after
+    // it, and the client that would have worked was never reached.
+    //
+    // Nothing here needs a signed-in identity: both clients in use are anonymous by design. Passing
+    // null means putting a client back in that list cannot re-arm that trap by accident.
+    val youtubeCookies: String? = null
+    resolution = resolveTrailerPlaybackSource(url, maxHeight, youtubeCookies, alternateUrls, preferredUrl)
     resolved = true
   }
 
@@ -18244,6 +19440,8 @@ private fun TrailerPlaybackView(
     audioUrl = source.audioUrl,
     requestHeaders = source.requestHeaders,
     maxHeight = source.height ?: maxHeight,
+    startPositionMs = source.startPositionMs,
+    endTrimMs = source.endTrimMs,
     onReady = { onReadyChanged(true) },
     onError = {
       onReadyChanged(false)
@@ -18318,6 +19516,11 @@ private fun TrailerWebView(
   val latestLoginRequired = rememberUpdatedState(onLoginRequired)
   val latestLoadFailed = rememberUpdatedState(onLoadFailed)
   val latestEnded = rememberUpdatedState(onEnded)
+  // Rebuilt from scratch when trailer state is cleared. Clearing cookies and site storage does not
+  // reach a WebView that is already alive — it keeps the session it was refused under, which is why
+  // a clear used to need an app restart before trailers came back. `key` disposes this one and
+  // constructs a new one, and the old instance is destroyed by AndroidView's onRelease.
+  key(TrailerResetSignal.current()) {
   AndroidView(
     modifier = modifier.background(Color.Transparent),
     factory = { context ->
@@ -18409,6 +19612,7 @@ private fun TrailerWebView(
       webView.destroy()
     },
   )
+  }
 }
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
@@ -18420,6 +19624,10 @@ private fun Media3TextureTrailerPlayer(
   audioUrl: String?,
   requestHeaders: Map<String, String>,
   maxHeight: Int,
+  /** Where to begin, for sources that carry a lead-in worth skipping. */
+  startPositionMs: Long = 0L,
+  /** Stop this far short of the end. See TrailerPlaybackSource.endTrimMs. */
+  endTrimMs: Long = 0L,
   onReady: () -> Unit,
   onError: () -> Unit,
   onEnded: () -> Unit,
@@ -18463,14 +19671,29 @@ private fun Media3TextureTrailerPlayer(
       }
       repeatMode = Player.REPEAT_MODE_OFF
       volume = if (muted) 0f else 1f
+      // Deliberately *not* seeking before prepare.
+      //
+      // These URLs are not read with HTTP Range headers: ChunkedGoogleVideoDataSource asks
+      // googlevideo for a span through its own `&range=` query parameter, and a first request that
+      // does not start at byte zero is answered 403. Seeking here therefore did not skip the
+      // opening — it broke playback outright, on every trailer. The seek is applied once the source
+      // is prepared instead; see the listener below.
       prepare()
     }
   }
 
   DisposableEffect(player, lifecycleOwner) {
     var playbackEnded = false
+    // Applied once, after the source is prepared, because a seek before that makes the first
+    // chunk request start mid-file and googlevideo answers it 403. By this point the opening bytes
+    // have been read, so the seek is an ordinary one and the span it asks for is accepted.
+    var startApplied = startPositionMs <= 0L
     val listener = object : Player.Listener {
       override fun onPlaybackStateChanged(playbackState: Int) {
+        if (playbackState == Player.STATE_READY && !startApplied) {
+          startApplied = true
+          player.seekTo(startPositionMs)
+        }
         if (playbackState == Player.STATE_READY) latestOnReady.value()
         if (playbackState == Player.STATE_ENDED && !playbackEnded) {
           playbackEnded = true
@@ -18503,6 +19726,25 @@ private fun Media3TextureTrailerPlayer(
       lifecycleOwner.lifecycle.removeObserver(observer)
       player.removeListener(listener)
       player.release()
+    }
+  }
+
+  // Treat the trailer as over [endTrimMs] before the file is, so a KinoCheck upload ends on its own
+  // last frame rather than running into the channel outro.
+  //
+  // Polled rather than driven off player events: Media3 emits nothing as position advances through
+  // steady playback, so a listener would only notice once the file had already ended. Half a second
+  // is finer than anyone can see against a ten-second trim and costs one field read.
+  LaunchedEffect(player, endTrimMs) {
+    if (endTrimMs <= 0L) return@LaunchedEffect
+    while (true) {
+      val duration = player.duration
+      if (duration != androidx.media3.common.C.TIME_UNSET && duration > endTrimMs && player.currentPosition >= duration - endTrimMs) {
+        player.pause()
+        latestOnEnded.value()
+        return@LaunchedEffect
+      }
+      delay(500)
     }
   }
 
@@ -18633,11 +19875,18 @@ private fun ClassicDetailHero(
   onToggleFavourite: () -> Unit = {},
   trailerMuted: Boolean = true,
   onTrailerMutedChange: (Boolean) -> Unit = {},
+  /** Autoplay is on but its start delay has not elapsed yet. */
+  trailerAutoplayPending: Boolean = false,
+  /** The dominant-colour page background, when one is in use. Null keeps the theme's. */
+  pageBackground: Color? = null,
 ) {
   BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
     val artworkHeight = (maxWidth * 1.18f).coerceIn(440.dp, 670.dp)
     val foreground = MaterialTheme.colorScheme.onBackground
-    val background = MaterialTheme.colorScheme.background
+    // The colour the page is actually painted with. In Dominant mode the scrims below fade the
+    // artwork into that rather than into the theme background, which is what stops the hero ending
+    // on a band of black over a coloured page.
+    val background = pageBackground ?: MaterialTheme.colorScheme.background
     val lightDetail = background.luminance() > 0.5f
 
     val trailerControlContent = if (lightDetail) MaterialTheme.colorScheme.onSurface else Color.White
@@ -18664,8 +19913,13 @@ private fun ClassicDetailHero(
       }
     }
     Column(modifier = Modifier.fillMaxWidth()) {
-      Box(modifier = Modifier.fillMaxWidth().height(artworkHeight).clip(RectangleShape)) {
-        Box(modifier = Modifier.fillMaxSize()) {
+      // Half an artwork-height taller than the artwork itself, so the scrim's mirrored lower half
+      // has somewhere to live. Overflowing this box instead was tried and does not work — the
+      // oversized child gets measured back down to the parent, which squeezed the whole gradient
+      // into the artwork's height and left its brightest point sitting on the very edge it was
+      // supposed to hide. The content below is pulled up by the same amount, so nothing moves.
+      Box(modifier = Modifier.fillMaxWidth().height(artworkHeight * 1.5f)) {
+        Box(modifier = Modifier.fillMaxWidth().height(artworkHeight).align(Alignment.TopCenter).clip(RectangleShape)) {
           AsyncImage(
             model = backdrop,
             contentDescription = detail.title,
@@ -18679,16 +19933,27 @@ private fun ClassicDetailHero(
           )
           if (trailerPlaying && !detail.trailerUrl.isNullOrBlank()) {
             key(trailerPlaybackKey) {
-              // Keep the platform video view out of parallax/blur layers. Transforming an
-              // Android video surface while a LazyColumn scrolls can crash RenderThread on
-              // some OnePlus/GPU combinations.
+              // Drifts with the backdrop so the page scrolls over the trailer rather than shoving
+              // it up the screen — the same 0.42 factor the still image uses, so swapping between
+              // them mid-scroll does not change how the hero moves.
+              //
+              // Deliberately `offset` and not `graphicsLayer`. The video view is a platform surface
+              // and transforming one while a LazyColumn scrolls can take RenderThread down on some
+              // OnePlus/OPPO GPUs, which is why the parallax was stripped from here in the first
+              // place. An offset is resolved during placement — the view is positioned somewhere
+              // else rather than drawn through a matrix — so it buys the same movement without
+              // putting the surface inside a transformed layer. Reading scrollOffset() in the
+              // lambda also keeps it in the placement phase, off the recomposition path.
               TrailerPlaybackView(
                 url = detail.trailerUrl,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                  .fillMaxSize()
+                  .offset { IntOffset(0, (scrollOffset() * 0.42f).roundToInt()) },
                 autoPlay = true,
                 muted = trailerMuted,
                 maxHeight = trailerResolution,
                 alternateUrls = detail.trailerCandidateUrls(),
+                preferredUrl = rememberKinocheckTrailerUrl(detail),
                 onReadyChanged = { trailerReady = it },
                 onLoadFailed = { trailerFailed = true; trailerPlaying = false; trailerAutoplayUsed = true },
                 onEnded = { trailerPlaying = false; trailerReady = false; trailerAutoplayUsed = true },
@@ -18697,27 +19962,51 @@ private fun ClassicDetailHero(
           }
         }
         if (!lightDetail) {
+        // The bottom fade, mirrored about the artwork's bottom edge.
+        //
+        // One box and one brush rather than two stacked scrims: the halves have to meet at exactly
+        // full `background` with no seam of their own, and two separately composited gradients
+        // cannot guarantee that — the pair would show a faint band wherever their end stops did not
+        // land on the same pixel.
+        //
+        // The box is 1.5x the artwork, so the edge sits at 0.667 of the brush. Everything above it
+        // is the original fade at its original proportions (0.50/0.76/0.93/1.00 of the artwork,
+        // divided by 1.5); everything below is those same steps walked back out again. The result
+        // is darkest exactly on the cut and falls away symmetrically, so the hard bottom of the
+        // artwork has nothing to read against — it is the middle of a gradient rather than an end.
+        //
+        // Only visible where something sits under the hero to darken, which is the vivid-ambient
+        // backdrop. On a plain background the lower half paints background over background and
+        // costs nothing.
         Box(
-          modifier = Modifier.fillMaxSize().background(
-            Brush.verticalGradient(
-              colorStops = arrayOf(
-                0.00f to Color.Black.copy(alpha = 0.04f),
-                0.50f to Color.Transparent,
-                0.76f to background.copy(alpha = 0.42f),
-                0.93f to background.copy(alpha = 0.94f),
-                1.00f to background,
+          modifier = Modifier
+            .fillMaxSize()
+            .background(
+              Brush.verticalGradient(
+                colorStops = arrayOf(
+                  0.0000f to Color.Black.copy(alpha = 0.04f),
+                  0.3333f to Color.Transparent,
+                  0.5067f to background.copy(alpha = 0.42f),
+                  0.6200f to background.copy(alpha = 0.94f),
+                  0.6667f to background,
+                  0.7133f to background.copy(alpha = 0.94f),
+                  0.8267f to background.copy(alpha = 0.42f),
+                  1.0000f to Color.Transparent,
+                ),
               ),
             ),
-          ),
         )
         }
 
         if (trailerPlaying) {
           if (!lightDetail) {
+            // Anchored to the artwork's bottom edge rather than to this box's, which is now half an
+            // artwork-height lower. Still straddles that edge 90dp either side, as it always meant
+            // to — its lower half was being clipped away entirely until the box stopped clipping.
             Column(
               modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .offset(y = 90.dp)
+                .align(Alignment.TopCenter)
+                .offset(y = artworkHeight - 90.dp)
                 .fillMaxWidth()
                 .height(180.dp),
             ) {
@@ -18725,9 +20014,13 @@ private fun ClassicDetailHero(
               Box(modifier = Modifier.fillMaxWidth().weight(1f).background(Brush.verticalGradient(listOf(background, Color.Transparent))))
             }
           }
+          // Only over the artwork. Filling this box would now reach down over the poster and title,
+          // where a tap means something else.
           Box(
             modifier = Modifier
-              .fillMaxSize()
+              .fillMaxWidth()
+              .height(artworkHeight)
+              .align(Alignment.TopCenter)
               .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onTrailerMutedChange(!trailerMuted) },
           )
         }
@@ -18806,7 +20099,10 @@ private fun ClassicDetailHero(
           .fillMaxWidth()
           .layout { measurable, constraints ->
             val placeable = measurable.measure(constraints)
-            val overlap = 112.dp.roundToPx()
+            // The artwork box carries half an artwork-height of scrim below the picture, so the
+            // pull-up absorbs that as well as the original 112dp overlap. Without it the poster
+            // and title would sit that far further down and the page would grow by the same.
+            val overlap = (112.dp + artworkHeight / 2).roundToPx()
             layout(placeable.width, (placeable.height - overlap).coerceAtLeast(0)) {
               placeable.placeRelative(0, -overlap)
             }
@@ -18867,6 +20163,7 @@ private fun ClassicDetailHero(
           streamCount = streamCount, streamLoading = streamLoading, primaryPlayLabel = primaryPlayLabel, selectedTab = selectedTab,
           showEpisodes = showEpisodes, showStreamsList = showStreamsList, inWatchlist = inWatchlist, showMediaActions = showMediaActions,
           showWatchedAction = showWatchedAction, watched = watched, autoPlayTrailer = autoPlayTrailer && !detail.trailerUrl.isNullOrBlank(),
+          trailerAutoplayPending = trailerAutoplayPending,
           onPlay = onPlay, hasTrailer = showMediaActions && !detail.trailerUrl.isNullOrBlank(), onTrailer = onTrailer, onAbout = onAbout,
           onStreams = onStreams, onEpisodes = onEpisodes, onSave = onSave, onToggleWatched = onToggleWatched,
           showFavouriteAction = showFavouriteAction, isFavourite = isFavourite, onToggleFavourite = onToggleFavourite,
@@ -18931,18 +20228,29 @@ private fun DetailHero(
   onToggleFavourite: () -> Unit = {},
   trailerMuted: Boolean = true,
   onTrailerMutedChange: (Boolean) -> Unit = {},
+  /** Autoplay is on but its start delay has not elapsed yet. */
+  trailerAutoplayPending: Boolean = false,
+  /** The dominant-colour page background, when one is in use. */
+  pageBackground: Color? = null,
 ) {
   if (style == DetailPageStyle.Classic) {
     ClassicDetailHero(
       detail, backdrop, metadataLine, scrollOffset, autoPlayTrailer, trailerResolution, hazeState, streamCount, streamLoading, primaryPlayLabel, selectedTab, showEpisodes, showStreamsList, inWatchlist, showMediaActions, showWatchedAction, watched, ratingsEnabled, externalRatingsEnabled, enabledRatingProviders, overview, overviewExpanded, onOverviewExpandedChange, onPlay, onTrailer, onAbout, onStreams, onEpisodes, onSave, onToggleWatched,
       showFavouriteAction = showFavouriteAction, isFavourite = isFavourite, proxyStatus = proxyStatus, onToggleFavourite = onToggleFavourite,
       trailerMuted = trailerMuted, onTrailerMutedChange = onTrailerMutedChange,
+      trailerAutoplayPending = trailerAutoplayPending,
+      pageBackground = pageBackground,
     )
     return
   }
   BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
     val heroHeight = ((maxWidth * if (style == DetailPageStyle.Centered) 1.36f else 1.30f).coerceIn(500.dp, 760.dp))
-    val lightDetail = MaterialTheme.colorScheme.background.luminance() > 0.5f
+    // The colour the page is actually painted with, which is the artwork's own in Dominant mode.
+    // Everything below fades the hero into this rather than into the theme background — fading to
+    // black over a coloured page leaves a band of black across the join, which is the same seam
+    // the Classic hero had before it was given the page colour to work with.
+    val background = pageBackground ?: MaterialTheme.colorScheme.background
+    val lightDetail = background.luminance() > 0.5f
 
     val detailForeground = MaterialTheme.colorScheme.onBackground
     val trailerControlContent = if (lightDetail) MaterialTheme.colorScheme.onSurface else Color.White
@@ -18994,9 +20302,18 @@ private fun DetailHero(
         )
         androidx.compose.animation.AnimatedVisibility(
           visible = trailerPlaying && !detail.trailerUrl.isNullOrBlank(),
-          // Same parallax layer as the static hero image, so scrolling glides the
-          // page content over the trailer while the video drifts at half speed.
-          modifier = Modifier.fillMaxSize(),
+          // Same parallax as the static hero image, so scrolling glides the page content over the
+          // trailer while the video drifts at half speed. This is what the comment here always
+          // claimed; the modifier that did it was missing, so the trailer was pushed up the screen
+          // one-for-one while the still image it replaced stayed put.
+          //
+          // `offset` rather than the image's `graphicsLayer`: the video is a platform surface and
+          // transforming one mid-scroll can take RenderThread down on some OnePlus/OPPO GPUs. An
+          // offset moves it during placement instead, which is the same movement without the
+          // transformed layer.
+          modifier = Modifier
+            .fillMaxSize()
+            .offset { IntOffset(0, (scrollOffset() * 0.5f).roundToInt()) },
           enter = fadeIn(animationSpec = tween(420)),
           exit = fadeOut(animationSpec = tween(520)),
         ) {
@@ -19008,6 +20325,7 @@ private fun DetailHero(
               muted = trailerMuted,
               maxHeight = trailerResolution,
               alternateUrls = detail.trailerCandidateUrls(),
+              preferredUrl = rememberKinocheckTrailerUrl(detail),
               onReadyChanged = { trailerReady = it },
               onLoadFailed = { trailerFailed = true; trailerPlaying = false; trailerAutoplayUsed = true },
               onEnded = { trailerPlaying = false; trailerReady = false; trailerAutoplayUsed = true },
@@ -19093,10 +20411,10 @@ private fun DetailHero(
               Brush.verticalGradient(
                 colorStops = arrayOf(
                   0.00f to Color.Transparent,
-                  0.18f to Color.Black.copy(alpha = 0.08f),
-                  0.42f to Color.Black.copy(alpha = 0.32f),
-                  0.68f to Color.Black.copy(alpha = 0.70f),
-                  1.00f to Color.Black,
+                  0.18f to background.copy(alpha = 0.08f),
+                  0.42f to background.copy(alpha = 0.32f),
+                  0.68f to background.copy(alpha = 0.70f),
+                  1.00f to background,
                 ),
               ),
             ),
@@ -19159,8 +20477,8 @@ private fun DetailHero(
             Brush.verticalGradient(
               colors = when {
                 lightDetail && style == DetailPageStyle.Centered -> listOf(Color.Transparent, Color.Transparent, Color.Transparent)
-                lightDetail -> listOf(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.background)
-                else -> listOf(Color.Black, Color.Black.copy(alpha = 0.82f), Color.Transparent)
+                lightDetail -> listOf(background, background, background)
+                else -> listOf(background, background.copy(alpha = 0.82f), Color.Transparent)
               },
             ),
           )
@@ -19177,6 +20495,7 @@ private fun DetailHero(
           inWatchlist = inWatchlist,
           showMediaActions = showMediaActions,
           autoPlayTrailer = autoPlayTrailer && !detail.trailerUrl.isNullOrBlank(),
+          trailerAutoplayPending = trailerAutoplayPending,
           primaryPlayLabel = primaryPlayLabel,
           onPlay = onPlay,
           hasTrailer = !detail.trailerUrl.isNullOrBlank(),
@@ -19242,6 +20561,8 @@ private fun movieStatusLabel(detail: MediaDetail): String =
 
 @Composable
 private fun StreamDekDetailActions(
+  /** True while autoplay is on and the start delay has not elapsed yet. */
+  trailerAutoplayPending: Boolean = false,
   streamCount: Int,
   streamLoading: Boolean,
   primaryPlayLabel: String,
@@ -19287,7 +20608,10 @@ private fun StreamDekDetailActions(
         Spacer(modifier = Modifier.width(8.dp))
         Text(primaryPlayLabel, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Black)
       }
-      if (showMediaActions && !autoPlayTrailer) {
+      // Hidden as soon as an autoplay trailer is *intended*, not once it has actually started.
+      // Gating on autoPlayTrailer alone meant this button appeared for the length of the start
+      // delay and then vanished under the viewer's thumb when the trailer arrived.
+      if (showMediaActions && !autoPlayTrailer && !trailerAutoplayPending) {
         if (lightMode) {
           Button(
             onClick = onTrailer,
@@ -19918,14 +21242,19 @@ private fun StreamListContent(
         ?: streamSingleLine(stream.filename)
         ?: streamSingleLine(stream.description)
         ?: listOfNotNull(stream.addonName, stream.quality, streamSizeLabel(stream)).joinToString(" ").ifBlank { "Stream source" }
-      val providerText = listOfNotNull(
+      // Where this result came from, in the television's words: the source's own name, and beside
+      // it whether that source is an add-on, a plugin out of a named collection, or a file already
+      // here. The name on its own never distinguished those, and a list of a hundred results from
+      // eight places was unreadable because of it.
+      //
+      // It is shown even when the headline repeats the name. Suppressing it was tidier and it is
+      // what hid the attribution on precisely the sources that lead with their own name — and the
+      // origin beside it is new information in every case.
+      val originText = streamOriginLabel(stream)
+      val attributionText = listOfNotNull(
         stream.addonName.takeIf { it.isNotBlank() },
         stream.source?.takeIf { it.isNotBlank() },
       ).distinct().joinToString(" • ")
-      // Skip the provider line when the headline already names the add-on, rather than printing
-      // "PenguPlay" directly under "PenguPlay 1080p • MoviesDrives".
-      val showProviderLine = providerText.isNotEmpty() &&
-        !(stream.addonName.isNotBlank() && primaryText.contains(stream.addonName, ignoreCase = true))
       val secondaryText = streamSingleLine(stream.title)?.takeIf { it != primaryText }
         ?: streamSingleLine(stream.description)?.takeIf { it != primaryText }
         ?: streamSingleLine(stream.filename)?.takeIf { it != primaryText }
@@ -19948,11 +21277,41 @@ private fun StreamListContent(
           }
           Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+              // Above the result rather than under it, and in both modes.
+              //
+              // The television puts it first because it is the thing you scan by when the same
+              // release is offered by five sources. Verbatim mode keeps it too: that mode's promise
+              // is that the add-on's own text is never rewritten, and a line the app adds above it
+              // does not touch a word of what was sent.
+              if (attributionText.isNotEmpty() || originText != null) {
+                Row(
+                  horizontalArrangement = Arrangement.spacedBy(7.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                ) {
+                  if (attributionText.isNotEmpty()) {
+                    Text(
+                      attributionText,
+                      color = MaterialTheme.colorScheme.primary,
+                      style = MaterialTheme.typography.labelMedium,
+                      fontWeight = FontWeight.Black,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                      modifier = Modifier.weight(1f, fill = false),
+                    )
+                  }
+                  originText?.let {
+                    Text(
+                      it,
+                      color = streamForeground.copy(alpha = 0.48f),
+                      style = MaterialTheme.typography.labelSmall,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                    )
+                  }
+                }
+              }
               if (uiState.streamDekFormattingEnabled) {
                 Text(primaryText, color = streamForeground, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (showProviderLine) {
-                  Text(providerText, color = streamForeground.copy(alpha = 0.62f), style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
               } else {
                 // Verbatim. Stremio add-ons put deliberate structure in these two fields — `name`
                 // is the short label ("Torrentio\n4k"), `title`/`description` the detail block with
@@ -20439,7 +21798,11 @@ private fun ContinueWatchingCard(item: MediaItem, style: ContinueWatchingStyle, 
           Box(modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth()) { progressBar() }
         }
         Column(modifier = Modifier.padding(horizontal = 9.dp, vertical = 9.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-          Text(item.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Bold, fontSize = 12.sp, lineHeight = 16.sp, color = Color.White)
+          // Two lines are always reserved, whether the title needs them or not. The row lays these
+          // out side by side, so a card whose title fits on one line used to be a line shorter than
+          // its neighbours and the row's bottom edge came out ragged. Every card now takes the
+          // height of the tallest, and the artwork and progress bars line up across the row.
+          Text(item.title, minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Bold, fontSize = 12.sp, lineHeight = 16.sp, color = Color.White)
           Text(item.year ?: item.type.replaceFirstChar(Char::uppercase), fontSize = 10.sp, color = Color.White.copy(alpha = 0.66f))
           Text("$watchedPercent% watched", fontSize = 10.sp, color = Color.White.copy(alpha = 0.72f))
         }
@@ -20681,28 +22044,36 @@ private fun EpisodeStreamsPage(
   val providers = remember(uiState.availableStreams) { streamProviderNames(uiState.availableStreams) }
   var providerFilter by rememberSaveable(detail.id, episode.id) { mutableStateOf("All") }
   val episodeHazeState = rememberHazeState()
-  val lightStreamsPage = MaterialTheme.colorScheme.background.luminance() > 0.5f
+  // Taken from the title's own backdrop rather than this episode's still: an episode belongs to the
+  // title, and sampling each still would give every episode a different page colour. The answer is
+  // already cached from the title page, so this costs nothing and matches it exactly.
+  val episodePageBackground = rememberDominantBackgroundColor(
+    artworkUrl = detail.backdrop,
+    enabled = uiState.detailBackgroundMode == BackgroundMode.Dominant,
+  )
+  val episodeBackground = episodePageBackground ?: MaterialTheme.colorScheme.background
+  val lightStreamsPage = episodeBackground.luminance() > 0.5f
   val streamsPageForeground = MaterialTheme.colorScheme.onSurface
   val filterPanelHeight = if (providers.size > 1) 102.dp else 58.dp
   LaunchedEffect(providers, providerFilter) {
     if (providerFilter != "All" && providerFilter !in providers) providerFilter = "All"
   }
   BackHandler(onBack = onBack)
-  Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-      if (uiState.vividAmbient) {
+  Surface(modifier = Modifier.fillMaxSize(), color = episodeBackground) {
+    Box(modifier = Modifier.fillMaxSize().background(episodeBackground)) {
+      if (uiState.detailBackgroundMode == BackgroundMode.Cinematic) {
         AsyncImage(
           model = heroImage,
           contentDescription = null,
           modifier = Modifier.fillMaxSize().blur(34.dp),
           contentScale = ContentScale.Crop,
         )
-        Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background.copy(alpha = ambientTintAlpha(if (lightStreamsPage) 0.58f else 0.46f, uiState.ambientTintPercent))))
+        Box(modifier = Modifier.fillMaxSize().background(episodeBackground.copy(alpha = ambientTintAlpha(if (lightStreamsPage) 0.58f else 0.46f, uiState.ambientTintPercent))))
       }
       Column(modifier = Modifier.fillMaxSize()) {
         Box(modifier = Modifier.fillMaxWidth().height(330.dp).hazeSource(episodeHazeState)) {
           AsyncImage(model = heroImage, contentDescription = episode.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-          Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.10f), Color.Black.copy(alpha = 0.26f), Color.Black))))
+          Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(episodeBackground.copy(alpha = 0.10f), episodeBackground.copy(alpha = 0.42f), episodeBackground))))
           Column(
             modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(horizontal = 24.dp, vertical = 20.dp),
             verticalArrangement = Arrangement.spacedBy(5.dp),
@@ -20786,11 +22157,15 @@ private fun EpisodeStreamsPage(
             hazeStateOverride = episodeHazeState,
             blurRadius = 68f,
             contentPadding = PaddingValues(top = 10.dp, bottom = 8.dp),
-            tintAlpha = if (lightStreamsPage) 0.042f else 0.036f,
-            borderAlpha = if (lightStreamsPage) 0.024f else 0f,
-            baseAlpha = if (lightStreamsPage) 0.084f else 0.048f,
-            fillColorOverride = if (lightStreamsPage) null else Color.White,
-            showEdgeGradient = false,
+            // Tinted with the page's own colour. The glass otherwise falls back to a near-black
+            // haze tint whenever the theme is dark, which on a coloured page reads as a grey slab
+            // dropped on top of it rather than as part of the page.
+            tintAlpha = 0.30f,
+            borderAlpha = if (lightStreamsPage) 0.10f else 0.14f,
+            baseAlpha = 0.34f,
+            fillColorOverride = sectionSurfaceColor(episodeBackground),
+            // Lets the band dissolve into the list below instead of ending on a hard edge.
+            showEdgeGradient = true,
           ) {
             Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
               Text("Sources", modifier = Modifier.padding(horizontal = 24.dp), color = streamsPageForeground, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)

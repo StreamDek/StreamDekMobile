@@ -1,4 +1,4 @@
-package net.streamdek.mobile.torrent
+package net.streamdek.mobile.peer
 
 import android.content.Context
 import java.io.File

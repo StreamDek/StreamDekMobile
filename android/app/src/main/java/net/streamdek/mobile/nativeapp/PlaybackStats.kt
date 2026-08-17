@@ -29,7 +29,7 @@ data class PlaybackStats(
 
 /** How the bytes actually reach the player, which is not always what the source advertised. */
 enum class StreamTransport(val label: String) {
-  Torrent("Torrent"),
+  Peer("Peer-to-Peer"),
   Usenet("Usenet"),
   Download("Offline download"),
   Hls("HLS"),
@@ -42,18 +42,18 @@ enum class StreamTransport(val label: String) {
 /**
  * Classifies a session by what it is pulling from.
  *
- * The stream's own fields decide first — an info hash means a torrent even though the URL handed to
+ * The stream's own fields decide first — an info hash means a peer-to-peer source even though the URL handed to
  * the engine is this device's own loopback server, and the same goes for an NZB. Only when the
  * source says nothing does the URL get a vote.
  */
 fun streamTransport(stream: AddonStream?, playbackUrl: String): StreamTransport {
   if (stream?.source.equals("download", ignoreCase = true)) return StreamTransport.Download
-  if (!stream?.infoHash.isNullOrBlank()) return StreamTransport.Torrent
+  if (!stream?.infoHash.isNullOrBlank()) return StreamTransport.Peer
   if (!stream?.nzbUrl.isNullOrBlank() || stream?.nntpServers?.isNotEmpty() == true) return StreamTransport.Usenet
   val url = playbackUrl.trim()
   val path = url.substringBefore('?').lowercase(Locale.ROOT)
   return when {
-    url.startsWith("magnet:", ignoreCase = true) -> StreamTransport.Torrent
+    url.startsWith("magnet:", ignoreCase = true) -> StreamTransport.Peer
     url.startsWith("file:", ignoreCase = true) || url.startsWith("/") || url.startsWith("content:", ignoreCase = true) -> StreamTransport.LocalFile
     path.endsWith(".m3u8") -> StreamTransport.Hls
     path.endsWith(".mpd") -> StreamTransport.Dash

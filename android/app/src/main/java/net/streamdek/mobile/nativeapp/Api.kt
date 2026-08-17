@@ -289,6 +289,166 @@ data class DiscoverPage(
   val totalPages: Int,
 )
 
+/**
+ * Where a client's own settings live inside the shared preferences document.
+ *
+ * Mirrors the backend's convention (settingsSchema.ts) rather than inventing a second one: a
+ * setting the schema marks as per-platform is read from and written to this section, and
+ * everything else stays exactly where it has always been.
+ */
+internal const val PLATFORM_PREFERENCES_KEY = "platforms"
+internal const val PLATFORM_PREFERENCES_PLATFORM = "mobile"
+
+/** TMDB serves twenty results per page on every list endpoint the catalogs use. */
+internal const val CATALOG_PAGE_SIZE = 20
+
+/**
+ * Trackers used when an add-on supplies none of its own.
+ *
+ * A bare info-hash is answerable only through DHT, which on a mobile connection is slow at best
+ * and blocked at worst — so a source that arrived without trackers used to find no peers, produce
+ * no metadata, and fail as though it were dead. These are the long-standing public announce URLs
+ * that peer-to-peer clients ship with; they are a floor under such sources, not a replacement for the
+ * add-on's own list, which is always preferred and always included.
+ */
+private val FALLBACK_TRACKERS = listOf(
+  "udp://tracker.opentrackr.org:1337/announce",
+  "udp://open.demonii.com:1337/announce",
+  "udp://open.stealth.si:80/announce",
+  "udp://tracker.torrent.eu.org:451/announce",
+  "udp://exodus.desync.com:6969/announce",
+  "udp://tracker.openbittorrent.com:6969/announce",
+  "udp://explodie.org:6969/announce",
+  "udp://tracker1.bt.moack.co.kr:80/announce",
+)
+
+/**
+ * Announce URLs for a stream, from the add-on's `sources` list.
+ *
+ * Stremio add-ons publish these as `tracker:<url>` and `dht:<hash>`; only the trackers are of use
+ * here, since DHT is already on. Falls back to the public list when an add-on sends nothing.
+ */
+internal fun streamTrackers(sources: List<String>): List<String> {
+  val declared = sources.asSequence()
+    .map { it.trim() }
+    .filter { it.startsWith("tracker:", ignoreCase = true) }
+    .map { it.removePrefix("tracker:").removePrefix("TRACKER:").trim() }
+    .filter { it.isNotBlank() }
+    .distinct()
+    .toList()
+  return declared.ifEmpty { FALLBACK_TRACKERS }
+}
+
+/**
+ * A magnet link a peer swarm can actually answer: the hash, a display name, and every announce URL
+ * known for it.
+ */
+internal fun buildMagnetLink(infoHash: String, filename: String?, sources: List<String>): String {
+  val builder = StringBuilder("magnet:?xt=urn:btih:").append(infoHash.trim())
+  filename?.takeIf { it.isNotBlank() }?.let { builder.append("&dn=").append(URLEncoder.encode(it, Charsets.UTF_8.name())) }
+  streamTrackers(sources).forEach { tracker ->
+    builder.append("&tr=").append(URLEncoder.encode(tracker, Charsets.UTF_8.name()))
+  }
+  return builder.toString()
+}
+
+/** Reads the catalog registry out of a `/tmdb/catalogs` payload, skipping anything unusable. */
+internal fun parseCatalogManifest(json: JSONObject): List<CatalogDefinition> {
+  val catalogs = json.optJSONArray("catalogs") ?: return emptyList()
+  return buildList {
+    for (index in 0 until catalogs.length()) {
+      val entry = catalogs.optJSONObject(index) ?: continue
+      val id = entry.optString("id").trim()
+      val title = entry.optString("title").trim()
+      if (id.isEmpty() || title.isEmpty()) continue
+      add(
+        CatalogDefinition(
+          id = id,
+          title = title,
+          mediaType = entry.optString("media_type").ifBlank { "movie" },
+          group = entry.optString("group").ifBlank { "other" },
+          previewLimit = entry.optInt("preview_limit").takeIf { it > 0 } ?: CATALOG_PAGE_SIZE,
+          maxItems = entry.optInt("max_items").takeIf { it > 0 },
+          paginated = entry.optBoolean("paginated", true),
+        ),
+      )
+    }
+  }
+}
+
+/**
+ * Reads home rows out of a `/tmdb/home` payload.
+ *
+ * A row that came back with nothing usable in it is dropped here rather than handed on: an empty
+ * carousel is worse than no row at all, and this way no caller has to remember to check.
+ */
+internal fun parseCatalogHomeSections(json: JSONObject): List<MediaSection> {
+  val sections = json.optJSONArray("sections") ?: return emptyList()
+  return buildList {
+    for (index in 0 until sections.length()) {
+      val entry = sections.optJSONObject(index) ?: continue
+      val id = entry.optString("id").trim()
+      if (id.isEmpty()) continue
+      val items = (entry.optJSONArray("results") ?: JSONArray()).toMediaItems()
+      if (items.isEmpty()) continue
+      add(
+        MediaSection(
+          id = id,
+          title = entry.optString("title").ifBlank { id },
+          items = items,
+          nextPage = entry.optInt("next_page").takeIf { it > 1 },
+          totalPages = entry.optInt("total_pages"),
+        ),
+      )
+    }
+  }
+}
+
+private const val CATALOG_MANIFEST_TTL_MS = 6L * 60L * 60L * 1000L
+
+private class CatalogManifestCacheEntry(
+  val definitions: List<CatalogDefinition>,
+  private val fetchedAt: Long = System.currentTimeMillis(),
+) {
+  fun isFresh(): Boolean = System.currentTimeMillis() - fetchedAt < CATALOG_MANIFEST_TTL_MS
+}
+
+/**
+ * Short-lived memory of catalog pages already fetched.
+ *
+ * Its job is the walk a viewer actually makes — open a row, scroll, open a title, come back, back
+ * out to home, open the row again — which without it re-requests every page each time. The
+ * backend holds the authoritative per-catalog lifetimes (long for studio and archival rows, short
+ * for trending and theatrical); this side only needs to be short enough never to contradict them.
+ */
+private class CatalogPageCache(
+  private val ttlMs: Long = 5L * 60L * 1000L,
+  private val maxEntries: Int = 120,
+) {
+  private class Entry(val page: DiscoverPage, val storedAt: Long)
+
+  private val entries = object : LinkedHashMap<String, Entry>(32, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Entry>?): Boolean = size > maxEntries
+  }
+
+  private fun key(catalogId: String, region: String, page: Int) = "$catalogId|$region|$page"
+
+  @Synchronized
+  fun get(catalogId: String, region: String, page: Int): DiscoverPage? {
+    val entry = entries[key(catalogId, region, page)] ?: return null
+    if (System.currentTimeMillis() - entry.storedAt > ttlMs) {
+      entries.remove(key(catalogId, region, page))
+      return null
+    }
+    return entry.page
+  }
+
+  @Synchronized
+  fun put(catalogId: String, region: String, page: Int, value: DiscoverPage) {
+    entries[key(catalogId, region, page)] = Entry(value, System.currentTimeMillis())
+  }
+}
+
 private const val ADDON_CACHE_DIRECTORY = "addon-http"
 private const val ADDON_CACHE_MAX_BYTES = 12L * 1024L * 1024L
 
@@ -331,11 +491,11 @@ private object AddonResponseCacheInterceptor : Interceptor {
 data class AddonEntitlements(val ultra: Boolean = false, val serverSideStreams: Boolean = false)
 
 /**
- * The chosen torrent is not on the user's debrid service yet — a provider accepted the magnet and
+ * The chosen source is not on the user's debrid service yet — a provider accepted the magnet and
  * is fetching it onto its own servers now.
  *
  * Typed rather than a plain failure because it is not one: the source is fine and will usually
- * play in a few minutes. It also has to survive the torrent-engine fallback, which reports its
+ * play in a few minutes. It also has to survive the peer-to-peer engine fallback, which reports its
  * own unrelated errors on the way to giving up and would otherwise be the message shown.
  */
 class DebridDownloadingException(message: String) : IllegalStateException(message)
@@ -359,6 +519,29 @@ class StreamDekApiClient(context: Context? = null) {
     .build()
   private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
   val apiBaseUrl: String = BuildConfig.API_BASE_URL.trimEnd('/')
+
+  /**
+   * Region used for theatrical listings and watch-provider catalogs. Taken from the device, which
+   * is as close to "where the viewer is" as the app knows; the backend falls back to US for a
+   * service that does not operate here rather than handing back an empty row.
+   */
+  private val catalogRegion: String = runCatching {
+    java.util.Locale.getDefault().country.takeIf { it.length == 2 }?.uppercase()
+  }.getOrNull() ?: "US"
+  private val catalogPageCache = CatalogPageCache()
+  @Volatile private var cachedCatalogManifest: CatalogManifestCacheEntry? = null
+
+  // The four original built-in rows, by id, as title-and-path pairs. Only reached when the
+  // backend has no catalog registry: normally every default row comes from /tmdb/home and pages
+  // through /tmdb/catalog/:id. "streaming_networks" is a fixed list of service tiles rather than
+  // a paginable catalog, so it appears here for the home fallback but never for paging.
+  private val legacyBuiltInSections: Map<String, Pair<String, String>> = mapOf(
+    "trending_movies" to ("Trending Movies" to "/tmdb/trending/movie"),
+    "trending_series" to ("Trending Series" to "/tmdb/trending/tv"),
+    "new_movies" to ("New Movies" to "/tmdb/discover?type=movie&sort_by=primary_release_date.desc"),
+    "new_series" to ("New Series" to "/tmdb/discover?type=tv&sort_by=first_air_date.desc"),
+    "streaming_networks" to ("Streaming Networks" to "/tmdb/networks"),
+  )
 
   suspend fun restoreSession(sessionStore: SessionStore): AuthSession? {
     val existing = sessionStore.load() ?: return null
@@ -407,21 +590,79 @@ class StreamDekApiClient(context: Context? = null) {
       }
     }
 
-  suspend fun fetchHomeSections(session: AuthSession?, addons: List<InstalledAddon> = emptyList(), profileId: String? = null): Result<List<MediaSection>> = withContext(Dispatchers.IO) {
+  /**
+   * The default catalogs the backend offers, in the order it wants them shown.
+   *
+   * Held in memory for the session's working life: the registry changes on backend deploys, not
+   * minute to minute, and every home load and row-management screen would otherwise re-ask for it.
+   */
+  suspend fun fetchCatalogManifest(): Result<List<CatalogDefinition>> = withContext(Dispatchers.IO) {
+    cachedCatalogManifest?.takeIf { it.isFresh() }?.let { return@withContext Result.success(it.definitions) }
     runCatching {
-      val builtInRequests = listOf(
-        Triple("new_movies", "New Movies", "/tmdb/discover?type=movie&sort_by=primary_release_date.desc"),
-        Triple("new_series", "New Series", "/tmdb/discover?type=tv&sort_by=first_air_date.desc"),
-        Triple("streaming_networks", "Streaming Networks", "/tmdb/networks"),
-        Triple("trending_movies", "Trending Movies", "/tmdb/trending/movie"),
-        Triple("trending_series", "Trending Series", "/tmdb/trending/tv"),
-      )
-      val sections = supervisorScope {
-        builtInRequests.map { (id, title, path) -> async { MediaSection(id, title, fetchMediaList(path)) } }.awaitAll().toMutableList()
+      val response = execute(Request.Builder().url("$apiBaseUrl/tmdb/catalogs?region=${encodeQuery(catalogRegion)}").build())
+      ensureOk(response, "Failed to load catalogs")
+      parseCatalogManifest(response.json).also { definitions ->
+        if (definitions.isNotEmpty()) cachedCatalogManifest = CatalogManifestCacheEntry(definitions)
       }
-      sections += fetchAddonHomeSections(session, addons, profileId)
+    }
+  }
+
+  /**
+   * Home previews for the default catalogs, plus whatever the installed add-ons contribute.
+   *
+   * [catalogIds] limits the request to the rows the viewer actually has switched on, so a trimmed
+   * home screen costs less rather than the same — an empty list skips the default catalogs
+   * altogether, null asks for the backend's full default set.
+   *
+   * Every default row arrives in one response: the backend fetches them in parallel behind its
+   * own cache, drops rows that came back empty, and isolates failures to the row that failed —
+   * one dead catalog costs its own row and nothing else. If that endpoint is unavailable — an
+   * older backend, say — the original five rows are fetched the way they always were, so the home
+   * screen degrades rather than disappears.
+   */
+  suspend fun fetchHomeSections(
+    session: AuthSession?,
+    addons: List<InstalledAddon> = emptyList(),
+    profileId: String? = null,
+    catalogIds: List<String>? = null,
+  ): Result<List<MediaSection>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val sections = supervisorScope {
+        val defaults = async { fetchDefaultCatalogSections(catalogIds) }
+        val addonSections = async { fetchAddonHomeSections(session, addons, profileId) }
+        defaults.await() + addonSections.await()
+      }
       sections
     }
+  }
+
+  private suspend fun fetchDefaultCatalogSections(catalogIds: List<String>?): List<MediaSection> {
+    val wanted = catalogIds?.filter { it.isNotBlank() }
+    if (wanted != null && wanted.isEmpty()) return emptyList()
+    val idsParam = wanted?.let { "&ids=" + encodeQuery(it.joinToString(",")) }.orEmpty()
+    val batched = runCatching {
+      val response = execute(Request.Builder().url("$apiBaseUrl/tmdb/home?region=${encodeQuery(catalogRegion)}$idsParam").build())
+      ensureOk(response, "Failed to load home catalogs")
+      parseCatalogHomeSections(response.json)
+    }.getOrElse { error ->
+      android.util.Log.w("StreamDekCatalogs", "batched home catalogs unavailable, falling back to legacy rows", error)
+      emptyList()
+    }
+    if (batched.isNotEmpty()) return batched
+    return legacyHomeSections()
+  }
+
+  /** The original five rows, kept as the safety net for a backend without the catalog registry. */
+  private suspend fun legacyHomeSections(): List<MediaSection> = supervisorScope {
+    legacyBuiltInSections.map { (id, row) ->
+      async {
+        runCatching { MediaSection(id, row.first, fetchMediaList(row.second), nextPage = 2) }
+          .getOrElse { error ->
+            android.util.Log.w("StreamDekCatalogs", "legacy home row $id failed", error)
+            null
+          }
+      }
+    }.awaitAll().filterNotNull().filter { it.items.isNotEmpty() }
   }
 
   suspend fun search(query: String, page: Int = 1): Result<SearchPage> = withContext(Dispatchers.IO) {
@@ -464,7 +705,11 @@ class StreamDekApiClient(context: Context? = null) {
     query: String,
   ): Result<DiscoverPage> = withContext(Dispatchers.IO) {
     runCatching {
-      val params = mutableListOf("page=" + encodeQuery(page.toString()), "sort=" + encodeQuery(sort))
+      val params = mutableListOf(
+        "page=" + encodeQuery(page.toString()),
+        "sort=" + encodeQuery(sort),
+        "region=" + encodeQuery(catalogRegion),
+      )
       if (type != "all") params += "type=" + encodeQuery(type)
       genreId?.let { params += "genre_id=" + encodeQuery(it.toString()) }
       if (!year.isNullOrBlank()) params += "year=" + encodeQuery(year)
@@ -1414,13 +1659,18 @@ class StreamDekApiClient(context: Context? = null) {
         .put("primarySyncService", preferences.primarySyncService)
         .put("showHeroSynopsis", preferences.showHeroSynopsis)
         .put("vividAmbient", preferences.vividAmbient)
+        .put("homeBackgroundMode", preferences.homeBackgroundMode)
         .put("ambientTintPercent", preferences.ambientTintPercent)
         .put("defaultAppCatalogsEnabled", preferences.defaultAppCatalogsEnabled)
         .put("homeCatalogRows", preferences.homeCatalogRowsJson?.let(::JSONArray))
       val detail = JSONObject()
         .put("seasonTabStyle", preferences.seasonTabStyle)
-        .put("heroTrailerAutoplay", preferences.heroTrailerAutoplay)
-        .put("heroTrailerResolution", preferences.heroTrailerResolution)
+        // Trailer playback choices are this device's own — see [PLATFORM_PREFERENCES_KEY]. They are
+        // deliberately no longer written to the shared section: a television's idea of when a
+        // trailer should start has nothing to do with a phone's, and while both wrote here the last
+        // client to save quietly changed the other one's settings.
+        .put("trailerCacheClearHours", preferences.trailerCacheClearHours)
+        .put("detailBackgroundMode", preferences.detailBackgroundMode)
         .put("ratingsEnabled", preferences.ratingsEnabled)
         .put("externalRatingsEnabled", preferences.externalRatingsEnabled)
         .put("enabledRatingProviders", preferences.enabledRatingProviders?.let(::JSONArray))
@@ -1445,6 +1695,12 @@ class StreamDekApiClient(context: Context? = null) {
         .put("autoplayNextEpisode", preferences.autoPlayNextEpisode)
         .put("preferBingeGroupNextEpisode", preferences.preferBingeGroup)
         .put("autoLoadSubtitles", preferences.autoLoadSubtitles)
+        .put("secondaryAudioLanguage", preferences.secondaryAudioLanguage)
+        .put("preferredSubtitleLanguage", preferences.preferredSubtitleLanguage)
+        .put("secondarySubtitleLanguage", preferences.secondarySubtitleLanguage)
+        .put("useForcedSubtitles", preferences.useForcedSubtitles)
+        .put("showOnlyPreferredSubtitleLanguages", preferences.showOnlyPreferredSubtitleLanguages)
+        .put("addonSubtitleLoading", preferences.addonSubtitleLoading)
         .put("nextEpisodeThresholdMode", preferences.nextEpisodeThresholdMode)
         .put("nextEpisodeThresholdPercent", preferences.nextEpisodeThresholdPercent)
         .put("nextEpisodeThresholdMinutes", preferences.nextEpisodeThresholdMinutes)
@@ -1460,6 +1716,17 @@ class StreamDekApiClient(context: Context? = null) {
         .put("fusionBadgeUrls", preferences.fusionBadgeUrls?.let(::JSONArray))
         .put("activeFusionBadgeUrl", preferences.activeFusionBadgeUrl)
       val updates = JSONObject().put("autoUpdateChecksEnabled", preferences.autoUpdateChecksEnabled)
+      // This client's own settings, kept apart from the shared ones. The backend defines the
+      // convention (settingsSchema.ts: perPlatformSettingKeys / PER_PLATFORM_PREFERENCES_KEY) so a
+      // phone, a television and the portal all agree on where to look.
+      val platformPreferences = JSONObject()
+        .put(
+          PLATFORM_PREFERENCES_PLATFORM,
+          JSONObject()
+            .put("heroTrailerAutoplay", preferences.heroTrailerAutoplay)
+            .put("heroTrailerResolution", preferences.heroTrailerResolution)
+            .put("heroTrailerDelaySeconds", preferences.heroTrailerDelaySeconds),
+        )
       val payload = JSONObject()
         .put("app", app)
         .put("home", home)
@@ -1467,6 +1734,7 @@ class StreamDekApiClient(context: Context? = null) {
         .put("playback", playback)
         .put("streams", streams)
         .put("updates", updates)
+        .put(PLATFORM_PREFERENCES_KEY, platformPreferences)
       val request = Request.Builder()
         .url("$apiBaseUrl/account/preferences")
         .patch(JSONObject().put("preferences", payload).toString().toRequestBody(jsonMediaType))
@@ -1539,6 +1807,11 @@ class StreamDekApiClient(context: Context? = null) {
       val playback = mergedSection("playback")
       val streams = mergedSection("streams")
       val updates = accountPreferences.optJSONObject("updates") ?: JSONObject()
+      // Settings this client holds for itself. Anything missing here falls back to the shared
+      // section, so an account configured before trailer settings were split keeps what it had.
+      val platform = accountPreferences.optJSONObject(PLATFORM_PREFERENCES_KEY)
+        ?.optJSONObject(PLATFORM_PREFERENCES_PLATFORM)
+        ?: JSONObject()
       fun optionalBoolean(source: JSONObject, key: String): Boolean? = if (source.has(key) && !source.isNull(key)) source.optBoolean(key) else null
       fun optionalInt(source: JSONObject, key: String): Int? = if (source.has(key) && !source.isNull(key)) source.optInt(key) else null
       fun optionalString(source: JSONObject, key: String): String? = if (source.has(key) && !source.isNull(key)) source.optString(key).takeIf(String::isNotBlank) else null
@@ -1568,8 +1841,18 @@ class StreamDekApiClient(context: Context? = null) {
         defaultAppCatalogsEnabled = optionalBoolean(home, "defaultAppCatalogsEnabled"),
         homeCatalogRowsJson = home.optJSONArray("homeCatalogRows")?.toString(),
         seasonTabStyle = optionalString(detail, "seasonTabStyle"),
-        heroTrailerAutoplay = optionalBoolean(detail, "heroTrailerAutoplay"),
-        heroTrailerResolution = optionalInt(detail, "heroTrailerResolution"),
+        heroTrailerAutoplay = optionalBoolean(platform, "heroTrailerAutoplay") ?: optionalBoolean(detail, "heroTrailerAutoplay"),
+        trailerCacheClearHours = optionalInt(detail, "trailerCacheClearHours"),
+        detailBackgroundMode = optionalString(detail, "detailBackgroundMode"),
+        homeBackgroundMode = optionalString(home, "homeBackgroundMode"),
+        secondaryAudioLanguage = optionalString(playback, "secondaryAudioLanguage"),
+        preferredSubtitleLanguage = optionalString(playback, "preferredSubtitleLanguage"),
+        secondarySubtitleLanguage = optionalString(playback, "secondarySubtitleLanguage"),
+        useForcedSubtitles = optionalBoolean(playback, "useForcedSubtitles"),
+        showOnlyPreferredSubtitleLanguages = optionalBoolean(playback, "showOnlyPreferredSubtitleLanguages"),
+        addonSubtitleLoading = optionalString(playback, "addonSubtitleLoading"),
+        heroTrailerResolution = optionalInt(platform, "heroTrailerResolution") ?: optionalInt(detail, "heroTrailerResolution"),
+        heroTrailerDelaySeconds = optionalInt(platform, "heroTrailerDelaySeconds") ?: optionalInt(detail, "heroTrailerDelaySeconds"),
         ratingsEnabled = optionalBoolean(detail, "ratingsEnabled"),
         externalRatingsEnabled = optionalBoolean(detail, "externalRatingsEnabled"),
         enabledRatingProviders = optionalStringList(detail, "enabledRatingProviders"),
@@ -1971,7 +2254,7 @@ class StreamDekApiClient(context: Context? = null) {
   ): Result<DebridResolvedStream?> = withContext(Dispatchers.IO) {
     runCatching {
       if (stream.infoHash.isNullOrBlank()) return@runCatching null
-      val magnet = buildMagnet(stream.infoHash, stream.filename)
+      val magnet = buildMagnet(stream)
       val payload = JSONObject()
         .put("infoHash", stream.infoHash)
         .put("magnetLink", magnet)
@@ -1998,15 +2281,15 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
 
-  suspend fun streamTorrent(stream: AddonStream): Result<String?> = withContext(Dispatchers.IO) {
+  suspend fun streamViaBackend(stream: AddonStream): Result<String?> = withContext(Dispatchers.IO) {
     runCatching {
       if (stream.infoHash.isNullOrBlank()) return@runCatching null
       val payload = JSONObject()
         .put("infoHash", stream.infoHash)
-        .put("magnetLink", buildMagnet(stream.infoHash, stream.filename))
+        .put("magnetLink", buildMagnet(stream))
       stream.filename?.let { payload.put("filename", it) }
       val response = executeJson("/stream/torrent/add", payload)
-      ensureOk(response, "Could not start torrent stream")
+      ensureOk(response, "Could not start peer-to-peer stream")
       response.json.optString("streamUrl").ifBlank { null }
     }
   }
@@ -2428,25 +2711,42 @@ class StreamDekApiClient(context: Context? = null) {
     return items
   }
 
-  // The built-in home rows (New Movies, Trending, etc.) are single unpaginated TMDB requests —
-  // TMDB's discover/trending endpoints default to a 20-item page, which is exactly why these
-  // rows used to stop dead at 20 with no way to fetch more. Kept as its own map (rather than
-  // reusing fetchHomeSections' builtInRequests) since "streaming_networks" is a fixed small list
-  // of networks, not a paginable content catalog, and has no entry here.
-  private val builtInSectionPaths: Map<String, String> = mapOf(
-    "new_movies" to "/tmdb/discover?type=movie&sort_by=primary_release_date.desc",
-    "new_series" to "/tmdb/discover?type=tv&sort_by=first_air_date.desc",
-    "trending_movies" to "/tmdb/trending/movie",
-    "trending_series" to "/tmdb/trending/tv",
-  )
-
-  /** Pages in more items for a built-in (non-add-on) home row by TMDB page number. */
-  suspend fun fetchMoreBuiltInSection(sectionId: String, page: Int): Result<List<MediaItem>> = withContext(Dispatchers.IO) {
+  /**
+   * One page of a default catalog.
+   *
+   * Pages are as deep as the provider allows — the backend reports how many there are and returns
+   * nothing past the end, which is how "View All" knows to stop. Catalogs defined by their size
+   * (Top 100) report a page count that adds up to exactly that many items.
+   */
+  suspend fun fetchCatalogPage(catalogId: String, page: Int): Result<DiscoverPage> = withContext(Dispatchers.IO) {
+    catalogPageCache.get(catalogId, catalogRegion, page)?.let { return@withContext Result.success(it) }
     runCatching {
-      val path = builtInSectionPaths[sectionId] ?: return@runCatching emptyList()
-      fetchMediaList(path, page)
+      val response = execute(
+        Request.Builder()
+          .url("$apiBaseUrl/tmdb/catalog/${encodeQuery(catalogId)}?page=$page&region=${encodeQuery(catalogRegion)}")
+          .build(),
+      )
+      // An older backend does not know this catalog at all; the legacy paths below still answer
+      // for the four original rows, and anything else genuinely has no more pages to give.
+      if (response.statusCode == 404) return@runCatching legacyCatalogPage(catalogId, page)
+      ensureOk(response, "Failed to load catalog")
+      DiscoverPage(
+        items = (response.json.optJSONArray("results") ?: JSONArray()).toMediaItems(),
+        page = response.json.optInt("page").takeIf { it > 0 } ?: page,
+        totalPages = response.json.optInt("total_pages"),
+      ).also { catalogPageCache.put(catalogId, catalogRegion, page, it) }
     }
   }
+
+  private fun legacyCatalogPage(catalogId: String, page: Int): DiscoverPage {
+    if (catalogId == "streaming_networks") return DiscoverPage(emptyList(), page, 1)
+    val path = legacyBuiltInSections[catalogId]?.second ?: return DiscoverPage(emptyList(), page, 0)
+    return DiscoverPage(items = fetchMediaList(path, page), page = page, totalPages = 0)
+  }
+
+  /** Pages in more items for a default (non-add-on) home row by page number. */
+  suspend fun fetchMoreBuiltInSection(sectionId: String, page: Int): Result<List<MediaItem>> =
+    fetchCatalogPage(sectionId, page).map { it.items }
 
   private fun executeJson(
     path: String,
@@ -2513,10 +2813,8 @@ class StreamDekApiClient(context: Context? = null) {
 
   private fun encodeQuery(query: String): String = URLEncoder.encode(query, Charsets.UTF_8.name())
 
-  private fun buildMagnet(infoHash: String, filename: String?): String {
-    val suffix = filename?.takeIf { it.isNotBlank() }?.let { "&dn=${encodeQuery(it)}" }.orEmpty()
-    return "magnet:?xt=urn:btih:$infoHash$suffix"
-  }
+  private fun buildMagnet(stream: AddonStream): String =
+    buildMagnetLink(stream.infoHash.orEmpty(), stream.filename, stream.sources)
 
   private fun buildScrobbleJson(payload: TraktScrobblePayload): JSONObject {
     val json = JSONObject().put("progress", payload.progress.coerceIn(0.0, 100.0))
@@ -3456,6 +3754,12 @@ private fun parseAddonStream(json: JSONObject): AddonStream =
         val servers = optJSONArray("servers") ?: JSONArray()
         for (index in 0 until servers.length()) {
           servers.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+        }
+      },
+      sources = buildList {
+        val sources = optJSONArray("sources") ?: JSONArray()
+        for (index in 0 until sources.length()) {
+          sources.optString(index).takeIf { it.isNotBlank() }?.let(::add)
         }
       },
       cachedBy = buildList {

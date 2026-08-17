@@ -37,12 +37,12 @@ class PlaybackStatsTest {
   )
 
   @Test
-  fun `an info hash is a torrent even when the engine is handed a loopback url`() {
-    val torrent = stream(infoHash = "abc123")
+  fun `an info hash is a peer-to-peer source even when the engine is handed a loopback url`() {
+    val peerSource = stream(infoHash = "abc123")
 
     assertEquals(
-      StreamTransport.Torrent,
-      streamTransport(torrent, "http://127.0.0.1:8080/stream/0"),
+      StreamTransport.Peer,
+      streamTransport(peerSource, "http://127.0.0.1:8080/stream/0"),
     )
   }
 

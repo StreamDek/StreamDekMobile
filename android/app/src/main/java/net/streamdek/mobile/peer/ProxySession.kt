@@ -1,4 +1,4 @@
-package net.streamdek.mobile.torrent
+package net.streamdek.mobile.peer
 
 data class ProxySession(
   val upstreamUrl: String,

@@ -171,8 +171,10 @@ class DebridManager private constructor(private val providers: List<DebridProvid
       }
 
       try {
+        Log.d(TAG, "resolve: sending $infoHash to ${provider.name}")
         val torrentId = provider.addMagnet(magnetLink)
         val links = provider.getStreamLinks(torrentId)
+        Log.d(TAG, "resolve: ${provider.name} accepted as $torrentId and returned ${links.size} link(s)")
         if (links.isEmpty()) {
           // The magnet was accepted, so the provider is fetching it on its own servers — it just
           // did not finish inside the readiness window. Reporting that as a plain failure was

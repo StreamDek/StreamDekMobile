@@ -29,32 +29,37 @@ internal fun sanitizeDisplayText(value: String?): String? {
   return current.replace('\uFFFD', ' ').replace(Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]"), " ").trim()
 }
 
-internal fun normalizePreferredAudioLanguage(value: String?): String = when (value?.trim()?.lowercase()) {
-  "original", "default", "auto" -> "original"
-  "es", "spa", "spanish" -> "es"
-  "fr", "fra", "fre", "french" -> "fr"
-  "de", "deu", "ger", "german" -> "de"
-  "it", "ita", "italian" -> "it"
-  "pt", "por", "portuguese", "pt-br", "pob" -> "pt"
-  "ja", "jpn", "japanese" -> "ja"
-  "ko", "kor", "korean" -> "ko"
-  "hi", "hin", "hindi" -> "hi"
-  else -> "en"
-}
+/**
+ * The stored form of an audio-language choice.
+ *
+ * Delegates to [Languages], which knows every ISO language rather than the nine that used to be
+ * listed here. That mattered beyond tidiness: anything outside the nine fell through to English, so
+ * a viewer who chose Vietnamese got English audio and no indication why.
+ */
+internal fun normalizePreferredAudioLanguage(value: String?): String =
+  when (val normalized = Languages.normalize(value?.trim()?.lowercase().let {
+    if (it == "default" || it == "auto") Languages.ORIGINAL else it
+  })) {
+    Languages.ORIGINAL -> Languages.ORIGINAL
+    Languages.NONE, "" -> "en"
+    else -> normalized
+  }
 
-internal fun preferredAudioLanguageTags(value: String?): List<String> = when (normalizePreferredAudioLanguage(value)) {
-  "original" -> emptyList()
-  "en" -> listOf("en", "eng")
-  "es" -> listOf("es", "spa")
-  "fr" -> listOf("fr", "fra", "fre")
-  "de" -> listOf("de", "deu", "ger")
-  "it" -> listOf("it", "ita")
-  "pt" -> listOf("pt", "por")
-  "ja" -> listOf("ja", "jpn")
-  "ko" -> listOf("ko", "kor")
-  "hi" -> listOf("hi", "hin")
-  else -> listOf("en", "eng")
-}
+/** Track tags for one audio-language choice; empty means "leave the release alone". */
+internal fun preferredAudioLanguageTags(value: String?): List<String> =
+  when (val normalized = normalizePreferredAudioLanguage(value)) {
+    Languages.ORIGINAL -> emptyList()
+    else -> Languages.tags(normalized)
+  }
+
+/**
+ * Track tags for a first and second choice, in order of preference.
+ *
+ * A player asked for several languages takes the earliest one it can satisfy, which is exactly what
+ * a secondary preference means: use it when the release carries nothing in the first.
+ */
+internal fun orderedLanguageTags(primary: String?, secondary: String?): List<String> =
+  (preferredAudioLanguageTags(primary) + Languages.tags(secondary)).distinct()
 
 internal fun addonStreamPlaybackIdentity(stream: AddonStream): String {
   stream.url?.trim()?.takeIf(String::isNotBlank)?.let { return "url:${it.lowercase()}" }

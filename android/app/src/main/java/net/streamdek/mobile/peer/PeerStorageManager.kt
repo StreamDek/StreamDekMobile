@@ -1,10 +1,22 @@
-package net.streamdek.mobile.torrent
+package net.streamdek.mobile.peer
 
 import android.content.Context
 import java.io.File
 
-class TorrentStorageManager(context: Context) {
-  private val root = File(context.cacheDir, "streamdek-torrent-store").apply { mkdirs() }
+class PeerStorageManager(context: Context) {
+  private val root = File(context.cacheDir, "streamdek-peer-store").apply { mkdirs() }
+
+  init {
+    // The store was called "streamdek-torrent-store" before this was renamed. Left behind it would
+    // sit in the cache forever holding gigabytes nothing reads, so it is taken over on first use.
+    runCatching {
+      val previous = File(context.cacheDir, "streamdek-torrent-store")
+      if (previous.exists() && previous.isDirectory) {
+        previous.listFiles()?.forEach { entry -> entry.renameTo(File(root, entry.name)) }
+        previous.deleteRecursively()
+      }
+    }
+  }
 
   fun rootPath(): String = root.absolutePath
 

@@ -1,4 +1,4 @@
-package net.streamdek.mobile.torrent
+package net.streamdek.mobile.peer
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -17,23 +17,56 @@ import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
-class TorrentServerService : Service() {
+class PeerStreamService : Service() {
   private lateinit var prefs: android.content.SharedPreferences
   private lateinit var cacheStore: StreamCacheStore
-  private lateinit var torrentEngine: TorrentEngine
-  private var config = TorrentServerConfig()
+  private lateinit var peerEngine: PeerEngine
+  private var config = PeerStreamConfig()
   private var server: LocalStreamingHttpServer? = null
+
+  /**
+   * Where the service's blocking work happens. Single-threaded so repeated start commands queue
+   * behind each other rather than racing to start two sessions on the same port.
+   */
+  private val startupExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+    Thread(runnable, "streamdek-peer-stream").apply { isDaemon = true }
+  }
 
   override fun onCreate() {
     super.onCreate()
     prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    migrateLegacyPreferences()
     cacheStore = StreamCacheStore(this)
-    torrentEngine = TorrentEngine(this)
-    torrentEngineRef = torrentEngine
+    peerEngine = PeerEngine(this)
+    peerEngineRef = peerEngine
     cacheStorePath = cacheStore.cacheDirectoryPath()
-    torrentStorePath = torrentEngine.storagePath()
+    peerStorePath = peerEngine.storagePath()
     lifecycleState = "created"
     createNotificationChannel()
+  }
+
+  /**
+   * Adopts settings written under the previous name of this service.
+   *
+   * Renaming the preferences file would otherwise silently reset every viewer's peer-to-peer
+   * configuration — cache size, profile, whether it runs at all — on the update that renamed it.
+   */
+  private fun migrateLegacyPreferences() {
+    if (prefs.all.isNotEmpty()) return
+    val legacy = getSharedPreferences("streamdek_torrent_server", Context.MODE_PRIVATE)
+    if (legacy.all.isEmpty()) return
+    prefs.edit().apply {
+      legacy.all.forEach { (key, value) ->
+        when (value) {
+          is Boolean -> putBoolean(key, value)
+          is Int -> putInt(key, value)
+          is Long -> putLong(key, value)
+          is Float -> putFloat(key, value)
+          is String -> putString(key, value)
+        }
+      }
+    }.apply()
+    legacy.edit().clear().apply()
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -44,20 +77,35 @@ class TorrentServerService : Service() {
     }
 
     val newConfig = if (intent?.hasExtra(EXTRA_PORT) == true) {
-      TorrentServerConfig(
+      PeerStreamConfig(
         enabled = intent.getBooleanExtra(EXTRA_ENABLED, true),
-        streamingMode = intent.getStringExtra(EXTRA_STREAMING_MODE) ?: TorrentServerConfig.DEFAULT_STREAMING_MODE,
-        profile = intent.getStringExtra(EXTRA_PROFILE) ?: TorrentServerConfig.DEFAULT_PROFILE,
-        cacheSizeGb = intent.getIntExtra(EXTRA_CACHE_SIZE_GB, TorrentServerConfig.DEFAULT_CACHE_SIZE_GB),
-        port = intent.getIntExtra(EXTRA_PORT, TorrentServerConfig.DEFAULT_PORT),
+        streamingMode = intent.getStringExtra(EXTRA_STREAMING_MODE) ?: PeerStreamConfig.DEFAULT_STREAMING_MODE,
+        profile = intent.getStringExtra(EXTRA_PROFILE) ?: PeerStreamConfig.DEFAULT_PROFILE,
+        cacheSizeGb = intent.getIntExtra(EXTRA_CACHE_SIZE_GB, PeerStreamConfig.DEFAULT_CACHE_SIZE_GB),
+        port = intent.getIntExtra(EXTRA_PORT, PeerStreamConfig.DEFAULT_PORT),
         runAsForegroundService = intent.getBooleanExtra(EXTRA_RUN_AS_FOREGROUND, false),
       )
     } else {
-      TorrentServerConfig.fromPreferences(prefs)
+      PeerStreamConfig.fromPreferences(prefs)
     }
 
     lifecycleState = "start_command"
-    startOrUpdate(newConfig)
+    config = newConfig
+    config.persist(prefs.edit())
+    // Promotion has to happen on this thread and quickly — Android gives a service started with
+    // startForegroundService a few seconds to call startForeground before it kills it.
+    ensureForegroundState()
+    // Everything else is deliberately off the main thread. Starting a libtorrent session, walking
+    // the cache directory and binding a socket are all blocking work, and doing them here is what
+    // produced the ANR in PeerEngine.ensureStarted that killed the process mid-playback — so no
+    // torrent ever reached the player.
+    startupExecutor.execute {
+      runCatching { startOrUpdate(config) }.onFailure { error ->
+        lastStartupError = error.message ?: error.javaClass.simpleName
+        lifecycleState = "start_failed"
+        isOnline = false
+      }
+    }
     return START_STICKY
   }
 
@@ -67,10 +115,16 @@ class TorrentServerService : Service() {
   }
 
   override fun onDestroy() {
-    server?.stop()
+    // Shutting a libtorrent session down blocks too, so it goes to the same thread the start ran
+    // on. The flags are cleared here so nothing treats the server as live in the meantime.
+    val closing = server
     server = null
-    torrentEngine.stop()
-    torrentEngineRef = null
+    startupExecutor.execute {
+      runCatching { closing?.stop() }
+      runCatching { peerEngine.stop() }
+    }
+    startupExecutor.shutdown()
+    peerEngineRef = null
     isOnline = false
     recoveryMode = "idle"
     isForegroundMode = false
@@ -81,18 +135,14 @@ class TorrentServerService : Service() {
 
   override fun onBind(intent: Intent?): IBinder? = null
 
-  private fun startOrUpdate(newConfig: TorrentServerConfig) {
-    config = newConfig
-    config.persist(prefs.edit())
-    cacheStore.enforceLimit(config.cacheSizeGb)
-    torrentEngine.ensureStarted(config)
-    torrentEngine.enforceCacheLimit(config.cacheSizeGb)
-
+  /** Runs on [startupExecutor], never the main thread. */
+  private fun startOrUpdate(newConfig: PeerStreamConfig) {
     recoveryMode = if (isOnline) "recovering" else "starting"
     lastStartupError = null
-    foregroundDowngradeReason = null
     lifecycleState = "starting"
-    ensureForegroundState()
+    cacheStore.enforceLimit(newConfig.cacheSizeGb)
+    peerEngine.ensureStarted(newConfig)
+    peerEngine.enforceCacheLimit(newConfig.cacheSizeGb)
     startHttpServer()
   }
 
@@ -111,7 +161,7 @@ class TorrentServerService : Service() {
           configProvider = { config },
           statusProvider = { snapshot(config) },
           cacheStore = cacheStore,
-          torrentEngine = torrentEngine,
+          peerEngine = peerEngine,
         )
         val boundPort = nextServer.start(port)
 
@@ -207,11 +257,11 @@ class TorrentServerService : Service() {
   }
 
   companion object {
-    private const val PREFS_NAME = "streamdek_torrent_server"
-    private const val CHANNEL_ID = "streamdek_torrent_server"
+    private const val PREFS_NAME = "streamdek_peer_stream"
+    private const val CHANNEL_ID = "streamdek_peer_stream"
     private const val NOTIFICATION_ID = 11001
 
-    const val ACTION_STOP = "net.streamdek.mobile.torrent.STOP"
+    const val ACTION_STOP = "net.streamdek.mobile.peer.STOP"
     const val EXTRA_ENABLED = "enabled"
     const val EXTRA_STREAMING_MODE = "streamingMode"
     const val EXTRA_PROFILE = "profile"
@@ -221,18 +271,18 @@ class TorrentServerService : Service() {
 
     @Volatile var isOnline: Boolean = false
     @Volatile var isForegroundMode: Boolean = false
-    @Volatile var activePort: Int = TorrentServerConfig.DEFAULT_PORT
+    @Volatile var activePort: Int = PeerStreamConfig.DEFAULT_PORT
     @Volatile var recoveryMode: String = "idle"
     @Volatile var lastStartupError: String? = null
     @Volatile var foregroundDowngradeReason: String? = null
     @Volatile var lifecycleState: String = "idle"
     @Volatile private var cacheStorePath: String? = null
-    @Volatile private var torrentStorePath: String? = null
+    @Volatile private var peerStorePath: String? = null
     private val proxySessions = ConcurrentHashMap<String, ProxySession>()
-    @Volatile private var torrentEngineRef: TorrentEngine? = null
+    @Volatile private var peerEngineRef: PeerEngine? = null
 
-    fun createIntent(context: Context, config: TorrentServerConfig): Intent {
-      return Intent(context, TorrentServerService::class.java).apply {
+    fun createIntent(context: Context, config: PeerStreamConfig): Intent {
+      return Intent(context, PeerStreamService::class.java).apply {
         putExtra(EXTRA_ENABLED, config.enabled)
         putExtra(EXTRA_STREAMING_MODE, config.streamingMode)
         putExtra(EXTRA_PROFILE, config.profile)
@@ -242,7 +292,7 @@ class TorrentServerService : Service() {
       }
     }
 
-    fun createProxyUrl(config: TorrentServerConfig, upstreamUrl: String, headers: Map<String, String>): String {
+    fun createProxyUrl(config: PeerStreamConfig, upstreamUrl: String, headers: Map<String, String>): String {
       val sessionId = UUID.randomUUID().toString()
       proxySessions[sessionId] = ProxySession(
         upstreamUrl = upstreamUrl,
@@ -253,37 +303,41 @@ class TorrentServerService : Service() {
       return "http://127.0.0.1:$port/proxy/$sessionId"
     }
 
-    fun createTorrentProxyUrl(
-      config: TorrentServerConfig,
+    fun createPeerProxyUrl(
+      config: PeerStreamConfig,
       infoHash: String,
       magnetLink: String,
       preferredFilename: String?,
     ): String {
-      val engine = torrentEngineRef ?: throw IllegalStateException("Torrent engine is not ready.")
+      val engine = peerEngineRef ?: throw IllegalStateException("Torrent engine is not ready.")
       val playbackSession = engine.createPlaybackSession(config, infoHash, magnetLink, preferredFilename)
       val port = if (isOnline) activePort else config.port
-      return "http://127.0.0.1:$port/torrent/${playbackSession.sessionId}"
+      return "http://127.0.0.1:$port/peer/${playbackSession.sessionId}"
     }
+
+    /** The swarm behind the given torrent while it warms up, or null when it is not the live one. */
+    fun latestSwarmStats(expectedInfoHash: String?): SwarmStats? =
+      peerEngineRef?.latestSwarmStats(expectedInfoHash)
 
     fun getProxySession(sessionId: String): ProxySession? = proxySessions[sessionId]
 
-    fun getTorrentPlaybackSession(sessionId: String): TorrentPlaybackSession? {
-      return torrentEngineRef?.getPlaybackSession(sessionId)
+    fun getPeerPlaybackSession(sessionId: String): PeerPlaybackSession? {
+      return peerEngineRef?.getPlaybackSession(sessionId)
     }
 
-    fun prepareTorrentRange(sessionId: String, startByte: Long) {
-      torrentEngineRef?.prepareForByteRange(sessionId, startByte)
+    fun preparePeerRange(sessionId: String, startByte: Long) {
+      peerEngineRef?.prepareForByteRange(sessionId, startByte)
     }
 
-    fun waitForTorrentBytes(sessionId: String, targetByteExclusive: Long, timeoutMs: Long): Boolean {
-      return torrentEngineRef?.waitForAvailableBytes(sessionId, targetByteExclusive, timeoutMs) ?: false
+    fun waitForPeerBytes(sessionId: String, targetByteExclusive: Long, timeoutMs: Long): Boolean {
+      return peerEngineRef?.waitForAvailableBytes(sessionId, targetByteExclusive, timeoutMs) ?: false
     }
 
-    fun torrentBytesAvailable(sessionId: String): Long {
-      return torrentEngineRef?.estimateAvailableBytes(sessionId) ?: 0L
+    fun peerBytesAvailable(sessionId: String): Long {
+      return peerEngineRef?.estimateAvailableBytes(sessionId) ?: 0L
     }
 
-    fun snapshot(config: TorrentServerConfig): Map<String, Any> {
+    fun snapshot(config: PeerStreamConfig): Map<String, Any> {
       val port = if (isOnline) activePort else config.port
       return mapOf(
         "isOnline" to isOnline,
@@ -295,7 +349,7 @@ class TorrentServerService : Service() {
         "profile" to config.profile,
         "cacheSizeGb" to config.cacheSizeGb,
         "cacheDirectory" to cacheDirectory(),
-        "torrentStoreDirectory" to torrentStoreDirectory(),
+        "peerStoreDirectory" to peerStoreDirectory(),
         "cacheUsageBytes" to totalCacheUsageBytes(),
         "recoveryMode" to recoveryMode,
         "lastStartupError" to (lastStartupError ?: ""),
@@ -306,7 +360,7 @@ class TorrentServerService : Service() {
 
     fun cacheDirectory(): String = cacheStorePath ?: ""
 
-    fun torrentStoreDirectory(): String = torrentStorePath ?: ""
+    fun peerStoreDirectory(): String = peerStorePath ?: ""
 
     fun markStopped() {
       isOnline = false
@@ -317,10 +371,22 @@ class TorrentServerService : Service() {
       lastStartupError = null
     }
 
+    /** How long a measured cache size is reused before the directories are walked again. */
+    private const val CACHE_USAGE_TTL_MS = 10_000L
+    @Volatile private var cachedUsageBytes = 0L
+    @Volatile private var cachedUsageAt = 0L
+
+    /**
+     * Recursively measuring a cache that may hold gigabytes is not something to do on every call,
+     * and [snapshot] is read by each HTTP request as well as by the settings screen.
+     */
     private fun totalCacheUsageBytes(): Long {
-      val torrentBytes = directorySize(torrentStoreDirectory())
-      val proxyBytes = directorySize(cacheDirectory())
-      return torrentBytes + proxyBytes
+      val now = System.currentTimeMillis()
+      if (now - cachedUsageAt < CACHE_USAGE_TTL_MS) return cachedUsageBytes
+      val measured = directorySize(peerStoreDirectory()) + directorySize(cacheDirectory())
+      cachedUsageBytes = measured
+      cachedUsageAt = now
+      return measured
     }
 
     private fun directorySize(path: String): Long {
@@ -345,13 +411,13 @@ class TorrentServerService : Service() {
 
   override fun onLowMemory() {
     super.onLowMemory()
-    torrentEngine.enforceCacheLimit(config.cacheSizeGb)
+    peerEngine.enforceCacheLimit(config.cacheSizeGb)
   }
 
   override fun onTrimMemory(level: Int) {
     super.onTrimMemory(level)
     if (level >= TRIM_MEMORY_RUNNING_LOW) {
-      torrentEngine.enforceCacheLimit(config.cacheSizeGb)
+      peerEngine.enforceCacheLimit(config.cacheSizeGb)
     }
   }
 

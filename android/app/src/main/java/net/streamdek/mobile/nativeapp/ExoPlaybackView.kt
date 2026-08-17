@@ -79,6 +79,10 @@ class ExoPlaybackView @JvmOverloads constructor(
   private var pendingSpeed = 1.0
   private var pendingVolume = 1f
   private var preferredAudioLanguage = "en"
+  private var secondaryAudioLanguage = ""
+  private var preferredSubtitleLanguage = ""
+  private var secondarySubtitleLanguage = ""
+  private var useForcedSubtitles = false
   private var subtitlePositionPercent = 92
   private var subtitleTextColor = Color.WHITE
   private var subtitleBackgroundColor = Color.TRANSPARENT
@@ -182,14 +186,50 @@ class ExoPlaybackView @JvmOverloads constructor(
 
   fun setPreferredAudioLanguage(language: String?) {
     preferredAudioLanguage = normalizePreferredAudioLanguage(language)
-    val tags = preferredAudioLanguageTags(preferredAudioLanguage)
-    exoPlayer?.let { active ->
-      if (tags.isNotEmpty()) {
-        active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
-          .setPreferredAudioLanguages(*tags.toTypedArray())
-          .build()
+    applyLanguagePreferences()
+  }
+
+  /** The viewer's second choice of spoken language, used when the first is not in the release. */
+  fun setSecondaryAudioLanguage(language: String?) {
+    secondaryAudioLanguage = Languages.normalize(language)
+    applyLanguagePreferences()
+  }
+
+  /**
+   * Which subtitles to select, and whether to prefer a forced track.
+   *
+   * Forced subtitles are the signs-and-songs track rather than a transcript, so they only make
+   * sense when the viewer can already understand the audio — which is why the rule is "audio and
+   * subtitle language match" rather than a plain on switch.
+   */
+  fun setSubtitleLanguages(primary: String?, secondary: String?, useForced: Boolean) {
+    preferredSubtitleLanguage = Languages.normalize(primary)
+    secondarySubtitleLanguage = Languages.normalize(secondary)
+    useForcedSubtitles = useForced
+    applyLanguagePreferences()
+  }
+
+  private fun applyLanguagePreferences() {
+    val active = exoPlayer ?: return
+    val audioTags = orderedLanguageTags(preferredAudioLanguage, secondaryAudioLanguage)
+    val subtitleTags = (Languages.tags(preferredSubtitleLanguage) + Languages.tags(secondarySubtitleLanguage)).distinct()
+    // Forced only applies when the spoken language is one the viewer reads: matched against the
+    // audio actually asked for, since that is the language the release will be playing in.
+    val audioMatchesSubtitles = useForcedSubtitles &&
+      preferredSubtitleLanguage.isNotEmpty() &&
+      (Languages.matches(preferredAudioLanguage, preferredSubtitleLanguage) ||
+        Languages.matches(secondaryAudioLanguage, preferredSubtitleLanguage))
+    active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
+      .apply {
+        if (audioTags.isNotEmpty()) setPreferredAudioLanguages(*audioTags.toTypedArray())
+        if (subtitleTags.isNotEmpty()) setPreferredTextLanguages(*subtitleTags.toTypedArray())
+        // Role flags decide between the full track and the forced one within the chosen language.
+        setPreferredTextRoleFlags(if (audioMatchesSubtitles) C.ROLE_FLAG_SUBTITLE or C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND else 0)
+        // An untagged text track is a coin toss; only take one when the viewer asked for no
+        // particular language, otherwise a stray track overrides a considered preference.
+        setSelectUndeterminedTextLanguage(subtitleTags.isEmpty())
       }
-    }
+      .build()
   }
 
   fun setResizeMode(mode: String?) {
@@ -372,11 +412,7 @@ class ExoPlaybackView @JvmOverloads constructor(
     // player lets that failure travel out to the normal error/failover path instead of leaking a
     // decoder on its way to crashing the app.
     try {
-      preferredAudioLanguageTags(preferredAudioLanguage).takeIf(List<String>::isNotEmpty)?.let { tags ->
-        active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
-          .setPreferredAudioLanguages(*tags.toTypedArray())
-          .build()
-      }
+      applyLanguagePreferences()
       val item = MediaItem.Builder()
         .setUri(url)
         .apply { inferMimeType(url)?.let(::setMimeType) }

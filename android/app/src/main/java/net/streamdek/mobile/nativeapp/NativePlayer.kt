@@ -1636,6 +1636,8 @@ private fun PlayerSurface(
             setHeaders(session.requestHeaders)
             setDrmClearKeys(session.drmLicenseType, session.drmClearKeys)
             setPreferredAudioLanguage(session.preferredAudioLanguage)
+            setSecondaryAudioLanguage(session.secondaryAudioLanguage)
+            setSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage, session.useForcedSubtitles)
             setSource(session.url)
             setPaused(false)
           }
@@ -1656,6 +1658,8 @@ private fun PlayerSurface(
           view.setHeaders(session.requestHeaders)
           view.setDrmClearKeys(session.drmLicenseType, session.drmClearKeys)
           view.setPreferredAudioLanguage(session.preferredAudioLanguage)
+          view.setSecondaryAudioLanguage(session.secondaryAudioLanguage)
+          view.setSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage, session.useForcedSubtitles)
           view.setSource(session.url)
           view.setPaused(isPaused)
           view.setResizeMode(resizeMode)
@@ -1694,6 +1698,8 @@ private fun PlayerSurface(
             setSubtitleBold(session.subtitleBold)
             setHeaders(session.requestHeaders)
             setPreferredAudioLanguage(session.preferredAudioLanguage)
+            setSecondaryAudioLanguage(session.secondaryAudioLanguage)
+            setSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage)
             setSource(session.url)
             setPaused(false)
           }
@@ -1708,6 +1714,8 @@ private fun PlayerSurface(
           view.onTracksChangedCallback = onTracksChanged
           view.setHeaders(session.requestHeaders)
           view.setPreferredAudioLanguage(session.preferredAudioLanguage)
+          view.setSecondaryAudioLanguage(session.secondaryAudioLanguage)
+          view.setSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage)
           view.setSource(session.url)
           view.setPaused(isPaused)
           view.setResizeMode(resizeMode)
@@ -2319,7 +2327,20 @@ private fun PlayerSourceCard(
     verticalArrangement = Arrangement.spacedBy(8.dp),
   ) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-      Text(header, color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+      Text(header, color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f, fill = false))
+      // Beside the name, as on the television. Switching source mid-film is usually a choice
+      // between things that have already disappointed you once, and "which of these is even the
+      // same kind of source" was not answerable from a list of names.
+      streamOriginLabel(stream)?.let {
+        Text(
+          it,
+          color = Color.White.copy(alpha = 0.52f),
+          style = MaterialTheme.typography.labelSmall,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+      }
+      Spacer(Modifier.weight(1f))
       if (showDownload) {
         IconButton(onClick = onDownload, modifier = Modifier.size(28.dp)) {
           Icon(Icons.Rounded.Download, contentDescription = "Download for offline playback", tint = Color.White.copy(alpha = 0.78f), modifier = Modifier.size(18.dp))
@@ -2421,6 +2442,10 @@ private fun PlayerStreamInfo(
   val transport = remember(stream, session.url) { streamTransport(stream, session.url) }
   val sourceRows = buildList {
     streamProviderLabel(stream, session.sourceLabel)?.let { add("Provider" to it) }
+    // The television's wording, and its distinction: the provider is who served this, and this is
+    // what they are on this account — an add-on, a plugin out of a named collection, or a file
+    // already here. Two providers with the same name can be different things entirely.
+    streamOriginLabel(stream)?.let { add("Installed as" to it) }
     add("Delivery" to transport.label)
     session.sizeLabel?.takeIf { it.isNotBlank() }?.let { add("Size" to it) }
     session.qualityLabel?.takeIf { it.isNotBlank() }?.let { add("Quality" to it) }
@@ -2538,17 +2563,44 @@ internal fun playerStreamIdentity(stream: AddonStream?): String =
 
 private val playerHttpClient = OkHttpClient()
 
-private fun normalizeSubtitleLanguage(language: String?): String = when (language?.trim()?.lowercase()) {
-  "eng", "english" -> "en"
-  "spa", "spanish" -> "es"
-  "fra", "fre", "french" -> "fr"
-  "deu", "ger", "german" -> "de"
-  "ita", "italian" -> "it"
-  "por", "portuguese", "pt-br", "pob" -> "pt"
-  "jpn", "japanese" -> "ja"
-  "kor", "korean" -> "ko"
-  "hin", "hindi" -> "hi"
-  else -> language?.trim()?.lowercase().orEmpty().substringBefore('-')
+/**
+ * The two-letter code for a subtitle's language, however the source spelled it.
+ *
+ * Delegates to [Languages] rather than the nine-language table this used to be: a viewer whose
+ * language was not on that list had every subtitle sorted as "other", so their own language ranked
+ * below English.
+ */
+private fun normalizeSubtitleLanguage(language: String?): String = Languages.normalize(language)
+
+/** Where a subtitle language sits in the viewer's order of preference. */
+private fun subtitleLanguageRank(language: String?, session: PlayerSession): Int {
+  val normalized = Languages.normalize(language)
+  val preferred = preferredSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage)
+  val index = preferred.indexOf(normalized)
+  return when {
+    index >= 0 -> index
+    // English is a reasonable third choice for most viewers, but never above a stated preference.
+    normalized == "en" -> preferred.size
+    else -> preferred.size + 1
+  }
+}
+
+/**
+ * Drops subtitles in languages the viewer did not ask for, when they have asked for that.
+ *
+ * Never empties the list: a filter that leaves nothing to choose from is worse than an unfiltered
+ * list, since the viewer is then stuck with no subtitles and no way to pick any from here.
+ */
+private fun List<ExternalSubtitle>.filterPreferredSubtitleLanguages(session: PlayerSession): List<ExternalSubtitle> {
+  // Two settings can narrow this list: the viewer's "only my languages" switch, and asking add-ons
+  // for their preferred languages only. Either one is reason enough to filter.
+  val narrowToPreferred = session.showOnlyPreferredSubtitleLanguages ||
+    session.addonSubtitleLoading == "preferred"
+  if (!narrowToPreferred) return this
+  val preferred = preferredSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage)
+  if (preferred.isEmpty()) return this
+  val matching = filter { Languages.normalize(it.language) in preferred }
+  return matching.ifEmpty { this }
 }
 
 // Downloads a remote subtitle to the app cache and returns the local path.
@@ -2571,6 +2623,9 @@ private suspend fun downloadSubtitleToCache(context: Context, url: String): Stri
 }
 
 private suspend fun fetchExternalSubtitles(session: PlayerSession, userSources: List<UserSubtitleSource>): List<ExternalSubtitle> = withContext(Dispatchers.IO) {
+  // "Off" means do not ask. Worth honouring before any request goes out rather than fetching and
+  // discarding: each source is a network call on the way into playback.
+  if (session.addonSubtitleLoading == "off") return@withContext emptyList()
   val imdbId = session.imdbId?.takeIf { it.startsWith("tt") } ?: return@withContext emptyList()
   val series = session.mediaType == "tv" || session.mediaType == "series"
   val videoId = if (series) {
@@ -2607,7 +2662,8 @@ private suspend fun fetchExternalSubtitles(session: PlayerSession, userSources: 
     }.getOrDefault(emptyList())
   }
     .distinctBy { it.url }
-    .sortedWith(compareBy<ExternalSubtitle> { if (it.language == normalizeSubtitleLanguage(session.subtitleLanguage)) 0 else if (it.language == "en") 1 else 2 }.thenBy { it.label })
+    .filterPreferredSubtitleLanguages(session)
+    .sortedWith(compareBy<ExternalSubtitle> { subtitleLanguageRank(it.language, session) }.thenBy { it.label })
     .take(80)
 }
 private fun parseSegmentTime(value: Any?): Double? {

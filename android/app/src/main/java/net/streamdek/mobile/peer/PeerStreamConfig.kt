@@ -1,8 +1,8 @@
-package net.streamdek.mobile.torrent
+package net.streamdek.mobile.peer
 
 import android.content.SharedPreferences
 
-data class TorrentServerConfig(
+data class PeerStreamConfig(
   val enabled: Boolean = true,
   val streamingMode: String = DEFAULT_STREAMING_MODE,
   val profile: String = DEFAULT_PROFILE,
@@ -16,7 +16,7 @@ data class TorrentServerConfig(
     const val DEFAULT_CACHE_SIZE_GB = 5
     const val DEFAULT_PORT = 11100
 
-    fun fromPreferences(prefs: SharedPreferences): TorrentServerConfig = TorrentServerConfig(
+    fun fromPreferences(prefs: SharedPreferences): PeerStreamConfig = PeerStreamConfig(
       enabled = prefs.getBoolean("enabled", true),
       streamingMode = prefs.getString("streamingMode", DEFAULT_STREAMING_MODE) ?: DEFAULT_STREAMING_MODE,
       profile = prefs.getString("profile", DEFAULT_PROFILE) ?: DEFAULT_PROFILE,

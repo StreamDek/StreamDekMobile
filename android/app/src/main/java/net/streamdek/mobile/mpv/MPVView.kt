@@ -13,6 +13,8 @@ import java.io.FileOutputStream
 import net.streamdek.mobile.BuildConfig
 import net.streamdek.mobile.nativeapp.PlaybackStats
 import net.streamdek.mobile.nativeapp.normalizePreferredAudioLanguage
+import net.streamdek.mobile.nativeapp.Languages
+import net.streamdek.mobile.nativeapp.orderedLanguageTags
 import net.streamdek.mobile.nativeapp.preferredAudioLanguageTags
 
 data class MpvTrackInfo(
@@ -51,6 +53,9 @@ class MPVView @JvmOverloads constructor(
     private var pendingDecoderMode: String = "HW+"
     private var pendingRenderSurface: String = "Standard"
     private var pendingPreferredAudioLanguage: String = "en"
+    private var pendingSecondaryAudioLanguage: String = ""
+    private var pendingPreferredSubtitleLanguage: String = ""
+    private var pendingSecondarySubtitleLanguage: String = ""
     /**
      * Subtitle appearance, held here rather than written straight through: the player sets it while
      * the view is still being constructed, long before mpv exists to receive it.
@@ -222,8 +227,10 @@ class MPVView @JvmOverloads constructor(
         MPVLib.setOptionString("sub-fonts-dir", "/system/fonts")
         MPVLib.setOptionString("sub-codepage", "auto")
         MPVLib.setOptionString("embeddedfonts", "yes")
-        MPVLib.setOptionString("alang", preferredAudioLanguageTags(pendingPreferredAudioLanguage).joinToString(","))
-        MPVLib.setOptionString("slang", "eng,en")
+        MPVLib.setOptionString("alang", orderedLanguageTags(pendingPreferredAudioLanguage, pendingSecondaryAudioLanguage).joinToString(","))
+        // Was hardcoded to English, which quietly overrode both the profile's subtitle language and
+        // the viewer's preference — mpv picked English whatever the settings said.
+        subtitleLanguageOption()?.let { MPVLib.setOptionString("slang", it) }
         // Selecting an HLS subtitle rendition before FILE_LOADED can block the entire source
         // when an add-on advertises a dead subtitle playlist. NativePlayer applies the user's
         // preferred subtitle only after the video itself has prepared.
@@ -507,10 +514,32 @@ class MPVView @JvmOverloads constructor(
         applyRenderSurfaceMode()
     }
 
+    /** The subtitle languages to hand mpv, most wanted first, or null when none were chosen. */
+    private fun subtitleLanguageOption(): String? =
+        (Languages.tags(pendingPreferredSubtitleLanguage) + Languages.tags(pendingSecondarySubtitleLanguage))
+            .distinct()
+            .takeIf { it.isNotEmpty() }
+            ?.joinToString(",")
+
+    fun setSubtitleLanguages(primary: String?, secondary: String?) {
+        pendingPreferredSubtitleLanguage = Languages.normalize(primary)
+        pendingSecondarySubtitleLanguage = Languages.normalize(secondary)
+        if (initialized && !isDestroyed) {
+            subtitleLanguageOption()?.let { MPVLib.setPropertyString("slang", it) }
+        }
+    }
+
+    fun setSecondaryAudioLanguage(language: String?) {
+        pendingSecondaryAudioLanguage = Languages.normalize(language)
+        if (initialized && !isDestroyed) {
+            MPVLib.setPropertyString("alang", orderedLanguageTags(pendingPreferredAudioLanguage, pendingSecondaryAudioLanguage).joinToString(","))
+        }
+    }
+
     fun setPreferredAudioLanguage(language: String?) {
         pendingPreferredAudioLanguage = normalizePreferredAudioLanguage(language)
         if (initialized && !isDestroyed) {
-            MPVLib.setPropertyString("alang", preferredAudioLanguageTags(pendingPreferredAudioLanguage).joinToString(","))
+            MPVLib.setPropertyString("alang", orderedLanguageTags(pendingPreferredAudioLanguage, pendingSecondaryAudioLanguage).joinToString(","))
         }
     }
 

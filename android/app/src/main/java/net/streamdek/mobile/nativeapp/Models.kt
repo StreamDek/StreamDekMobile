@@ -194,6 +194,32 @@ data class MediaSection(
   val id: String,
   val title: String,
   val items: List<MediaItem>,
+  /**
+   * Page a default catalog row carries on from when the viewer opens it. Home previews are not
+   * always one clean page — a row short on new titles reads further into its catalog — so the
+   * server says where it stopped rather than the client inferring it from the item count.
+   * Null for rows that cannot be paged (add-on rows carry their own offsets; networks are fixed).
+   */
+  val nextPage: Int? = null,
+  val totalPages: Int = 0,
+)
+
+/**
+ * One default catalog, as declared by the backend catalog registry (`GET /tmdb/catalogs`).
+ *
+ * The registry — not the app — decides which rows exist, what they are called and in what order
+ * they appear, so a new default row is a backend deploy rather than an app release. [id] is
+ * stable and independent of [title]: it is what row layouts, deep links and analytics persist.
+ */
+data class CatalogDefinition(
+  val id: String,
+  val title: String,
+  /** "movie", "tv" or "network". */
+  val mediaType: String,
+  val group: String,
+  val previewLimit: Int,
+  val maxItems: Int?,
+  val paginated: Boolean,
 )
 
 data class StreamProfile(
@@ -229,6 +255,20 @@ data class CloudPlaybackPreferences(
   val seasonTabStyle: String? = null,
   val heroTrailerAutoplay: Boolean? = null,
   val heroTrailerResolution: Int? = null,
+  val heroTrailerDelaySeconds: Int? = null,
+  /**
+   * Shared across clients on purpose: the trailer cache is a fix for trailers that have stopped
+   * playing, and a viewer who sets that schedule means it for their account, not for one device.
+   */
+  val trailerCacheClearHours: Int? = null,
+  val detailBackgroundMode: String? = null,
+  val homeBackgroundMode: String? = null,
+  val secondaryAudioLanguage: String? = null,
+  val preferredSubtitleLanguage: String? = null,
+  val secondarySubtitleLanguage: String? = null,
+  val useForcedSubtitles: Boolean? = null,
+  val showOnlyPreferredSubtitleLanguages: Boolean? = null,
+  val addonSubtitleLoading: String? = null,
   val ratingsEnabled: Boolean? = null,
   val externalRatingsEnabled: Boolean? = null,
   val enabledRatingProviders: List<String>? = null,
@@ -359,6 +399,15 @@ data class AddonStream(
    */
   val nzbUrl: String? = null,
   val nntpServers: List<String> = emptyList(),
+  /**
+   * Where to find peers for [infoHash], as the add-on supplied it: entries are `tracker:<url>`
+   * and `dht:<hash>`, which is the convention every Stremio peer-to-peer add-on follows.
+   *
+   * Load-bearing rather than informational. A magnet carrying only a hash leaves both the local
+   * engine and a debrid service that has to fetch the source fresh with nothing but DHT to go on,
+   * which on a mobile connection usually means no peers and no metadata.
+   */
+  val sources: List<String> = emptyList(),
 )
 
 data class DebridAccount(
@@ -419,7 +468,7 @@ data class TraktStatus(
   val username: String?,
 )
 
-data class TorrentServerSettings(
+data class PeerStreamSettings(
   val enabled: Boolean = true,
   val streamingMode: String = "server",
   val profile: String = "default",
@@ -428,14 +477,14 @@ data class TorrentServerSettings(
   val runAsForegroundService: Boolean = false,
 )
 
-data class TorrentServerStatus(
+data class PeerStreamStatus(
   val isOnline: Boolean = false,
   val isForeground: Boolean = false,
   val requestedForeground: Boolean = false,
   val port: Int = 11100,
   val url: String = "http://127.0.0.1:11100",
   val cacheDirectory: String = "",
-  val torrentStoreDirectory: String = "",
+  val peerStoreDirectory: String = "",
   val cacheUsageBytes: Long = 0L,
   val profile: String = "default",
   val cacheSizeGb: Int = 5,
@@ -469,6 +518,16 @@ data class PlayerSession(
   val currentStream: AddonStream? = null,
   val imdbId: String? = null,
   val subtitleLanguage: String = "en",
+  /** Second choice of subtitle language, tried when nothing matches [subtitleLanguage]. */
+  val secondarySubtitleLanguage: String = "none",
+  /** Second choice of spoken language, tried when nothing matches the preferred one. */
+  val secondaryAudioLanguage: String = "none",
+  /** Prefer a forced track when the audio is already in the subtitle language. */
+  val useForcedSubtitles: Boolean = false,
+  /** Hide subtitle tracks in neither preferred language, rather than listing everything. */
+  val showOnlyPreferredSubtitleLanguages: Boolean = false,
+  /** How much subtitle add-ons are asked for: "preferred", "all" or "off". */
+  val addonSubtitleLoading: String = "preferred",
   val autoLoadSubtitles: Boolean = true,
   /**
    * Subtitle appearance, carried in from settings.

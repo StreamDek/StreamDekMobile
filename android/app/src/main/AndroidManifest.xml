@@ -58,7 +58,7 @@
       </intent-filter>
     </activity>
     <service
-      android:name=".torrent.TorrentServerService"
+      android:name=".torrent.PeerStreamService"
       android:enabled="true"
       android:exported="false"
       android:foregroundServiceType="dataSync"

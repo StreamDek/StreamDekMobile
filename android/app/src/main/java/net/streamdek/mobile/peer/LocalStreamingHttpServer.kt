@@ -1,4 +1,4 @@
-package net.streamdek.mobile.torrent
+package net.streamdek.mobile.peer
 
 import java.io.BufferedReader
 import java.io.File
@@ -18,10 +18,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.Locale
 
 class LocalStreamingHttpServer(
-  private val configProvider: () -> TorrentServerConfig,
+  private val configProvider: () -> PeerStreamConfig,
   private val statusProvider: () -> Map<String, Any>,
   private val cacheStore: StreamCacheStore,
-  private val torrentEngine: TorrentEngine,
+  private val peerEngine: PeerEngine,
 ) {
   private data class ParsedRequest(
     val method: String,
@@ -85,10 +85,10 @@ class LocalStreamingHttpServer(
             request.path.removePrefix("/proxy/"),
             request.headers,
           )
-          request.path.startsWith("/torrent/") -> streamTorrentSession(
+          request.path.startsWith("/peer/") -> streamPeerSession(
             output,
             request.method,
-            request.path.removePrefix("/torrent/"),
+            request.path.removePrefix("/peer/"),
             request.headers,
           )
           else -> writeResponse(output, 404, "text/plain; charset=utf-8", "Not found")
@@ -135,7 +135,7 @@ class LocalStreamingHttpServer(
     sessionId: String,
     requestHeaders: Map<String, String>,
   ) {
-    val session = TorrentServerService.getProxySession(sessionId)
+    val session = PeerStreamService.getProxySession(sessionId)
     if (session == null) {
       writeResponse(output, 404, "text/plain; charset=utf-8", "Proxy session not found")
       return
@@ -198,13 +198,13 @@ class LocalStreamingHttpServer(
     }
   }
 
-  private fun streamTorrentSession(
+  private fun streamPeerSession(
     output: OutputStream,
     method: String,
     sessionId: String,
     requestHeaders: Map<String, String>,
   ) {
-    val session = TorrentServerService.getTorrentPlaybackSession(sessionId)
+    val session = PeerStreamService.getPeerPlaybackSession(sessionId)
     if (session == null) {
       writeResponse(output, 404, "text/plain; charset=utf-8", "Torrent session not found")
       return
@@ -224,10 +224,10 @@ class LocalStreamingHttpServer(
       return
     }
 
-    TorrentServerService.prepareTorrentRange(sessionId, start)
+    PeerStreamService.preparePeerRange(sessionId, start)
     val requiredBytes = (end + 1).coerceAtLeast(start + 1)
-    val ready = TorrentServerService.waitForTorrentBytes(sessionId, requiredBytes, 45_000L)
-    val availableBytes = TorrentServerService.torrentBytesAvailable(sessionId)
+    val ready = PeerStreamService.waitForPeerBytes(sessionId, requiredBytes, 45_000L)
+    val availableBytes = PeerStreamService.peerBytesAvailable(sessionId)
     if (!ready && availableBytes <= start) {
       writeResponse(output, 503, "text/plain; charset=utf-8", "Torrent data not ready")
       return

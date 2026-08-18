@@ -718,6 +718,7 @@ private data class AppUiState(
   val profiles: List<StreamProfile> = emptyList(),
   val activeProfileId: String? = null,
   val addonsLoading: Boolean = false,
+  val pluginsLoading: Boolean = false,
   val addons: List<InstalledAddon> = emptyList(),
   val m3uLoading: Boolean = false,
   val m3uProgress: Float? = null,
@@ -2565,6 +2566,29 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private var pluginRefreshJob: Job? = null
   private var cloudStreamLoadJob: Job? = null
   private val apiClient = StreamDekApiClient(application.applicationContext)
+
+  /**
+   * One playback attempt as the user experiences it, which is not the same as one call to
+   * [playStream] — a failed source is retried against the next ranked one, and all of those
+   * retries are still the single attempt the viewer is waiting on.
+   */
+  private data class PlaybackAttempt(
+    val correlationId: String,
+    val startedAt: Long,
+    var sourcesTried: Int,
+  )
+
+  private var playbackAttempt: PlaybackAttempt? = null
+
+  /**
+   * Correlation id for the title currently open.
+   *
+   * Created when a title is opened and sent on the stream request, so the add-on calls and
+   * debrid resolves the backend makes on this device's behalf line up with what the device
+   * reports back about whether anything actually played.
+   */
+  private var detailCorrelationId: String? = null
+
   private var searchRequestGeneration: Long = 0L
   private var streamRequestGeneration: Long = 0L
   private var playbackRequestGeneration: Long = 0L
@@ -2642,6 +2666,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     private set
 
   init {
+    // The session is read lazily rather than captured: events queued before sign-in still get
+    // attributed once one exists, and signed-out activity is sent anonymously rather than lost.
+    Telemetry.configure(apiClient) { uiState.session }
+    Telemetry.sessionStarted()
     DisplayNameOverrides.initialize(application.applicationContext)
     LocalAddonManager.initialize(application.applicationContext)
     M3uPlaylistManager.initialize(application.applicationContext)
@@ -2792,6 +2820,23 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       onStart = { uiState = uiState.copy(errorMessage = null, infoMessage = null) },
       block = { apiClient.confirmPasswordReset(email, token, newPassword) },
       onSuccess = { uiState = uiState.copy(infoMessage = "Password updated. You can sign in now.") },
+    )
+  }
+
+  /**
+   * Resets a password without a code, then signs in with it.
+   *
+   * Signing in here rather than sending the viewer back to the form is the point of it: the
+   * reset invalidates every existing session for the account, so there is nothing to return to.
+   */
+  fun resetPasswordDirect(email: String, newPassword: String) {
+    launchWork(
+      onStart = { uiState = uiState.copy(errorMessage = null, infoMessage = null) },
+      block = { apiClient.resetPasswordDirect(email, newPassword) },
+      onSuccess = {
+        uiState = uiState.copy(infoMessage = "Password updated.")
+        signIn(email, newPassword, true)
+      },
     )
   }
 
@@ -3302,6 +3347,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         .onSuccess { page ->
           if (generation == searchRequestGeneration) {
             uiState = uiState.copy(searchLoading = false, searchResults = page.items, searchResultQuery = normalized)
+            // Counts the catalogue search only. Add-on catalogues answer separately and later,
+            // so folding them in here would report a number that was not true when it was
+            // recorded. The query text is never sent.
+            Telemetry.searchPerformed(page.items.size)
           }
         }
         .onFailure { error ->
@@ -3494,6 +3543,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       pendingDirectContinueEntry = null
       pendingDirectContinueFallback = null
     }
+    // A fresh correlation id per title opened; every stage that follows carries it.
+    detailCorrelationId = Telemetry.newCorrelationId()
+    Telemetry.contentOpened(mediaId = id, mediaType = type, title = fallbackItem?.title)
     val detailIsLive = fallbackItem?.isLiveCatalogItem() == true
     detailSourceAddonId = fallbackItem?.sourceAddonId
     detailSourceCatalogType = fallbackItem?.sourceCatalogType
@@ -3942,7 +3994,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         if (merged.isEmpty() && !uiState.detailIsLive) {
           val fallback = mutableListOf<AddonStream>()
           for (id in candidates) {
-            apiClient.fetchStreams(uiState.session, type, id, uiState.activeProfileId)
+            apiClient.fetchStreams(uiState.session, type, id, uiState.activeProfileId, detailCorrelationId)
               .onSuccess { fallback += it }
               .onFailure { lastError = it }
           }
@@ -4132,7 +4184,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
       // The aggregate endpoint spans every add-on, so live channels never use it.
       if (merged.isEmpty() && !live) {
-        apiClient.fetchStreams(uiState.session, type, id, uiState.activeProfileId)
+        apiClient.fetchStreams(uiState.session, type, id, uiState.activeProfileId, detailCorrelationId)
           .onSuccess { streams -> merged += streams }
           .onFailure { lastError = it }
       }
@@ -4367,10 +4419,21 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     episode: EpisodeItem? = null,
     resumePercentOverride: Double? = null,
     returnToEpisodeStreams: Boolean = false,
+    /** True when this call is the app rolling on to the next ranked source, not a new request. */
+    continuingAttempt: Boolean = false,
   ) {
     val detail = uiState.detail ?: return
     val selectedEpisode = episode ?: uiState.selectedEpisode
     val requestGeneration = ++playbackRequestGeneration
+
+    val attempt = playbackAttempt
+      ?.takeIf { continuingAttempt }
+      ?.also { it.sourcesTried += 1 }
+      ?: PlaybackAttempt(
+        correlationId = detailCorrelationId ?: Telemetry.newCorrelationId(),
+        startedAt = System.currentTimeMillis(),
+        sourcesTried = 1,
+      ).also { playbackAttempt = it }
     launchWork(
       onStart = {
         uiState = uiState.copy(
@@ -4412,12 +4475,42 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           liveChannelSwitching = liveChannelSwitchSnapshot != null,
           liveChannelSwitchingLabel = uiState.liveChannelSwitchingLabel,
         )
+
+        Telemetry.playbackStarted(
+          correlationId = attempt.correlationId,
+          mediaId = detail.id,
+          mediaType = detail.type,
+          title = detail.title,
+          addonKey = playback.stream.addonId.takeIf { it.isNotBlank() } ?: playback.stream.addonName,
+          // Whichever debrid service actually served it, when one did.
+          provider = playback.stream.cachedBy.firstOrNull(),
+          durationMs = System.currentTimeMillis() - attempt.startedAt,
+          sourcesTried = attempt.sourcesTried,
+        )
+        playbackAttempt = null
       },
       onFailure = failure@ { message ->
         if (requestGeneration != playbackRequestGeneration) return@failure
         // A failed resolver should not stop automatic playback at the first ranked source.
         // Preserve position for VOD and roll live channels on from zero.
         if (playNextStreamSource(stream, selectedEpisode, if (uiState.detailIsLive) 0.0 else resumePercentOverride)) return@failure
+
+        // Past this point the app has stopped rolling on to other sources, so this is a failure
+        // the viewer actually saw. Recording it any earlier would count a source that was
+        // successfully replaced as a failed playback, and make the success rate meaningless.
+        Telemetry.playbackFailed(
+          correlationId = attempt.correlationId,
+          mediaId = detail.id,
+          mediaType = detail.type,
+          title = detail.title,
+          addonKey = stream.addonId.takeIf { it.isNotBlank() } ?: stream.addonName,
+          provider = stream.cachedBy.firstOrNull(),
+          errorCategory = classifyPlaybackFailure(message),
+          errorCode = null,
+          durationMs = System.currentTimeMillis() - attempt.startedAt,
+          sourcesTried = attempt.sourcesTried,
+        )
+        playbackAttempt = null
         pendingDirectContinueFallback?.let { showDetails ->
           pendingDirectContinueFallback = null
           pendingDirectContinueEntry = null
@@ -4448,7 +4541,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val next = streams.drop((index + 1).coerceAtLeast(0)).firstOrNull { streamIdentity(it) != failedKey }
     if (next != null) {
       uiState = uiState.copy(playerLaunchingLabel = buildSourceLabel(next) ?: next.addonName)
-      playStream(next, episode, resumePercentOverride = resumePercent)
+      playStream(next, episode, resumePercentOverride = resumePercent, continuingAttempt = true)
       return true
     }
     if (index < 0 && loadPlaybackMemoryEntry(detail, episode)?.stream != null) {
@@ -6989,6 +7082,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     refreshAddonEntitlements()
     loadHome(force = forceHome)
     refreshAddons()
+    refreshProfilePlugins()
     loadM3uPlaylists()
     syncPlaylistsWithAccount()
     refreshTraktData()
@@ -7042,21 +7136,44 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     }
   }
 
-  private fun refreshProfilePlugins() {
+  /**
+   * Pulls the profile's plugin document and takes it on unless the device holds newer edits.
+   *
+   * Add-on state is read back from the server by every refreshAddons(), of which there is one on
+   * practically every screen change, so a change made in the portal turns up almost at once.
+   * Plugins are client state synced through a single document, and this used to run only on a
+   * profile switch -- which meant a portal edit did not appear until the app was killed and
+   * reopened. It is now called on the same beats: sign-in, foreground, and opening the screen.
+   */
+  fun refreshProfilePlugins(manual: Boolean = false) {
     val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
     StreamDekPlugins.manager.selectProfileStorage(ownerKey)
-    val session = uiState.session ?: return
-    val profileId = uiState.activeProfileId ?: return
+    val session = uiState.session
+    val profileId = uiState.activeProfileId
+    if (session == null || profileId == null) {
+      // Pressing refresh while signed out should say why rather than appear to do nothing.
+      if (manual) uiState = uiState.copy(pluginsLoading = false, infoMessage = "Sign in to sync plugin collections.")
+      return
+    }
     pluginRefreshJob?.cancel()
+    uiState = uiState.copy(pluginsLoading = true)
     pluginRefreshJob = viewModelScope.launch {
-      apiClient.fetchProfilePlugins(session, profileId).onSuccess { cloudJson ->
+      apiClient.fetchProfilePlugins(session, profileId).onFailure {
+        if (manual) uiState = uiState.copy(errorMessage = "Could not reach your account to refresh plugin collections.")
+      }.onSuccess { cloudJson ->
         if (uiState.activeProfileId != profileId || activeOwnerKey() != ownerKey) return@onSuccess
         val cloudHasState = runCatching {
           JSONObject(cloudJson).let { root -> root.has("enabled") || root.has("repos") || root.has("providers") }
         }.getOrDefault(false)
         val localSnapshot = StreamDekPlugins.manager.snapshotJson(includeCode = false)
         val localIsNewer = StreamDekPlugins.manager.state.updatedAt > StreamDekPlugins.manager.snapshotUpdatedAt(cloudJson)
-        if (cloudHasState && !localIsNewer) {
+        // Both sides stamp updatedAt from their own clock, so a phone running even slightly
+        // ahead of the machine the portal was used on would keep deciding it was the newer of
+        // the two and push over the change instead of taking it. That is fine to arbitrate on a
+        // background sync, but not when someone has pressed refresh and is watching: there the
+        // account wins outright. Nothing local is lost by it -- edits made here are pushed as
+        // they happen, so the copy being taken back already contains them.
+        if (cloudHasState && (manual || !localIsNewer)) {
           StreamDekPlugins.manager.restoreCloudState(cloudJson)
           StreamDekPlugins.manager.state.repos
             .filter { repo -> StreamDekPlugins.manager.state.providers.none { provider -> provider.repoUrl == repo.url } || StreamDekPlugins.manager.state.providers.any { provider -> provider.repoUrl == repo.url && provider.code.isBlank() } }
@@ -7064,7 +7181,9 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
         } else if (StreamDekPlugins.manager.state.repos.isNotEmpty() || StreamDekPlugins.manager.state.updatedAt > 0L) {
           apiClient.putProfilePlugins(session, profileId, localSnapshot)
         }
+        if (manual) uiState = uiState.copy(infoMessage = "Plugin collections up to date.")
       }
+      uiState = uiState.copy(pluginsLoading = false)
     }
   }
 
@@ -7421,6 +7540,17 @@ fun StreamDekNativeApp(
   val uiState = viewModel.uiState
   LaunchedEffect(uiState.playerSession?.url, uiState.session?.user?.uid) {
     if (uiState.playerSession != null) viewModel.refreshHandoffDevices()
+  }
+  // Someone making a change in the portal and switching straight back to the app is the whole
+  // reason plugin sync felt broken, so the plugin document is re-read whenever the app is
+  // brought forward rather than only when a profile is chosen.
+  val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+  DisposableEffect(lifecycleOwner, uiState.session?.user?.uid, uiState.activeProfileId) {
+    val observer = LifecycleEventObserver { _, event ->
+      if (event == Lifecycle.Event.ON_START) viewModel.refreshProfilePlugins()
+    }
+    lifecycleOwner.lifecycle.addObserver(observer)
+    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
   }
   val systemDarkMode = isSystemInDarkTheme()
   val darkMode = when (uiState.appAppearance) {
@@ -7948,7 +8078,7 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
       Text(
         when (mode) {
           "signup" -> "Sign up to sync your library, profiles, and progress."
-          "reset" -> "Enter your details to recover access to StreamDek."
+          "reset" -> "Enter your email and a new password to regain access."
           else -> "Sign in to access your library and progress."
         },
         modifier = Modifier.fillMaxWidth(),
@@ -7989,21 +8119,18 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
           colors = fieldColors,
         )
       } else {
-        OutlinedTextField(
-          value = form.resetCode,
-          onValueChange = { form = form.copy(resetCode = it) },
-          placeholder = { InputGuideText("Reset code") },
-          modifier = Modifier.fillMaxWidth(),
-          shape = RoundedCornerShape(18.dp),
-          singleLine = true,
-          colors = fieldColors,
-        )
-        Spacer(modifier = Modifier.height(9.dp))
+        // No reset code: there is no mail server to deliver one, so the address and a new
+        // password are the whole form. Same shape as the web portal.
         OutlinedTextField(
           value = form.newPassword,
           onValueChange = { form = form.copy(newPassword = it) },
           placeholder = { InputGuideText("New password") },
           leadingIcon = { Icon(Icons.Rounded.Lock, contentDescription = null) },
+          trailingIcon = {
+            IconButton(onClick = { showPassword = !showPassword }) {
+              Icon(if (showPassword) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility, contentDescription = if (showPassword) "Hide password" else "Show password")
+            }
+          },
           visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
           modifier = Modifier.fillMaxWidth(),
           shape = RoundedCornerShape(18.dp),
@@ -8029,10 +8156,13 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
           when (mode) {
             "signin" -> viewModel.signIn(form.email.trim(), form.password, true)
             "signup" -> viewModel.signUp(form.email.trim(), form.password, true)
-            else -> if (form.resetCode.isBlank() || form.newPassword.isBlank()) viewModel.requestPasswordReset(form.email.trim()) else viewModel.confirmPasswordReset(form.email.trim(), form.resetCode, form.newPassword)
+            else -> viewModel.resetPasswordDirect(form.email.trim(), form.newPassword)
           }
         },
-        enabled = !uiState.booting,
+        enabled = !uiState.booting && when (mode) {
+          "reset" -> form.email.isNotBlank() && form.newPassword.length >= 6
+          else -> form.email.isNotBlank() && form.password.isNotBlank()
+        },
         modifier = Modifier.fillMaxWidth().height(54.dp),
         shape = RoundedCornerShape(18.dp),
         colors = ButtonDefaults.buttonColors(containerColor = white, contentColor = Color.Black, disabledContainerColor = white.copy(alpha = 0.58f), disabledContentColor = Color.Black.copy(alpha = 0.58f)),
@@ -8044,7 +8174,7 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
             when (mode) {
               "signin" -> "Sign In"
               "signup" -> "Create Account"
-              else -> if (form.resetCode.isBlank() || form.newPassword.isBlank()) "Send Reset Code" else "Reset Password"
+              else -> "Reset Password"
             },
             fontWeight = FontWeight.Black,
             fontSize = 16.sp,
@@ -8783,6 +8913,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
                 onMoveHomeCatalogRow = viewModel::moveHomeCatalogRow,
                 onRefreshHome = { viewModel.loadHome(force = true) },
                 onRefreshAddons = viewModel::refreshAddons,
+                onRefreshPlugins = { viewModel.refreshProfilePlugins(manual = true) },
                 onInstallAddon = viewModel::installAddon,
                 onToggleAddon = viewModel::toggleAddon,
                 onUninstallAddon = viewModel::uninstallAddon,
@@ -13780,6 +13911,7 @@ private fun SettingsTab(
   onMoveHomeCatalogRow: (String, Int) -> Unit,
   onRefreshHome: () -> Unit,
   onRefreshAddons: () -> Unit,
+  onRefreshPlugins: () -> Unit,
   onInstallAddon: (String) -> Unit,
   onToggleAddon: (InstalledAddon, Boolean) -> Unit,
   onUninstallAddon: (String) -> Unit,
@@ -14429,7 +14561,7 @@ private fun SettingsTab(
             item { DownloadsSettingsSummary(uiState, onRefreshDownloads, onRemoveDownload, onPlayDownload, onOpenDownloadDetails) }
           }
         }
-        SettingsRoute.Plugins -> item { PluginsSettingsSummary() }
+        SettingsRoute.Plugins -> item { PluginsSettingsSummary(uiState.pluginsLoading, onRefreshPlugins) }
         SettingsRoute.Debrid -> item { DebridSettingsSummary(uiState, onRefreshDebrid, onAddDebrid, onRemoveDebrid, onSetDebridEnabled, onMoveDebrid, onSetDebridCloudSync, onPremiumizeSignIn, onRealDebridSignIn, onDismissDebridSignIn, onDismissDebridNotice) }
         SettingsRoute.SyncServices -> {
           item { SyncServicesSettingsSummary(uiState, onRouteChange, onRefreshSyncServices, onPrimarySyncServiceChange) }
@@ -16824,8 +16956,11 @@ private fun PluginSourceTestDialog(state: PluginSourceTestState, onDismiss: () -
             state.streams.forEach { stream ->
               Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.055f)) {
                 Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                  Text(stream.title?.takeIf { it.isNotBlank() } ?: stream.name ?: state.providerName, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                  listOfNotNull(stream.quality, stream.size).joinToString("  •  ").takeIf { it.isNotBlank() }?.let {
+                  Text(streamSingleLine(stream.title) ?: stream.name ?: state.providerName, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                  // Some sources pack a whole formatted card — title, size, codec, source — into
+                  // every one of these fields, so flatten them and drop the blanks rather than
+                  // printing four lines of it under a two-line title.
+                  listOfNotNull(streamSingleLine(stream.quality), streamSizeLabel(stream)).joinToString("  •  ").takeIf { it.isNotBlank() }?.let {
                     Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall)
                   }
                 }
@@ -16932,13 +17067,27 @@ private fun ProviderSettingsDialog(
                 }
               }
               "text" -> field.key?.let { key ->
+                // A source token — a FebBox `ui=` cookie, an API key — is pasted in from somewhere
+                // else and then checked by eye, so masking it hides the one thing worth looking at.
+                // These show their contents, with an eye to hide them rather than to reveal them.
+                var hidden by remember(providerKey, key) { mutableStateOf(false) }
                 OutlinedTextField(
                   value = values[key]?.toString().orEmpty(),
                   onValueChange = { values = values + (key to it) },
                   label = { Text(field.label) },
                   placeholder = field.placeholder?.let { placeholder -> { Text(placeholder) } },
                   supportingText = field.description?.let { description -> { Text(description) } },
-                  visualTransformation = if (field.isPassword) PasswordVisualTransformation() else VisualTransformation.None,
+                  visualTransformation = if (field.isPassword && hidden) PasswordVisualTransformation() else VisualTransformation.None,
+                  trailingIcon = if (!field.isPassword) null else {
+                    {
+                      IconButton(onClick = { hidden = !hidden }) {
+                        Icon(
+                          if (hidden) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
+                          contentDescription = if (hidden) "Show value" else "Hide value",
+                        )
+                      }
+                    }
+                  },
                   singleLine = true,
                   modifier = Modifier.fillMaxWidth(),
                 )
@@ -17041,7 +17190,7 @@ private fun CollectionCard(
 }
 
 @Composable
-private fun PluginsSettingsSummary() {
+private fun PluginsSettingsSummary(refreshing: Boolean, onRefresh: () -> Unit) {
   val scope = rememberCoroutineScope()
   val context = LocalContext.current
   var addKind by rememberSaveable { mutableStateOf(CollectionKind.Plugin) }
@@ -17049,6 +17198,11 @@ private fun PluginsSettingsSummary() {
   // Bumped after a CloudStream collection is added here so its own section re-reads the manager.
   var cloudStreamVersion by remember { mutableIntStateOf(0) }
   var pluginState by remember { mutableStateOf(StreamDekPlugins.manager.state) }
+  // syncState() below covers edits made on this screen. This covers the ones that are not:
+  // a portal change arriving on the next foreground, which otherwise left the page stale.
+  LaunchedEffect(Unit) {
+    StreamDekPlugins.manager.stateChanged.collect { pluginState = it }
+  }
   var busy by remember { mutableStateOf(false) }
   var message by remember { mutableStateOf<String?>(null) }
   var expandedPluginUrl by rememberSaveable { mutableStateOf<String?>(null) }
@@ -17185,6 +17339,34 @@ private fun PluginsSettingsSummary() {
           syncState()
         },
       )
+
+      // The same control the add-ons page carries, and for the same reason: this list is one
+      // document synced per profile, so a collection added or a source switched off in the web
+      // portal only lands when something asks the account for it.
+      Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        Text(
+          "Synced with your account",
+          color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+          style = MaterialTheme.typography.bodySmall,
+          modifier = Modifier.weight(1f),
+        )
+        if (refreshing) {
+          CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+        } else {
+          IconButton(onClick = onRefresh) {
+            Icon(
+              Icons.Rounded.Refresh,
+              contentDescription = "Refresh plugin collections",
+              tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
+            )
+          }
+        }
+      }
+
       if (pluginState.repos.isEmpty()) {
         Text(
           "No plugin collections added yet.",

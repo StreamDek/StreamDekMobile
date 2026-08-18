@@ -610,6 +610,24 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
 
+  /**
+   * Sets a new password from the address alone, with no emailed code.
+   *
+   * This deployment has no mail server, so the code [requestPasswordReset] mints never reaches
+   * anyone and the flow it belongs to cannot be completed. The trade is that knowing an address
+   * is enough to take the account; the code endpoints are left in place for when SMTP exists.
+   */
+  suspend fun resetPasswordDirect(email: String, newPassword: String): Result<Unit> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = executeJson(
+          "/auth/password-reset/direct",
+          JSONObject().put("email", email).put("newPassword", newPassword),
+        )
+        ensureOk(response, "Could not reset password")
+      }
+    }
+
   suspend fun confirmPasswordReset(email: String, token: String, newPassword: String): Result<Unit> =
     withContext(Dispatchers.IO) {
       runCatching {
@@ -1995,13 +2013,49 @@ class StreamDekApiClient(context: Context? = null) {
     return parsed.toString()
   }
 
-  suspend fun fetchStreams(session: AuthSession?, type: String, videoId: String, profileId: String? = null): Result<List<AddonStream>> =
+  /**
+   * Posts a batch of client funnel events.
+   *
+   * Returns whether the backend accepted them so the caller can requeue on a transient failure.
+   * Deliberately never throws: telemetry is not allowed to surface an error to a caller that is
+   * in the middle of doing something the user asked for.
+   */
+  suspend fun sendTelemetry(session: AuthSession?, events: JSONArray): Boolean =
     withContext(Dispatchers.IO) {
       runCatching {
         val response = execute(
           Request.Builder()
+            .url("$apiBaseUrl/telemetry/events")
+            .post(JSONObject().put("events", events).toString().toRequestBody(jsonMediaType))
+            .headers(authHeaders(session))
+            .build(),
+        )
+        response.ok
+      }.getOrDefault(false)
+    }
+
+  suspend fun fetchStreams(
+    session: AuthSession?,
+    type: String,
+    videoId: String,
+    profileId: String? = null,
+    correlationId: String? = null,
+  ): Result<List<AddonStream>> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val headers = authHeaders(session, includeContentType = false, profileId = profileId)
+          // Joins this device's playback outcome to the add-on calls and debrid resolves the
+          // backend makes because of it. Without it the two halves of the funnel are separate
+          // piles of events that cannot be lined up.
+          .let { base ->
+            if (correlationId.isNullOrBlank()) base
+            else base.newBuilder().add("x-correlation-id", correlationId).build()
+          }
+
+        val response = execute(
+          Request.Builder()
             .url("$apiBaseUrl/addons/streams/$type/${encodeQuery(videoId)}")
-            .headers(authHeaders(session, includeContentType = false, profileId = profileId))
+            .headers(headers)
             .build(),
         )
         ensureOk(response, "Failed to load streams")

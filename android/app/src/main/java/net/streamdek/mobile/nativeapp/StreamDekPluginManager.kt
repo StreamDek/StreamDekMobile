@@ -14,6 +14,9 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.TimeoutCancellationException
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -25,9 +28,6 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.net.URI
 import java.util.concurrent.TimeUnit
-import javax.crypto.Cipher
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
 
 data class PluginRepo(val url: String, val name: String, val version: String, val description: String?, val enabled: Boolean = true)
 data class PluginProvider(
@@ -101,6 +101,16 @@ internal fun resolvePluginProviderUrl(repositoryUrl: String, filename: String): 
   return URI(resolved.scheme, resolved.userInfo, resolved.host, resolved.port, resolved.path, manifest.query, resolved.fragment).toString()
 }
 
+/**
+ * Whether a source exports `onSettings`, whatever its manifest claims.
+ *
+ * `hasSettings` is advisory and collections forget it. A source that needs an API token or a
+ * cookie but is listed without the flag leaves nowhere to type one in, and the only symptom is a
+ * source that returns no streams -- so trust the code over the listing.
+ */
+internal fun pluginDeclaresSettings(code: String): Boolean =
+  Regex("""(?:\bfunction\s+onSettings\b)|(?:\bonSettings\s*[:=])""").containsMatchIn(code)
+
 internal fun normalizePluginJavaScript(source: String): String {
   var normalized = source
   normalized = normalized.replace(
@@ -173,21 +183,41 @@ private val CHEERIO_COMPAT_SHIM = """
   }
   function __sdBytesToWords(bytes){var words=[];for(var i=0;i<bytes.length;i++)words[i>>>2]=(words[i>>>2]||0)|(bytes[i]<<(24-(i%4)*8));return words}
   function __sdWordsToBytes(words,count){var out=[];for(var i=0;i<count;i++)out.push((words[i>>>2]>>>(24-(i%4)*8))&255);return out}
-  function __sdWordArray(words,sigBytes){
-    var value={words:(words||[]).slice(),sigBytes:sigBytes===undefined?(words||[]).length*4:Number(sigBytes)};
-    value.bytes=function(){return __sdWordsToBytes(value.words,value.sigBytes)};
-    value.concat=function(other){var joined=value.bytes().concat(other&&other.bytes?other.bytes():[]);value.words=__sdBytesToWords(joined);value.sigBytes=joined.length;return value};
-    value.toString=function(encoder){if(encoder===__sdCrypto.enc.Utf8)return __sd_utf8_decode(JSON.stringify(value.bytes()));return ''};
-    return value;
-  }
-  var __sdCrypto={
-    enc:{Utf8:{parse:function(v){var bytes=JSON.parse(__sd_utf8_encode(String(v)));return __sdWordArray(__sdBytesToWords(bytes),bytes.length)}},Base64:{parse:function(v){var bytes=__sdB64Bytes(v);return __sdWordArray(__sdBytesToWords(bytes),bytes.length)} }},
-    lib:{WordArray:{create:function(words,sigBytes){return __sdWordArray(words,sigBytes)}}},mode:{CBC:'CBC'},pad:{Pkcs7:'Pkcs7'}
-  };
-  function __sdDecrypt(kind,cipher,key,options){var data=typeof cipher==='string'?__sdB64Bytes(cipher):(cipher&&cipher.ciphertext&&cipher.ciphertext.bytes?cipher.ciphertext.bytes():[]);var keyBytes=key&&key.bytes?key.bytes():[];var iv=options&&options.iv&&options.iv.bytes?options.iv.bytes():[];var plain=__sd_crypto_decrypt(kind,JSON.stringify(data),JSON.stringify(keyBytes),JSON.stringify(iv));return {toString:function(){return plain||''}}}
-  __sdCrypto.AES={decrypt:function(cipher,key,options){return __sdDecrypt('AES',cipher,key,options)}};
-  __sdCrypto.TripleDES={decrypt:function(cipher,key,options){return __sdDecrypt('DESede',cipher,key,options)}};
 """.trimIndent()
+
+/**
+ * What FebBox and the other hosts these sources scrape expect to see. The old "StreamDek/1.0"
+ * was enough for a bot filter to answer with a challenge page instead of JSON, which reaches the
+ * provider as an unparseable body and leaves it reporting no streams rather than an error.
+ */
+private const val PLUGIN_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+/** The plugin sandbox: DOM and crypto shims, a browser-ish global scope, and the module loader. */
+private val PLUGIN_RUNTIME_SOURCE = CHEERIO_COMPAT_SHIM + "\n" + PLUGIN_POLYFILLS + "\n" + "globalThis.window=globalThis;globalThis.self=globalThis;globalThis.global=globalThis;globalThis.console={log:function(){__sd_log([].slice.call(arguments).map(String).join(' '))},warn:function(){__sd_log([].slice.call(arguments).map(String).join(' '))},info:function(){__sd_log([].slice.call(arguments).map(String).join(' '))},debug:function(){__sd_log([].slice.call(arguments).map(String).join(' '))},error:function(){__sd_log([].slice.call(arguments).map(String).join(' '))}};var __sd_timers={};var __sd_timer_seq=0;globalThis.setTimeout=function(fn){if(typeof fn!=='function')return 0;var id=++__sd_timer_seq;__sd_timers[id]=1;Promise.resolve().then(function(){if(__sd_timers[id]){delete __sd_timers[id];fn()}});return id};globalThis.clearTimeout=function(id){delete __sd_timers[id]};globalThis.setInterval=function(){return 0};globalThis.clearInterval=function(){};globalThis.Buffer={from:function(v,e){e=String(e||'utf8').toLowerCase();var b=e==='base64'?__sdB64Bytes(v):e==='binary'||e==='latin1'?String(v||'').split('').map(function(c){return c.charCodeAt(0)&255}):JSON.parse(__sd_utf8_encode(String(v||'')));return {__bytes:b,toString:function(enc){enc=String(enc||'utf8').toLowerCase();if(enc==='base64')return __sdB64Encode(b);if(enc==='hex')return b.map(function(n){return ('0'+n.toString(16)).slice(-2)}).join('');return __sd_utf8_decode(JSON.stringify(b))}}}};" +
+  "var __sd_types=new Proxy({isArrayBuffer:function(v){return v instanceof ArrayBuffer},isTypedArray:function(v){return ArrayBuffer.isView(v)}},{get:function(t,k){return t[k]||function(){return false}}});" +
+  "function __sd_emitter(){this._events={}};__sd_emitter.prototype.on=function(n,f){(this._events[n]||(this._events[n]=[])).push(f);return this};__sd_emitter.prototype.once=function(n,f){var s=this;function w(){s.removeListener(n,w);return f.apply(s,arguments)}return this.on(n,w)};__sd_emitter.prototype.emit=function(n){var a=[].slice.call(arguments,1);(this._events[n]||[]).slice().forEach(function(f){f.apply(null,a)});return true};__sd_emitter.prototype.removeListener=function(n,f){this._events[n]=(this._events[n]||[]).filter(function(x){return x!==f});return this};" +
+  "function require(n){if(n==='cheerio-without-node-native'||n==='cheerio')return __sd_cheerio;if(n==='crypto-js')return __sdCrypto;if(n==='axios')return __sdAxios;if(n==='util'||n==='util/types')return n==='util/types'?__sd_types:{types:__sd_types,inherits:function(c,p){c.prototype=Object.create(p.prototype);c.prototype.constructor=c},promisify:function(f){return function(){var a=[].slice.call(arguments);return new Promise(function(ok,no){a.push(function(e,v){e?no(e):ok(v)});f.apply(null,a)})}},inspect:function(v){try{return JSON.stringify(v)}catch(e){return String(v)}}};if(n==='events')return {EventEmitter:__sd_emitter};if(n==='querystring')return {escape:encodeURIComponent,unescape:decodeURIComponent,stringify:function(o){return Object.keys(o||{}).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(o[k])}).join('&')}};if(n==='url')return {URL:globalThis.URL,URLSearchParams:globalThis.URLSearchParams};throw new Error('Module not available in sandbox: '+n)};" +
+  "globalThis.fetch=async function(u,o){o=o||{};var h=o.headers||{};if(h&&typeof h.forEach==='function'){var m={};h.forEach(function(v,k){m[k]=String(v)});h=m}var r=JSON.parse(__sd_fetch(String(u),String(o.method||\"GET\"),JSON.stringify(h),String(o.body||\"\"),o.redirect!=='manual'));return {ok:r.ok,status:r.status,statusText:r.statusText||'',url:r.url,headers:{get:function(n){return r.headers[String(n).toLowerCase()]||null}},text:function(){return Promise.resolve(r.body)},json:function(){try{return Promise.resolve(JSON.parse(r.body))}catch(e){return Promise.resolve(null)}}}};" +
+  "async function __sdAxios(o){if(typeof o==='string')o={url:o};o=o||{};var u=String(o.url||'');if(o.params){var q=Object.keys(o.params).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(o.params[k])}).join('&');if(q)u+=(u.indexOf('?')>=0?'&':'?')+q}var body=o.data;if(body&&typeof body!=='string')body=JSON.stringify(body);var r=await fetch(u,{method:String(o.method||'GET').toUpperCase(),headers:o.headers||{},body:body});var t=await r.text();var data;try{data=JSON.parse(t)}catch(e){data=t}var response={data:data,status:r.status,statusText:'',headers:r.headers,config:o,request:null};if(!r.ok){var error=new Error('Request failed with status code '+r.status);error.response=response;throw error}return response};__sdAxios.get=function(u,o){return __sdAxios(Object.assign({},o||{},{url:u,method:'GET'}))};__sdAxios.post=function(u,d,o){return __sdAxios(Object.assign({},o||{},{url:u,data:d,method:'POST'}))};__sdAxios.request=__sdAxios;__sdAxios.create=function(defaults){var client=function(o){return __sdAxios(Object.assign({},defaults||{},o||{}))};client.get=__sdAxios.get;client.post=__sdAxios.post;client.request=client;return client};__sdAxios.default=__sdAxios;"
+
+private const val TAG = "StreamDekPlugin"
+
+/**
+ * Reads a DOM node handle out of a QuickJS argument.
+ *
+ * The same JS integer arrives boxed differently depending on how it got there: the handle
+ * returned straight out of `__sd_dom_load` came through as a Long, while handles that had been
+ * round-tripped through JSON and `Number()` came through as a Double. Parsing with
+ * `toString().toIntOrNull()` worked for the first and returned null for the second -- "2.0" is not
+ * an Int -- so a root selector matched but every nested `.find()` and `.attr()` off it silently
+ * resolved to nothing, and a source that leaned on cheerio just reported no streams.
+ */
+private fun domNodeHandle(raw: Any?): Int? = when (raw) {
+  null -> null
+  is Number -> raw.toInt()
+  else -> raw.toString().trim().toDoubleOrNull()?.toInt()
+}
 
 class StreamDekPluginManager(context: Context) {
   private val prefs = context.getSharedPreferences("streamdek_plugins", Context.MODE_PRIVATE)
@@ -195,8 +225,26 @@ class StreamDekPluginManager(context: Context) {
   // Keyed by "${provider.id}:${provider.code.hashCode()}" so a provider refresh that changes
   // its scraper source naturally invalidates the cached bytecode instead of reusing stale code.
   private val providerBytecodeCache = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
+  // The shim itself is identical for every provider, so it compiles once for the whole app.
+  @Volatile private var runtimeBytecode: ByteArray? = null
   private var storageKey = "state"
-  @Volatile var state = load(storageKey); private set
+  @Volatile
+  var state: PluginState = load(storageKey)
+    private set(value) {
+      field = value
+      stateChanges.value = value
+    }
+
+  private val stateChanges = MutableStateFlow(state)
+
+  /**
+   * The same state, for anything that has to follow it rather than read it once.
+   *
+   * A cloud restore replaces this wholesale without going anywhere near the screen that shows it,
+   * so a plain read left the plugins page displaying whatever was there when it opened. Distinct
+   * from [onStateChanged], which is a single slot already taken by the cloud push.
+   */
+  val stateChanged: StateFlow<PluginState> get() = stateChanges.asStateFlow()
   @Volatile private var operationNotice: String? = null
   var onStateChanged: ((String) -> Unit)? = null
 
@@ -292,7 +340,12 @@ class StreamDekPluginManager(context: Context) {
     val provider = state.providers.firstOrNull { it.id == providerId }
       ?: throw IllegalArgumentException("Plugin source not found.")
     require(provider.hasSettings) { "This source does not advertise extra settings." }
-    val array = JSONArray(executeProvider(provider, null, null, null, null, settingsOnly = true, timeoutMs = 15_000L))
+    val raw = executeProvider(provider, null, null, null, null, settingsOnly = true, timeoutMs = 15_000L)
+    val array = JSONArray(raw)
+    // Only the device can produce this -- it comes from running the source's own onSettings() in
+    // the sandbox -- so it is cached and synced outward for the web portal, which has no engine
+    // and would otherwise have no idea what fields a source wants.
+    prefs.edit().putString(settingsSchemaKey(providerId), raw).apply()
     buildList {
       for (index in 0 until array.length()) {
         val item = array.optJSONObject(index) ?: continue
@@ -326,11 +379,39 @@ class StreamDekPluginManager(context: Context) {
     val root = JSONObject()
     values.forEach { (key, value) -> root.put(key, value) }
     prefs.edit().putString(settingsStorageKey(providerId), root.toString()).apply()
+    // save() stamps updatedAt and fires onStateChanged, which is what pushes the document to the
+    // profile. Without it a token entered here stayed on this device and every other one kept
+    // reporting no streams.
+    save()
   }
 
   private fun settingsStorageKey(providerId: String) = "settings:$storageKey:$providerId"
 
-  private suspend fun runStreams(provider: PluginProvider, id: String, type: String, season: Int?, episode: Int?, timeoutMs: Long = 25_000L): List<AddonStream> =
+  private fun settingsSchemaKey(providerId: String) = "schema:$storageKey:$providerId"
+
+  private fun settingsSchemaJson(providerId: String): JSONArray? =
+    prefs.getString(settingsSchemaKey(providerId), null)?.let { raw -> runCatching { JSONArray(raw) }.getOrNull() }
+
+  /**
+   * Copies settings carried in a synced document into local storage.
+   *
+   * Blank values are skipped rather than written: a portal or an older build that has never seen a
+   * source sends it back with no settings at all, and taking that literally would wipe a working
+   * token off this device on the next sign-in.
+   */
+  private fun applyCloudSettings(raw: String) {
+    val providers = runCatching { JSONObject(raw).optJSONArray("providers") }.getOrNull() ?: return
+    val editor = prefs.edit()
+    for (index in 0 until providers.length()) {
+      val item = providers.optJSONObject(index) ?: continue
+      val id = item.optString("id").takeIf { it.isNotBlank() } ?: continue
+      val values = item.optJSONObject("settings") ?: continue
+      if (values.length() > 0) editor.putString(settingsStorageKey(id), values.toString())
+    }
+    editor.apply()
+  }
+
+  private suspend fun runStreams(provider: PluginProvider, id: String, type: String, season: Int?, episode: Int?, timeoutMs: Long = 60_000L): List<AddonStream> =
     parse(executeProvider(provider, id, type, season, episode, settingsOnly = false, timeoutMs = timeoutMs), provider)
 
   private suspend fun executeProvider(provider: PluginProvider, id: String?, type: String?, season: Int?, episode: Int?, settingsOnly: Boolean, timeoutMs: Long): String = withTimeout(timeoutMs) {
@@ -349,35 +430,39 @@ class StreamDekPluginManager(context: Context) {
         null
       }
       function("__sd_dom_load") { args: Array<Any?> ->
-        registerDomNode(Jsoup.parse(args.getOrNull(0)?.toString().orEmpty()))
+        val html = args.getOrNull(0)?.toString().orEmpty()
+        registerDomNode(Jsoup.parse(html)).also {
+          Log.d(TAG, "[" + provider.name + "] dom.load " + html.length + " chars -> node " + it)
+        }
       }
       function("__sd_dom_select") { args: Array<Any?> ->
-        val root = args.getOrNull(0)?.toString()?.toIntOrNull()?.let(domNodes::get)
+        val root = domNodeHandle(args.getOrNull(0))?.let(domNodes::get)
         val selector = args.getOrNull(1)?.toString().orEmpty()
         val ids = if (root == null || selector.isBlank()) emptyList() else runCatching { root.select(selector).map(::registerDomNode) }.getOrDefault(emptyList())
+        Log.d(TAG, "[" + provider.name + "] dom.select " + selector + " -> " + ids.size)
         JSONArray(ids).toString()
       }
       function("__sd_dom_matches") { args: Array<Any?> ->
-        val node = args.getOrNull(0)?.toString()?.toIntOrNull()?.let(domNodes::get)
+        val node = domNodeHandle(args.getOrNull(0))?.let(domNodes::get)
         val selector = args.getOrNull(1)?.toString().orEmpty()
         node != null && selector.isNotBlank() && runCatching { node.`is`(selector) }.getOrDefault(false)
       }
       function("__sd_dom_attr") { args: Array<Any?> ->
-        val node = args.getOrNull(0)?.toString()?.toIntOrNull()?.let(domNodes::get)
+        val node = domNodeHandle(args.getOrNull(0))?.let(domNodes::get)
         node?.attr(args.getOrNull(1)?.toString().orEmpty()).orEmpty()
       }
       function("__sd_dom_text") { args: Array<Any?> ->
-        args.getOrNull(0)?.toString()?.toIntOrNull()?.let(domNodes::get)?.text().orEmpty()
+        domNodeHandle(args.getOrNull(0))?.let(domNodes::get)?.text().orEmpty()
       }
       function("__sd_dom_html") { args: Array<Any?> ->
-        args.getOrNull(0)?.toString()?.toIntOrNull()?.let(domNodes::get)?.html().orEmpty()
+        domNodeHandle(args.getOrNull(0))?.let(domNodes::get)?.html().orEmpty()
       }
       function("__sd_dom_children") { args: Array<Any?> ->
-        val node = args.getOrNull(0)?.toString()?.toIntOrNull()?.let(domNodes::get)
+        val node = domNodeHandle(args.getOrNull(0))?.let(domNodes::get)
         JSONArray(node?.children()?.map(::registerDomNode).orEmpty()).toString()
       }
       function("__sd_dom_parent") { args: Array<Any?> ->
-        args.getOrNull(0)?.toString()?.toIntOrNull()?.let(domNodes::get)?.parent()?.let(::registerDomNode) ?: 0
+        domNodeHandle(args.getOrNull(0))?.let(domNodes::get)?.parent()?.let(::registerDomNode) ?: 0
       }
       function("__sd_utf8_encode") { args: Array<Any?> ->
         JSONArray(args.getOrNull(0)?.toString().orEmpty().toByteArray(Charsets.UTF_8).map { it.toInt() and 0xff }).toString()
@@ -386,22 +471,6 @@ class StreamDekPluginManager(context: Context) {
         runCatching {
           val source = JSONArray(args.getOrNull(0)?.toString().orEmpty())
           String(ByteArray(source.length()) { index -> source.optInt(index).toByte() }, Charsets.UTF_8)
-        }.getOrDefault("")
-      }
-      function("__sd_crypto_decrypt") { args: Array<Any?> ->
-        runCatching {
-          fun bytes(raw: Any?): ByteArray {
-            val source = JSONArray(raw?.toString().orEmpty())
-            return ByteArray(source.length()) { index -> source.optInt(index).toByte() }
-          }
-          val algorithm = args.getOrNull(0)?.toString().orEmpty()
-          val encrypted = bytes(args.getOrNull(1))
-          val key = bytes(args.getOrNull(2))
-          val iv = bytes(args.getOrNull(3))
-          val transformation = if (algorithm == "DESede") "DESede/CBC/PKCS5Padding" else "AES/CBC/PKCS5Padding"
-          val cipher = Cipher.getInstance(transformation)
-          cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, algorithm), IvParameterSpec(iv))
-          String(cipher.doFinal(encrypted), Charsets.UTF_8)
         }.getOrDefault("")
       }
       function("__capture_result") { args: Array<Any?> ->
@@ -417,13 +486,24 @@ class StreamDekPluginManager(context: Context) {
         val method = args.getOrNull(1)?.toString()?.uppercase() ?: "GET"
         val headerJson = runCatching { JSONObject(args.getOrNull(2)?.toString() ?: "{}") }.getOrDefault(JSONObject())
         val body = args.getOrNull(3)?.toString().orEmpty()
+        val followRedirects = args.getOrNull(4) as? Boolean ?: true
         require(url.startsWith("http://") || url.startsWith("https://")) { "Only HTTP(S) is allowed." }
         val request = Request.Builder().url(url)
-        headerJson.keys().forEach { key -> headerJson.optString(key).takeIf { it.isNotBlank() }?.let { request.header(key, it) } }
-        if (!headerJson.keys().asSequence().any { it.equals("User-Agent", true) }) request.header("User-Agent", "StreamDek/1.0")
+        // Scrapers copy browser header dumps wholesale, Accept-Encoding included. Setting it by
+        // hand switches OkHttp out of transparent gzip, so the body arrives still compressed and
+        // every JSON.parse in the provider fails on binary. Drop it and let OkHttp negotiate.
+        headerJson.keys().asSequence().filterNot { it.equals("Accept-Encoding", true) }.toList()
+          .forEach { key -> headerJson.optString(key).takeIf { it.isNotBlank() }?.let { request.header(key, it) } }
+        if (!headerJson.keys().asSequence().any { it.equals("User-Agent", true) }) request.header("User-Agent", PLUGIN_USER_AGENT)
         val requestBody = if (method == "GET" || method == "HEAD") null else body.toRequestBody(headerJson.optString("Content-Type").toMediaTypeOrNull())
+        // `redirect: "manual"` is how a source reads the Location of a 302 rather than following
+        // it, which is the usual way these hosts hand back a signed download URL.
+        val client = if (followRedirects) http else http.newBuilder().followRedirects(false).followSslRedirects(false).build()
         runBlocking(Dispatchers.IO) {
-          http.newCall(request.method(method, requestBody).build()).execute().use {
+          client.newCall(request.method(method, requestBody).build()).execute().use {
+            Log.d(TAG, "[" + provider.name + "] " + method + " " + url.substringBefore("?").take(120) +
+              " -> " + it.code + " " + (it.body?.contentLength() ?: -1L) + "b" +
+              (if (headerJson.keys().asSequence().any { name -> name.equals("Cookie", true) }) " +cookie" else ""))
             val responseHeaders = JSONObject()
             // names() is a unique set and header(name) answers with the last value only, so a
             // response carrying several Set-Cookie lines arrived as one. A provider that
@@ -433,25 +513,23 @@ class StreamDekPluginManager(context: Context) {
               val values = it.headers.values(name)
               responseHeaders.put(name.lowercase(), if (values.size > 1) values.joinToString(", ") else values.firstOrNull().orEmpty())
             }
-            JSONObject().put("ok", it.isSuccessful).put("status", it.code).put("url", it.request.url.toString()).put("headers", responseHeaders).put("body", it.body?.string().orEmpty()).toString()
+            JSONObject().put("ok", it.isSuccessful).put("status", it.code).put("statusText", it.message).put("url", it.request.url.toString()).put("headers", responseHeaders).put("body", it.body?.string().orEmpty()).toString()
           }
         }
       }
-      val providerSource = CHEERIO_COMPAT_SHIM + "\n" + "globalThis.window=globalThis;globalThis.self=globalThis;globalThis.global=globalThis;globalThis.console={log:function(){__sd_log([].slice.call(arguments).map(String).join(' '))},warn:function(){__sd_log([].slice.call(arguments).map(String).join(' '))},info:function(){__sd_log([].slice.call(arguments).map(String).join(' '))},debug:function(){__sd_log([].slice.call(arguments).map(String).join(' '))},error:function(){__sd_log([].slice.call(arguments).map(String).join(' '))}};globalThis.setTimeout=function(fn){fn();return 0};globalThis.clearTimeout=function(){};globalThis.Buffer={from:function(v,e){e=String(e||'utf8').toLowerCase();var b=e==='base64'?__sdB64Bytes(v):e==='binary'||e==='latin1'?String(v||'').split('').map(function(c){return c.charCodeAt(0)&255}):JSON.parse(__sd_utf8_encode(String(v||'')));return {__bytes:b,toString:function(enc){enc=String(enc||'utf8').toLowerCase();if(enc==='base64')return __sdB64Encode(b);if(enc==='hex')return b.map(function(n){return ('0'+n.toString(16)).slice(-2)}).join('');return __sd_utf8_decode(JSON.stringify(b))}}}};" +
-        "var __sd_types=new Proxy({isArrayBuffer:function(v){return v instanceof ArrayBuffer},isTypedArray:function(v){return ArrayBuffer.isView(v)}},{get:function(t,k){return t[k]||function(){return false}}});" +
-        "function __sd_emitter(){this._events={}};__sd_emitter.prototype.on=function(n,f){(this._events[n]||(this._events[n]=[])).push(f);return this};__sd_emitter.prototype.once=function(n,f){var s=this;function w(){s.removeListener(n,w);return f.apply(s,arguments)}return this.on(n,w)};__sd_emitter.prototype.emit=function(n){var a=[].slice.call(arguments,1);(this._events[n]||[]).slice().forEach(function(f){f.apply(null,a)});return true};__sd_emitter.prototype.removeListener=function(n,f){this._events[n]=(this._events[n]||[]).filter(function(x){return x!==f});return this};" +
-        "function require(n){if(n==='cheerio-without-node-native'||n==='cheerio')return __sd_cheerio;if(n==='crypto-js')return __sdCrypto;if(n==='axios')return __sdAxios;if(n==='util'||n==='util/types')return n==='util/types'?__sd_types:{types:__sd_types,inherits:function(c,p){c.prototype=Object.create(p.prototype);c.prototype.constructor=c},promisify:function(f){return function(){var a=[].slice.call(arguments);return new Promise(function(ok,no){a.push(function(e,v){e?no(e):ok(v)});f.apply(null,a)})}},inspect:function(v){try{return JSON.stringify(v)}catch(e){return String(v)}}};if(n==='events')return {EventEmitter:__sd_emitter};if(n==='querystring')return {escape:encodeURIComponent,unescape:decodeURIComponent,stringify:function(o){return Object.keys(o||{}).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(o[k])}).join('&')}};if(n==='url')return {URL:globalThis.URL,URLSearchParams:globalThis.URLSearchParams};throw new Error('Module not available in sandbox: '+n)};" +
-        "globalThis.fetch=async function(u,o){o=o||{};var r=JSON.parse(__sd_fetch(String(u),String(o.method||\"GET\"),JSON.stringify(o.headers||{}),String(o.body||\"\")));return {ok:r.ok,status:r.status,url:r.url,headers:{get:function(n){return r.headers[String(n).toLowerCase()]||null}},text:function(){return Promise.resolve(r.body)},json:function(){return Promise.resolve(JSON.parse(r.body))}}};" +
-        "async function __sdAxios(o){if(typeof o==='string')o={url:o};o=o||{};var u=String(o.url||'');if(o.params){var q=Object.keys(o.params).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(o.params[k])}).join('&');if(q)u+=(u.indexOf('?')>=0?'&':'?')+q}var body=o.data;if(body&&typeof body!=='string')body=JSON.stringify(body);var r=await fetch(u,{method:String(o.method||'GET').toUpperCase(),headers:o.headers||{},body:body});var t=await r.text();var data;try{data=JSON.parse(t)}catch(e){data=t}var response={data:data,status:r.status,statusText:'',headers:r.headers,config:o,request:null};if(!r.ok){var error=new Error('Request failed with status code '+r.status);error.response=response;throw error}return response};__sdAxios.get=function(u,o){return __sdAxios(Object.assign({},o||{},{url:u,method:'GET'}))};__sdAxios.post=function(u,d,o){return __sdAxios(Object.assign({},o||{},{url:u,data:d,method:'POST'}))};__sdAxios.request=__sdAxios;__sdAxios.create=function(defaults){var client=function(o){return __sdAxios(Object.assign({},defaults||{},o||{}))};client.get=__sdAxios.get;client.post=__sdAxios.post;client.request=client;return client};__sdAxios.default=__sdAxios;" +        "var module={exports:{}};var exports=module.exports;(function(){" + normalizePluginJavaScript(provider.code) + "})();"
-      // Compiling this ~5KB+ shim/boilerplate/provider-source blob to bytecode is the
-      // expensive part of each streams() call; cache it per provider so repeat requests
-      // (e.g. re-opening a detail page) only re-run the cheap per-call bytecode below.
-      val providerBytecode = providerBytecodeCache.getOrPut("${provider.id}:${provider.code.hashCode()}") {
-        compile(providerSource, "provider.js", false)
-      }
-      evaluate<Any?>(providerBytecode)
+      installPluginCryptoBridge()
+      // Compiling the shim to bytecode is the expensive part of each streams() call, and it is the
+      // same blob every time, so it is compiled once per process rather than once per provider.
+      evaluate<Any?>(runtimeBytecode ?: compile(PLUGIN_RUNTIME_SOURCE, "runtime.js", false).also { runtimeBytecode = it })
+      // Settings go in before the provider body runs. A source that reads SCRAPER_SETTINGS at module
+      // scope rather than inside getStreams -- a FebBox token, say -- saw undefined and returned nothing.
       val settingsJson = JSONObject(providerSettings(provider.id)).toString()
       evaluate<Any?>("globalThis.SCRAPER_SETTINGS=$settingsJson;globalThis.global.SCRAPER_SETTINGS=globalThis.SCRAPER_SETTINGS;")
+      // Cached separately, keyed by content, so a refreshed provider recompiles and the shim does not.
+      val providerBytecode = providerBytecodeCache.getOrPut("${provider.id}:${provider.code.hashCode()}") {
+        compile("var module={exports:{}};var exports=module.exports;(function(){" + normalizePluginJavaScript(provider.code) + "})();", "provider.js", false)
+      }
+      evaluate<Any?>(providerBytecode)
       val invocation = if (settingsOnly) {
         "var f=module.exports.onSettings||globalThis.onSettings;if(typeof f!=='function')throw new Error('Plugin does not export onSettings');var r=await f();"
       } else {
@@ -511,7 +589,8 @@ class StreamDekPluginManager(context: Context) {
       providers += PluginProvider(providerId, url, item.optString("name").ifBlank { key }, buildList {
         if (types != null) for (typeIndex in 0 until types.length()) types.optString(typeIndex).takeIf { it.isNotBlank() }?.let(::add)
         if (isEmpty()) addAll(listOf("movie", "tv"))
-      }, item.optBoolean("enabled", true) && (previous[providerId]?.enabled ?: true), code, item.optBoolean("hasSettings", false))
+      }, item.optBoolean("enabled", true) && (previous[providerId]?.enabled ?: true), code,
+        item.optBoolean("hasSettings", false) || pluginDeclaresSettings(code))
     }
     require(providers.isNotEmpty()) { "No compatible providers in repository." }
     if (skipped.isNotEmpty()) {
@@ -567,6 +646,8 @@ class StreamDekPluginManager(context: Context) {
   fun selectProfileStorage(ownerKey: String, cloudJson: String? = null) {
     storageKey = "state:$ownerKey"
     state = if (!cloudJson.isNullOrBlank() && cloudJson != "{}") parse(cloudJson) else load(storageKey)
+    // After storageKey, never before -- the settings keys are scoped by it.
+    if (!cloudJson.isNullOrBlank() && cloudJson != "{}") applyCloudSettings(cloudJson)
     prefs.edit().putString(storageKey, serialize(state)).apply()
   }
 
@@ -577,13 +658,26 @@ class StreamDekPluginManager(context: Context) {
       if (provider.code.isNotBlank()) provider
       else provider.copy(code = cachedProviders["${provider.repoUrl}:${provider.id}"]?.code.orEmpty())
     })
+    applyCloudSettings(raw)
     prefs.edit().putString(storageKey, serialize(state)).apply()
   }
 
   private fun serialize(value: PluginState, includeCode: Boolean = true): String {
     val root = JSONObject().put("enabled", value.enabled).put("updatedAt", value.updatedAt)
     root.put("repos", JSONArray().apply { value.repos.forEach { put(JSONObject().put("url", it.url).put("name", it.name).put("version", it.version).put("description", it.description).put("enabled", it.enabled)) } })
-    root.put("providers", JSONArray().apply { value.providers.forEach { put(JSONObject().put("id", it.id).put("repo", it.repoUrl).put("name", it.name).put("types", JSONArray(it.types)).put("enabled", it.enabled).put("code", if (includeCode) it.code else "").put("hasSettings", it.hasSettings)) } })
+    root.put("providers", JSONArray().apply {
+      value.providers.forEach {
+        put(
+          JSONObject().put("id", it.id).put("repo", it.repoUrl).put("name", it.name).put("types", JSONArray(it.types))
+            .put("enabled", it.enabled).put("code", if (includeCode) it.code else "").put("hasSettings", it.hasSettings)
+            // The values a source needs to work at all -- a FebBox cookie, an API key. They used to
+            // live only in local storage, so a restored profile came back with every source enabled
+            // and no token, which reads as a source that simply returns nothing.
+            .put("settings", JSONObject(providerSettings(it.id)))
+            .put("settingsSchema", settingsSchemaJson(it.id) ?: JSONArray()),
+        )
+      }
+    })
     return root.toString()
   }
 

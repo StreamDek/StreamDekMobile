@@ -1,0 +1,10 @@
+<resources>
+  <!--
+    Tiramisu chose what happens to the launcher icon behind the splash. The attribute does not
+    exist before 33, so it lives here rather than in the base theme, where every older platform
+    would parse a theme item it has no id for.
+  -->
+  <style name="Theme.App.SplashScreen" parent="Theme.App.SplashScreen.Base">
+    <item name="android:windowSplashScreenBehavior">icon_preferred</item>
+  </style>
+</resources>

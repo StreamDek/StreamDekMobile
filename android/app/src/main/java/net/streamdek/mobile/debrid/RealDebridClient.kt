@@ -77,7 +77,11 @@ internal class RealDebridClient(
    * this one starts immediately. Anything else is reported uncached, which is honest rather than
    * a guess.
    */
+  override val supportsCacheCheck: Boolean = false
+
   override suspend fun checkCache(infoHashes: List<String>, names: Map<String, String>): Map<String, Boolean> {
+    // Never called while supportsCacheCheck is false, and answers honestly if it ever is: what this
+    // account already holds is instant, and everything else is unknown rather than unavailable.
     if (infoHashes.isEmpty()) return emptyMap()
     val library = runCatching { downloadedLibraryHashes() }.getOrElse { emptySet() }
     return infoHashes.associate { hash -> hash.lowercase() to library.contains(hash.lowercase()) }

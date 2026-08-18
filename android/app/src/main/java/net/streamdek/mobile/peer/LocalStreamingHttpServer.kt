@@ -85,10 +85,10 @@ class LocalStreamingHttpServer(
             request.path.removePrefix("/proxy/"),
             request.headers,
           )
-          request.path.startsWith("/peer/") -> streamPeerSession(
+          request.path.startsWith("/torrent/") -> streamPeerSession(
             output,
             request.method,
-            request.path.removePrefix("/peer/"),
+            request.path.removePrefix("/torrent/"),
             request.headers,
           )
           else -> writeResponse(output, 404, "text/plain; charset=utf-8", "Not found")

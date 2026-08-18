@@ -6,10 +6,11 @@
     <item name="android:navigationBarColor">@android:color/transparent</item>
     <item name="android:windowBackground">@color/activityBackground</item>
   </style>
-  <style name="Theme.App.SplashScreen" parent="Theme.SplashScreen">
+  <!-- Everything every platform understands. The v33 copy adds what only Tiramisu has. -->
+  <style name="Theme.App.SplashScreen.Base" parent="Theme.SplashScreen">
     <item name="windowSplashScreenBackground">@color/splashscreen_background</item>
     <item name="windowSplashScreenAnimatedIcon">@drawable/splashscreen_logo_small</item>
     <item name="postSplashScreenTheme">@style/AppTheme</item>
-    <item name="android:windowSplashScreenBehavior">icon_preferred</item>
   </style>
+  <style name="Theme.App.SplashScreen" parent="Theme.App.SplashScreen.Base"/>
 </resources>

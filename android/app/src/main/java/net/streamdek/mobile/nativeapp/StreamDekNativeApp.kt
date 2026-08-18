@@ -4264,7 +4264,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
 
     val infoHash = playbackStream.infoHash?.takeIf { it.isNotBlank() }
-      ?: throw IllegalStateException("This source does not contain a playable URL or torrent hash.")
+      ?: throw IllegalStateException("This source does not contain a playable URL or peer hash.")
     var lastFailure: Throwable? = null
     // Kept apart from lastFailure: the torrent engine below reports its own errors on the way to
     // giving up, and overwriting "your debrid is fetching this" with one of those is how a source
@@ -4359,7 +4359,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
 
     throw debridDownloading
-      ?: IllegalStateException(lastFailure?.message ?: "This source could not be resolved. Enable the local torrent server or try another source.")
+      ?: IllegalStateException(lastFailure?.message ?: "This source could not be resolved. Enable the local peer server or try another source.")
   }
 
   fun playStream(
@@ -5180,19 +5180,33 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     loadDebridAccounts("Premium services refreshed.")
   }
 
-  private fun loadDebridAccounts(successMessage: String? = null) {
+  /**
+   * Re-reads the connected services from wherever they are kept.
+   *
+   * [problem] is carried through instead of a success message for the case where the list is worth
+   * refreshing but something still went wrong — a key the server refused, say. Without it the
+   * refresh landed after the explanation and wiped it off the screen.
+   */
+  private fun loadDebridAccounts(successMessage: String? = null, problem: String? = null) {
     // With the keys kept off StreamDek's servers there is nothing to fetch: this device holds the
     // only copy, so it is also the list.
     if (!uiState.debridCloudSync) {
       uiState = uiState.copy(
         debridLoading = false,
         debridAccounts = localDebridAccounts(),
-        debridNoticeMessage = successMessage,
-        debridNoticeIsError = false,
+        debridNoticeMessage = problem ?: successMessage,
+        debridNoticeIsError = problem != null,
       )
       return
     }
-    val session = uiState.session ?: return
+    // Cloud sync is on but there is nobody signed in — an expired session, or a sign-out with the
+    // preference still set. The device's own keys are what playback uses in that state, so they are
+    // also what the list has to show; returning here left the previous account's cards on screen,
+    // and every control on them did nothing.
+    val session = uiState.session ?: run {
+      uiState = uiState.copy(debridLoading = false, debridAccounts = localDebridAccounts())
+      return
+    }
     launchWork(
       onStart = { uiState = uiState.copy(debridLoading = true, debridNoticeMessage = null, debridNoticeIsError = false) },
       block = { apiClient.fetchDebridAccounts(session) },
@@ -5200,8 +5214,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         uiState = uiState.copy(
           debridLoading = false,
           debridAccounts = accounts.sortedBy { it.priority },
-          debridNoticeMessage = successMessage,
-          debridNoticeIsError = false,
+          debridNoticeMessage = problem ?: successMessage,
+          debridNoticeIsError = problem != null,
         )
         syncDebridKeys()
       },
@@ -5238,7 +5252,18 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
    * removing it first would lose the credential outright with nothing to restore it from.
    */
   fun setDebridCloudSync(enabled: Boolean) {
-    val session = uiState.session ?: return
+    // Nothing to sync with while signed out, but the switch still has to move: leaving it stuck on
+    // is what strands every other control on this screen. Saved, and the list falls back to the
+    // device's own keys.
+    val session = uiState.session ?: run {
+      appSettingsStore.saveDebridCloudSync(enabled)
+      uiState = uiState.copy(debridCloudSync = enabled, debridLoading = false, debridAccounts = localDebridAccounts())
+      showDebridNotice(
+        if (enabled) "Sign in to sync your premium-service keys with your account." else "Premium-service keys are kept on this device only.",
+        loading = false,
+      )
+      return
+    }
     appSettingsStore.saveDebridCloudSync(enabled)
     uiState = uiState.copy(debridCloudSync = enabled, debridNoticeMessage = null, debridNoticeIsError = false)
 
@@ -5246,7 +5271,23 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       uiState = uiState.copy(debridLoading = true)
       if (enabled) {
         val local = DebridKeyStore.load(getApplication())
-        local.forEach { key -> apiClient.addDebridAccount(session, key.provider, key.apiKey) }
+        // Each key keeps the state this device holds for it. Uploading them as bare credentials let
+        // the server default every one to "on", so switching cloud sync on switched services back
+        // on that the account holder had switched off.
+        val refused = local.mapIndexedNotNull { index, key ->
+          apiClient
+            .addDebridAccount(session, key.provider, key.apiKey, enabled = key.enabled, priority = index)
+            .fold(onSuccess = { null }, onFailure = { debridProviderLabel(key.provider) to (it.message ?: "could not be saved") })
+        }
+        if (refused.isNotEmpty()) {
+          // Reported rather than swallowed: a key the server would not take is a service that is
+          // not on the account, and every control for it then fails with "account not found" —
+          // which is what made this look random rather than like one refused upload.
+          loadDebridAccounts(
+            problem = refused.joinToString(" ") { (label, reason) -> "$label was not saved to your account: $reason." },
+          )
+          return@launch
+        }
         loadDebridAccounts("Premium-service keys are now synced with your StreamDek account.")
         return@launch
       }
@@ -5514,20 +5555,34 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         existing + DebridKeyStore.StoredKey(provider, apiKey, existing.size, true, validation.username),
       )
       if (validation.premium == false) {
-        showDebridNotice("Connected, but this account is not premium. Torrent downloads need a premium subscription with this service.", isError = true, loading = false)
+        showDebridNotice("Connected, but this account is not premium. Peer-to-peer downloads need a premium subscription with this service.", isError = true, loading = false)
       } else {
         showDebridNotice("${debridProviderLabel(provider)} connected.", loading = false)
       }
     }
   }
 
+  /**
+   * The session a premium-service change has to go through, or null to change this device's copy.
+   *
+   * Null covers two cases that behave the same way: cloud sync switched off, and cloud sync on with
+   * nobody signed in — an expired session, or a sign-out with the preference left set. The second
+   * used to return early and do nothing at all, so the switch flipped back and the ordering buttons
+   * were dead, with no message to say why. The device's keys are what playback resolves through, so
+   * the change is made there instead and the notice says it has not left this device.
+   */
+  private fun debridSyncSession(): AuthSession? = uiState.session.takeIf { uiState.debridCloudSync }
+
+  /** Appended when a change could not be synced because the account is signed out. */
+  private fun debridDeviceOnlySuffix(): String =
+    if (uiState.debridCloudSync && uiState.session == null) " Sign in to sync it to your account." else ""
+
   fun removeDebridAccount(provider: String) {
-    if (!uiState.debridCloudSync) {
+    val session = debridSyncSession() ?: run {
       applyLocalDebridKeys(DebridKeyStore.load(getApplication()).filterNot { it.provider == provider })
-      showDebridNotice("${debridProviderLabel(provider)} disconnected.", loading = false)
+      showDebridNotice("${debridProviderLabel(provider)} disconnected.${debridDeviceOnlySuffix()}", loading = false)
       return
     }
-    val session = uiState.session ?: return
     launchWork(
       onStart = { dismissDebridNotice() },
       block = { apiClient.removeDebridAccount(session, provider) },
@@ -5537,16 +5592,18 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   fun setDebridAccountEnabled(provider: String, enabled: Boolean) {
-    if (!uiState.debridCloudSync) {
+    val session = debridSyncSession() ?: run {
       applyLocalDebridKeys(
         DebridKeyStore.load(getApplication()).map { key ->
           if (key.provider == provider) key.copy(enabled = enabled) else key
         },
       )
-      showDebridNotice("${debridProviderLabel(provider)} ${if (enabled) "enabled" else "disabled"}.", loading = false)
+      showDebridNotice(
+        "${debridProviderLabel(provider)} ${if (enabled) "enabled" else "disabled"}.${debridDeviceOnlySuffix()}",
+        loading = false,
+      )
       return
     }
-    val session = uiState.session ?: return
     val previous = uiState.debridAccounts
     uiState = uiState.copy(
       debridAccounts = previous.map { account ->
@@ -5558,22 +5615,59 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     launchWork(
       onStart = {},
       block = { apiClient.setDebridAccountEnabled(session, provider, enabled) },
-      onSuccess = { loadDebridAccounts("${debridProviderLabel(provider)} ${if (enabled) "enabled" else "disabled"}.") },
-      onFailure = { message -> uiState = uiState.copy(debridAccounts = previous, debridNoticeMessage = message, debridNoticeIsError = true) },
+      // No reload on success. The list already shows exactly what was just saved, and re-fetching it
+      // put the whole page through a loading pass for every flick of a switch — which is what made
+      // it flicker, and what let two quick toggles land their answers out of order.
+      onSuccess = { showDebridNotice("${debridProviderLabel(provider)} ${if (enabled) "enabled" else "disabled"}.", loading = false) },
+      onFailure = { message -> recoverDebridChange(provider, enabled, previous, message) },
     )
   }
+  /**
+   * Second attempt at a change the account refused because it has no such service.
+   *
+   * The account can be missing a service the device is still showing: turning cloud sync on uploads
+   * each key, and one the provider would not validate never lands, leaving a card whose every
+   * control answers "account not found". The device holds the credential either way, so it is
+   * uploaded and the change repeated once. If that fails too, the reason is the provider's own and
+   * worth reading — the switch goes back and says so.
+   */
+  private fun recoverDebridChange(provider: String, enabled: Boolean, previous: List<DebridAccount>, message: String) {
+    val session = uiState.session
+    val storedKey = DebridKeyStore.load(getApplication()).firstOrNull { it.provider == provider }
+    if (session == null || storedKey == null || !message.contains("not found", ignoreCase = true)) {
+      uiState = uiState.copy(debridAccounts = previous, debridNoticeMessage = message, debridNoticeIsError = true)
+      return
+    }
+    viewModelScope.launch {
+      val recovered = apiClient
+        .addDebridAccount(session, provider, storedKey.apiKey, enabled = enabled, priority = storedKey.priority)
+        .mapCatching { apiClient.setDebridAccountEnabled(session, provider, enabled).getOrThrow() }
+      recovered.fold(
+        onSuccess = {
+          showDebridNotice("${debridProviderLabel(provider)} ${if (enabled) "enabled" else "disabled"}.", loading = false)
+        },
+        onFailure = { error ->
+          uiState = uiState.copy(
+            debridAccounts = previous,
+            debridNoticeMessage = "${debridProviderLabel(provider)} is not saved to your StreamDek account: ${error.message ?: message}",
+            debridNoticeIsError = true,
+          )
+        },
+      )
+    }
+  }
+
   fun moveDebridAccount(provider: String, delta: Int) {
-    if (!uiState.debridCloudSync) {
+    val session = debridSyncSession() ?: run {
       val stored = DebridKeyStore.load(getApplication()).toMutableList()
       val index = stored.indexOfFirst { it.provider == provider }
       val target = (index + delta).coerceIn(0, (stored.size - 1).coerceAtLeast(0))
       if (index < 0 || index == target) return
       stored.add(target, stored.removeAt(index))
       applyLocalDebridKeys(stored)
-      showDebridNotice("Premium service priority updated.", loading = false)
+      showDebridNotice("Premium service priority updated.${debridDeviceOnlySuffix()}", loading = false)
       return
     }
-    val session = uiState.session ?: return
     val current = uiState.debridAccounts.sortedBy { it.priority }.toMutableList()
     val previous = current.toList()
     val index = current.indexOfFirst { it.provider == provider }
@@ -5586,7 +5680,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     launchWork(
       onStart = { dismissDebridNotice() },
       block = { apiClient.reorderDebridAccounts(session, reordered.map { it.provider }) },
-      onSuccess = { loadDebridAccounts("Premium service priority updated.") },
+      // Same as the switch above: the order on screen is the order that was sent.
+      onSuccess = { showDebridNotice("Premium service priority updated.", loading = false) },
       onFailure = { message -> uiState = uiState.copy(debridAccounts = previous, debridNoticeMessage = message, debridNoticeIsError = true) },
     )
   }
@@ -6773,7 +6868,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       }
     }
     refreshPeerStreamStatus()
-    return Result.failure(IllegalStateException(PeerStreamService.lastStartupError?.ifBlank { null } ?: "Local torrent server did not come online in time."))
+    return Result.failure(IllegalStateException(PeerStreamService.lastStartupError?.ifBlank { null } ?: "Local peer server did not come online in time."))
   }
 
   private fun refreshPeerStreamStatus() {
@@ -21283,30 +21378,61 @@ private fun StreamListContent(
               // release is offered by five sources. Verbatim mode keeps it too: that mode's promise
               // is that the add-on's own text is never rewritten, and a line the app adds above it
               // does not touch a word of what was sent.
-              if (attributionText.isNotEmpty() || originText != null) {
+              val readyProvider = stream.cachedBy.firstOrNull()
+              if (attributionText.isNotEmpty() || originText != null || readyProvider != null) {
                 Row(
+                  modifier = Modifier.fillMaxWidth(),
                   horizontalArrangement = Arrangement.spacedBy(7.dp),
                   verticalAlignment = Alignment.CenterVertically,
                 ) {
-                  if (attributionText.isNotEmpty()) {
-                    Text(
-                      attributionText,
-                      color = MaterialTheme.colorScheme.primary,
-                      style = MaterialTheme.typography.labelMedium,
-                      fontWeight = FontWeight.Black,
-                      maxLines = 1,
-                      overflow = TextOverflow.Ellipsis,
-                      modifier = Modifier.weight(1f, fill = false),
-                    )
+                  // The attribution and the origin travel together and give up their space to the
+                  // badge, which is pinned to the right of this row rather than left where it began.
+                  Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                  ) {
+                    if (attributionText.isNotEmpty()) {
+                      Text(
+                        attributionText,
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Black,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                      )
+                    }
+                    originText?.let {
+                      Text(
+                        it,
+                        color = streamForeground.copy(alpha = 0.48f),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                      )
+                    }
                   }
-                  originText?.let {
-                    Text(
-                      it,
-                      color = streamForeground.copy(alpha = 0.48f),
-                      style = MaterialTheme.typography.labelSmall,
-                      maxLines = 1,
-                      overflow = TextOverflow.Ellipsis,
-                    )
+                  // Beside the source's own name, where the eye already is when scanning which of
+                  // five copies of a release to press. "Ready" rather than "Cached", and named: it
+                  // describes what happens when this is pressed and which service is promising it.
+                  // Its absence means nobody could be asked — Real-Debrid answers no such question
+                  // any more — not that this will fail.
+                  readyProvider?.let { provider ->
+                    Box(
+                      modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(streamForeground)
+                        .padding(horizontal = 9.dp, vertical = 4.dp),
+                    ) {
+                      Text(
+                        "Ready · ${debridProviderLabel(provider)}",
+                        color = MaterialTheme.colorScheme.surface,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Black,
+                        maxLines = 1,
+                      )
+                    }
                   }
                 }
               }
@@ -21359,11 +21485,6 @@ private fun StreamListContent(
                     maxLines = 1,
                   )
                 }
-              }
-            }
-            if (stream.cachedBy.isNotEmpty()) {
-              Box(modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(streamForeground).padding(horizontal = 10.dp, vertical = 5.dp)) {
-                Text("Cached", color = MaterialTheme.colorScheme.surface, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black)
               }
             }
           }

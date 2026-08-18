@@ -1,13 +1,23 @@
 package net.streamdek.mobile.peer
 
 import android.content.Context
+import com.frostwire.jlibtorrent.AlertListener
 import com.frostwire.jlibtorrent.Priority
 import com.frostwire.jlibtorrent.SessionManager
+import com.frostwire.jlibtorrent.SessionParams
 import com.frostwire.jlibtorrent.SettingsPack
 import com.frostwire.jlibtorrent.Sha1Hash
 import com.frostwire.jlibtorrent.TorrentFlags
 import com.frostwire.jlibtorrent.TorrentHandle
 import com.frostwire.jlibtorrent.TorrentInfo
+import com.frostwire.jlibtorrent.alerts.Alert
+import com.frostwire.jlibtorrent.swig.alert
+import com.frostwire.jlibtorrent.swig.settings_pack
+import com.frostwire.jlibtorrent.alerts.DhtBootstrapAlert
+import com.frostwire.jlibtorrent.alerts.ListenFailedAlert
+import com.frostwire.jlibtorrent.alerts.ListenSucceededAlert
+import com.frostwire.jlibtorrent.alerts.TrackerErrorAlert
+import com.frostwire.jlibtorrent.alerts.TrackerReplyAlert
 import java.io.File
 import java.util.UUID
 
@@ -49,9 +59,32 @@ class PeerEngine(
   fun ensureStarted(config: PeerStreamConfig) {
     if (!started) {
       val startedAt = System.currentTimeMillis()
-      sessionManager.start()
+      sessionManager.addListener(discoveryListener)
+      // The mask has to be part of the session's own parameters. Applied afterwards it changed
+      // nothing — the session had already decided what it would post, and ninety seconds of a
+      // failing download produced not one alert, not even the listen result every session emits on
+      // startup. Errors, tracker traffic, status and DHT only; the peer-level categories would log
+      // every block of every piece.
+      val mask = alert.error_notification.to_int() or
+        alert.tracker_notification.to_int() or
+        alert.status_notification.to_int() or
+        alert.dht_notification.to_int()
+      val params = runCatching {
+        SessionParams(SettingsPack().setInteger(settings_pack.int_types.alert_mask.swigValue(), mask))
+      }.getOrElse {
+        android.util.Log.w(TAG, "could not set the alert mask: ${it.message}")
+        SessionParams()
+      }
+      sessionManager.start(params)
       started = true
-      android.util.Log.d(TAG, "peer session started in ${System.currentTimeMillis() - startedAt}ms")
+      // What the session bound is the first thing worth knowing when nothing can be found: no
+      // endpoint means no socket, and no socket means no tracker and no DHT, whatever the source.
+      val endpoints = runCatching { sessionManager.listenEndpoints().joinToString() }.getOrDefault("unavailable")
+      android.util.Log.d(
+        TAG,
+        "peer session started in ${System.currentTimeMillis() - startedAt}ms; " +
+          "dht=${runCatching { sessionManager.isDhtRunning() }.getOrDefault(false)} listening on [$endpoints]",
+      )
     }
     applyProfile(config.profile)
     storage.enforceLimit(config.cacheSizeGb, sessionsByInfoHash.keys)
@@ -235,6 +268,43 @@ class PeerEngine(
     throw IllegalStateException("The peer-to-peer engine did not accept this source. Try another one.")
   }
 
+  /**
+   * What the session is told by the network, rather than what can be inferred from a peer count.
+   *
+   * Polling `numPeers()` says only that nothing was found; it cannot say whether a socket was ever
+   * bound, whether a tracker answered or refused, or whether the DHT reached anyone. Those arrive
+   * as alerts, and without them a failure to find peers looks the same whether the swarm is empty,
+   * the trackers are unreachable or the engine never got a socket at all.
+   */
+  private val discoveryListener = object : AlertListener {
+    // Null rather than a filter: the filtered form delivered nothing at all, not even the listen
+    // result that every session posts on startup, so the filter itself was suspect. Everything
+    // arrives here and the `when` below keeps only what is worth a line.
+    override fun types(): IntArray? = null
+
+    override fun alert(alert: Alert<*>) {
+      when (alert) {
+        is ListenSucceededAlert ->
+          android.util.Log.d(TAG, "bound ${alert.socketType()} on ${alert.address()}:${alert.port()}")
+        is ListenFailedAlert ->
+          android.util.Log.w(
+            TAG,
+            "could not bind ${alert.socketType()} on ${alert.listenInterface()}: ${alert.error().message()}",
+          )
+        is DhtBootstrapAlert -> android.util.Log.d(TAG, "dht bootstrapped")
+        is TrackerReplyAlert ->
+          android.util.Log.d(TAG, "tracker ${alert.trackerUrl()} returned ${alert.numPeers()} peer(s)")
+        is TrackerErrorAlert ->
+          android.util.Log.w(
+            TAG,
+            "tracker ${alert.trackerUrl()} failed (${alert.timesInRow()}x): " +
+              alert.errorMessage().ifBlank { alert.error().message() },
+          )
+        else -> Unit
+      }
+    }
+  }
+
   private fun applyProfile(profile: String) {
     val settings = SettingsPack()
     when (profile) {
@@ -269,8 +339,22 @@ class PeerEngine(
 
     val handle = session.handle
     val startedAt = System.currentTimeMillis()
+    var lastProgressBucket = -1L
     val deadline = startedAt + TORRENT_METADATA_TIMEOUT_MS
     while (System.currentTimeMillis() < deadline) {
+      // Every ten seconds, what the wait is actually waiting on: a DHT climbing off zero and
+      // trackers the engine accepted mean the swarm is simply slow; both flat mean it never got out.
+      val waited = System.currentTimeMillis() - startedAt
+      if (waited > 0 && waited / 10_000 != lastProgressBucket) {
+        lastProgressBucket = waited / 10_000
+        val live = runCatching { handle.status() }.getOrNull()
+        android.util.Log.d(
+          TAG,
+          "waiting on ${session.infoHash}: ${waited / 1000}s dht=${runCatching { sessionManager.dhtNodes() }.getOrDefault(-1L)} " +
+            "trackers=${runCatching { handle.trackers().size }.getOrDefault(-1)} " +
+            "seeds=${live?.numSeeds() ?: -1} peers=${live?.numPeers() ?: -1}",
+        )
+      }
       val torrentFile = handle.torrentFile()
       if (torrentFile != null) {
         val target = selectTargetFile(torrentFile, session.preferredFilename)
@@ -295,12 +379,30 @@ class PeerEngine(
     val status = runCatching { handle.status() }.getOrNull()
     val seeds = status?.numSeeds() ?: 0
     val peers = status?.numPeers() ?: 0
-    android.util.Log.w(TAG, "no metadata for ${session.infoHash} after ${TORRENT_METADATA_TIMEOUT_MS}ms; seeds=$seeds peers=$peers")
+    // The DHT node count separates the two reasons a wait ends with nothing. A swarm nobody is
+    // sharing leaves the node count healthy and the peer count at zero; a network that blocks
+    // peer-to-peer traffic leaves both at zero, because the same UDP the DHT needs is the UDP the
+    // trackers answer on. Without it the app can only say "no peers" and the device looks broken.
+    val dhtNodes = runCatching { sessionManager.dhtNodes() }.getOrDefault(-1L)
+    val dhtRunning = runCatching { sessionManager.isDhtRunning() }.getOrDefault(false)
+    android.util.Log.w(
+      TAG,
+      "no metadata for ${session.infoHash} after ${TORRENT_METADATA_TIMEOUT_MS}ms; " +
+        "seeds=$seeds peers=$peers dhtRunning=$dhtRunning dhtNodes=$dhtNodes",
+    )
     throw IllegalStateException(
-      if (seeds == 0 && peers == 0) {
-        "No peers are sharing this source right now — nothing was found to download from. Try another source."
-      } else {
-        "This source found $peers peer(s) but did not send its file list in time. Try another source."
+      when {
+        // Not a word about this source: the engine has not reached a single peer-to-peer node on
+        // this network, which no choice of source can fix. Saying "try another source" here sent
+        // people through every result in the list, each failing the same way for a minute.
+        dhtRunning && dhtNodes == 0L ->
+          "This network is blocking peer-to-peer traffic, so no source can be found to download " +
+            "from. A VPN on a server that does not allow it will do this — try another network, or " +
+            "a premium service instead."
+        seeds == 0 && peers == 0 ->
+          "No peers are sharing this source right now — nothing was found to download from. Try another source."
+        else ->
+          "This source found $peers peer(s) but did not send its file list in time. Try another source."
       },
     )
   }

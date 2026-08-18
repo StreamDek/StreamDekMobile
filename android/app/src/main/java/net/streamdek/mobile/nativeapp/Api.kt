@@ -312,6 +312,7 @@ internal const val CATALOG_PAGE_SIZE = 20
  * add-on's own list, which is always preferred and always included.
  */
 private val FALLBACK_TRACKERS = listOf(
+  // UDP first: it is what trackers answer fastest on when a network allows it.
   "udp://tracker.opentrackr.org:1337/announce",
   "udp://open.demonii.com:1337/announce",
   "udp://open.stealth.si:80/announce",
@@ -320,6 +321,13 @@ private val FALLBACK_TRACKERS = listOf(
   "udp://tracker.openbittorrent.com:6969/announce",
   "udp://explodie.org:6969/announce",
   "udp://tracker1.bt.moack.co.kr:80/announce",
+  // Not redundant with the list above. A network that blocks peer-to-peer traffic — a VPN on a
+  // server that does not carry it, a router dropping unsolicited UDP — takes every tracker above
+  // and the DHT with it, and these are then the only way left to find a peer at all.
+  "https://tracker.gbitt.info:443/announce",
+  "https://tracker.tamersunion.org:443/announce",
+  "http://tracker.openbittorrent.com:80/announce",
+  "http://tracker.files.fm:6969/announce",
 )
 
 /**
@@ -503,7 +511,33 @@ class DebridDownloadingException(message: String) : IllegalStateException(messag
 class StreamDekApiClient(context: Context? = null) {
   private val appContext = context?.applicationContext
   private val clientIdentity = appContext?.let { ClientIdentityStore(it).load() }
-  private val client = OkHttpClient()
+  private val client = OkHttpClient.Builder()
+    // Every request the app makes to StreamDek's own API passes through here. Only failures are
+    // written, and only the method, path and status: enough to tell a refusal from the API apart
+    // from a gateway that never reached it, which is otherwise invisible from a device — the
+    // screen says the same "something went wrong" either way.
+    .addInterceptor { chain ->
+      val request = chain.request()
+      val started = System.currentTimeMillis()
+      try {
+        chain.proceed(request).also { response ->
+          if (!response.isSuccessful) {
+            android.util.Log.w(
+              "StreamDekApi",
+              "${request.method} ${request.url.encodedPath} -> ${response.code} in ${System.currentTimeMillis() - started}ms" +
+                (response.header("server")?.let { " (via $it)" } ?: ""),
+            )
+          }
+        }
+      } catch (error: Throwable) {
+        android.util.Log.w(
+          "StreamDekApi",
+          "${request.method} ${request.url.encodedPath} -> ${error.javaClass.simpleName}: ${error.message} after ${System.currentTimeMillis() - started}ms",
+        )
+        throw error
+      }
+    }
+    .build()
   private val directStreamClient = client.newBuilder()
     .connectTimeout(15, TimeUnit.SECONDS)
     .readTimeout(120, TimeUnit.SECONDS)
@@ -2195,14 +2229,27 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
 
-  suspend fun addDebridAccount(session: AuthSession, provider: String, apiKey: String): Result<String?> =
+  /**
+   * Saves a provider's key to the account.
+   *
+   * [enabled] and [priority] carry the state a device already holds for this service, for the one
+   * caller that has it: uploading what this device knows when the account holder turns cloud sync
+   * on. Left null when connecting a service for the first time, where the server decides — on, and
+   * last in the order.
+   */
+  suspend fun addDebridAccount(
+    session: AuthSession,
+    provider: String,
+    apiKey: String,
+    enabled: Boolean? = null,
+    priority: Int? = null,
+  ): Result<String?> =
     withContext(Dispatchers.IO) {
       runCatching {
-        val response = executeJson(
-          "/debrid/accounts",
-          JSONObject().put("provider", provider).put("apiKey", apiKey),
-          session = session,
-        )
+        val payload = JSONObject().put("provider", provider).put("apiKey", apiKey)
+        enabled?.let { payload.put("enabled", it) }
+        priority?.let { payload.put("priority", it) }
+        val response = executeJson("/debrid/accounts", payload, session = session)
         ensureOk(response, "Failed to add debrid account")
         response.json.optString("username").ifBlank { null }
       }

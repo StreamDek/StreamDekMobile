@@ -109,8 +109,13 @@ class DebridManager private constructor(private val providers: List<DebridProvid
   ): Map<String, List<String>> {
     if (infoHashes.isEmpty() || !hasProviders) return emptyMap()
 
+    // Only the providers that can answer. One that cannot is not evidence of anything, and asking
+    // it costs a round trip per stream list to be told nothing.
+    val answerable = providers.filter { it.supportsCacheCheck }
+    if (answerable.isEmpty()) return emptyMap()
+
     val answers = coroutineScope {
-      providers.map { provider ->
+      answerable.map { provider ->
         async {
           provider.name to runCatching { provider.checkCache(infoHashes, names) }.getOrElse { emptyMap() }
         }
@@ -126,7 +131,13 @@ class DebridManager private constructor(private val providers: List<DebridProvid
     }
 
     val order = providerNames
-    return merged.mapValues { (_, list) -> list.sortedBy { order.indexOf(it) } }.filterValues { it.isNotEmpty() }
+    val answer = merged.mapValues { (_, list) -> list.sortedBy { order.indexOf(it) } }.filterValues { it.isNotEmpty() }
+    // Per provider, so a service reporting everything as cached can be told apart from one whose
+    // shared cache genuinely holds most of what a stream list offers.
+    answers.forEach { (providerName, result) ->
+      Log.d(TAG, "cache check: $providerName held ${result.count { it.value }} of ${infoHashes.size}")
+    }
+    return answer
   }
 
   /** The first provider, in priority order, that already holds this hash. */
@@ -135,7 +146,9 @@ class DebridManager private constructor(private val providers: List<DebridProvid
     // match on name is otherwise forced to answer "not cached" and lose its turn at the front.
     val names = filename?.let { mapOf(infoHash.lowercase() to it) }.orEmpty()
     for (provider in providers) {
-      if (isCoolingDown(provider.name)) continue
+      // A provider that cannot answer keeps its place in the resolve order below; it just cannot
+      // win the head start, and asking it would only spend a library walk to hear "no".
+      if (!provider.supportsCacheCheck || isCoolingDown(provider.name)) continue
       val cached = runCatching { provider.checkCache(listOf(infoHash), names) }.getOrNull() ?: continue
       if (cached[infoHash.lowercase()] == true) return provider
     }

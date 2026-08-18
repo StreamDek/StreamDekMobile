@@ -312,7 +312,7 @@ class PeerStreamService : Service() {
       val engine = peerEngineRef ?: throw IllegalStateException("Torrent engine is not ready.")
       val playbackSession = engine.createPlaybackSession(config, infoHash, magnetLink, preferredFilename)
       val port = if (isOnline) activePort else config.port
-      return "http://127.0.0.1:$port/peer/${playbackSession.sessionId}"
+      return "http://127.0.0.1:$port/torrent/${playbackSession.sessionId}"
     }
 
     /** The swarm behind the given torrent while it warms up, or null when it is not the live one. */

@@ -70,6 +70,17 @@ class DebridHttpException(val statusCode: Int, message: String) : IllegalStateEx
 interface DebridProviderClient {
   val name: String
 
+  /**
+   * Whether this provider can be asked what it already holds.
+   *
+   * False is not the same as "holds nothing": Real-Debrid switched off its instant-availability
+   * endpoint and published no replacement, so nobody can ask it — yet it takes a magnet and serves
+   * it perfectly well. Asking anyway produced a "no" that read as "this will not play", and cost a
+   * walk through the account's library on every stream list to produce it. A provider that cannot
+   * answer is left out of the question entirely, and its sources carry no badge either way.
+   */
+  val supportsCacheCheck: Boolean get() = true
+
   suspend fun validate(): DebridValidation
 
   /**

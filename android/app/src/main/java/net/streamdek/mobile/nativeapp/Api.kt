@@ -157,6 +157,7 @@ class WatchlistStore(context: Context) {
       buildList {
         for (index in 0 until source.length()) {
           val item = source.optJSONObject(index) ?: continue
+          if (isAdultCatalogEntry(item)) continue
           add(parseMediaItem(item))
         }
       }
@@ -508,6 +509,29 @@ data class AddonEntitlements(val ultra: Boolean = false, val serverSideStreams: 
  */
 class DebridDownloadingException(message: String) : IllegalStateException(message)
 
+/**
+ * One title's place, as the account keeps it.
+ *
+ * The shape the backend already stores and the television already writes -- this app is the one
+ * that never joined in, which is why a film finished on the TV still showed as half-watched here.
+ */
+data class PlaybackProgressRecord(
+  val entityType: String,
+  val entityId: String,
+  val episodeKey: String?,
+  val seasonNumber: Int?,
+  val episodeNumber: Int?,
+  val title: String?,
+  val poster: String?,
+  val backdrop: String?,
+  val year: String?,
+  val positionSec: Double,
+  val durationSec: Double,
+  val progress: Double,
+  val completed: Boolean,
+  val updatedAt: Long,
+)
+
 class StreamDekApiClient(context: Context? = null) {
   private val appContext = context?.applicationContext
   private val clientIdentity = appContext?.let { ClientIdentityStore(it).load() }
@@ -648,6 +672,29 @@ class StreamDekApiClient(context: Context? = null) {
    * Held in memory for the session's working life: the registry changes on backend deploys, not
    * minute to minute, and every home load and row-management screen would otherwise re-ask for it.
    */
+  /**
+   * Reads the platform's content policy and hands it to [AdultContentFilter].
+   *
+   * Needs no session: the block applies before anyone signs in. A failure here deliberately
+   * leaves the filter on rather than reporting an error, because the safe state and the
+   * unknown state are the same one.
+   */
+  suspend fun refreshContentPolicy() = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(Request.Builder().url("$apiBaseUrl/public/content-policy").build())
+      ensureOk(response, "Failed to load content policy")
+      val terms = response.json.optJSONArray("terms")
+      AdultContentFilter.applyPolicy(
+        blockAdult = response.json.optBoolean("blockAdult", true),
+        terms = buildList {
+          if (terms != null) for (index in 0 until terms.length()) {
+            terms.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+          }
+        },
+      )
+    }.onFailure { AdultContentFilter.applyPolicy(null, null) }
+  }
+
   suspend fun fetchCatalogManifest(): Result<List<CatalogDefinition>> = withContext(Dispatchers.IO) {
     cachedCatalogManifest?.takeIf { it.isFresh() }?.let { return@withContext Result.success(it.definitions) }
     runCatching {
@@ -1420,6 +1467,7 @@ class StreamDekApiClient(context: Context? = null) {
       for (index in 0 until items.length()) {
         val item = items.optJSONObject(index) ?: continue
         if (isPlaceholderCatalogMeta(item)) continue
+        if (isAdultCatalogEntry(item)) continue
         val normalizedCatalogType = rawType.trim().lowercase()
         val mediaItem = parseMediaItem(item).copy(
           id = parseAddonCatalogItemId(item),
@@ -1517,6 +1565,7 @@ class StreamDekApiClient(context: Context? = null) {
       for (index in 0 until items.length()) {
         val item = items.optJSONObject(index) ?: continue
         if (isPlaceholderCatalogMeta(item)) continue
+        if (isAdultCatalogEntry(item)) continue
         val normalizedCatalogType = rawType.trim().lowercase()
         val mediaItem = parseMediaItem(item).copy(
           id = parseAddonCatalogItemId(item),
@@ -1677,6 +1726,169 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
 
+  /**
+   * Where the viewer got to, shared with every other device on the account.
+   *
+   * Scoped to the viewing profile, not the account: the profile travels in the `x-profile-id`
+   * header and the server keys the row on it, so two people sharing an account keep their own
+   * resume points.
+   *
+   * Sent alongside the local save rather than instead of it. The local store stays the source of
+   * truth for what is on screen -- it answers instantly and works offline -- and this is the copy
+   * the other devices read.
+   */
+  suspend fun putPlaybackProgress(
+    session: AuthSession,
+    profileId: String?,
+    entityType: String,
+    entityId: String,
+    episodeKey: String?,
+    positionSec: Double,
+    durationSec: Double,
+    title: String? = null,
+    poster: String? = null,
+    backdrop: String? = null,
+    year: String? = null,
+    seasonNumber: Int? = null,
+    episodeNumber: Int? = null,
+    completed: Boolean = false,
+  ): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val metadata = JSONObject()
+        .put("title", title)
+        .put("poster", poster)
+        .put("backdrop", backdrop)
+        .put("year", year)
+        .put("seasonNumber", seasonNumber)
+        .put("episodeNumber", episodeNumber)
+      val body = JSONObject()
+        .put("entityType", if (entityType.equals("movie", true)) "movie" else "tv")
+        .put("entityId", entityId)
+        .put("episodeKey", episodeKey)
+        .put("positionSec", positionSec)
+        .put("durationSec", durationSec)
+        .put("updatedAt", java.time.Instant.now().toString())
+        // Said outright rather than inferred from the position: "mark as watched" is pressed on a
+        // card, so there is no position and usually no runtime for the server to work it out from.
+        .put("completed", completed)
+        .put("metadata", metadata)
+      val response = execute(
+        Request.Builder()
+          .url("$apiBaseUrl/sync/progress")
+          .headers(authHeaders(session, profileId = profileId))
+          .put(body.toString().toRequestBody(jsonMediaType))
+          .build(),
+      )
+      ensureOk(response, "Failed to save playback progress")
+      Unit
+    }
+  }
+
+  /** Everything the account knows about where things were left, newest first. */
+  suspend fun fetchPlaybackProgress(session: AuthSession, profileId: String?, limit: Int = 100): Result<List<PlaybackProgressRecord>> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = execute(
+          Request.Builder()
+            .url("$apiBaseUrl/sync/progress?limit=$limit")
+            .headers(authHeaders(session, includeContentType = false, profileId = profileId))
+            .build(),
+        )
+        ensureOk(response, "Failed to load playback progress")
+        val results = response.json.optJSONArray("results") ?: JSONArray()
+        buildList {
+          for (index in 0 until results.length()) {
+            val item = results.optJSONObject(index) ?: continue
+            val entityId = item.optString("entityId").takeIf { it.isNotBlank() } ?: continue
+            val metadata = item.optJSONObject("metadata") ?: JSONObject()
+            add(
+              PlaybackProgressRecord(
+                entityType = item.optStringOrNull("entityType") ?: "movie",
+                entityId = entityId,
+                episodeKey = item.optStringOrNull("episodeKey"),
+                seasonNumber = item.opt("seasonNumber").asOptionalInt() ?: metadata.opt("seasonNumber").asOptionalInt(),
+                episodeNumber = item.opt("episodeNumber").asOptionalInt() ?: metadata.opt("episodeNumber").asOptionalInt(),
+                title = item.optStringOrNull("title") ?: metadata.optStringOrNull("title"),
+                poster = item.optStringOrNull("poster") ?: metadata.optStringOrNull("poster"),
+                backdrop = item.optStringOrNull("backdrop") ?: metadata.optStringOrNull("backdrop"),
+                year = item.optStringOrNull("year") ?: metadata.optStringOrNull("year"),
+                positionSec = item.optDouble("positionSec", 0.0),
+                durationSec = item.optDouble("durationSec", 0.0),
+                progress = item.optDouble("progress", 0.0),
+                completed = item.optString("status").equals("completed", true),
+                // Compared against the local entry's own stamp when the two disagree, so the
+                // newer of them wins rather than whichever happened to be read last.
+                updatedAt = parseIsoInstantMillis(item.optString("updatedAt")),
+              ),
+            )
+          }
+        }
+      }
+    }
+
+  /**
+   * Empties this profile's Continue Watching on the account.
+   *
+   * Clearing used to be a local gesture: the phone hid its rows and the server kept them, so the
+   * television still listed everything and the phone's own store filled back up on the next sync.
+   */
+  suspend fun clearPlaybackProgress(session: AuthSession, profileId: String?): Result<Unit> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = execute(
+          Request.Builder()
+            .url("$apiBaseUrl/sync/progress")
+            .headers(authHeaders(session, includeContentType = false, profileId = profileId))
+            .delete()
+            .build(),
+        )
+        ensureOk(response, "Failed to clear playback progress")
+        Unit
+      }
+    }
+
+  /** Forgets one title's place everywhere, for "remove from Continue Watching" and "start over". */
+  suspend fun deletePlaybackProgress(
+    session: AuthSession,
+    profileId: String?,
+    entityType: String,
+    entityId: String,
+    episodeKey: String? = null,
+  ): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val type = if (entityType.equals("movie", true)) "movie" else "tv"
+      val query = episodeKey?.takeIf { it.isNotBlank() }?.let { "?episodeKey=${encodeQuery(it)}" }.orEmpty()
+      val response = execute(
+        Request.Builder()
+          .url("$apiBaseUrl/sync/progress/$type/${encodeQuery(entityId)}$query")
+          .headers(authHeaders(session, includeContentType = false, profileId = profileId))
+          .delete()
+          .build(),
+      )
+      ensureOk(response, "Failed to clear playback progress")
+      Unit
+    }
+  }
+
+  /**
+   * Just the stamp on the plugin document.
+   *
+   * Small enough to ask for on a timer, which the document itself is not: it carries every source
+   * and every settings schema. See startWatchingProfilePlugins.
+   */
+  suspend fun fetchProfilePluginsVersion(session: AuthSession, profileId: String): Result<Long> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(
+        Request.Builder()
+          .url("$apiBaseUrl/profiles/${encodeQuery(profileId)}/plugins/version")
+          .headers(authHeaders(session, includeContentType = false, profileId = profileId))
+          .build(),
+      )
+      ensureOk(response, "Failed to check plugin collections")
+      response.json.optLong("updatedAt", 0L)
+    }
+  }
+
   suspend fun putProfilePlugins(session: AuthSession, profileId: String, pluginsJson: String): Result<Unit> = withContext(Dispatchers.IO) {
     runCatching {
       val plugins = runCatching { JSONObject(pluginsJson) }.getOrElse { JSONObject() }
@@ -1723,6 +1935,9 @@ class StreamDekApiClient(context: Context? = null) {
         // client to save quietly changed the other one's settings.
         .put("trailerCacheClearHours", preferences.trailerCacheClearHours)
         .put("detailBackgroundMode", preferences.detailBackgroundMode)
+        // Beside the mode it belongs to. The home screen's copy of this stays under `home`; the
+        // two pages carry their own strength now, so one of them had to move out of that section.
+        .put("ambientTintPercent", preferences.detailAmbientTintPercent)
         .put("ratingsEnabled", preferences.ratingsEnabled)
         .put("externalRatingsEnabled", preferences.externalRatingsEnabled)
         .put("enabledRatingProviders", preferences.enabledRatingProviders?.let(::JSONArray))
@@ -1896,6 +2111,9 @@ class StreamDekApiClient(context: Context? = null) {
         heroTrailerAutoplay = optionalBoolean(platform, "heroTrailerAutoplay") ?: optionalBoolean(detail, "heroTrailerAutoplay"),
         trailerCacheClearHours = optionalInt(detail, "trailerCacheClearHours"),
         detailBackgroundMode = optionalString(detail, "detailBackgroundMode"),
+        // Falls back to the home value, which is where the single shared setting used to live, so
+        // a profile written by an older client arrives with both pages on the strength it chose.
+        detailAmbientTintPercent = optionalInt(detail, "ambientTintPercent") ?: optionalInt(home, "ambientTintPercent"),
         homeBackgroundMode = optionalString(home, "homeBackgroundMode"),
         secondaryAudioLanguage = optionalString(playback, "secondaryAudioLanguage"),
         preferredSubtitleLanguage = optionalString(playback, "preferredSubtitleLanguage"),
@@ -2560,6 +2778,42 @@ class StreamDekApiClient(context: Context? = null) {
       }
     }
 
+  /**
+   * When the next and most recent episodes of each of these series air.
+   *
+   * One call for the whole followed list rather than a detail fetch per series: this drives both
+   * the episode reminders and the television's New Episodes row, and both of those run over every
+   * series a viewer follows at once. The backend caps and caches the batch; anything it could not
+   * answer for is simply absent from the result rather than reported as a failure, because a row
+   * built from the rest is better than no row.
+   */
+  suspend fun fetchSeriesEpisodeStatus(tmdbIds: List<Int>): Result<List<SeriesEpisodeStatus>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val ids = tmdbIds.filter { it > 0 }.distinct()
+      if (ids.isEmpty()) return@runCatching emptyList()
+      val response = executeJson("/tmdb/series/episode-status", JSONObject().put("ids", JSONArray(ids)))
+      ensureOk(response, "Failed to load episode dates")
+      val series = response.json.optJSONArray("series") ?: JSONArray()
+      buildList {
+        for (index in 0 until series.length()) {
+          val item = series.optJSONObject(index) ?: continue
+          val tmdbId = item.optInt("tmdbId").takeIf { it > 0 } ?: continue
+          add(
+            SeriesEpisodeStatus(
+              tmdbId = tmdbId,
+              title = item.optString("title").ifBlank { null },
+              poster = item.optString("poster").ifBlank { null },
+              backdrop = item.optString("backdrop").ifBlank { null },
+              status = item.optString("status").ifBlank { null },
+              nextEpisode = parseAiringEpisode(item.optJSONObject("nextEpisodeToAir")),
+              lastEpisode = parseAiringEpisode(item.optJSONObject("lastEpisodeToAir")),
+            ),
+          )
+        }
+      }
+    }
+  }
+
   suspend fun requestSyncServiceDeviceCode(service: String): Result<DeviceCodeInfo> = withContext(Dispatchers.IO) {
     runCatching {
       val response = executeJson("/${encodeQuery(service)}/auth/device/code", JSONObject())
@@ -2649,6 +2903,38 @@ class StreamDekApiClient(context: Context? = null) {
       ensureOk(response, "Failed to update $service watchlist")
     }
   }
+
+  /**
+   * StreamDek's own watchlist -- the list SyncDek serves.
+   *
+   * Written on every watchlist change whatever service the profile has chosen, alongside the
+   * fan-out to the connected providers. That is what makes switching to SyncDek show a list that
+   * is already there: it has been kept up to date all along rather than started from empty.
+   */
+  suspend fun syncDekWatchlist(
+    session: AuthSession,
+    profileId: String,
+    item: MediaItem,
+    remove: Boolean,
+  ): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val entry = JSONObject().put("title", item.title)
+      item.year?.toIntOrNull()?.let { entry.put("year", it) }
+      entry.put("ids", JSONObject().put("tmdb", item.id.toIntOrNull()))
+      val payload = if (item.type.trim().lowercase() in setOf("tv", "series", "show")) {
+        JSONObject().put("movies", JSONArray()).put("shows", JSONArray().put(entry))
+      } else {
+        JSONObject().put("movies", JSONArray().put(entry)).put("shows", JSONArray())
+      }
+      val endpoint = if (remove) "/sync/watchlist/remove" else "/sync/watchlist/add"
+      val response = executeJson(endpoint, payload, session = session, profileId = profileId)
+      ensureOk(response, "Failed to update your watchlist")
+    }
+  }
+
+  /** The same list, read back and enriched the way a provider's would be. */
+  suspend fun fetchSyncDekWatchlist(session: AuthSession, profileId: String): Result<List<TraktItem>> =
+    traktList(session, profileId, "/sync/watchlist")
 
   /** Watchlist for a non-Trakt service, used when a profile makes it the primary source. */
   suspend fun fetchSyncServiceWatchlist(session: AuthSession, profileId: String, service: String): Result<List<TraktItem>> =
@@ -2975,6 +3261,7 @@ private fun JSONArray?.toMediaItems(): List<MediaItem> {
   return buildList(length()) {
     for (index in 0 until length()) {
       val item = optJSONObject(index) ?: continue
+      if (isAdultCatalogEntry(item)) continue
       add(parseMediaItem(item))
     }
   }
@@ -3300,6 +3587,32 @@ private fun parseMediaItemYear(item: JSONObject): String? = listOf(
   item.optString("release_date").take(4),
   item.optString("first_air_date").take(4),
 ).firstOrNull { !it.isNullOrBlank() && it != "null" }
+
+/**
+ * Whether a catalogue entry is pornography.
+ *
+ * Read off the raw payload rather than the parsed item so the source's own `adult` flag counts:
+ * TMDB sets it, and it is the one signal here that involves no guessing. The description is
+ * deliberately not searched -- a plot summary mentioning pornography is usually a documentary
+ * about it, and hiding those is how a filter earns a reputation for being wrong.
+ */
+internal fun isAdultCatalogEntry(item: JSONObject): Boolean = AdultContentFilter.isBlockedItem(
+  adultFlag = item.optBoolean("adult", false),
+  title = item.optString("title").ifBlank { item.optString("name") },
+  genres = parseGenreNames(item),
+)
+
+private fun parseAiringEpisode(json: JSONObject?): AiringEpisode? {
+  val airDate = json?.optString("airDate")?.trim()?.takeIf { it.isNotEmpty() && it != "null" } ?: return null
+  return AiringEpisode(
+    id = json.optInt("id").takeIf { it > 0 },
+    name = json.optString("name").ifBlank { null },
+    season = json.optInt("season").takeIf { json.has("season") && !json.isNull("season") },
+    episode = json.optInt("episode").takeIf { json.has("episode") && !json.isNull("episode") },
+    airDate = airDate,
+    still = json.optString("still").ifBlank { null },
+  )
+}
 
 private fun parseMediaItem(item: JSONObject): MediaItem =
   MediaItem(
@@ -3910,17 +4223,24 @@ private fun parseTraktItem(json: JSONObject): TraktItem =
     updatedAt = parseFlexibleTimestamp(json, "updated_at", "updatedAt", "paused_at", "pausedAt", "last_watched_at", "lastWatchedAt", "watched_at", "watchedAt"),
   )
 
+/**
+ * A string field that may legitimately be absent.
+ *
+ * Android's `optString` returns the four characters "null" for a JSON null rather than an empty
+ * string, which no amount of `ifBlank` will catch. Poster and backdrop went through it, so a
+ * record with no artwork arrived as the URL "null", was stored, and drew an empty card that
+ * looked for all the world like missing data rather than a bad string.
+ */
+private fun JSONObject.optStringOrNull(name: String): String? =
+  if (isNull(name)) null else optString(name).trim().takeIf { it.isNotEmpty() && it != "null" && it != "undefined" }
 
+/** A JSON value that may legitimately be absent, as a nullable Int. */
+private fun Any?.asOptionalInt(): Int? = when (this) {
+  null, JSONObject.NULL -> null
+  is Number -> toInt()
+  else -> toString().trim().toIntOrNull()
+}
 
-
-
-
-
-
-
-
-
-
-
-
-
+/** An ISO-8601 instant as epoch millis, or zero when it cannot be read. */
+private fun parseIsoInstantMillis(value: String?): Long =
+  runCatching { java.time.Instant.parse(value.orEmpty()).toEpochMilli() }.getOrDefault(0L)

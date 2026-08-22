@@ -167,6 +167,8 @@ dependencies {
     implementation("dev.chrisbanes.haze:haze-blur-materials:2.0.0-alpha03")
     implementation("androidx.core:core-splashscreen:1.0.1")
     implementation("io.coil-kt:coil-compose:2.7.0")
+    // Schedules the "new episode is out" reminders; see EpisodeReleaseNotifications.
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jsoup:jsoup:1.18.3")

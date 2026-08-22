@@ -457,6 +457,116 @@ class CloudStreamRepoManager(private val context: Context) {
     onStateChanged?.invoke(state)
   }
 
+  /**
+   * This profile's collections as the account stores them, for the other clients to read.
+   *
+   * `installedFilePath` is deliberately left out. Where this device put its copy of a `.cs3` is
+   * this device's business -- another phone has a different path and a television has no copy at
+   * all -- and syncing it would hand every client a pointer to a file it does not have.
+   */
+  fun snapshotJson(): String {
+    val root = JSONObject().put("updatedAt", state.updatedAt)
+    root.put("repos", JSONArray().apply {
+      state.repos.forEach { put(JSONObject().put("url", it.url).put("name", it.name).put("description", it.description).put("iconUrl", it.iconUrl).put("enabled", it.enabled)) }
+    })
+    root.put("providers", JSONArray().apply {
+      state.providers.forEach {
+        put(
+          JSONObject()
+            .put("repoUrl", it.repoUrl)
+            .put("internalName", it.internalName)
+            .put("name", it.name)
+            .put("version", it.version)
+            .put("downloadUrl", it.downloadUrl)
+            .put("tvTypes", JSONArray(it.tvTypes))
+            .put("language", it.language)
+            .put("description", it.description)
+            .put("enabled", it.enabled),
+        )
+      }
+    })
+    return root.toString()
+  }
+
+  fun snapshotUpdatedAt(raw: String): Long = runCatching { JSONObject(raw).optLong("updatedAt", 0L) }.getOrDefault(0L)
+
+  /**
+   * Takes the account's copy of the collections, keeping what only this device can know.
+   *
+   * A provider already downloaded here keeps its `installedFilePath`, matched on the same
+   * (repoUrl, internalName) pair everything else uses -- otherwise taking an update from the web
+   * portal would orphan every `.cs3` already on disk and every enabled source would have to be
+   * fetched again. Anything the incoming copy no longer lists is dropped, including its file:
+   * that is what makes a removal made elsewhere actually free the space here.
+   *
+   * Returns true when something changed, so the caller can decide whether to reload providers.
+   */
+  fun restoreCloudState(raw: String?): Boolean {
+    val root = runCatching { JSONObject(raw.orEmpty().ifBlank { "{}" }) }.getOrNull() ?: return false
+    if (!root.has("repos") && !root.has("providers")) return false
+    val incoming = parseState(root)
+    val localPaths = state.providers.associate { (it.repoUrl to it.internalName) to it.installedFilePath }
+    val merged = incoming.copy(
+      providers = incoming.providers.map { provider ->
+        provider.copy(installedFilePath = localPaths[provider.repoUrl to provider.internalName])
+      },
+    )
+    if (merged.repos == state.repos && merged.providers == state.providers) return false
+
+    // A source that has gone, or been switched off elsewhere, must stop answering here too --
+    // a .cs3 stays live in the process until it is explicitly dropped.
+    val keep = merged.providers.filter { it.enabled }.mapNotNull { it.installedFilePath }.toSet()
+    state.providers.mapNotNull { it.installedFilePath }.distinct()
+      .filterNot { it in keep }
+      .forEach(CloudStreamPluginLoader::unload)
+
+    state = merged
+    prefs.edit().putString(storageKey, snapshotJsonWithPaths()).apply()
+    return true
+  }
+
+  /** The on-disk form, which unlike [snapshotJson] does keep this device's file paths. */
+  private fun snapshotJsonWithPaths(): String {
+    val root = JSONObject(snapshotJson())
+    val providers = root.optJSONArray("providers") ?: JSONArray()
+    for (index in 0 until providers.length()) {
+      val item = providers.optJSONObject(index) ?: continue
+      val match = state.providers.firstOrNull {
+        it.repoUrl == item.optString("repoUrl") && it.internalName == item.optString("internalName")
+      }
+      item.put("installedFilePath", match?.installedFilePath)
+    }
+    return root.toString()
+  }
+
+  private fun parseState(root: JSONObject): CsPluginState {
+    val repos = root.optJSONArray("repos") ?: JSONArray()
+    val providers = root.optJSONArray("providers") ?: JSONArray()
+    return CsPluginState(
+      repos = List(repos.length()) {
+        repos.getJSONObject(it).run { CsRepo(getString("url"), getString("name"), optString("description").ifBlank { null }, optString("iconUrl").ifBlank { null }, optBoolean("enabled", true)) }
+      },
+      providers = List(providers.length()) { index ->
+        providers.getJSONObject(index).run {
+          val tvTypes = optJSONArray("tvTypes") ?: JSONArray()
+          CsProviderEntry(
+            repoUrl = getString("repoUrl"),
+            internalName = getString("internalName"),
+            name = getString("name"),
+            version = optInt("version", 0),
+            downloadUrl = getString("downloadUrl"),
+            tvTypes = List(tvTypes.length()) { i -> tvTypes.getString(i) },
+            language = optString("language").ifBlank { null },
+            description = optString("description").ifBlank { null },
+            enabled = optBoolean("enabled", false),
+            installedFilePath = optString("installedFilePath").ifBlank { null },
+          )
+        }
+      },
+      updatedAt = root.optLong("updatedAt", 0L),
+    )
+  }
+
   private fun load(): CsPluginState = runCatching {
     val raw = prefs.getString(storageKey, null) ?: return CsPluginState()
     val root = JSONObject(raw)

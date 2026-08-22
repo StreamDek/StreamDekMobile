@@ -1,6 +1,6 @@
 {
   "name": "streamdek-mobile",
-  "version": "2.1.6",
+  "version": "2.1.7",
   "private": true,
   "scripts": {
     "validate:version": "node scripts/validate-version.js"

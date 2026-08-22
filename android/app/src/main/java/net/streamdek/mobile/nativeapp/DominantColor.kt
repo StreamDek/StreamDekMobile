@@ -4,7 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import androidx.compose.ui.graphics.Color
 import androidx.core.graphics.drawable.toBitmap
-import coil.ImageLoader
+import coil.imageLoader
 import coil.request.ImageRequest
 import kotlin.math.max
 import kotlin.math.min
@@ -58,7 +58,11 @@ object DominantColor {
           .allowHardware(false)
           .allowRgb565(false)
           .build()
-        val drawable = ImageLoader(context).execute(request).drawable ?: return@runCatching null
+        // The app's shared loader, not a new one per call. Building an ImageLoader stands up a
+        // fresh OkHttp client, thread pools and cache handles, and the result shares nothing with
+        // the loader every AsyncImage draws through — so sampling a poster re-downloaded artwork
+        // that was already in the cache, and did it on connections nothing else could reuse.
+        val drawable = context.imageLoader.execute(request).drawable ?: return@runCatching null
         val bitmap = drawable.toBitmap(SAMPLE_SIZE, SAMPLE_SIZE, Bitmap.Config.ARGB_8888)
         pageColorFrom(bitmap, lightTheme)?.also { remember(key, it) }
       }.getOrNull()

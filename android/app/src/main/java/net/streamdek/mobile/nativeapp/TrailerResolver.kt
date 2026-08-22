@@ -88,50 +88,96 @@ suspend fun resolveTrailerPlaybackSource(
   /**
    * A trailer somebody has already identified as the right one — today, KinoCheck's pick.
    *
-   * Tried on its own before anything else, and only if it produces nothing does the ranked search
-   * over [url] and [alternates] run. It is deliberately not thrown in with the others: the ranking
-   * exists to find a trailer among adverts by running time, and a curated answer should not have to
-   * win that competition to be used.
+   * The last thing tried, not the first. The ranked search over [url] and [alternates] reads each
+   * candidate's running time and picks the real trailer out of the adverts, and that judgement is
+   * better than a third party's for the titles it can see — it is working from the videos the
+   * studio actually published. KinoCheck is the answer for the titles it cannot: nothing readable
+   * in the list, every candidate walled, or no candidates at all.
+   *
+   * It is still kept out of the ranking rather than thrown in with the others. A curated answer
+   * should not have to win a competition scored on running time; it either gets used whole, sting
+   * trimmed, or not at all.
    */
   preferredUrl: String? = null,
+  /**
+   * Whether a Short may be played when it is the only thing a title has.
+   *
+   * True here, on a handset. The television passes false: a vertical sixty-second clip stretched
+   * across a living-room screen reads as a broken trailer rather than a short one.
+   */
+  allowShortForm: Boolean = true,
 ): TrailerPlaybackResolution = withContext(Dispatchers.IO) {
   withTimeoutOrNull(20_000) {
-    preferredUrl?.trim()?.takeIf { it.isNotBlank() }?.let { preferred ->
-      extractYoutubeTrailerKey(preferred)?.let { key ->
-        val resolved = resolveTrailerCandidates(listOf(key), normalizeTrailerMaxHeight(maxHeight), youtubeCookies)
-        // Past KinoCheck's own branded sting, where the URL allows it. See KINOCHECK_START_MS for
-        // why the offset is what it is.
-        //
-        // The player reads these files through googlevideo's `&range=` query parameter, and the
-        // gated client refuses any span that does not start at byte zero — asking it to start part
-        // way in does not skip the sting, it kills the trailer outright. The headset client's
-        // URLs have no such limit, so the skip applies there and is simply not attempted on the
-        // other. (An earlier measurement suggested deep offsets were fine everywhere; it used HTTP
-        // Range headers, which is not the mechanism the player uses.)
-        resolved.source?.let { source ->
-          return@withTimeoutOrNull if (source.seekable) {
-            resolved.copy(source = source.copy(startPositionMs = KINOCHECK_START_MS, endTrimMs = KINOCHECK_END_TRIM_MS))
-          } else {
-            resolved
-          }
-        }
-      }
-    }
     val trimmed = url.trim()
-    if (trimmed.isBlank()) return@withTimeoutOrNull TrailerPlaybackResolution()
-    if (isNativePlayableTrailerUrl(trimmed)) return@withTimeoutOrNull TrailerPlaybackResolution(source = TrailerPlaybackSource(trimmed))
-    val primaryKey = extractYoutubeTrailerKey(trimmed) ?: return@withTimeoutOrNull TrailerPlaybackResolution()
-    val candidateKeys = (listOf(primaryKey) + alternates.mapNotNull(::extractYoutubeTrailerKey))
+    val preferredKey = preferredUrl?.trim()?.takeIf { it.isNotBlank() }?.let(::extractYoutubeTrailerKey)
+    val candidateKeys = (listOfNotNull(extractYoutubeTrailerKey(trimmed)) + alternates.mapNotNull(::extractYoutubeTrailerKey))
       .distinct()
       .take(TRAILER_CANDIDATE_LIMIT)
     val cap = normalizeTrailerMaxHeight(maxHeight)
-    resolveTrailerCandidates(candidateKeys, cap, youtubeCookies)
+    var loginRequired = false
+
+    /** The curated pick, with KinoCheck's own branded sting trimmed off where the URL allows it. */
+    suspend fun attemptPreferred(clients: List<YoutubeClient>): TrailerPlaybackResolution? {
+      val key = preferredKey ?: return null
+      val resolved = resolveTrailerCandidates(listOf(key), cap, youtubeCookies, clients)
+      loginRequired = loginRequired || resolved.youtubeLoginRequired
+      val source = resolved.source ?: return null
+      // The player reads these files through googlevideo's `&range=` query parameter, and the
+      // capped client refuses any span that does not start at byte zero — asking it to start part
+      // way in does not skip the sting, it kills the trailer outright. The headset client's URLs
+      // have no such limit, so the skip applies there and is simply not attempted on the other.
+      // (An earlier measurement suggested deep offsets were fine everywhere; it used HTTP Range
+      // headers, which is not the mechanism the player uses.)
+      return if (source.seekable) {
+        resolved.copy(source = source.copy(startPositionMs = KINOCHECK_START_MS, endTrimMs = KINOCHECK_END_TRIM_MS))
+      } else {
+        resolved
+      }
+    }
+
+    // A trailer served as a plain file needs none of this, and is unambiguous — no ranking, no
+    // client ladder, no third party. First, because it is both the cheapest and the most certain.
+    if (trimmed.isNotBlank() && isNativePlayableTrailerUrl(trimmed)) {
+      return@withTimeoutOrNull TrailerPlaybackResolution(source = TrailerPlaybackSource(trimmed))
+    }
+    if (preferredKey == null && candidateKeys.isEmpty()) return@withTimeoutOrNull TrailerPlaybackResolution()
+
+    // Then the ranked search, one client at a time all the way down. Running time is what tells a
+    // two-minute trailer from a fifteen-second ticket advert, and no marketing language changes
+    // that — see [trailerCandidateScore]. Each client gets a full pass over the candidates before
+    // the next one is tried, so a title whose videos are all walled on the first client is still
+    // ranked properly on the second rather than falling through on its first refusal.
+    if (candidateKeys.isNotEmpty()) {
+      trailerClientLadder.forEach { client ->
+        val resolved = resolveTrailerCandidates(candidateKeys, cap, youtubeCookies, listOf(client), allowShortForm)
+        loginRequired = loginRequired || resolved.youtubeLoginRequired
+        if (resolved.source != null) return@withTimeoutOrNull resolved
+      }
+    }
+
+    // KinoCheck last. By here the title's own videos could not be read or played on any client, so
+    // a curated pick is the difference between a trailer and a blank hero. It gets the same
+    // one-client-at-a-time treatment rather than being abandoned on a single refusal.
+    trailerClientLadder.forEach { client ->
+      attemptPreferred(listOf(client))?.let { return@withTimeoutOrNull it }
+    }
+
+    TrailerPlaybackResolution(youtubeLoginRequired = loginRequired)
   } ?: TrailerPlaybackResolution()
 }
 
-private suspend fun resolveTrailerCandidates(keys: List<String>, maxHeight: Int, cookies: String?): TrailerPlaybackResolution {
+private suspend fun resolveTrailerCandidates(
+  keys: List<String>,
+  maxHeight: Int,
+  cookies: String?,
+  clients: List<YoutubeClient> = trailerClientLadder,
+  allowShortForm: Boolean = true,
+): TrailerPlaybackResolution {
   val session = youtubeSession(keys.first())
-  if (keys.size == 1) return resolveYoutubePlaybackSource(keys.first(), maxHeight, cookies, session)
+  // A single candidate used to skip all of this and play, which meant a title whose only video was
+  // a Short played the Short without anything ever looking at it. One video still gets judged; it
+  // just has nothing to be judged against.
+  //
   // Which of the candidates is the trailer only has to be worked out once per title; after that it
   // is a single request for a fresh playback URL rather than a fan-out across all of them.
   cachedTrailerChoice(keys)?.let { return resolveYoutubePlaybackSource(it, maxHeight, cookies, session) }
@@ -145,20 +191,33 @@ private suspend fun resolveTrailerCandidates(keys: List<String>, maxHeight: Int,
         // Probed with the same client that will serve the playback, so the response that decides
         // the pick is also the one played. Probing with a different client meant the winner arrived
         // with a URL from the gated one, which is how the client ordering below was bypassed.
-        val probe = trailerProbeGate.withPermit { requestYoutubePlayer(key, session, androidVrClient, maxHeight, cookies) }
+        //
+        // It is the pass's own client rather than a fixed one. Hard-coded to the headset client,
+        // this fan-out returned nothing at all whenever that client was walled — no titles, no
+        // running times — so [pickBestTrailerCandidate] had nothing to rank and fell back to the
+        // metadata service's own order, which is roughly newest first. That is precisely the order
+        // this whole mechanism exists to avoid, and it is why titles opened on ticket adverts.
+        val probe = trailerProbeGate.withPermit { requestYoutubePlayer(key, session, clients.first(), maxHeight, cookies) }
         key to probe
       }
     }.awaitAll()
   }
-  val best = pickBestTrailerCandidate(probes.map { (key, probe) -> TrailerCandidate(key, probe.title, probe.durationSeconds) })
-    ?: keys.first()
+  val best = pickBestTrailerCandidate(
+    probes.map { (key, probe) -> TrailerCandidate(key, probe.title, probe.durationSeconds) },
+    allowShortForm = allowShortForm,
+  ) ?: run {
+    // Nothing here is a trailer and short-form is not allowed to stand in. Reported as no result
+    // so the caller moves on to the next client and, in the end, to the curated pick.
+    Log.d(trailerResolverTag, "no full-length candidate among ${keys.size}: " + probes.joinToString { (key, probe) -> "$key(${probe.durationSeconds}s ${probe.title})" })
+    return TrailerPlaybackResolution()
+  }
   Log.d(trailerResolverTag, "picked $best from ${keys.size} candidates: " + probes.joinToString { (key, probe) -> "$key(${probe.durationSeconds}s ${probe.title})" })
   cacheTrailerChoice(keys, best)
 
   val chosen = probes.firstOrNull { (key, _) -> key == best }?.second
   chosen?.resolution?.source?.let { return TrailerPlaybackResolution(source = it) }
   // The chosen video needs the rest of the client ladder — age-restricted trailers land here.
-  return resolveYoutubePlaybackSource(best, maxHeight, cookies, session)
+  return resolveYoutubePlaybackSource(best, maxHeight, cookies, session, clients)
 }
 
 internal data class TrailerCandidate(val key: String, val title: String?, val durationSeconds: Int?)
@@ -171,12 +230,50 @@ internal data class TrailerCandidate(val key: String, val title: String?, val du
  * genuine trailers too — but a theatre notice is fifteen seconds and a trailer is two minutes, and
  * no amount of marketing language changes that.
  */
-internal fun pickBestTrailerCandidate(candidates: List<TrailerCandidate>): String? =
-  candidates.maxWithOrNull(
+/**
+ * Whether a candidate is short-form rather than a trailer.
+ *
+ * Runtime is the signal, as everywhere else here: a minute is not enough to trail a film, whatever
+ * the upload was labelled. The hashtag is checked too because a Short cut to exactly sixty seconds
+ * is otherwise indistinguishable from a brief teaser by duration alone.
+ *
+ * An unknown runtime is not short-form. It is unknown, and punishing it would throw away perfectly
+ * good trailers whose metadata the client could not read.
+ */
+internal fun isShortFormTrailerCandidate(title: String?, durationSeconds: Int?): Boolean {
+  val name = title.orEmpty().lowercase()
+  if (name.contains("#short") || name.contains("#reel")) return true
+  return durationSeconds != null && durationSeconds < 60
+}
+
+/**
+ * Which of a title's videos to play, or none of them.
+ *
+ * Short-form is held back rather than merely ranked low. Ranking alone still plays a Short when it
+ * is the only thing on offer, because the best of a bad set still wins — which is exactly how a
+ * hero came to open on a sixty-second vertical clip.
+ *
+ * @param allowShortForm what to do when short-form is all there is. True on a handset, where a
+ *   clip is better than a still frame and the whole thing is the size of a postcard anyway. False
+ *   on a television, where a vertical Short blown up across a wall looks broken — there the search
+ *   gives up and lets the curated fallback answer instead.
+ */
+internal fun pickBestTrailerCandidate(
+  candidates: List<TrailerCandidate>,
+  allowShortForm: Boolean = true,
+): String? {
+  val fullLength = candidates.filterNot { isShortFormTrailerCandidate(it.title, it.durationSeconds) }
+  val pool = when {
+    fullLength.isNotEmpty() -> fullLength
+    allowShortForm -> candidates
+    else -> return null
+  }
+  return pool.maxWithOrNull(
     compareBy<TrailerCandidate> { trailerCandidateScore(it.title, it.durationSeconds) }
       // Between two real trailers, the longer one is the fuller cut.
       .thenBy { it.durationSeconds ?: 0 },
   )?.key
+}
 
 internal fun trailerCandidateScore(title: String?, durationSeconds: Int?): Int {
   val name = title.orEmpty().lowercase()
@@ -197,6 +294,9 @@ internal fun trailerCandidateScore(title: String?, durationSeconds: Int?): Int {
   // These name a different kind of video outright, rather than describing a trailer's release.
   val otherFormat = listOf("featurette", "behind the scenes", "bloopers", "blooper", "interview", "tv spot", "opening scene", "first 10 minutes")
   if (otherFormat.any { name.contains(it) }) score -= 35
+  // A Short that calls itself a trailer is still a Short. Without this the +20 for the word puts
+  // a sixty-second vertical clip above a two-minute trailer that happens not to say "official".
+  if (isShortFormTrailerCandidate(title, durationSeconds)) score -= 60
   return score
 }
 
@@ -308,21 +408,36 @@ private val androidVrClient = YoutubeClient(
  */
 private val iosClient = YoutubeClient("IOS", "20.10.4", osName = "iOS", osVersion = "18.3.2.22D82", deviceMake = "Apple", deviceModel = "iPhone16,2", userAgent = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)", clientId = "5", servableBytes = SERVABLE_TRAILER_BYTES)
 
-private fun resolveYoutubePlaybackSource(videoId: String, maxHeight: Int, cookies: String?, session: YoutubeSession): TrailerPlaybackResolution {
-  // Two clients, both anonymous, in the order they were measured to work.
-  //
-  // TVHTML5 used to be in here, and when a YouTube cookie existed it was tried *second* — ahead of
-  // IOS. That position is worse than useless: it answers `status=OK` and hands back a 360p URL that
-  // then answers 403 when the player fetches it, so resolution reported success, playback died a few
-  // seconds later, and the client that would have worked was never reached. The cookie that
-  // triggered it is one this app creates itself — the iframe fallback runs in a WebView with cookies
-  // enabled — so using that fallback once poisoned every trailer after it.
-  //
-  // Measured against the live service on 15 Aug 2026, from a network YouTube was bot-walling:
-  // ANDROID_VR was refused on some videos and served others, IOS served every one, and TVHTML5 in
-  // all three forms — plain, simply-embedded, web-embedded — returned either the wall, "the page
-  // needs to be reloaded", or "no longer supported in this application".
-  val clients = listOf(androidVrClient, iosClient)
+/**
+ * The clients, in the order a trailer is attempted through them.
+ *
+ * Both are anonymous. TVHTML5 used to be in here, and when a YouTube cookie existed it was tried
+ * ahead of IOS. That position is worse than useless: it answers `status=OK` and hands back a 360p
+ * URL that then answers 403 when the player fetches it, so resolution reported success, playback
+ * died a few seconds later, and the client that would have worked was never reached. The cookie
+ * that triggered it is one this app creates itself — the iframe fallback runs in a WebView with
+ * cookies enabled — so using that fallback once poisoned every trailer after it.
+ *
+ * Measured against the live service on 21 Aug 2026, over three trailers, sending the same
+ * `visitorData` this resolver scrapes: ANDROID_VR answered `LOGIN_REQUIRED` — "sign in to confirm
+ * you're not a bot" — every single time, while IOS answered OK every time with 1080p renditions
+ * and the title and running time the candidate ranking needs. TVHTML5 was walled too, and WEB
+ * reported the video simply unavailable.
+ *
+ * That wall is a proof-of-origin check rather than an identity one, so signing in does not answer
+ * it; only a client YouTube does not gate does. Hence IOS first. ANDROID_VR stays behind it rather
+ * than being deleted: which client is gated moves around, and when it does answer it is the better
+ * of the two — its URLs are uncapped and seekable, which is what the KinoCheck sting-skip needs.
+ */
+private val trailerClientLadder = listOf(iosClient, androidVrClient)
+
+private fun resolveYoutubePlaybackSource(
+  videoId: String,
+  maxHeight: Int,
+  cookies: String?,
+  session: YoutubeSession,
+  clients: List<YoutubeClient> = trailerClientLadder,
+): TrailerPlaybackResolution {
   var loginRequired = false
   for (client in clients) {
     val probe = requestYoutubePlayer(videoId, session, client, maxHeight, cookies)

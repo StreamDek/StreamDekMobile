@@ -162,6 +162,9 @@ private const val MAX_PLAYER_SOURCE_ROWS = 30
 internal enum class ActivePlaybackEngine { Media3, MPV }
 internal fun initialPlaybackEngine(preference: String): ActivePlaybackEngine =
   if (preference.equals("MPV", ignoreCase = true)) ActivePlaybackEngine.MPV else ActivePlaybackEngine.Media3
+/** How often playback position is written back while a title is running. */
+private const val PROGRESS_CHECKPOINT_SECONDS = 30.0
+
 internal fun shouldAutoFallbackToMpv(preference: String, activeEngine: ActivePlaybackEngine, fallbackUsed: Boolean): Boolean =
   preference.equals("Auto", ignoreCase = true) && activeEngine == ActivePlaybackEngine.Media3 && !fallbackUsed
 internal fun nextUntriedPlaybackSource(
@@ -189,7 +192,7 @@ fun NativePlayerScreen(
   onHandoff: suspend (LinkedTvDevice, Double) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) },
   onBack: (Double) -> Unit,
   onScrobble: (String, Double) -> Unit,
-  onProgressCheckpoint: (Double) -> Unit,
+  onProgressCheckpoint: (Double, Double) -> Unit,
   onSelectStream: (AddonStream, Double) -> Unit,
   onReloadStreams: () -> Unit,
   onPlaybackEnded: () -> Unit,
@@ -686,9 +689,14 @@ fun NativePlayerScreen(
     currentTime = position
     duration = total
     if (!session.isLive && !isPaused && total > 0.0 && position >= total - 0.75) finishPlayback()
-    if (!session.isLive && !isPaused && total > 0.0 && position >= 10.0 && position - lastCheckpointSecond >= 10.0) {
+    // One early checkpoint so a title opened and abandoned still remembers something, then every
+    // thirty seconds. The position only has to be right when playback stops, and pause, exit and
+    // completion all write on their own -- so a tighter cadence was three times the traffic to the
+    // account for a number nobody reads in between.
+    val checkpointDue = lastCheckpointSecond <= 0.0 || position - lastCheckpointSecond >= PROGRESS_CHECKPOINT_SECONDS
+    if (!session.isLive && !isPaused && total > 0.0 && position >= 10.0 && checkpointDue) {
       lastCheckpointSecond = position
-      onProgressCheckpoint(((position / total) * 100.0).coerceIn(0.0, 100.0))
+      onProgressCheckpoint(position, total)
     }
   }
   // Shared engine-swap path for automatic Media3 -> mpv error fallback and a user-initiated
@@ -873,7 +881,20 @@ fun NativePlayerScreen(
       onEnd = playerEndCallback,
       onStallChanged = playerStallCallback,
       onTracksChanged = playerTracksCallback,
-      onExoViewCreated = { exoPlayerView = it },
+      onExoViewCreated = { view ->
+        exoPlayerView = view
+        // Dolby Vision profile 7 is the one case Media3 loses silently: it decodes, reports frames,
+        // and shows black, so the error-driven fallback never fires. The stream is recognised the
+        // moment its track is selected and handed to mpv, which decodes the HEVC base layer. Not
+        // gated on the Auto engine preference the way an error is -- turning the setting on is
+        // itself the instruction to play these files with whatever can. See Dv7Hevc.
+        view.onDolbyVisionProfile7Callback = {
+          if (activeEngine == ActivePlaybackEngine.Media3 && !autoFallbackUsed) {
+            autoFallbackUsed = true
+            switchEngine(ActivePlaybackEngine.MPV, "Dolby Vision profile 7")
+          }
+        }
+      },
       onMpvViewCreated = { playerView = it },
     )
 

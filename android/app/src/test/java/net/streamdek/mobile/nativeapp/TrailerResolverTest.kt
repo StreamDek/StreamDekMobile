@@ -211,4 +211,64 @@ class TrailerResolverTest {
     )
     assertEquals("m4a", selectAdaptiveAudio(available))
   }
+
+  @Test
+  fun `a short is never chosen while a real trailer is on offer`() {
+    val chosen = pickBestTrailerCandidate(
+      listOf(
+        TrailerCandidate("short", "Wicked | Official Trailer #shorts", 58),
+        TrailerCandidate("real", "Wicked | Trailer", 150),
+      ),
+    )
+    assertEquals("real", chosen)
+  }
+
+  @Test
+  fun `a phone falls back to the short when it is all there is`() {
+    val chosen = pickBestTrailerCandidate(
+      listOf(TrailerCandidate("short", "Wicked | Clip", 45)),
+      allowShortForm = true,
+    )
+    assertEquals("short", chosen)
+  }
+
+  @Test
+  fun `a television plays nothing rather than a short blown up across the wall`() {
+    val chosen = pickBestTrailerCandidate(
+      listOf(TrailerCandidate("short", "Wicked | Clip #shorts", 45)),
+      allowShortForm = false,
+    )
+    assertNull(chosen)
+  }
+
+  @Test
+  fun `a lone full-length trailer is still chosen on a television`() {
+    val chosen = pickBestTrailerCandidate(
+      listOf(TrailerCandidate("real", "Wicked | Official Trailer", 143)),
+      allowShortForm = false,
+    )
+    assertEquals("real", chosen)
+  }
+
+  @Test
+  fun `an unknown runtime is not treated as short-form`() {
+    // Unknown is unknown. Punishing it would throw away trailers whose metadata could not be read.
+    assertTrue(!isShortFormTrailerCandidate("Wicked | Official Trailer", null))
+    val chosen = pickBestTrailerCandidate(
+      listOf(TrailerCandidate("unknown", "Wicked | Official Trailer", null)),
+      allowShortForm = false,
+    )
+    assertEquals("unknown", chosen)
+  }
+
+  @Test
+  fun `calling itself a trailer does not promote a short above a real one`() {
+    val chosen = pickBestTrailerCandidate(
+      listOf(
+        TrailerCandidate("short", "Wicked | Official Trailer", 30),
+        TrailerCandidate("real", "Wicked | A Look Inside the Trailer", 130),
+      ),
+    )
+    assertEquals("real", chosen)
+  }
 }

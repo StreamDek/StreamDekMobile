@@ -654,5 +654,11 @@ internal fun parseM3uLines(
   // entries — which some panels emit — is still accepted.
   if (!sawPlaylistMarker) throw IllegalArgumentException("That URL doesn't look like an M3U playlist.")
   onProgress(items.size, processedLines)
-  return items
+  // A playlist's adult section names itself plainly, and dropping those entries here rather
+  // than at the point they are displayed keeps them out of browse, search, categories and
+  // favourites at once -- there is no later list that could quietly reintroduce them.
+  return items.filterNot { item ->
+    AdultContentFilter.isBlockedItem(title = item.title, genres = item.genres) ||
+      AdultContentFilter.isBlocked(item.sourceCatalogName)
+  }
 }

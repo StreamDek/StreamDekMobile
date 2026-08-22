@@ -53,6 +53,32 @@ data class PluginSettingField(
   val isPassword: Boolean = false,
   val options: List<PluginSettingOption> = emptyList(),
 )
+/** Reads a settings schema, whether it came from onSettings() or from a collection manifest. */
+internal fun parsePluginSettingFields(array: JSONArray): List<PluginSettingField> = buildList {
+  for (index in 0 until array.length()) {
+    val item = array.optJSONObject(index) ?: continue
+    val options = item.optJSONArray("options")
+    add(PluginSettingField(
+      // Anything unrecognised is treated as a text field rather than skipped. A manifest that says
+      // "string" or "password" instead of "text" would otherwise declare a field that renders as
+      // nothing at all, which looks identical to a source with no settings at all.
+      type = item.optString("type").lowercase().ifBlank { "text" },
+      key = item.optString("key").ifBlank { null },
+      label = item.optString("label").ifBlank { item.optString("key") },
+      description = item.optString("description").ifBlank { null },
+      placeholder = item.optString("placeholder").ifBlank { null },
+      defaultValue = item.opt("defaultValue")?.takeUnless { it == JSONObject.NULL },
+      isPassword = item.optBoolean("isPassword", false),
+      options = buildList {
+        if (options != null) for (optionIndex in 0 until options.length()) {
+          val option = options.optJSONObject(optionIndex) ?: continue
+          add(PluginSettingOption(option.optString("label"), option.optString("value")))
+        }
+      },
+    ))
+  }
+}
+
 internal fun humanReadablePluginError(error: Throwable): String {
   if (error is TimeoutCancellationException) return "This source took too long to respond. It may be offline or blocked on this network."
   val raw = error.message.orEmpty().lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().trim()
@@ -336,38 +362,30 @@ class StreamDekPluginManager(context: Context) {
     }.onFailure { Log.e("StreamDekPlugin", "Source test failed: $providerName", it) }
   }
 
+  /**
+   * The fields a source wants filled in.
+   *
+   * Three places can answer, in descending order of authority. The source's own onSettings() is
+   * asked first -- it is the only answer that is definitely current. A collection whose manifest
+   * declares the fields instead is next: several do, including ones whose scraper is minified or
+   * generated, and before this a manifest saying hasSettings opened a dialog that could only
+   * report that the code exports no onSettings, leaving a source that needs a token with nowhere
+   * to type one. Last is whatever was learned previously, which covers a source that is offline.
+   *
+   * An empty list is a real answer rather than a failure -- see the dialog, which then lets the
+   * values be entered by hand.
+   */
   suspend fun settingsSchema(providerId: String): Result<List<PluginSettingField>> = withContext(Dispatchers.IO) { runCatching {
     val provider = state.providers.firstOrNull { it.id == providerId }
       ?: throw IllegalArgumentException("Plugin source not found.")
-    require(provider.hasSettings) { "This source does not advertise extra settings." }
-    val raw = executeProvider(provider, null, null, null, null, settingsOnly = true, timeoutMs = 15_000L)
-    val array = JSONArray(raw)
-    // Only the device can produce this -- it comes from running the source's own onSettings() in
-    // the sandbox -- so it is cached and synced outward for the web portal, which has no engine
-    // and would otherwise have no idea what fields a source wants.
-    prefs.edit().putString(settingsSchemaKey(providerId), raw).apply()
-    buildList {
-      for (index in 0 until array.length()) {
-        val item = array.optJSONObject(index) ?: continue
-        val type = item.optString("type").lowercase()
-        val options = item.optJSONArray("options")
-        add(PluginSettingField(
-          type = type,
-          key = item.optString("key").ifBlank { null },
-          label = item.optString("label").ifBlank { item.optString("key") },
-          description = item.optString("description").ifBlank { null },
-          placeholder = item.optString("placeholder").ifBlank { null },
-          defaultValue = item.opt("defaultValue")?.takeUnless { it == JSONObject.NULL },
-          isPassword = item.optBoolean("isPassword", false),
-          options = buildList {
-            if (options != null) for (optionIndex in 0 until options.length()) {
-              val option = options.optJSONObject(optionIndex) ?: continue
-              add(PluginSettingOption(option.optString("label"), option.optString("value")))
-            }
-          },
-        ))
-      }
-    }
+    val fromCode = if (!pluginDeclaresSettings(provider.code)) null else runCatching {
+      val raw = executeProvider(provider, null, null, null, null, settingsOnly = true, timeoutMs = 15_000L)
+      // Only the device can produce this -- it comes from running the source's own onSettings() in
+      // the sandbox -- so it is cached and synced outward for the web portal, which has no engine
+      // and would otherwise have no idea what fields a source wants.
+      JSONArray(raw).also { prefs.edit().putString(settingsSchemaKey(providerId), raw).apply() }
+    }.getOrNull()
+    parsePluginSettingFields(fromCode ?: settingsSchemaJson(providerId) ?: JSONArray())
   } }
 
   fun providerSettings(providerId: String): Map<String, Any> {
@@ -555,7 +573,12 @@ class StreamDekPluginManager(context: Context) {
         val hash = item.optString("infoHash").ifBlank { null }
         if (url == null && hash == null) continue
         val headers = item.optJSONObject("headers")
-        add(AddonStream("plugin:" + provider.id, provider.name, item.optString("name").ifBlank { provider.name }, item.optString("title").ifBlank { provider.name }, item.optString("description").ifBlank { null }, url, hash, item.optInt("fileIdx").takeIf { item.has("fileIdx") }, item.optString("filename").ifBlank { null }, item.optString("quality").ifBlank { null }, item.optString("size").ifBlank { null }, emptyList(), requestHeaders = buildMap {
+        // The source's own name deliberately no longer stands in for a missing name or title
+        // here. It is already shown as the result's attribution, and copying it into the headline
+        // made every result from such a source read as that source's name repeated, with the
+        // actual release, quality and size pushed into a smaller line underneath or lost. Left
+        // null, the list falls back to the title being watched -- see streamDisplayName.
+        add(AddonStream("plugin:" + provider.id, provider.name, item.optString("name").ifBlank { null }, item.optString("title").ifBlank { null }, item.optString("description").ifBlank { null }, url, hash, item.optInt("fileIdx").takeIf { item.has("fileIdx") }, item.optString("filename").ifBlank { null }, item.optString("quality").ifBlank { null }, item.optString("size").ifBlank { null }, emptyList(), requestHeaders = buildMap {
           headers?.keys()?.forEach { key -> headers.optString(key).takeIf { it.isNotBlank() }?.let { put(key, it) } }
         }))
       }
@@ -567,6 +590,12 @@ class StreamDekPluginManager(context: Context) {
     val name = manifest.optString("name").trim()
     val version = manifest.optString("version").trim()
     require(name.isNotEmpty() && version.isNotEmpty()) { "Invalid repository manifest." }
+    // Refused outright rather than installed-and-filtered: a collection whose whole purpose is
+    // pornography has nothing left once its sources are removed, and saying so is clearer than
+    // adding something that then returns nothing.
+    require(!AdultContentFilter.isBlocked(name, manifest.optString("description"))) {
+      "This collection is an adult source and cannot be added."
+    }
     val entries = manifest.optJSONArray("scrapers") ?: throw IllegalArgumentException("No providers in repository.")
     val providers = mutableListOf<PluginProvider>()
     val skipped = mutableListOf<String>()
@@ -575,6 +604,9 @@ class StreamDekPluginManager(context: Context) {
       val key = item.optString("id")
       val file = item.optString("filename")
       if (key.isBlank() || file.isBlank()) continue
+      // Individual adult sources inside an otherwise ordinary collection are skipped, so the
+      // rest of it still works rather than the whole thing being unusable.
+      if (AdultContentFilter.isBlocked(item.optString("name"), item.optString("description"), key)) continue
       val source = resolvePluginProviderUrl(url, file)
       val providerId = url.lowercase() + ":" + key
       val types = item.optJSONArray("supportedTypes")
@@ -586,11 +618,19 @@ class StreamDekPluginManager(context: Context) {
         skipped += providerName
         continue
       }
+      // A collection may describe its source's settings in the manifest rather than in the
+      // scraper. Kept in the same slot the sandbox writes to, so everything downstream -- the
+      // dialog, the cloud document, the web portal -- reads one schema without caring which end
+      // of the collection declared it.
+      val declaredSettings = item.optJSONArray("settings") ?: item.optJSONArray("settingsSchema")
+      if (declaredSettings != null && declaredSettings.length() > 0) {
+        prefs.edit().putString(settingsSchemaKey(providerId), declaredSettings.toString()).apply()
+      }
       providers += PluginProvider(providerId, url, item.optString("name").ifBlank { key }, buildList {
         if (types != null) for (typeIndex in 0 until types.length()) types.optString(typeIndex).takeIf { it.isNotBlank() }?.let(::add)
         if (isEmpty()) addAll(listOf("movie", "tv"))
       }, item.optBoolean("enabled", true) && (previous[providerId]?.enabled ?: true), code,
-        item.optBoolean("hasSettings", false) || pluginDeclaresSettings(code))
+        item.optBoolean("hasSettings", false) || pluginDeclaresSettings(code) || declaredSettings != null)
     }
     require(providers.isNotEmpty()) { "No compatible providers in repository." }
     if (skipped.isNotEmpty()) {

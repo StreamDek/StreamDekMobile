@@ -37,6 +37,16 @@ data class MediaItem(
   val rating: Double?,
   val description: String,
   val progress: Double? = null,
+  /**
+   * Replaces the small line under the title on a card.
+   *
+   * Cards otherwise fall back to the year, or to the media type -- which is how a brand new
+   * episode of Silo came to be labelled "Tv". Set where the row knows something better to say:
+   * which episode is waiting, or which one you are part-way through.
+   */
+  val cardSubtitle: String? = null,
+  /** Draws that line as news rather than as metadata. */
+  val cardHighlight: Boolean = false,
   val genres: List<String> = emptyList(),
   val titleLogo: String? = null,
   val addedAt: Long? = null,
@@ -114,6 +124,33 @@ data class LocalAddonMeta(
   val runtimeMinutes: Int?,
   val cast: List<CastMember>,
   val episodes: List<EpisodeItem>,
+)
+
+/**
+ * When a series' next and most recent episodes air, as the backend reads them off TMDB.
+ *
+ * One record per series rather than a walk through its seasons: the two episodes a viewer
+ * following a show cares about are exactly these, and asking for them by season costs a request
+ * each. `airDate` is TMDB's own local air date (YYYY-MM-DD), left unparsed because only the device
+ * knows the viewer's timezone.
+ */
+data class SeriesEpisodeStatus(
+  val tmdbId: Int,
+  val title: String?,
+  val poster: String?,
+  val backdrop: String?,
+  val status: String?,
+  val nextEpisode: AiringEpisode?,
+  val lastEpisode: AiringEpisode?,
+)
+
+data class AiringEpisode(
+  val id: Int?,
+  val name: String?,
+  val season: Int?,
+  val episode: Int?,
+  val airDate: String,
+  val still: String?,
 )
 
 data class CastMember(
@@ -250,6 +287,8 @@ data class CloudPlaybackPreferences(
   val showHeroSynopsis: Boolean? = null,
   val vividAmbient: Boolean? = null,
   val ambientTintPercent: Int? = null,
+  /** The title page's own ambient strength; [ambientTintPercent] is the home screen's. */
+  val detailAmbientTintPercent: Int? = null,
   val defaultAppCatalogsEnabled: Boolean? = null,
   val homeCatalogRowsJson: String? = null,
   val seasonTabStyle: String? = null,

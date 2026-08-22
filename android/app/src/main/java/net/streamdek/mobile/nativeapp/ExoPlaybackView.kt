@@ -27,6 +27,7 @@ import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
 import androidx.media3.exoplayer.drm.FrameworkMediaDrm
 import androidx.media3.exoplayer.drm.LocalMediaDrmCallback
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
@@ -54,6 +55,14 @@ class ExoPlaybackView @JvmOverloads constructor(
   var onEndCallback: (() -> Unit)? = null
   var onErrorCallback: ((message: String) -> Unit)? = null
   var onTracksChangedCallback: ((List<MpvTrackInfo>, List<MpvTrackInfo>, Int?, Int?) -> Unit)? = null
+
+  /**
+   * Raised when the selected video track is Dolby Vision profile 7 and the viewer has asked for
+   * the fallback. Media3 cannot show these -- see Dv7Hevc -- and, worse, does not fail while
+   * failing to, so the player switches engine on this rather than on an error that never comes.
+   */
+  var onDolbyVisionProfile7Callback: (() -> Unit)? = null
+  private var dolbyVisionProfile7Reported = false
   var onStallChangedCallback: ((Boolean) -> Unit)? = null
 
   // Shared by every player this view builds, so a live channel switch or an engine retry keeps the
@@ -144,6 +153,7 @@ class ExoPlaybackView @JvmOverloads constructor(
   }
 
   fun setSource(url: String?) {
+    dolbyVisionProfile7Reported = false
     val next = url?.trim().orEmpty()
     if (next.isBlank() || next == source) return
     val hadActivePlayer = exoPlayer != null
@@ -395,6 +405,14 @@ class ExoPlaybackView @JvmOverloads constructor(
     val renderers = DefaultRenderersFactory(context)
       .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
       .setEnableDecoderFallback(true)
+    // Tunneled output hands decoding and rendering to the hardware as one pipeline, which is what
+    // keeps audio and video locked together on a television box. It is off by default because the
+    // devices that do not implement it properly fail loudly -- a black picture with running audio.
+    val trackSelector = DefaultTrackSelector(context).apply {
+      if (PlaybackCodecOptions.tunneledPlayback) {
+        setParameters(buildUponParameters().setTunnelingEnabled(true))
+      }
+    }
     val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
     if (drmLicenseType.equals("clearkey", ignoreCase = true) && drmClearKeys.isNotEmpty()) {
       runCatching { clearKeyDrmSessionManager(drmClearKeys) }
@@ -403,6 +421,7 @@ class ExoPlaybackView @JvmOverloads constructor(
     }
     val active = ExoPlayer.Builder(context)
       .setRenderersFactory(renderers)
+      .setTrackSelector(trackSelector)
       .setMediaSourceFactory(mediaSourceFactory)
       .setBandwidthMeter(bandwidthMeter)
       .build()
@@ -554,6 +573,32 @@ class ExoPlaybackView @JvmOverloads constructor(
     }
   }
 
+  /**
+   * Whether the video track that was just selected is Dolby Vision profile 7.
+   *
+   * Checked here rather than inside a renderer because this is the earliest point at which the
+   * chosen format is known to the app, and because it takes no subclassing of Media3 to reach.
+   * Reported once per source: the listener fires again on every track change, and switching engine
+   * twice for the same file would restart playback twice.
+   */
+  private fun reportDolbyVisionProfile7(tracks: Tracks) {
+    if (dolbyVisionProfile7Reported) return
+    tracks.groups.forEach { group ->
+      if (group.type != C.TRACK_TYPE_VIDEO) return@forEach
+      for (index in 0 until group.length) {
+        if (!group.isTrackSelected(index)) continue
+        val format = group.getTrackFormat(index)
+        if (format.sampleMimeType != MimeTypes.VIDEO_DOLBY_VISION) continue
+        Dv7Hevc.log("Dolby Vision video track selected: " + Dv7Hevc.describe(format))
+        if (PlaybackCodecOptions.dv7HevcFallback && Dv7Hevc.isDolbyVisionProfile7(format)) {
+          dolbyVisionProfile7Reported = true
+          onDolbyVisionProfile7Callback?.invoke()
+        }
+        return
+      }
+    }
+  }
+
   private fun dispatchTracks(tracks: Tracks) {
     audioSelections.clear()
     subtitleSelections.clear()
@@ -573,6 +618,7 @@ class ExoPlaybackView @JvmOverloads constructor(
       }
     }
     onTracksChangedCallback?.invoke(audio, subtitles, audio.firstOrNull { it.selected }?.id, subtitles.firstOrNull { it.selected }?.id)
+    reportDolbyVisionProfile7(tracks)
   }
 
   private fun applyTrackSelection(selection: Pair<Tracks.Group, Int>?) {

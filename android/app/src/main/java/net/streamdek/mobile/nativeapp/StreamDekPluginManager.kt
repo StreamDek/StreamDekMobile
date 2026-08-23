@@ -432,7 +432,66 @@ class StreamDekPluginManager(context: Context) {
   private suspend fun runStreams(provider: PluginProvider, id: String, type: String, season: Int?, episode: Int?, timeoutMs: Long = 60_000L): List<AddonStream> =
     parse(executeProvider(provider, id, type, season, episode, settingsOnly = false, timeoutMs = timeoutMs), provider)
 
+  /** Serialises the write-back in [providerCode]. See the comment there. */
+  private val codeRecoveryLock = Any()
+
+  /** Provider id to scraper URL for one collection, read once per process. */
+  private val manifestSourceUrls = mutableMapOf<String, Map<String, String>>()
+
+  private fun providerSourceUrls(repoUrl: String): Map<String, String> = synchronized(manifestSourceUrls) {
+    manifestSourceUrls.getOrPut(repoUrl) {
+      val entries = JSONObject(text(repoUrl)).optJSONArray("scrapers") ?: JSONArray()
+      buildMap {
+        for (index in 0 until entries.length()) {
+          val item = entries.optJSONObject(index) ?: continue
+          val key = item.optString("id")
+          val file = item.optString("filename")
+          if (key.isNotBlank() && file.isNotBlank()) {
+            put(repoUrl.lowercase() + ":" + key, resolvePluginProviderUrl(repoUrl, file))
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * The scraper's own code, downloading it if this device does not have it.
+   *
+   * A stored collection can be holding sources it has no code for, and the whole of what that
+   * looked like from the outside was one source that had stopped working. The account document
+   * carries every provider without its code -- 35 scrapers per collection is not something to push
+   * through a profile blob -- so a device restoring it refills each one from its local cache and
+   * re-downloads the rest. Any of those downloads can fail, the blank entry is saved either way,
+   * and nothing retried it: the source stayed listed, stayed switched on, and ran an empty file.
+   * An empty file exports nothing, so it failed as "this source is missing the function StreamDek
+   * needs" -- which reads as the plugin author's mistake and is not one.
+   *
+   * Fetched here instead, at the moment it is needed, and written back so it is paid for once.
+   * This is what the television has always done, which is why the same collection answers there.
+   */
+  private suspend fun providerCode(provider: PluginProvider): String {
+    provider.code.takeIf { it.isNotBlank() }?.let { return it }
+    val sourceUrl = withContext(Dispatchers.IO) { runCatching { providerSourceUrls(provider.repoUrl)[provider.id] } }
+      .getOrNull()
+      ?: throw IllegalStateException("StreamDek does not have this source's code, and its collection could not be reached to download it. Refresh the collection and try again.")
+    val code = withContext(Dispatchers.IO) { text(sourceUrl) }
+    require(code.isNotBlank()) { "This source's collection served an empty file for it." }
+    Log.i(TAG, "Recovered missing code for " + provider.name + " (" + code.length + " chars)")
+    // Written back so the next call is instant, and so a source that has been silently empty since
+    // its last cloud restore stops being empty rather than being re-downloaded on every press.
+    //
+    // Locked because a search fans out to five providers at once and each is a read-modify-write
+    // of the same state: unsynchronised, four of five recoveries would be written and then
+    // overwritten by a copy taken before them, and those sources would download again next time.
+    synchronized(codeRecoveryLock) {
+      state = state.copy(providers = state.providers.map { if (it.id == provider.id) it.copy(code = code) else it })
+      save()
+    }
+    return code
+  }
+
   private suspend fun executeProvider(provider: PluginProvider, id: String?, type: String?, season: Int?, episode: Int?, settingsOnly: Boolean, timeoutMs: Long): String = withTimeout(timeoutMs) {
+    val code = providerCode(provider)
     val deferred = CompletableDeferred<String>()
     val domNodes = mutableMapOf<Int, Element>()
     var nextDomNodeId = 1
@@ -544,8 +603,8 @@ class StreamDekPluginManager(context: Context) {
       val settingsJson = JSONObject(providerSettings(provider.id)).toString()
       evaluate<Any?>("globalThis.SCRAPER_SETTINGS=$settingsJson;globalThis.global.SCRAPER_SETTINGS=globalThis.SCRAPER_SETTINGS;")
       // Cached separately, keyed by content, so a refreshed provider recompiles and the shim does not.
-      val providerBytecode = providerBytecodeCache.getOrPut("${provider.id}:${provider.code.hashCode()}") {
-        compile("var module={exports:{}};var exports=module.exports;(function(){" + normalizePluginJavaScript(provider.code) + "})();", "provider.js", false)
+      val providerBytecode = providerBytecodeCache.getOrPut("${provider.id}:${code.hashCode()}") {
+        compile("var module={exports:{}};var exports=module.exports;(function(){" + normalizePluginJavaScript(code) + "})();", "provider.js", false)
       }
       evaluate<Any?>(providerBytecode)
       val invocation = if (settingsOnly) {

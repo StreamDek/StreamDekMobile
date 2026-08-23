@@ -845,7 +845,7 @@ private data class AppUiState(
   /** Hide subtitle tracks that are in neither preferred language. */
   val showOnlyPreferredSubtitleLanguages: Boolean = false,
   /** How much add-ons are asked for: "preferred", "all" or "off". */
-  val addonSubtitleLoading: String = ADDON_SUBTITLE_LOADING_PREFERRED,
+  val addonSubtitleLoading: String = ADDON_SUBTITLE_LOADING_ALL,
   val detailPageStyle: DetailPageStyle = DetailPageStyle.Classic,
   val seasonTabStyle: SeasonTabStyle = SeasonTabStyle.Regular,
   val showNavLabels: Boolean = true,
@@ -951,7 +951,12 @@ private data class AppUiState(
   val subtitleOutline: Boolean = true,
   val subtitleOutlineColor: String = "#FF000000",
   /** Which tab the in-player subtitle picker opens on: the viewer's usual source of subtitles. */
-  val subtitleDefaultSource: String = "BuiltIn",
+  /**
+   * Which tab the subtitle picker opens on. Add-ons, because that is where the choice actually is:
+   * a release carries one or two embedded tracks and the add-ons between them carry a hundred, so
+   * opening on Built-in showed the shorter list first and made the longer one look absent.
+   */
+  val subtitleDefaultSource: String = "Addons",
   val blurUnwatchedEpisodes: Boolean = true,
   val nextEpisodeThresholdMode: String = "minutes",
   val nextEpisodeThresholdPercent: Int = 95,
@@ -1078,7 +1083,7 @@ private val streamSizeLabelPattern = Regex("""(\d+(?:[.,]\d+)?)\s*(TB|TiB|GB|GiB
  * value to actually parse as a size keeps the badge to what it claims to be, and falling back to
  * the stream's own text recovers a size for sources that only mention it in the title.
  */
-private fun streamSizeLabel(stream: AddonStream): String? {
+internal fun streamSizeLabel(stream: AddonStream): String? {
   fun normalize(match: MatchResult): String {
     val amount = match.groupValues[1].replace(',', '.')
     val unit = when (match.groupValues[2].lowercase()) {
@@ -1241,6 +1246,10 @@ internal fun streamDisplayName(stream: AddonStream, fallbackName: String): Strin
 /** Collapses an add-on's multi-line text onto one line so a formatted row stays one line tall. */
 private fun streamSingleLine(value: String?): String? =
   value?.replace(Regex("\\s+"), " ")?.trim()?.takeIf { it.isNotEmpty() }
+
+/** Whitespace and case removed, so two spellings of the same sentence compare equal. */
+internal fun streamTextFingerprint(value: String): String =
+  value.replace(Regex("\\s+"), " ").trim().lowercase()
 
 private fun parseStreamSizeGiB(size: String?): Double? {
   val raw = size?.trim().orEmpty()
@@ -1668,7 +1677,7 @@ private class AppSettingsStore(context: Context) {
     secondarySubtitleLanguage = Languages.normalize(prefs.getString("secondary_subtitle_language", Languages.NONE)),
     useForcedSubtitles = prefs.getBoolean("use_forced_subtitles", false),
     showOnlyPreferredSubtitleLanguages = prefs.getBoolean("show_only_preferred_subtitle_languages", false),
-    addonSubtitleLoading = prefs.getString("addon_subtitle_loading", ADDON_SUBTITLE_LOADING_PREFERRED) ?: ADDON_SUBTITLE_LOADING_PREFERRED,
+    addonSubtitleLoading = prefs.getString("addon_subtitle_loading", ADDON_SUBTITLE_LOADING_ALL) ?: ADDON_SUBTITLE_LOADING_ALL,
     detailPageStyle = runCatching { DetailPageStyle.valueOf(profilePrefs.getString("detail_page_style", DetailPageStyle.Classic.name) ?: DetailPageStyle.Classic.name) }.getOrDefault(DetailPageStyle.Classic),
     seasonTabStyle = runCatching { SeasonTabStyle.valueOf(profilePrefs.getString("season_tab_style", SeasonTabStyle.Regular.name) ?: SeasonTabStyle.Regular.name) }.getOrDefault(SeasonTabStyle.Regular),
     showNavLabels = prefs.getBoolean("show_nav_labels", true),
@@ -1711,7 +1720,7 @@ private class AppSettingsStore(context: Context) {
     subtitleBackgroundColor = profilePrefs.getString("subtitle_background_color", null) ?: "#00000000",
     subtitleOutline = profilePrefs.getBoolean("subtitle_outline", true),
     subtitleOutlineColor = profilePrefs.getString("subtitle_outline_color", null) ?: "#FF000000",
-    subtitleDefaultSource = profilePrefs.getString("subtitle_default_source", null) ?: "BuiltIn",
+    subtitleDefaultSource = profilePrefs.getString("subtitle_default_source", null) ?: "Addons",
     blurUnwatchedEpisodes = profilePrefs.getBoolean("blur_unwatched_episodes", true),
     nextEpisodeThresholdMode = profilePrefs.getString("next_episode_threshold_mode", "minutes") ?: "minutes",
     nextEpisodeThresholdPercent = profilePrefs.getInt("next_episode_threshold_percent", 95).coerceIn(50, 99),
@@ -8093,6 +8102,15 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
               seasonNumber = record.seasonNumber,
               episodeNumber = record.episodeNumber,
               progressPercent = record.progress,
+              durationSeconds = record.durationSec.takeIf { it > 0.0 }?.toInt() ?: existing?.durationSeconds,
+              // The same reasoning as the artwork above, and the reason Remember Last Source read
+              // as broken: the account stores a position, not a source, so every pull replaced the
+              // entry with one that had forgotten which stream had played. Continue Watching then
+              // had nothing to resume from and fell back to opening the detail page. The server
+              // does not know this, so it cannot be asked -- what this device already knew is the
+              // only copy there is.
+              stream = existing?.stream,
+              isLive = existing?.isLive ?: false,
               updatedAt = record.updatedAt,
               syncedAt = record.updatedAt,
             ),
@@ -9963,7 +9981,9 @@ private fun UpdatePromptDialog(uiState: AppUiState, onUpdate: () -> Unit, onDism
         release.requiredReason?.let { Text(it, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold) }
         if (release.releaseNotes.isNotBlank()) {
           Text("What is new", fontWeight = FontWeight.Black)
-          Text(release.releaseNotes, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f))
+          // Authored as Markdown, so shown as Markdown -- see MarkdownText. Handed to a plain Text
+          // the notes arrived as their own punctuation: "## What's New" hashes and all.
+          MarkdownText(release.releaseNotes, bodyAlpha = 0.78f)
         }
         uiState.updateProgress?.let { progress ->
           Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -20772,7 +20792,7 @@ private fun AppUpdatesSettingsSummary(uiState: AppUiState, onAutoCheckChange: (B
           release.fileSizeBytes?.let { Text("Download size ${formatBytesLabel(it).removeSuffix(" used")}", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f), fontWeight = FontWeight.Bold) }
           if (release.releaseNotes.isNotBlank()) {
             Text("What is new", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f), fontWeight = FontWeight.Black)
-            Text(release.releaseNotes, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f), style = MaterialTheme.typography.bodyLarge)
+            MarkdownText(release.releaseNotes)
           }
           uiState.updateProgress?.let { progress ->
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -23751,7 +23771,14 @@ private fun StreamResultCard(
             // is a headline when neither field named anything — a row reading only "1080p" is
             // not the add-on's text being respected, it is a result nobody can identify.
             val rawLabel = stream.name?.takeIf { it.isNotBlank() }
-            val rawDetail = stream.title?.takeIf { it.isNotBlank() } ?: stream.description?.takeIf { it.isNotBlank() }
+            // The detail line is the add-on's detail block -- unless it is the label over again.
+            // Plenty of sources fill `name` and `title` with the same string, and every one of
+            // their results rendered as two identical lines because of it. A line printed twice is
+            // not the add-on's text being respected, so a field that repeats the label is skipped
+            // and the next one with something else to say is used instead.
+            val rawLabelPrint = rawLabel?.let(::streamTextFingerprint)
+            val rawDetail = listOfNotNull(stream.title, stream.description)
+              .firstOrNull { it.isNotBlank() && streamTextFingerprint(it) != rawLabelPrint }
             if (!streamTextNamesTitle(rawLabel) && !streamTextNamesTitle(rawDetail)) {
               Text(
                 primaryText,
@@ -23771,12 +23798,17 @@ private fun StreamResultCard(
         // Single size badge for the card — the duplicate that used to render
         // inside the badge row below has been removed.
         //
-        // Formatted mode only. The badge is StreamDek's own derived label, uppercased, and it
-        // is only as good as what could be scraped out of the add-on's text: for add-ons that
-        // put something other than a size in that field it rendered whole phrases as a pill
-        // ("ENGLISH • HINDI • TAMIL • TELUGU"), squeezing the add-on's own text into a narrow
-        // column. Raw mode shows the size the add-on itself printed, in its own line.
-        if (uiState.streamDekFormattingEnabled && uiState.showSizeBadges) {
+        // In both modes now, and gated only on the viewer's own Size Badges switch. The badge is
+        // read out of what the add-on already sent -- the same field the player's loading screen
+        // prints beside the release name -- so a result that showed no size here and "5.01 GB" a
+        // second later on the loading screen was hiding one it had all along. Verbatim mode's
+        // promise is that the add-on's own text is never rewritten, and a badge beside that text
+        // does not touch a word of it.
+        //
+        // It is still only as good as what can be scraped: add-ons that put something other than a
+        // size in that field render whole phrases as a pill, which is why it stays a narrow
+        // right-hand badge rather than anything the row's layout depends on.
+        if (uiState.showSizeBadges) {
           streamSizeLabel(stream)?.let { size ->
             Box(
               modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(oxbloodRed).padding(horizontal = 9.dp, vertical = 4.dp),

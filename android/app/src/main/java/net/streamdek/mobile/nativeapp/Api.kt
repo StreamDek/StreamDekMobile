@@ -1756,6 +1756,13 @@ class StreamDekApiClient(context: Context? = null) {
     runCatching {
       val metadata = JSONObject()
         .put("title", title)
+        // posterUrl/backdropUrl are the names the account stores these under, and the names the
+        // television has always sent. This app sent poster/backdrop, which nothing read, so every
+        // position it wrote arrived with no artwork and came back as a blank card -- on Home here,
+        // on the television, and on the portal. Both spellings go up: the server now reads either,
+        // but an older server reads only these.
+        .put("posterUrl", poster)
+        .put("backdropUrl", backdrop)
         .put("poster", poster)
         .put("backdrop", backdrop)
         .put("year", year)

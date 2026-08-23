@@ -137,7 +137,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.util.Log
 import java.io.File
+import java.nio.charset.CodingErrorAction
+import java.nio.ByteBuffer
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
@@ -250,7 +253,7 @@ fun NativePlayerScreen(
   var activeEngine by remember(liveEngineKey, session.playerEngine) { mutableStateOf(initialPlaybackEngine(session.playerEngine)) }
   var autoFallbackUsed by remember(liveEngineKey, session.playerEngine) { mutableStateOf(false) }
   var pendingEngineResumeSeconds by remember(session.url) { mutableDoubleStateOf(0.0) }
-  fun activeAddSubtitle(path: String) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.addSubtitleFile(path) else playerView?.addSubtitleFile(path) }
+  fun activeAddSubtitle(path: String, language: String?) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.addSubtitleFile(path, language) else playerView?.addSubtitleFile(path, language) }
   fun activeReload() { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.reloadSource() else playerView?.reloadSource() }
   fun activeSetPaused(paused: Boolean) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setPaused(paused) else playerView?.setPaused(paused) }
   fun activeSeekTo(seconds: Double) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.seekTo(seconds) else playerView?.seekTo(seconds) }
@@ -282,6 +285,8 @@ fun NativePlayerScreen(
     mutableStateOf(SubtitlePanelTab.entries.firstOrNull { it.name == session.subtitleDefaultSource } ?: SubtitlePanelTab.BuiltIn)
   }
   var subtitleDisabledByUser by remember(session.url) { mutableStateOf(false) }
+  /** Shown in the add-on tab when a chosen subtitle could not be loaded at all. */
+  var subtitleErrorMessage by remember(session.url) { mutableStateOf<String?>(null) }
   var userPickedAudio by remember(session.url) { mutableStateOf(false) }
   var userPickedSubtitle by remember(session.url) { mutableStateOf(false) }
   var externalSubtitles by remember(session.url) { mutableStateOf<List<ExternalSubtitle>>(emptyList()) }
@@ -555,20 +560,31 @@ fun NativePlayerScreen(
     }
   }
 
-  LaunchedEffect(session.url, duration, session.autoLoadSubtitles, playerView, exoPlayerView, subtitleDisabledByUser, session.isLive, userSubtitleSources) {
+  // Deliberately not keyed on duration or on subtitleDisabledByUser.
+  //
+  // Duration is revised as a stream loads -- a usenet assembly or a growing HLS window can report
+  // 0 and then several different figures -- and every revision cancelled this effect and restarted
+  // it, delay and all, so the lookup could be perpetually one revision away from running. Whether
+  // the viewer has switched subtitles off is not a reason to have no list either: the panel is
+  // where they go to switch them back on, and it has to have something in it when they get there.
+  // The list is fetched once per source, and what is done with it is decided below.
+  LaunchedEffect(session.url, session.autoLoadSubtitles, playerView, exoPlayerView, session.isLive, userSubtitleSources) {
     if (session.isLive) return@LaunchedEffect
-    if (!session.autoLoadSubtitles || duration <= 0.0 || (playerView == null && exoPlayerView == null) || subtitleDisabledByUser) return@LaunchedEffect
+    if (playerView == null && exoPlayerView == null) return@LaunchedEffect
     delay(1_200)
     subtitlesLoading = true
     val results = fetchExternalSubtitles(session, userSubtitleSources)
     externalSubtitles = results
-    if (selectedSubtitleTrackId == null && selectedExternalSubtitleId == null && !subtitleDisabledByUser && !userPickedSubtitle) {
+    // Auto-selection is the part that has to respect those two, not the lookup above.
+    if (session.autoLoadSubtitles && selectedSubtitleTrackId == null && selectedExternalSubtitleId == null &&
+      !subtitleDisabledByUser && !userPickedSubtitle
+    ) {
       results.firstOrNull { it.language == "en" }?.let { subtitle ->
         selectedExternalSubtitleId = subtitle.id
         // Download off the player thread first — handing mpv a remote URL stalls
         // playback while it fetches the file.
         val localPath = downloadSubtitleToCache(playerContext, subtitle.url)
-        if (localPath != null && selectedExternalSubtitleId == subtitle.id) activeAddSubtitle(localPath)
+        if (localPath != null && selectedExternalSubtitleId == subtitle.id) activeAddSubtitle(localPath, subtitle.language)
       }
     }
     subtitlesLoading = false
@@ -579,7 +595,7 @@ fun NativePlayerScreen(
     delay(700)
     val localPath = downloadSubtitleToCache(playerContext, subtitle.url)
     if (localPath != null && activeEngine == ActivePlaybackEngine.MPV && selectedExternalSubtitleId == subtitle.id) {
-      playerView?.addSubtitleFile(localPath)
+      playerView?.addSubtitleFile(localPath, subtitle.language)
       externalSubtitleNeedsReapply = false
     }
   }
@@ -1369,13 +1385,42 @@ fun NativePlayerScreen(
                 userPickedSubtitle = true
                 selectedSubtitleTrackId = null
                 selectedExternalSubtitleId = subtitle.id
-                // Fetch in the background and hand mpv a local file so the video
-                // keeps playing while the new subtitle loads.
+                subtitleErrorMessage = null
+                // Fetched in the background so the video keeps playing while it loads, and moved
+                // on from when it will not load. These files sit on hosts that expire links and
+                // refuse requests -- one of PenguPlay's answers 403 outright -- and a chosen
+                // subtitle that silently fails is the single worst outcome here: the row looks
+                // selected, nothing appears, and there is no way to tell a broken link from a
+                // player that cannot render it. The next copy in the same language is tried
+                // instead, exactly as a failed stream falls through to the next source, and only
+                // once nothing in that language works is the viewer told.
                 playerScope.launch {
-                  val localPath = downloadSubtitleToCache(playerContext, subtitle.url)
-                  if (localPath != null && selectedExternalSubtitleId == subtitle.id) activeAddSubtitle(localPath)
+                  val alternates = externalSubtitles.filter {
+                    it.id != subtitle.id && Languages.matches(it.language, subtitle.language)
+                  }
+                  var applied = false
+                  for (candidate in (listOf(subtitle) + alternates).take(SUBTITLE_ATTEMPT_LIMIT)) {
+                    if (selectedExternalSubtitleId != subtitle.id) return@launch
+                    val localPath = downloadSubtitleToCache(playerContext, candidate.url) ?: continue
+                    if (selectedExternalSubtitleId != subtitle.id) return@launch
+                    activeAddSubtitle(localPath, candidate.language)
+                    applied = true
+                    if (candidate.id != subtitle.id) {
+                      Log.i("StreamDekSubtitles", "fell through to " + candidate.label)
+                    }
+                    break
+                  }
+                  if (!applied && selectedExternalSubtitleId == subtitle.id) {
+                    selectedExternalSubtitleId = null
+                    subtitleErrorMessage =
+                      "That subtitle could not be downloaded, and neither could the others in " +
+                        (trackLanguageName(subtitle.language) ?: "that language") + ". Try another source."
+                  }
                 }
               }
+            }
+            subtitleErrorMessage?.let {
+              Text(it, color = Color(0xFFF08A8A), style = MaterialTheme.typography.bodyMedium)
             }
           }
           SubtitlePanelTab.Style -> {
@@ -2328,12 +2373,15 @@ private fun PlayerSourceCard(
   onDownload: () -> Unit = {},
 ) {
   val header = listOfNotNull(stream.addonName.takeIf { it.isNotBlank() } ?: stream.addonId, stream.source?.takeIf { it.isNotBlank() }, stream.quality?.takeIf { it.isNotBlank() }).distinct().joinToString("  ")
-  val metaLine = listOfNotNull(
-    stream.name?.takeIf { it.isNotBlank() },
-    stream.title?.takeIf { it.isNotBlank() },
-  ).joinToString("  ")
+  // Deduplicated across all three fields, not just joined. Plenty of sources fill `name`, `title`
+  // and `description` with the same string, and this row printed it once per field -- "FebBox - 4K
+  // FebBox - 4K" over a third copy of itself. Whichever field said it first keeps it.
+  val said = hashSetOf<String>()
+  fun freshText(value: String?): String? =
+    value?.takeIf { it.isNotBlank() && said.add(streamTextFingerprint(it)) }
+  val metaLine = listOfNotNull(freshText(stream.name), freshText(stream.title)).joinToString("  ")
   val supportingLine = listOfNotNull(
-    stream.description?.takeIf { it.isNotBlank() },
+    freshText(stream.description),
     stream.cachedBy.takeIf { it.isNotEmpty() }?.joinToString(", "),
   ).joinToString(" | ")
   val shape: Shape = RoundedCornerShape(24.dp)
@@ -2376,7 +2424,10 @@ private fun PlayerSourceCard(
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
       StreamInfoPill(icon = Icons.Rounded.HighQuality, label = stream.quality ?: "Stream")
-      stream.size?.takeIf { it.isNotBlank() }?.let {
+      // Read out of the add-on's whole text rather than the size field alone: most sources put it
+      // in the release name, and asking only for the field left this pill off nearly every row
+      // while the loading screen a second later showed the size it had scraped from the same text.
+      streamSizeLabel(stream)?.let {
         StreamInfoPill(icon = Icons.Rounded.Sensors, label = "[$it]", containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f), contentColor = MaterialTheme.colorScheme.primary)
       }
       if (active) {
@@ -2553,8 +2604,26 @@ private fun PlayerOptionRow(label: String, selected: Boolean, onClick: () -> Uni
   }
 }
 
+/**
+ * A track's language spelled out, rather than the tag the container happened to carry.
+ *
+ * Containers say "eng", "fre", "pt-BR" and occasionally "English"; none of those is what a viewer
+ * is looking for when they open this list to find their own language. [Languages] already knows
+ * every spelling, so the tag is resolved through it and the full name shown instead. A tag it does
+ * not recognise is left as it was written — a track labelled with something private to one encoder
+ * is still better identified by that than by "Unknown".
+ */
+private fun trackLanguageName(raw: String?): String? {
+  val value = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+  val normalized = Languages.normalize(value)
+  return if (normalized.isEmpty()) value.uppercase() else Languages.label(normalized)
+}
+
 private fun trackLabel(track: MpvTrackInfo): String =
-  listOfNotNull(track.language?.uppercase(), track.title, track.codec).joinToString(" - ").ifBlank { "Track ${track.id}" }
+  listOfNotNull(trackLanguageName(track.language), track.title, track.codec).joinToString(" - ").ifBlank { "Track ${track.id}" }
+
+/** How many copies of the same language to try before telling the viewer none of them loaded. */
+private const val SUBTITLE_ATTEMPT_LIMIT = 4
 
 /** How long a finger has to stay put before a press becomes a speed boost. */
 private const val HOLD_TO_SPEED_DELAY_MS = 350L
@@ -2583,6 +2652,17 @@ internal fun playerStreamIdentity(stream: AddonStream?): String =
   stream?.let(::addonStreamPlaybackIdentity).orEmpty()
 
 private val playerHttpClient = OkHttpClient()
+
+/**
+ * What a subtitle download presents itself as.
+ *
+ * The same reasoning as the plugin sandbox's: a request with no User-Agent is refused outright by
+ * some of the hosts these add-ons point at, and a refusal arrives as a subtitle that simply never
+ * appears. Matching a browser is what gets the file.
+ */
+private const val SUBTITLE_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+    "Chrome/131.0.0.0 Safari/537.36"
 
 /**
  * The two-letter code for a subtitle's language, however the source spelled it.
@@ -2624,30 +2704,115 @@ private fun List<ExternalSubtitle>.filterPreferredSubtitleLanguages(session: Pla
   return matching.ifEmpty { this }
 }
 
-// Downloads a remote subtitle to the app cache and returns the local path.
-// mpv's sub-add blocks the playback loop while it opens network streams, so
-// feeding it a local file keeps the video playing during subtitle switches.
+/**
+ * What this subtitle actually is, read from the file rather than from its address.
+ *
+ * The extension used to be taken from the URL, which for these sources answers nothing useful --
+ * `substringAfterLast('.')` on "https://subs5.strem.io/en/download/.../file/1962235234" returns
+ * the whole tail after ".io", so every file was saved as .srt whatever it held. A WebVTT or ASS
+ * file handed to a player as SubRip parses to nothing, and nothing is exactly what the viewer
+ * sees: no error, no subtitles, no way to tell which happened.
+ */
+internal fun subtitleExtensionFor(text: String): String {
+  val head = text.take(4_096)
+  return when {
+    head.trimStart().startsWith("WEBVTT") -> "vtt"
+    head.contains("[Events]", ignoreCase = true) && head.contains("Dialogue:", ignoreCase = true) -> "ass"
+    head.contains("[Script Info]", ignoreCase = true) -> "ass"
+    Regex("""<tt[\s>]""", RegexOption.IGNORE_CASE).containsMatchIn(head) -> "ttml"
+    else -> "srt"
+  }
+}
+
+/**
+ * Text out of whatever the source encoded it in.
+ *
+ * OpenSubtitles alone serves both UTF-8 and CP1252 for the same title -- it says so in the listing
+ * -- and a CP1252 file read as UTF-8 loses every accented character to a replacement glyph. Strict
+ * decoding is what tells the two apart: real UTF-8 either decodes or throws, so a failure is a
+ * reliable signal to fall back rather than a guess. Everything is rewritten as UTF-8 so the players
+ * only ever see one encoding.
+ */
+internal fun decodeSubtitleBytes(bytes: ByteArray): String {
+  val body = if (bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte()) {
+    bytes.copyOfRange(3, bytes.size)
+  } else {
+    bytes
+  }
+  return runCatching {
+    Charsets.UTF_8.newDecoder()
+      .onMalformedInput(CodingErrorAction.REPORT)
+      .onUnmappableCharacter(CodingErrorAction.REPORT)
+      .decode(ByteBuffer.wrap(body))
+      .toString()
+  }.getOrElse { String(body, Charsets.ISO_8859_1) }
+}
+
+/**
+ * Downloads a remote subtitle to the app cache and returns the local path.
+ *
+ * mpv's sub-add blocks the playback loop while it opens network streams, so feeding it a local
+ * file keeps the video playing during subtitle switches. The file is normalised on the way in --
+ * named for what it actually is, and written as UTF-8 -- so that by the time either engine is
+ * handed it, the only thing left that can go wrong is the choosing.
+ */
 private suspend fun downloadSubtitleToCache(context: Context, url: String): String? = withContext(Dispatchers.IO) {
   runCatching {
     if (!url.startsWith("http", ignoreCase = true)) return@runCatching url
-    val extension = url.substringAfterLast('.', "srt").substringBefore('?')
-      .takeIf { it.length in 2..5 && it.all(Char::isLetterOrDigit) } ?: "srt"
-    val file = File(context.cacheDir, "subtitles/${url.hashCode().toUInt()}.$extension")
-    if (file.exists() && file.length() > 0L) return@runCatching file.absolutePath
-    file.parentFile?.mkdirs()
-    playerHttpClient.newCall(Request.Builder().url(url).build()).execute().use { response ->
+    val stem = File(context.cacheDir, "subtitles/${url.hashCode().toUInt()}")
+    // Any extension already written for this URL will do; the content decided it last time.
+    stem.parentFile?.listFiles { file -> file.name.startsWith(stem.name + ".") }
+      ?.firstOrNull { it.length() > 0L }
+      ?.let { return@runCatching it.absolutePath }
+    stem.parentFile?.mkdirs()
+    // Sent as a browser, because several of these hosts answer anything else with a refusal
+    // rather than a file -- PenguPlay's returns 403 to a header-less request. The plugin sandbox
+    // already learned this lesson; the subtitle fetcher had not. A referer is offered too, since
+    // hot-link protection is the usual reason behind the filter.
+    val request = Request.Builder()
+      .url(url)
+      .header("User-Agent", SUBTITLE_USER_AGENT)
+      .header("Accept", "*/*")
+      .apply {
+        runCatching { java.net.URI(url) }.getOrNull()
+          ?.let { uri -> uri.scheme?.let { scheme -> uri.host?.let { host -> "$scheme://$host/" } } }
+          ?.let { header("Referer", it) }
+      }
+      .build()
+    val bytes = playerHttpClient.newCall(request).execute().use { response ->
       if (!response.isSuccessful) error("Subtitle download failed: ${response.code}")
-      file.writeBytes(response.body?.bytes() ?: error("Empty subtitle body"))
+      response.body?.bytes() ?: error("Empty subtitle body")
     }
+    val text = decodeSubtitleBytes(bytes)
+    if (text.isBlank()) error("Subtitle file was empty")
+    val file = File(stem.parentFile, stem.name + "." + subtitleExtensionFor(text))
+    file.writeText(text, Charsets.UTF_8)
+    Log.i("StreamDekSubtitles", "cached " + file.name + " (" + bytes.size + " bytes) from " + url.substringBefore('?').take(90))
     file.absolutePath
+  }.onFailure {
+    Log.w("StreamDekSubtitles", "could not cache subtitle " + url.substringBefore('?').take(90), it)
   }.getOrNull()
 }
 
 private suspend fun fetchExternalSubtitles(session: PlayerSession, userSources: List<UserSubtitleSource>): List<ExternalSubtitle> = withContext(Dispatchers.IO) {
   // "Off" means do not ask. Worth honouring before any request goes out rather than fetching and
   // discarding: each source is a network call on the way into playback.
-  if (session.addonSubtitleLoading == "off") return@withContext emptyList()
-  val imdbId = session.imdbId?.takeIf { it.startsWith("tt") } ?: return@withContext emptyList()
+  if (session.addonSubtitleLoading == "off") {
+    Log.i("StreamDekSubtitles", "add-on subtitles are switched off in settings")
+    return@withContext emptyList()
+  }
+  // Every add-on in this fan-out is a Stremio subtitles endpoint, and those are addressed by IMDb
+  // id -- there is no other identifier to ask them with. A session that reaches here without one
+  // therefore has no add-on subtitles available at all, which is worth saying out loud: silence
+  // here is indistinguishable from every source having nothing, and it is not the same problem.
+  val imdbId = session.imdbId?.takeIf { it.startsWith("tt") } ?: run {
+    Log.w(
+      "StreamDekSubtitles",
+      "no IMDb id on this session (title=" + session.title + ", id=" + session.imdbId + "), " +
+        "so no add-on can be asked for subtitles",
+    )
+    return@withContext emptyList()
+  }
   val series = session.mediaType == "tv" || session.mediaType == "series"
   val videoId = if (series) {
     val season = session.seasonNumber ?: return@withContext emptyList()
@@ -2660,12 +2825,20 @@ private suspend fun fetchExternalSubtitles(session: PlayerSession, userSources: 
     addAll(userSources)
   }.distinctBy { it.baseUrl.lowercase() }
 
+  // Every source is reported, answered or not. Failures used to be swallowed whole -- a source
+  // that 404s, times out, is configured wrong or simply has nothing for this title all produced
+  // the same empty list and the same silent absence from the panel, which is not a thing anyone
+  // can debug from the outside. One line per source says which of those happened.
+  Log.i("StreamDekSubtitles", "asking " + sources.size + " source(s) for " + type + "/" + videoId)
   sources.flatMap { source ->
     runCatching {
       val endpoint = "${source.baseUrl.trimEnd('/')}/subtitles/$type/$videoId.json"
       val request = Request.Builder().url(endpoint).header("Accept", "application/json").build()
       playerHttpClient.newCall(request).execute().use { response ->
-        if (!response.isSuccessful) return@use emptyList()
+        if (!response.isSuccessful) {
+          Log.w("StreamDekSubtitles", source.name + " answered HTTP " + response.code + " for " + endpoint)
+          return@use emptyList()
+        }
         val entries = JSONObject(response.body?.string().orEmpty()).optJSONArray("subtitles") ?: JSONArray()
         buildList {
           for (index in 0 until entries.length()) {
@@ -2675,11 +2848,21 @@ private suspend fun fetchExternalSubtitles(session: PlayerSession, userSources: 
             val language = normalizeSubtitleLanguage(item.optString("lang"))
             if (id.isBlank() || url.isBlank() || language.isBlank()) continue
             val release = item.optString("m").trim()
-            val label = listOf(language.uppercase(), release, source.name).filter { it.isNotBlank() }.joinToString(" - ")
+            // Named, not coded. "FR - <release> - OpenSubtitles" asks a viewer to know that FR is
+            // French before they can pick their own language out of eighty rows; the add-on's
+            // two-letter tag is what this list is sorted by, not what it should be read by.
+            val label = listOf(trackLanguageName(language).orEmpty(), release, source.name).filter { it.isNotBlank() }.joinToString(" - ")
             add(ExternalSubtitle("${source.id}:$id", language, label, url))
           }
+        }.also { parsed ->
+          Log.i(
+            "StreamDekSubtitles",
+            source.name + " returned " + entries.length() + " entries, " + parsed.size + " usable",
+          )
         }
       }
+    }.onFailure {
+      Log.w("StreamDekSubtitles", source.name + " could not be reached at " + source.baseUrl, it)
     }.getOrDefault(emptyList())
   }
     .distinctBy { it.url }

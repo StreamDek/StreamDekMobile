@@ -581,7 +581,7 @@ class MPVView @JvmOverloads constructor(
      * @param path A file:// URI or absolute path to the subtitle file on device
      *             storage.
      */
-    fun addSubtitleFile(path: String) {
+    fun addSubtitleFile(path: String, language: String? = null) {
         if (!initialized || isDestroyed) {
             Log.w(TAG, "addSubtitleFile called before init; ignoring")
             return
@@ -592,8 +592,14 @@ class MPVView @JvmOverloads constructor(
         // so we strip the scheme prefix. "file://" + "/absolute/path" → "/absolute/path".
         val normalizedPath = if (path.startsWith("file://")) path.removePrefix("file://") else path
         if (BuildConfig.DEBUG) Log.i(TAG, "addSubtitleFile: $normalizedPath")
-        // "select" tells mpv to activate this sub immediately after loading it
-        MPVLib.command(arrayOf("sub-add", normalizedPath, "select"))
+        // "select" tells mpv to activate this sub immediately after loading it. The title and
+        // language follow it so the track list names the file properly rather than showing the
+        // cache filename -- a hashed number -- next to every add-on subtitle the viewer loads.
+        val tag = language?.trim()?.takeIf { it.isNotEmpty() }
+        MPVLib.command(
+            if (tag == null) arrayOf("sub-add", normalizedPath, "select")
+            else arrayOf("sub-add", normalizedPath, "select", "Add-on subtitle", tag),
+        )
         // Dispatch synchronously so the React side sees the new track right away
         post { dispatchTracksChanged() }
     }

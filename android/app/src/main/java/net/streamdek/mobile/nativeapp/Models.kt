@@ -94,6 +94,7 @@ data class SeasonSummary(
   val name: String,
   val episodeCount: Int,
   val poster: String? = null,
+  val airDate: String? = null,
 )
 
 data class EpisodeItem(
@@ -142,6 +143,7 @@ data class SeriesEpisodeStatus(
   val status: String?,
   val nextEpisode: AiringEpisode?,
   val lastEpisode: AiringEpisode?,
+  val episodes: List<AiringEpisode> = emptyList(),
 )
 
 data class AiringEpisode(
@@ -308,6 +310,7 @@ data class CloudPlaybackPreferences(
   val useForcedSubtitles: Boolean? = null,
   val showOnlyPreferredSubtitleLanguages: Boolean? = null,
   val addonSubtitleLoading: String? = null,
+  val subtitleDefaultSource: String? = null,
   val ratingsEnabled: Boolean? = null,
   val externalRatingsEnabled: Boolean? = null,
   val enabledRatingProviders: List<String>? = null,
@@ -490,6 +493,10 @@ data class TraktItem(
   val backdrop: String?,
   val description: String?,
   val progress: Double?,
+  val positionSec: Double? = null,
+  val durationSec: Double? = null,
+  val seasonNumber: Int? = null,
+  val episodeNumber: Int? = null,
   val addedAt: Long? = null,
   val updatedAt: Long? = null,
 )
@@ -554,6 +561,7 @@ data class PlayerSession(
   val decoderMode: String = "HW+",
   val renderSurface: String = "Standard",
   val resumePercent: Double = 0.0,
+  val resumePositionSec: Double = 0.0,
   val currentStream: AddonStream? = null,
   val imdbId: String? = null,
   val subtitleLanguage: String = "en",
@@ -581,7 +589,7 @@ data class PlayerSession(
   val subtitleBackgroundColor: String = "#00000000",
   val subtitleOutline: Boolean = true,
   val subtitleOutlineColor: String = "#FF000000",
-  val subtitleDefaultSource: String = "BuiltIn",
+  val subtitleDefaultSource: String = "All",
   val skipIntroEnabled: Boolean = true,
   val skipRecapEnabled: Boolean = true,
   val skipEndingEnabled: Boolean = true,

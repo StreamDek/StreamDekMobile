@@ -8,6 +8,7 @@ import coil.memory.MemoryCache
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
+import net.streamdek.mobile.nativeapp.EpisodeNotificationSystem
 
 /**
  * The app, and the one image loader everything in it draws through.
@@ -26,6 +27,11 @@ import java.util.concurrent.TimeUnit
  * in the URL — so revalidating it costs a round trip to be told nothing happened.
  */
 class MainApplication : Application(), ImageLoaderFactory {
+  override fun onCreate() {
+    super.onCreate()
+    EpisodeNotificationSystem.ensureBackgroundWork(this)
+  }
+
   override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
     .okHttpClient {
       OkHttpClient.Builder()

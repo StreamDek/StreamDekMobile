@@ -718,6 +718,7 @@ private data class AppUiState(
   val searchResultQuery: String = "",
   val localContinueWatching: List<MediaItem> = emptyList(),
   val localResumeEntries: List<PlaybackMemoryEntry> = emptyList(),
+  val playbackProgressRecords: List<PlaybackProgressRecord> = emptyList(),
   // Browse navigation lives in the view model so it survives the player screen
   // replacing the main scene — otherwise backing out of a detail page opened from
   // a browse row would fall through to Home.
@@ -771,6 +772,8 @@ private data class AppUiState(
    */
   val newEpisodeItems: List<MediaItem> = emptyList(),
   val episodeRemindersEnabled: Boolean = false,
+  val upcomingEpisodeRemindersEnabled: Boolean = false,
+  val upcomingEpisodeReminderDays: Int = 1,
   val episodeRemindersPermitted: Boolean = true,
   val dv7HevcFallback: Boolean = false,
   val tunneledPlayback: Boolean = false,
@@ -824,6 +827,8 @@ private data class AppUiState(
   val returnToDetailAfterPlayer: Boolean = false,
   val playerReturnEpisodeId: String? = null,
   val showProfilePicker: Boolean = false,
+  /** Device-local startup preference; profile identity itself remains account/profile scoped. */
+  val rememberLastProfileAtStartup: Boolean = false,
   val appAppearance: AppAppearance = AppAppearance.System,
   val appLanguage: String = "en",
   val themePreset: AppThemePreset = AppThemePreset.Monochrome,
@@ -956,7 +961,7 @@ private data class AppUiState(
    * a release carries one or two embedded tracks and the add-ons between them carry a hundred, so
    * opening on Built-in showed the shorter list first and made the longer one look absent.
    */
-  val subtitleDefaultSource: String = "Addons",
+  val subtitleDefaultSource: String = "All",
   val blurUnwatchedEpisodes: Boolean = true,
   val nextEpisodeThresholdMode: String = "minutes",
   val nextEpisodeThresholdPercent: Int = 95,
@@ -1473,8 +1478,9 @@ private fun LocalAddonMeta.seasonSummaries(): List<SeasonSummary> = episodes
       name = "Season $seasonNumber",
       episodeCount = seasonEpisodes.size,
       poster = poster,
+      airDate = seasonEpisodes.mapNotNull(EpisodeItem::airDate).minOrNull(),
     )
-  }
+  }.filter(::isSeasonAvailable)
 
 private fun MediaDetail.withLocalAddonMeta(meta: LocalAddonMeta): MediaDetail {
   val bridgeSeasons = meta.seasonSummaries()
@@ -1663,6 +1669,8 @@ private class AppSettingsStore(context: Context) {
   }
 
   fun applyTo(state: AppUiState): AppUiState = state.copy(
+    rememberLastProfileAtStartup = prefs.getBoolean("remember_last_profile_at_startup", false),
+    showProfilePicker = state.showProfilePicker && !prefs.getBoolean("remember_last_profile_at_startup", false),
     appAppearance = runCatching { AppAppearance.valueOf(prefs.getString("app_appearance", AppAppearance.System.name) ?: AppAppearance.System.name) }.getOrDefault(AppAppearance.System),
     appLanguage = normalizeAppLanguage(prefs.getString(APP_LANGUAGE_PREFERENCE, "en")),
     themePreset = runCatching { AppThemePreset.valueOf(prefs.getString("theme_preset", AppThemePreset.Monochrome.name) ?: AppThemePreset.Monochrome.name) }.getOrDefault(AppThemePreset.Monochrome),
@@ -1720,7 +1728,7 @@ private class AppSettingsStore(context: Context) {
     subtitleBackgroundColor = profilePrefs.getString("subtitle_background_color", null) ?: "#00000000",
     subtitleOutline = profilePrefs.getBoolean("subtitle_outline", true),
     subtitleOutlineColor = profilePrefs.getString("subtitle_outline_color", null) ?: "#FF000000",
-    subtitleDefaultSource = profilePrefs.getString("subtitle_default_source", null) ?: "Addons",
+    subtitleDefaultSource = normalizeSubtitleDefaultSource(profilePrefs.getString("subtitle_default_source", null)),
     blurUnwatchedEpisodes = profilePrefs.getBoolean("blur_unwatched_episodes", true),
     nextEpisodeThresholdMode = profilePrefs.getString("next_episode_threshold_mode", "minutes") ?: "minutes",
     nextEpisodeThresholdPercent = profilePrefs.getInt("next_episode_threshold_percent", 95).coerceIn(50, 99),
@@ -1776,6 +1784,9 @@ private class AppSettingsStore(context: Context) {
 
   fun saveAutoUpdateChecks(value: Boolean) { prefs.edit().putBoolean("auto_update_checks", value).apply() }
   fun saveAppAppearance(value: AppAppearance) { prefs.edit().putString("app_appearance", value.name).apply() }
+  fun saveRememberLastProfileAtStartup(value: Boolean) {
+    prefs.edit().putBoolean("remember_last_profile_at_startup", value).apply()
+  }
   fun saveAppLanguage(value: String) { prefs.edit().putString(APP_LANGUAGE_PREFERENCE, normalizeAppLanguage(value)).apply() }
   fun saveThemePreset(value: AppThemePreset) { prefs.edit().putString("theme_preset", value.name).apply() }
   fun saveHeaderStyle(value: HeaderStyle) { prefs.edit().putString("header_style", value.name).apply() }
@@ -1830,7 +1841,9 @@ private class AppSettingsStore(context: Context) {
   fun saveSubtitleBackgroundColor(value: String) { profilePrefs.edit().putString("subtitle_background_color", value).apply() }
   fun saveSubtitleOutline(value: Boolean) { profilePrefs.edit().putBoolean("subtitle_outline", value).apply() }
   fun saveSubtitleOutlineColor(value: String) { profilePrefs.edit().putString("subtitle_outline_color", value).apply() }
-  fun saveSubtitleDefaultSource(value: String) { profilePrefs.edit().putString("subtitle_default_source", value).apply() }
+  fun saveSubtitleDefaultSource(value: String) {
+    profilePrefs.edit().putString("subtitle_default_source", normalizeSubtitleDefaultSource(value)).apply()
+  }
   fun saveBlurUnwatchedEpisodes(value: Boolean) { profilePrefs.edit().putBoolean("blur_unwatched_episodes", value).apply() }
   fun saveNextEpisodeThresholdMode(value: String) { profilePrefs.edit().putString("next_episode_threshold_mode", value).apply() }
   fun saveNextEpisodeThresholdPercent(value: Int) { profilePrefs.edit().putInt("next_episode_threshold_percent", value.coerceIn(50, 99)).apply() }
@@ -1979,6 +1992,27 @@ internal val addonSubtitleLoadingChoices: List<Pair<String, String>> = listOf(
 
 internal fun addonSubtitleLoadingLabel(value: String): String =
   addonSubtitleLoadingChoices.firstOrNull { it.first == value }?.second ?: "Preferred languages"
+
+internal val subtitleSourceChoices: List<Pair<String, String>> = listOf(
+  "All" to "All sources",
+  "BuiltIn" to "Built-in",
+  "Addons" to "Add-ons",
+)
+
+internal fun normalizeSubtitleDefaultSource(value: String?): String = when (value?.trim()?.lowercase()) {
+  "builtin", "built-in", "embedded" -> "BuiltIn"
+  "addons", "add-ons", "addon" -> "Addons"
+  else -> "All"
+}
+
+internal fun subtitleSourceLabel(value: String?): String =
+  subtitleSourceChoices.first { it.first == normalizeSubtitleDefaultSource(value) }.second
+
+internal fun subtitleSourceIncludesBuiltIn(value: String?): Boolean =
+  normalizeSubtitleDefaultSource(value) != "Addons"
+
+internal fun subtitleSourceIncludesAddons(value: String?): Boolean =
+  normalizeSubtitleDefaultSource(value) != "BuiltIn"
 
 /**
  * The subtitle languages a viewer has asked for, most wanted first, with nothing repeated.
@@ -2237,10 +2271,13 @@ private data class PlaybackMemoryEntry(
   val seasonNumber: Int? = null,
   val episodeNumber: Int? = null,
   val progressPercent: Double = 0.0,
+  val positionSeconds: Double? = null,
   val durationSeconds: Int? = null,
   val stream: AddonStream? = null,
   val isLive: Boolean = false,
   val updatedAt: Long = System.currentTimeMillis(),
+  val lastDevice: String? = null,
+  val lastPlatform: String? = null,
   /**
    * When this entry last reached the account, or null if it never has.
    *
@@ -2255,7 +2292,8 @@ private data class PlaybackMemoryEntry(
 private fun resumePositionLabel(entry: PlaybackMemoryEntry): String? {
   val durationSeconds = entry.durationSeconds ?: return null
   if (durationSeconds <= 0) return null
-  val positionSeconds = (durationSeconds * entry.progressPercent / 100.0).toInt()
+  val positionSeconds = entry.positionSeconds?.toInt()
+    ?: (durationSeconds * entry.progressPercent / 100.0).toInt()
   return "%02d:%02d".format(positionSeconds / 3600, (positionSeconds % 3600) / 60)
 }
 
@@ -2342,9 +2380,12 @@ private fun playbackMemoryToJson(entry: PlaybackMemoryEntry): JSONObject = JSONO
   .put("seasonNumber", entry.seasonNumber)
   .put("episodeNumber", entry.episodeNumber)
   .put("progressPercent", entry.progressPercent)
+  .put("positionSeconds", entry.positionSeconds)
   .put("durationSeconds", entry.durationSeconds)
   .put("isLive", entry.isLive)
   .put("updatedAt", entry.updatedAt)
+  .put("lastDevice", entry.lastDevice)
+  .put("lastPlatform", entry.lastPlatform)
   .put("syncedAt", entry.syncedAt)
   .put("stream", entry.stream?.let(::addonStreamToJson))
 
@@ -2373,10 +2414,13 @@ private fun parsePlaybackMemoryEntry(json: JSONObject): PlaybackMemoryEntry? {
     seasonNumber = json.optInt("seasonNumber").takeIf { it > 0 },
     episodeNumber = json.optInt("episodeNumber").takeIf { it > 0 },
     progressPercent = json.optDouble("progressPercent").takeIf { it.isFinite() }?.coerceIn(0.0, 100.0) ?: 0.0,
+    positionSeconds = json.optDouble("positionSeconds").takeIf { json.has("positionSeconds") && it.isFinite() && it >= 0.0 },
     durationSeconds = json.optInt("durationSeconds").takeIf { it > 0 },
     isLive = json.optBoolean("isLive", false),
     stream = json.optJSONObject("stream")?.let(::parseAddonStreamJson),
     updatedAt = json.optLong("updatedAt").takeIf { it > 0L } ?: 0L,
+    lastDevice = json.storedStringOrNull("lastDevice"),
+    lastPlatform = json.storedStringOrNull("lastPlatform"),
     // Absent on entries written before the field existed, which is the honest answer for them:
     // unknown, so leave them alone.
     syncedAt = json.optLong("syncedAt").takeIf { it > 0L },
@@ -3415,7 +3459,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           dismissPlayer(100.0)
           uiState = uiState.copy(errorMessage = "No playable source was found for the next episode.")
         } else {
-          playStream(selected, nextEpisode, 0.0)
+          playStream(selected, nextEpisode)
         }
       },
       onFailure = { message -> dismissPlayer(100.0); uiState = uiState.copy(streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null, errorMessage = message) },
@@ -3457,12 +3501,34 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         if (selected == null) {
           uiState = uiState.copy(streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null, errorMessage = "No playable source was found for S${target.seasonNumber} E${target.episodeNumber}.")
         } else {
-          playStream(selected, target, 0.0)
+          playStream(selected, target)
         }
       },
       onFailure = { message -> uiState = uiState.copy(streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null, errorMessage = message) },
     )
   }
+
+  /** Completes only the episode whose legitimate ending CTA initiated the transition. */
+  fun playNextEpisodeFromEnding() {
+    val player = uiState.playerSession ?: return
+    if (player.mediaType != "tv" || player.seasonNumber == null || player.episodeNumber == null) {
+      playAdjacentEpisode(1)
+      return
+    }
+    val ownerKey = watchedOwnerKey(uiState.session, uiState.activeProfileId)
+    val watchedKey = watchedEpisodeKey(player.mediaId, player.seasonNumber, player.episodeNumber)
+    val existing = watchedEpisodeStore.load(ownerKey, player.mediaId)
+    if (watchedKey !in existing) {
+      watchedEpisodeStore.save(ownerKey, player.mediaId, completedEpisodeWatchedIds(existing, watchedKey))
+      uiState = uiState.copy(watchedEpisodeRevision = uiState.watchedEpisodeRevision + 1)
+    }
+    if (lastPlaybackDurationSec > 0.0) lastPlaybackPositionSec = lastPlaybackDurationSec
+    saveCurrentPlaybackSnapshot(100.0)
+    scrobbleCurrentPlayer("stop", 100.0)
+    Log.i("StreamDekPlayback", "[EpisodeTransition] from=S${player.seasonNumber}E${player.episodeNumber} previousEpisodeCompleted=true")
+    playAdjacentEpisode(1)
+  }
+
   fun scrobblePlayer(action: String, progressPercent: Double) { scrobbleCurrentPlayer(action, progressPercent) }
 
   /**
@@ -3840,19 +3906,22 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     return fetched
   }
   fun resumeContinueWatching(item: MediaItem, onUnavailable: () -> Unit): Boolean {
+    if (uiState.playerLaunching || uiState.streamLoading || pendingDirectContinueEntry != null) return true
     val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
     // Downloads saved before the media record existed are keyed by download id. Those play from
     // disk directly — sending that id through loadDetail is what opened an unrelated title.
     if (isDownloadMediaId(item.id) && playSavedDownload(item.id, ownerKey)) return true
-    val entry = playbackResumeStore.loadAll(ownerKey)
+    val candidates = playbackResumeStore.loadAll(ownerKey)
       .filter { it.mediaId == item.id && normalizedMediaType(it.mediaType) == normalizedMediaType(item.type) && !it.isLive }
-      .maxByOrNull { it.updatedAt }
-      ?.takeIf { remembered ->
-        remembered.stream?.let { stream ->
-          !stream.url.isNullOrBlank() || !stream.infoHash.isNullOrBlank()
-        } == true
-      }
+    val entry = candidates.firstOrNull {
+      item.resumeSeasonNumber != null && item.resumeEpisodeNumber != null &&
+        it.seasonNumber == item.resumeSeasonNumber && it.episodeNumber == item.resumeEpisodeNumber
+    } ?: candidates.maxByOrNull { it.updatedAt }
       ?: return false
+    Log.i(
+      "StreamDekPlayback",
+      "[ContinueWatching] contentId=${entry.mediaId} contentType=${entry.mediaType} season=${entry.seasonNumber} episode=${entry.episodeNumber} originDevice=${entry.lastPlatform ?: "mobile"} destinationDevice=mobile resumePosition=${entry.positionSeconds ?: 0.0}",
+    )
     pendingDirectContinueEntry = entry
     pendingDirectContinueFallback = onUnavailable
     pendingDirectContinueEpisode = continueFallbackEpisode(
@@ -3863,6 +3932,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         resumeEpisodeNumber = entry.episodeNumber ?: item.resumeEpisodeNumber,
       ),
     )
+    uiState = uiState.copy(playerLaunching = true, playerLaunchingLabel = "Finding a source…", errorMessage = null)
     loadDetail(item.type, item.id, item, preservePendingContinue = true)
     return true
   }
@@ -3876,9 +3946,16 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val entry = pendingDirectContinueEntry?.takeIf {
       (it.mediaId == detail.id || it.mediaId == uiState.detailFallbackItem?.id) && normalizedMediaType(it.mediaType) == normalizedMediaType(detail.type)
     } ?: return false
-    val stream = entry.stream ?: return false
     pendingDirectContinueEntry = null
-    playStream(stream, episode, entry.progressPercent)
+    val stream = entry.stream
+    if (stream != null && (!stream.url.isNullOrBlank() || !stream.infoHash.isNullOrBlank())) {
+      playStream(stream, episode, entry.progressPercent)
+    } else {
+      // Cross-device SyncDek rows intentionally have no stream URL. Resolve through the same
+      // device-local pipeline as Play; playStream will read this exact entry's resume position.
+      uiState = uiState.copy(playerLaunching = true, playerLaunchingLabel = "Finding a source…")
+      playBestStream(episode)
+    }
     return true
   }
 
@@ -4042,8 +4119,12 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
             refreshTraktComments(resolvedDetail)
           }
           if (resolvedDetail.type == "tv" && resolvedDetail.seasons.isNotEmpty()) {
-            val restartSeason = resolvedDetail.seasons.firstOrNull { it.seasonNumber == fallbackItem.resumeSeasonNumber } ?: resolvedDetail.seasons.first()
-            loadSeason(resolvedDetail.id, restartSeason.seasonNumber, fallbackItem.resumeEpisodeNumber, resumeKnownSource = pendingDirectContinueEntry != null)
+            loadResumeAwareSeries(
+              resolvedDetail,
+              fallbackItem.resumeSeasonNumber,
+              fallbackItem.resumeEpisodeNumber,
+              resumeKnownSource = pendingDirectContinueEntry != null,
+            )
           } else if (!unreleasedMovie) {
             if (!playPendingContinue(resolvedDetail, continueFallbackEpisode(fallbackItem))) loadStreamsAfterDetailSettles(null)
           }
@@ -4077,8 +4158,12 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         refreshExternalRatings(resolvedDetail)
         refreshTraktComments(resolvedDetail)
         if (resolvedDetail.type == "tv" && resolvedDetail.seasons.isNotEmpty()) {
-          val restartSeason = resolvedDetail.seasons.firstOrNull { it.seasonNumber == fallbackItem?.resumeSeasonNumber } ?: resolvedDetail.seasons.first()
-          loadSeason(resolvedDetail.id, restartSeason.seasonNumber, fallbackItem?.resumeEpisodeNumber, resumeKnownSource = pendingDirectContinueEntry != null)
+          loadResumeAwareSeries(
+            resolvedDetail,
+            fallbackItem?.resumeSeasonNumber,
+            fallbackItem?.resumeEpisodeNumber,
+            resumeKnownSource = pendingDirectContinueEntry != null,
+          )
         } else if (!unreleasedMovie) {
           if (!playPendingContinue(resolvedDetail, continueFallbackEpisode(fallbackItem))) loadStreamsAfterDetailSettles(null)
         }
@@ -4838,9 +4923,18 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       block = { resolvePlayback(stream, detail, selectedEpisode) },
       onSuccess = success@ { playback ->
         if (requestGeneration != playbackRequestGeneration) return@success
-        val resumePercent = resumePercentOverride ?: loadPlaybackMemoryEntry(detail, selectedEpisode)?.progressPercent ?: 0.0
+        val resumeEntry = loadPlaybackMemoryEntry(detail, selectedEpisode)
+        val resumePercent = resumePercentOverride ?: resumeEntry?.progressPercent ?: 0.0
+        val resumePositionSec = if (resumePercentOverride != null) 0.0 else resumeEntry?.positionSeconds ?: 0.0
         pendingDirectContinueFallback = null
-        val builtSession = buildPlayerSession(playback.url, detail, buildSourceLabel(playback.stream), selectedEpisode, playback.stream, resumePercent)
+        pendingDirectContinueEpisode = null
+        val builtSession = buildPlayerSession(playback.url, detail, buildSourceLabel(playback.stream), selectedEpisode, playback.stream, resumePercent, resumePositionSec)
+        if (resumePositionSec > 0.0 || resumePercent > 0.0) {
+          Log.i(
+            "StreamDekPlayback",
+            "[ContinueWatching] sourceResolution=success provider=${playback.stream.addonName.take(48)} resumePosition=${resumePositionSec.takeIf { it > 0.0 } ?: resumePercent}",
+          )
+        }
 
         // Switching channels while one is already playing: swap the session straight over.
         // The old content stays visibly playing until the new source is actually ready -
@@ -4935,7 +5029,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       return true
     }
     if (index < 0 && loadPlaybackMemoryEntry(detail, episode)?.stream != null) {
-      playbackResumeStore.removeTitle(activeOwnerKey() ?: GUEST_OWNER_KEY, detail.id, if (detail.type == "series") "tv" else detail.type)
+      val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
+      loadPlaybackMemoryEntry(detail, episode)?.let { playbackResumeStore.save(ownerKey, it.copy(stream = null), touch = false) }
       uiState = uiState.copy(localResumeEntries = loadResumeEntries())
       playBestStream(episode)
       return true
@@ -4991,7 +5086,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       return
     }
     launchWork(
-      onStart = { uiState = uiState.copy(streamLoading = true, errorMessage = null) },
+      onStart = {
+        if (pendingDirectContinueFallback != null) Log.i("StreamDekPlayback", "[ContinueWatching] sourceResolution=started")
+        uiState = uiState.copy(streamLoading = true, errorMessage = null)
+      },
       block = {
         when {
           uiState.detailIsLive && detailSourceAddonId != null -> {
@@ -5037,10 +5135,26 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           }
         } ?: ranked.firstOrNull()
         preferred?.let { playStream(it, selectedEpisode) } ?: run {
-          uiState = uiState.copy(errorMessage = "No playable streams were found.")
+          pendingDirectContinueFallback?.let { showDetails ->
+            pendingDirectContinueFallback = null
+            val resumeEpisode = pendingDirectContinueEpisode
+            pendingDirectContinueEpisode = null
+            showDetails()
+            loadStreamsForCurrentDetail(resumeEpisode)
+          }
+          uiState = uiState.copy(playerLaunching = false, playerLaunchingLabel = null, errorMessage = "No playable streams were found. Choose another source to keep your place.")
         }
       },
-      onFailure = { message -> uiState = uiState.copy(streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null, errorMessage = message) },
+      onFailure = { message ->
+        pendingDirectContinueFallback?.let { showDetails ->
+          pendingDirectContinueFallback = null
+          val resumeEpisode = pendingDirectContinueEpisode
+          pendingDirectContinueEpisode = null
+          showDetails()
+          loadStreamsForCurrentDetail(resumeEpisode)
+        }
+        uiState = uiState.copy(playerLaunching = false, playerLaunchingLabel = null, streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null, errorMessage = message)
+      },
     )
   }
   fun refreshProfiles(showLoading: Boolean = true, refreshScopedData: Boolean = true) {
@@ -5050,7 +5164,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       block = { apiClient.fetchProfiles(session) },
       onSuccess = { profiles ->
         val selected = determineActiveProfile(session, profiles)
-        val showPicker = if (routeAfterProfileRefresh) profiles.size > 1 else uiState.showProfilePicker
+        val showPicker = if (routeAfterProfileRefresh) {
+          profiles.size > 1 && !uiState.rememberLastProfileAtStartup
+        } else uiState.showProfilePicker
         routeAfterProfileRefresh = false
         uiState = uiState.copy(profilesLoading = false, profiles = profiles, activeProfileId = selected?.id ?: uiState.activeProfileId, showProfilePicker = showPicker)
         selected?.id?.let { profileSelectionStore.save(session.user.uid, it) }
@@ -5618,15 +5734,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   private fun buildNewEpisodeItems(statuses: List<SeriesEpisodeStatus>): List<MediaItem> {
     val today = java.time.LocalDate.now()
-    val earliest = today.minusDays(newEpisodeWindowDays)
-    return statuses.mapNotNull { entry ->
-      val episode = entry.lastEpisode ?: return@mapNotNull null
+    return EpisodeReleasePolicy.releasedWithin(statuses, today, newEpisodeWindowDays).map { (entry, episode) ->
       val airDate = runCatching { java.time.LocalDate.parse(episode.airDate.trim()) }.getOrNull()
-        ?: return@mapNotNull null
-      // Dated in the future is a schedule, not a release: TMDB carries those on the last episode
-      // of a series that is between seasons.
-      if (airDate.isAfter(today) || airDate.isBefore(earliest)) return@mapNotNull null
-      airDate to MediaItem(
+        ?: today
+      MediaItem(
         id = entry.tmdbId.toString(),
         type = "tv",
         title = entry.title.orEmpty(),
@@ -5642,18 +5753,23 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         resumeSeasonNumber = episode.season,
         resumeEpisodeNumber = episode.episode,
       )
-    }.sortedByDescending { (airDate, _) -> airDate }.map { (_, item) -> item }
+    }
   }
 
   fun refreshEpisodeReminders() {
     val context = getApplication<Application>()
-    val enabled = EpisodeReleaseNotifications.isEnabled(context)
-    val permitted = EpisodeReleaseNotifications.permitted(context)
-    uiState = uiState.copy(episodeRemindersEnabled = enabled, episodeRemindersPermitted = permitted)
-    if (!enabled || !permitted) EpisodeReleaseNotifications.cancelAll(context)
+    val owner = activeOwnerKey() ?: return
+    val notificationSettings = EpisodeNotificationSystem.settings(context, owner)
+    val permitted = EpisodeNotificationSystem.permitted(context)
+    uiState = uiState.copy(
+      episodeRemindersEnabled = notificationSettings.availableEnabled,
+      upcomingEpisodeRemindersEnabled = notificationSettings.upcomingEnabled,
+      upcomingEpisodeReminderDays = notificationSettings.upcomingDays,
+      episodeRemindersPermitted = permitted,
+    )
     val ids = followedSeriesTmdbIds()
+    EpisodeNotificationSystem.cacheEligibleSeries(context, owner, ids)
     if (ids.isEmpty()) {
-      EpisodeReleaseNotifications.cancelAll(context)
       uiState = uiState.copy(newEpisodeItems = emptyList())
       return
     }
@@ -5664,7 +5780,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           // One request feeds both. The row is filled whatever the reminder setting says; only
           // the notifications are gated on it.
           uiState = uiState.copy(newEpisodeItems = buildNewEpisodeItems(statuses))
-          if (enabled && permitted) EpisodeReleaseNotifications.refresh(context, statuses)
+          EpisodeNotificationSystem.requestImmediateCheck(context)
         }
         .onFailure { Log.w("StreamDekEpisodes", "Could not refresh episode reminders", it) }
     }
@@ -5672,12 +5788,35 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   fun setEpisodeRemindersEnabled(value: Boolean) {
     val context = getApplication<Application>()
-    EpisodeReleaseNotifications.setEnabled(context, value)
+    val owner = activeOwnerKey() ?: return
+    val settings = EpisodeNotificationSystem.settings(context, owner).copy(availableEnabled = value)
+    EpisodeNotificationSystem.saveSettings(context, owner, settings)
     uiState = uiState.copy(
       episodeRemindersEnabled = value,
-      episodeRemindersPermitted = EpisodeReleaseNotifications.permitted(context),
+      episodeRemindersPermitted = EpisodeNotificationSystem.permitted(context),
     )
     refreshEpisodeReminders()
+  }
+
+  fun setUpcomingEpisodeRemindersEnabled(value: Boolean) {
+    val context = getApplication<Application>()
+    val owner = activeOwnerKey() ?: return
+    val settings = EpisodeNotificationSystem.settings(context, owner).copy(upcomingEnabled = value)
+    EpisodeNotificationSystem.saveSettings(context, owner, settings)
+    uiState = uiState.copy(
+      upcomingEpisodeRemindersEnabled = value,
+      episodeRemindersPermitted = EpisodeNotificationSystem.permitted(context),
+    )
+    refreshEpisodeReminders()
+  }
+
+  fun setUpcomingEpisodeReminderDays(value: Int) {
+    if (value !in setOf(1, 2, 7)) return
+    val context = getApplication<Application>()
+    val owner = activeOwnerKey() ?: return
+    val settings = EpisodeNotificationSystem.settings(context, owner).copy(upcomingDays = value)
+    EpisodeNotificationSystem.saveSettings(context, owner, settings)
+    uiState = uiState.copy(upcomingEpisodeReminderDays = value)
   }
 
   fun setDv7HevcFallback(value: Boolean) {
@@ -6573,6 +6712,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     preferences.useForcedSubtitles?.let(appSettingsStore::saveUseForcedSubtitles)
     preferences.showOnlyPreferredSubtitleLanguages?.let(appSettingsStore::saveShowOnlyPreferredSubtitleLanguages)
     preferences.addonSubtitleLoading?.let(appSettingsStore::saveAddonSubtitleLoading)
+    preferences.subtitleDefaultSource?.let(appSettingsStore::saveSubtitleDefaultSource)
     preferences.ratingsEnabled?.let(appSettingsStore::saveRatingsEnabled)
     preferences.externalRatingsEnabled?.let(appSettingsStore::saveExternalRatingsEnabled)
     ratingProviders?.let(appSettingsStore::saveEnabledRatingProviders)
@@ -6642,6 +6782,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       useForcedSubtitles = preferences.useForcedSubtitles ?: uiState.useForcedSubtitles,
       showOnlyPreferredSubtitleLanguages = preferences.showOnlyPreferredSubtitleLanguages ?: uiState.showOnlyPreferredSubtitleLanguages,
       addonSubtitleLoading = preferences.addonSubtitleLoading ?: uiState.addonSubtitleLoading,
+      subtitleDefaultSource = preferences.subtitleDefaultSource?.let(::normalizeSubtitleDefaultSource) ?: uiState.subtitleDefaultSource,
       heroTrailerDelaySeconds = preferences.heroTrailerDelaySeconds?.coerceIn(0, MAX_TRAILER_DELAY_SECONDS)
         ?: uiState.heroTrailerDelaySeconds,
       ratingsEnabled = preferences.ratingsEnabled ?: uiState.ratingsEnabled,
@@ -7027,6 +7168,148 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
   }
 
+  fun toggleEpisodeWatched(detail: MediaDetail, episode: EpisodeItem, currentlyWatched: Boolean) {
+    val ownerKey = activeOwnerKey() ?: return
+    val targetWatched = !currentlyWatched
+    val key = watchedEpisodeKey(detail.id, episode.seasonNumber, episode.episodeNumber)
+    val existing = watchedEpisodeStore.load(ownerKey, detail.id)
+    watchedEpisodeStore.save(
+      ownerKey,
+      detail.id,
+      if (targetWatched) (existing + key).distinct() else existing.filterNot { it == key },
+    )
+    playbackResumeStore.remove(ownerKey, detail.id, "tv", episode.seasonNumber, episode.episodeNumber)
+    val now = System.currentTimeMillis()
+    val optimistic = PlaybackProgressRecord(
+      entityType = "tv",
+      entityId = detail.id,
+      episodeKey = playbackEpisodeKey(episode.seasonNumber, episode.episodeNumber),
+      seasonNumber = episode.seasonNumber,
+      episodeNumber = episode.episodeNumber,
+      title = detail.title,
+      poster = detail.poster,
+      backdrop = detail.backdrop,
+      year = detail.year,
+      positionSec = 0.0,
+      durationSec = 0.0,
+      progress = 0.0,
+      completed = targetWatched,
+      unwatched = !targetWatched,
+      updatedAt = now,
+      lastDevice = "StreamDek Mobile",
+      lastPlatform = "mobile",
+    )
+    uiState = uiState.copy(
+      playbackProgressRecords = uiState.playbackProgressRecords.filterNot {
+        it.entityType.equals("tv", true) && it.entityId == detail.id &&
+          it.seasonNumber == episode.seasonNumber && it.episodeNumber == episode.episodeNumber
+      } + optimistic,
+      localContinueWatching = loadLocalContinueWatching(),
+      localResumeEntries = loadResumeEntries(),
+      watchedEpisodeRevision = uiState.watchedEpisodeRevision + 1,
+      infoMessage = if (targetWatched) "Episode marked as watched." else "Episode marked as unwatched.",
+    )
+    // Reuse the same series policy as initial detail loading. Marking the current episode watched
+    // advances to the next unwatched slot; reversing it makes that exact episode the continuation.
+    seriesResumeState(detail).target?.let { target ->
+      loadSeason(detail.id, target.seasonNumber, target.episodeNumber)
+    }
+
+    val session = uiState.session ?: return
+    val profileId = uiState.activeProfileId ?: return
+    viewModelScope.launch {
+      apiClient.putPlaybackProgress(
+        session = session,
+        profileId = profileId,
+        entityType = "tv",
+        entityId = detail.id,
+        episodeKey = playbackEpisodeKey(episode.seasonNumber, episode.episodeNumber),
+        positionSec = 0.0,
+        durationSec = 0.0,
+        title = detail.title,
+        poster = detail.poster,
+        backdrop = detail.backdrop,
+        year = detail.year,
+        seasonNumber = episode.seasonNumber,
+        episodeNumber = episode.episodeNumber,
+        completed = targetWatched,
+        unwatched = !targetWatched,
+      )
+      if (uiState.traktStatus.connected) {
+        apiClient.syncWatchedEpisode(session, profileId, detail, episode, targetWatched)
+      }
+      pullPlaybackProgress()
+    }
+  }
+
+  fun setSeasonWatched(detail: MediaDetail, episodes: List<EpisodeItem>, watched: Boolean) {
+    val ownerKey = activeOwnerKey() ?: return
+    if (episodes.isEmpty()) return
+    val seasonKeys = episodes.map { watchedEpisodeKey(detail.id, it.seasonNumber, it.episodeNumber) }.toSet()
+    val existing = watchedEpisodeStore.load(ownerKey, detail.id)
+    watchedEpisodeStore.save(
+      ownerKey,
+      detail.id,
+      if (watched) (existing + seasonKeys).distinct() else existing.filterNot { it in seasonKeys },
+    )
+    episodes.forEach { episode ->
+      playbackResumeStore.remove(ownerKey, detail.id, "tv", episode.seasonNumber, episode.episodeNumber)
+    }
+    val now = System.currentTimeMillis()
+    val records = episodes.map { episode ->
+      PlaybackProgressRecord(
+        entityType = "tv",
+        entityId = detail.id,
+        episodeKey = playbackEpisodeKey(episode.seasonNumber, episode.episodeNumber),
+        seasonNumber = episode.seasonNumber,
+        episodeNumber = episode.episodeNumber,
+        title = detail.title,
+        poster = detail.poster,
+        backdrop = detail.backdrop,
+        year = detail.year,
+        positionSec = 0.0,
+        durationSec = 0.0,
+        progress = 0.0,
+        completed = watched,
+        unwatched = !watched,
+        updatedAt = now,
+        lastDevice = "StreamDek Mobile",
+        lastPlatform = "mobile",
+      )
+    }
+    uiState = uiState.copy(
+      playbackProgressRecords = uiState.playbackProgressRecords.filterNot { record ->
+        record.entityType.equals("tv", true) && record.entityId == detail.id &&
+          episodes.any { it.seasonNumber == record.seasonNumber && it.episodeNumber == record.episodeNumber }
+      } + records,
+      localContinueWatching = loadLocalContinueWatching(),
+      localResumeEntries = loadResumeEntries(),
+      watchedEpisodeRevision = uiState.watchedEpisodeRevision + 1,
+      infoMessage = if (watched) "Season marked as watched." else "Season marked as unwatched.",
+    )
+    // A bulk watched-state action must not navigate. The series resume policy may now point at
+    // the next season, but that target belongs to a later Play/Continue Watching action; while
+    // managing this season the viewer should remain on the episodes they just changed.
+
+    val session = uiState.session ?: return
+    val profileId = uiState.activeProfileId ?: return
+    viewModelScope.launch {
+      var synced = false
+      repeat(3) { attempt ->
+        if (!synced) {
+          synced = apiClient.putPlaybackProgressBatch(session, profileId, records).isSuccess
+          if (!synced && attempt < 2) delay(500L * (attempt + 1))
+        }
+      }
+      if (!synced) {
+        uiState = uiState.copy(
+          infoMessage = "Season updated on this device, but SyncDek could not sync it yet. Please retry.",
+        )
+      }
+      pullPlaybackProgress()
+    }
+  }
+
   /**
    * Takes one title off Continue Watching without claiming it was watched.
    *
@@ -7177,6 +7460,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       useForcedSubtitles = uiState.useForcedSubtitles,
       showOnlyPreferredSubtitleLanguages = uiState.showOnlyPreferredSubtitleLanguages,
       addonSubtitleLoading = uiState.addonSubtitleLoading,
+      subtitleDefaultSource = uiState.subtitleDefaultSource,
       ratingsEnabled = uiState.ratingsEnabled,
       externalRatingsEnabled = uiState.externalRatingsEnabled,
       enabledRatingProviders = uiState.enabledRatingProviders.sorted(),
@@ -7213,6 +7497,10 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     viewModelScope.launch { apiClient.patchCloudPreferences(session, preferences, uiState.activeProfileId) }
   }
   fun setAppAppearance(value: AppAppearance) { appSettingsStore.saveAppAppearance(value); uiState = uiState.copy(appAppearance = value); syncCloudPreferences() }
+  fun setRememberLastProfileAtStartup(value: Boolean) {
+    appSettingsStore.saveRememberLastProfileAtStartup(value)
+    uiState = uiState.copy(rememberLastProfileAtStartup = value)
+  }
   fun setAppLanguage(value: String) {
     val normalized = normalizeAppLanguage(value)
     appSettingsStore.saveAppLanguage(normalized)
@@ -7313,7 +7601,12 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setSubtitleBackgroundColor(value: String) { appSettingsStore.saveSubtitleBackgroundColor(value); uiState = uiState.copy(subtitleBackgroundColor = value) }
   fun setSubtitleOutline(value: Boolean) { appSettingsStore.saveSubtitleOutline(value); uiState = uiState.copy(subtitleOutline = value) }
   fun setSubtitleOutlineColor(value: String) { appSettingsStore.saveSubtitleOutlineColor(value); uiState = uiState.copy(subtitleOutlineColor = value) }
-  fun setSubtitleDefaultSource(value: String) { appSettingsStore.saveSubtitleDefaultSource(value); uiState = uiState.copy(subtitleDefaultSource = value) }
+  fun setSubtitleDefaultSource(value: String) {
+    val normalized = normalizeSubtitleDefaultSource(value)
+    appSettingsStore.saveSubtitleDefaultSource(normalized)
+    uiState = uiState.copy(subtitleDefaultSource = normalized)
+    syncCloudPreferences()
+  }
   fun setSecondaryAudioLanguage(value: String) {
     val normalized = Languages.normalize(value)
     appSettingsStore.saveSecondaryAudioLanguage(normalized)
@@ -7932,6 +8225,118 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     return profiles.firstOrNull { it.id == stored } ?: profiles.firstOrNull { it.isDefault } ?: profiles.firstOrNull()
   }
 
+  private fun seriesResumeState(detail: MediaDetail, extraWatched: Set<String> = emptySet()): SeriesResumeState {
+    val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
+    val watched = watchedEpisodeStore.load(ownerKey, detail.id).toSet() + extraWatched
+    val remoteEvents = uiState.playbackProgressRecords.filter {
+      it.entityType.equals("tv", true) && it.entityId == detail.id && it.seasonNumber != null && it.episodeNumber != null
+    }.map {
+      SeriesProgressEvent(
+        seasonNumber = it.seasonNumber!!,
+        episodeNumber = it.episodeNumber!!,
+        positionSec = it.positionSec,
+        status = when { it.unwatched -> "unwatched"; it.completed -> "completed"; else -> "in-progress" },
+        updatedAtMillis = it.updatedAt,
+      )
+    }
+    val localEvents = uiState.localResumeEntries.filter {
+      it.mediaId == detail.id && normalizedMediaType(it.mediaType) == "tv" && it.seasonNumber != null && it.episodeNumber != null
+    }.map {
+      SeriesProgressEvent(it.seasonNumber!!, it.episodeNumber!!, it.positionSeconds ?: 0.0, "in-progress", it.updatedAt ?: 0L)
+    }
+    val providerEvents = uiState.traktContinueWatching.filter {
+      (it.tmdbId?.toString() ?: it.id) == detail.id && it.seasonNumber != null && it.episodeNumber != null
+    }.map {
+      SeriesProgressEvent(
+        it.seasonNumber!!,
+        it.episodeNumber!!,
+        it.positionSec ?: (it.durationSec?.times((it.progress ?: 0.0) / 100.0) ?: 0.0),
+        "in-progress",
+        it.updatedAt ?: 0L,
+      )
+    }
+    return getSeriesResumeState(detail.id, seriesEpisodeSlots(detail.seasons), remoteEvents + localEvents + providerEvents, watched)
+  }
+
+  private fun loadResumeAwareSeries(
+    detail: MediaDetail,
+    preferredSeasonNumber: Int? = null,
+    preferredEpisodeNumber: Int? = null,
+    resumeKnownSource: Boolean = false,
+  ) {
+    uiState = uiState.copy(seasonLoading = true)
+    viewModelScope.launch {
+      val session = uiState.session
+      val profileId = uiState.activeProfileId
+      val traktWatched = if (session != null && profileId != null && uiState.traktStatus.connected) {
+        apiClient.fetchTraktWatchedEpisodeKeys(session, profileId, detail.id).getOrDefault(emptySet())
+      } else emptySet()
+      if (traktWatched.isNotEmpty()) {
+        val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
+        watchedEpisodeStore.save(ownerKey, detail.id, (watchedEpisodeStore.load(ownerKey, detail.id) + traktWatched).distinct())
+        uiState = uiState.copy(watchedEpisodeRevision = uiState.watchedEpisodeRevision + 1)
+      }
+      // Older builds treated the season button as a local-only shortcut. Migrate those genuine
+      // local episode ticks into SyncDek, but only when the account has no event for that exact
+      // episode. An explicit remote unwatched event therefore remains authoritative.
+      if (session != null && profileId != null) {
+        val remoteForSeries = apiClient.fetchPlaybackProgress(
+          session = session,
+          profileId = profileId,
+          limit = 100,
+          entityId = detail.id,
+        ).getOrNull()
+        if (remoteForSeries != null) {
+          val knownEpisodes = remoteForSeries.filter { it.entityType.equals("tv", true) }.mapNotNull { record ->
+            val season = record.seasonNumber ?: return@mapNotNull null
+            val episode = record.episodeNumber ?: return@mapNotNull null
+            season to episode
+          }.toSet()
+          val prefix = "episode:${detail.id}:"
+          val localWatched = watchedEpisodeStore.load(activeOwnerKey() ?: GUEST_OWNER_KEY, detail.id)
+            .mapNotNull { key ->
+              if (!key.startsWith(prefix)) return@mapNotNull null
+              val parts = key.removePrefix(prefix).split(':')
+              val season = parts.getOrNull(0)?.toIntOrNull() ?: return@mapNotNull null
+              val episode = parts.getOrNull(1)?.toIntOrNull() ?: return@mapNotNull null
+              season to episode
+            }
+          val missingRemoteEpisodes = localWatched.filterNot { it in knownEpisodes }
+          if (missingRemoteEpisodes.isNotEmpty()) {
+            val migrationTime = System.currentTimeMillis()
+            val migrationRecords = missingRemoteEpisodes.map { (season, episode) ->
+              PlaybackProgressRecord(
+                entityType = "tv",
+                entityId = detail.id,
+                episodeKey = playbackEpisodeKey(season, episode),
+                seasonNumber = season,
+                episodeNumber = episode,
+                title = detail.title,
+                poster = detail.poster,
+                backdrop = detail.backdrop,
+                year = detail.year,
+                positionSec = 0.0,
+                durationSec = 0.0,
+                progress = 0.0,
+                completed = true,
+                updatedAt = migrationTime,
+                lastDevice = "StreamDek Mobile",
+                lastPlatform = "mobile",
+              )
+            }
+            apiClient.putPlaybackProgressBatch(session, profileId, migrationRecords)
+          }
+        }
+      }
+      if (uiState.detail?.id != detail.id) return@launch
+      val state = seriesResumeState(detail, traktWatched)
+      val target = if (preferredSeasonNumber != null && preferredEpisodeNumber != null) {
+        SeriesEpisodeSlot(preferredSeasonNumber, preferredEpisodeNumber)
+      } else state.target ?: SeriesEpisodeSlot(detail.seasons.first().seasonNumber, 1)
+      loadSeason(detail.id, target.seasonNumber, target.episodeNumber, resumeKnownSource)
+    }
+  }
+
   private fun activeOwnerKey(): String? {
     val userId = uiState.session?.user?.uid
     if (userId == null) return uiState.activeProfileId?.let { "guest:$it" } ?: GUEST_OWNER_KEY
@@ -8074,15 +8479,31 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
         val existing = local[key]
         if (existing != null && (existing.updatedAt ?: 0L) >= record.updatedAt) return@forEach
         changed = true
-        if (record.completed) {
+        if (record.unwatched) {
+          if (record.seasonNumber != null && record.episodeNumber != null) {
+            val watchedKey = watchedEpisodeKey(record.entityId, record.seasonNumber, record.episodeNumber)
+            watchedEpisodeStore.save(
+              ownerKey,
+              record.entityId,
+              watchedEpisodeStore.load(ownerKey, record.entityId).filterNot { it == watchedKey },
+            )
+          }
+          playbackResumeStore.remove(ownerKey, record.entityId, type, record.seasonNumber, record.episodeNumber)
+        } else if (record.completed) {
           // Finished elsewhere -- either played out, or marked watched, which now writes the same
           // kind of row rather than deleting one. The same two moves markWatched makes locally.
-          watchedTitleStore.add(ownerKey, MediaItem(record.entityId, type, record.title.orEmpty(), record.year, record.poster, record.backdrop, null, ""))
           if (record.seasonNumber != null && record.episodeNumber != null) {
+            val watchedKey = watchedEpisodeKey(record.entityId, record.seasonNumber, record.episodeNumber)
+            watchedEpisodeStore.save(
+              ownerKey,
+              record.entityId,
+              completedEpisodeWatchedIds(watchedEpisodeStore.load(ownerKey, record.entityId), watchedKey),
+            )
             // One episode finished, not the series. Dropping the whole title here would take the
             // next episode's position with it, which is the one the viewer is about to want.
             playbackResumeStore.remove(ownerKey, record.entityId, type, record.seasonNumber, record.episodeNumber)
           } else {
+            watchedTitleStore.add(ownerKey, MediaItem(record.entityId, type, record.title.orEmpty(), record.year, record.poster, record.backdrop, null, ""))
             playbackResumeStore.removeTitle(ownerKey, record.entityId, type)
           }
         } else {
@@ -8102,6 +8523,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
               seasonNumber = record.seasonNumber,
               episodeNumber = record.episodeNumber,
               progressPercent = record.progress,
+              positionSeconds = record.positionSec.takeIf { it >= 0.0 },
               durationSeconds = record.durationSec.takeIf { it > 0.0 }?.toInt() ?: existing?.durationSeconds,
               // The same reasoning as the artwork above, and the reason Remember Last Source read
               // as broken: the account stores a position, not a source, so every pull replaced the
@@ -8112,6 +8534,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
               stream = existing?.stream,
               isLive = existing?.isLive ?: false,
               updatedAt = record.updatedAt,
+              lastDevice = record.lastDevice,
+              lastPlatform = record.lastPlatform,
               syncedAt = record.updatedAt,
             ),
             touch = false,
@@ -8132,10 +8556,12 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
         }
       }
 
+      uiState = uiState.copy(playbackProgressRecords = remote)
       if (changed) {
         uiState = uiState.copy(
           localContinueWatching = loadLocalContinueWatching(),
           localResumeEntries = loadResumeEntries(),
+          watchedEpisodeRevision = uiState.watchedEpisodeRevision + 1,
         )
       }
     }
@@ -8151,6 +8577,12 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     return playbackResumeStore.loadAll(ownerKey)
       .filterNot { entry -> watchedTitleKey(entry.mediaType, entry.mediaId) in watchedTitles }
       .filter { entry -> !entry.isLive && entry.mediaType.lowercase() !in setOf("live", "channel", "sports", "sport") }
+      // Continue Watching has one series card: its newest episode event, with that episode's own
+      // position. Keeping every row and later merging by series id let an older episode overwrite
+      // the newer one depending on iteration order.
+      .groupBy { entry -> "${normalizedMediaType(entry.mediaType)}:${entry.mediaId}" }
+      .mapNotNull { (_, entries) -> entries.maxByOrNull { it.updatedAt } }
+      .sortedByDescending { it.updatedAt }
       .map { entry ->
         MediaItem(
           id = entry.mediaId,
@@ -8264,7 +8696,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
           seasonNumber = player.seasonNumber,
           episodeNumber = player.episodeNumber,
           progressPercent = normalizedProgress,
-          durationSeconds = player.runtimeMinutes?.times(60),
+          positionSeconds = lastPlaybackPositionSec.takeIf { it >= 0.0 },
+          durationSeconds = lastPlaybackDurationSec.takeIf { it > 0.0 }?.toInt() ?: player.runtimeMinutes?.times(60),
           isLive = player.isLive,
           stream = if (uiState.rememberLastSource) player.currentStream else null,
         ),
@@ -8287,12 +8720,14 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
         year = item.year ?: existing.year,
         poster = item.poster ?: existing.poster,
         backdrop = item.backdrop ?: existing.backdrop,
-        progress = maxOf(existing.progress ?: 0.0, item.progress ?: 0.0),
+        // Position and episode are one state. Never combine an older episode's larger percentage
+        // with the newest episode identity.
+        progress = item.progress ?: existing.progress,
         resumeSeasonNumber = item.resumeSeasonNumber ?: existing.resumeSeasonNumber,
         resumeEpisodeNumber = item.resumeEpisodeNumber ?: existing.resumeEpisodeNumber,
       )
     }
-    return merged.values.sortedByDescending { it.progress ?: 0.0 }
+    return merged.values.sortedByDescending { it.updatedAt ?: 0L }
   }
 
   private fun mergeWatchlistWithLocal(traktItems: List<TraktItem>, localOverride: List<MediaItem>? = null): List<MediaItem> {
@@ -8360,7 +8795,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
 
   private fun traktItemId(item: TraktItem): String = item.tmdbId?.toString() ?: item.id
 
-  private fun buildPlayerSession(url: String, detail: MediaDetail, sourceLabel: String?, episode: EpisodeItem?, stream: AddonStream, resumePercent: Double = 0.0): PlayerSession = PlayerSession(
+  private fun buildPlayerSession(url: String, detail: MediaDetail, sourceLabel: String?, episode: EpisodeItem?, stream: AddonStream, resumePercent: Double = 0.0, resumePositionSec: Double = 0.0): PlayerSession = PlayerSession(
     holdToSpeedEnabled = uiState.holdToSpeedEnabled,
     holdToSpeedMultiplier = uiState.holdToSpeedMultiplier,
     swipeToSeekEnabled = uiState.swipeToSeekEnabled,
@@ -8389,14 +8824,12 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     playerEngine = if (stream.source == DOWNLOAD_STREAM_SOURCE) "Media3" else uiState.playerEngine,
     preferredAudioLanguage = uiState.preferredAudioLanguage,
     resumePercent = resumePercent,
+    resumePositionSec = resumePositionSec,
     currentStream = stream,
     imdbId = detail.imdbId ?: detail.id.takeIf { it.startsWith("tt") },
-    // The profile's own choice still wins where one is set — a per-profile subtitle language is a
-    // family arrangement, not a device setting — and the app-level preference stands in otherwise.
-    subtitleLanguage = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }
-      ?.subtitleLanguage?.takeIf { it.isNotBlank() }
-      ?.let(Languages::normalize)
-      ?: uiState.preferredSubtitleLanguage,
+    // This is the explicit subtitle setting shown to the viewer. A general profile-language field
+    // must not silently replace it or "Show only preferred" filters the list using another value.
+    subtitleLanguage = uiState.preferredSubtitleLanguage,
     secondarySubtitleLanguage = uiState.secondarySubtitleLanguage,
     secondaryAudioLanguage = uiState.secondaryAudioLanguage,
     useForcedSubtitles = uiState.useForcedSubtitles,
@@ -8465,6 +8898,8 @@ private class NativeAppViewModelFactory(
 fun StreamDekNativeApp(
   pendingAddonManifestUrl: String? = null,
   onAddonManifestConsumed: () -> Unit = {},
+  pendingEpisodeNotification: EpisodeNotificationTarget? = null,
+  onEpisodeNotificationConsumed: () -> Unit = {},
 ) {
   val context = androidx.compose.ui.platform.LocalContext.current.applicationContext as Application
   val viewModel = viewModel<NativeAppViewModel>(factory = NativeAppViewModelFactory(context))
@@ -8603,6 +9038,7 @@ fun StreamDekNativeApp(
                 nextEpisodeLoadingLabel = uiState.nextEpisodeLoadingLabel,
                 onPreviousEpisode = { viewModel.playAdjacentEpisode(-1) },
                 onNextEpisode = { viewModel.playAdjacentEpisode(1) },
+                onNextEpisodeAtEnding = viewModel::playNextEpisodeFromEnding,
                 isFavourite = uiState.favouriteChannels.any { it.id == uiState.playerSession.mediaId },
                 onToggleFavourite = viewModel::toggleFavouriteChannelForCurrentSession,
                 liveChannels = uiState.playerLiveChannels,
@@ -8622,7 +9058,7 @@ fun StreamDekNativeApp(
               )
               }
               else -> rootStateHolder.SaveableStateProvider("main_scene") {
-                MainScene(viewModel, pendingAddonManifestUrl, onAddonManifestConsumed)
+                MainScene(viewModel, pendingAddonManifestUrl, onAddonManifestConsumed, pendingEpisodeNotification, onEpisodeNotificationConsumed)
               }
             }
           }
@@ -9220,29 +9656,51 @@ private fun NavigationCaretCue() {
 }
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: String?, onAddonManifestConsumed: () -> Unit) {
+private fun MainScene(
+  viewModel: NativeAppViewModel,
+  pendingAddonManifestUrl: String?,
+  onAddonManifestConsumed: () -> Unit,
+  pendingEpisodeNotification: EpisodeNotificationTarget?,
+  onEpisodeNotificationConsumed: () -> Unit,
+) {
   val launchContext = androidx.compose.ui.platform.LocalContext.current
   val uiState = viewModel.uiState
   // Turning new-episode reminders on has to clear Android 13's notification permission first.
   // The setting is only switched on once that is answered, and answered "yes" -- a toggle that
   // flipped on while the system was still refusing to show anything would be a lie.
+  var pendingNotificationEnable by remember { mutableStateOf<((Boolean) -> Unit)?>(null) }
   val notificationPermissionLauncher = rememberLauncherForActivityResult(
     ActivityResultContracts.RequestPermission(),
-  ) { granted -> viewModel.setEpisodeRemindersEnabled(granted) }
-  val onEpisodeRemindersRequested: (Boolean) -> Unit = { enabled ->
+  ) { granted -> pendingNotificationEnable?.invoke(granted); pendingNotificationEnable = null }
+  fun requestNotificationToggle(enabled: Boolean, apply: (Boolean) -> Unit) {
     val needsPermission = enabled &&
       android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
       ContextCompat.checkSelfPermission(launchContext, android.Manifest.permission.POST_NOTIFICATIONS) !=
         android.content.pm.PackageManager.PERMISSION_GRANTED
     if (needsPermission) {
+      pendingNotificationEnable = apply
       notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
     } else {
-      viewModel.setEpisodeRemindersEnabled(enabled)
+      apply(enabled)
     }
   }
+  val onEpisodeRemindersRequested: (Boolean) -> Unit = { enabled -> requestNotificationToggle(enabled, viewModel::setEpisodeRemindersEnabled) }
+  val onUpcomingEpisodeRemindersRequested: (Boolean) -> Unit = { enabled -> requestNotificationToggle(enabled, viewModel::setUpcomingEpisodeRemindersEnabled) }
   var selectedTab by rememberSaveable { mutableStateOf(MainTab.Home) }
   var previousTab by rememberSaveable { mutableStateOf(MainTab.Home) }
   var openDetail by rememberSaveable { mutableStateOf(uiState.detail?.let { it.type to it.id }) }
+  LaunchedEffect(pendingEpisodeNotification, uiState.booting, uiState.activeProfileId) {
+    val target = pendingEpisodeNotification ?: return@LaunchedEffect
+    if (uiState.booting || uiState.activeProfileId == null) return@LaunchedEffect
+    val fallback = MediaItem(
+      id = target.mediaId, type = "tv", title = "", year = null, poster = null,
+      backdrop = null, rating = null, description = "",
+      resumeSeasonNumber = target.season, resumeEpisodeNumber = target.episode,
+    )
+    openDetail = "tv" to target.mediaId
+    viewModel.loadDetail("tv", target.mediaId, fallback)
+    onEpisodeNotificationConsumed()
+  }
   val browseRow = uiState.browseRow
   val networkBrowse = uiState.networkBrowseItem
   // Settings keeps a history stack so backing out of a nested page returns to the
@@ -9786,6 +10244,7 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
                 onUpdateProfile = viewModel::updateProfile,
                 onDeleteProfile = viewModel::deleteProfile,
                 onMakeDefaultProfile = viewModel::makeDefaultProfile,
+                onRememberLastProfileAtStartupChange = viewModel::setRememberLastProfileAtStartup,
                 onUpdateProfilePin = viewModel::updateProfilePin,
                 onSignOut = viewModel::signOut,
                 onSignIn = { showAuth = true },
@@ -9888,6 +10347,8 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
                 onRefreshM3uPlaylists = { viewModel.loadM3uPlaylists(forceRefresh = true) },
                 onDownloadsEnabledChange = viewModel::setDownloadsEnabled,
                 onEpisodeRemindersChange = onEpisodeRemindersRequested,
+                onUpcomingEpisodeRemindersChange = onUpcomingEpisodeRemindersRequested,
+                onUpcomingEpisodeReminderDaysChange = viewModel::setUpcomingEpisodeReminderDays,
                 onDv7HevcFallbackChange = viewModel::setDv7HevcFallback,
                 onTunneledPlaybackChange = viewModel::setTunneledPlayback,
                 onRefreshDownloads = viewModel::refreshDownloads,
@@ -9949,6 +10410,9 @@ private fun MainScene(viewModel: NativeAppViewModel, pendingAddonManifestUrl: St
           onPlayBestStream = viewModel::playBestStream,
           onLoadSeason = viewModel::loadSeason,
           onToggleWatchlist = viewModel::toggleWatchlist,
+          onToggleEpisodeWatched = viewModel::toggleEpisodeWatched,
+          onSetSeasonWatched = viewModel::setSeasonWatched,
+          onRefreshPlaybackProgress = viewModel::pullPlaybackProgress,
           onToggleFavourite = viewModel::toggleFavouriteChannelForCurrentDetail,
           onOpenPerson = viewModel::openPerson,
           onClosePerson = viewModel::closePerson,
@@ -10501,6 +10965,8 @@ private fun TraktItem.toMediaItem(): MediaItem = MediaItem(
   rating = rating,
   description = description.orEmpty(),
   progress = progress,
+  resumeSeasonNumber = seasonNumber,
+  resumeEpisodeNumber = episodeNumber,
   addedAt = addedAt,
   updatedAt = updatedAt,
 )
@@ -10528,6 +10994,25 @@ private fun combinedContinueWatching(uiState: AppUiState): List<MediaItem> {
 
 private fun isSeriesType(type: String): Boolean = type == "tv" || type == "series" || type == "show"
 private fun homeHeroMediaKey(item: MediaItem): String = "${if (isSeriesType(item.type)) "tv" else item.type}:${item.id}"
+
+/**
+ * Stable identity for cards that can represent a specific episode of a series.
+ *
+ * Most catalogue cards identify a title, so type + id is sufficient. New Episodes deliberately
+ * allows more than one card for the same series, however, and those cards must remain distinct in
+ * lazy lists and in the View All page.
+ */
+internal fun mediaCollectionKey(item: MediaItem): String = buildString {
+  append(item.type)
+  append('-')
+  append(item.id)
+  if (item.resumeSeasonNumber != null || item.resumeEpisodeNumber != null) {
+    append("-s")
+    append(item.resumeSeasonNumber ?: "unknown")
+    append("-e")
+    append(item.resumeEpisodeNumber ?: "unknown")
+  }
+}
 
 private fun profileSwitcherHeroItems(sections: List<MediaSection>): List<MediaItem> {
   // Preferred sources first, then any remaining sections as a fallback, so the
@@ -10667,7 +11152,7 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
       if (recommendations.isNotEmpty()) add(HomeRow("recommended", "Recommended For You", recommendations))
       if (trending.isNotEmpty()) add(HomeRow("trending", "Trending On Trakt", trending))
       if (uiState.mergedWatchlist.isNotEmpty()) add(HomeRow("watchlist", "Watchlist", uiState.mergedWatchlist))
-    }
+    }.map { row -> row.copy(items = row.items.distinctBy(::mediaCollectionKey)) }
   }
   val heroBackdrop = heroItems.getOrNull(pagerState.currentPage.coerceIn(0, (heroItems.size - 1).coerceAtLeast(0)))
 
@@ -12222,7 +12707,7 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
   }
   // M3U parser IDs are already unique; do not allocate another full list just to deduplicate a
   // potentially huge playlist. Other rows keep their existing defensive de-duplication.
-  val uniqueItems = remember(row.id, loadedItems) { if (isM3uRow) loadedItems else loadedItems.distinctBy { "${it.type}-${it.id}" } }
+  val uniqueItems = remember(row.id, loadedItems) { if (isM3uRow) loadedItems else loadedItems.distinctBy(::mediaCollectionKey) }
   val hasMovies = remember(uniqueItems, isM3uRow) { !isM3uRow && uniqueItems.any { it.type.equals("movie", true) } }
   val hasSeries = remember(uniqueItems, isM3uRow) { !isM3uRow && uniqueItems.any { it.type.equals("tv", true) || it.type.equals("series", true) } }
   val showsTypeFilters = hasMovies && hasSeries
@@ -12398,7 +12883,11 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
   val gridColumns = if (showCategoryGrid) 2 else contentColumns()
   // Playlist VOD entries carry a direct stream URL, which makes isLiveRow true for them as well —
   // they are still titles, not channels.
-  val itemNoun = if (isLiveRow && row.id != "m3u_playlists_vod") "channels" else "titles"
+  val itemNoun = when {
+    row.id == "new-episodes" -> "episodes"
+    isLiveRow && row.id != "m3u_playlists_vod" -> "channels"
+    else -> "titles"
+  }
   val headerTitle = selectedCategory ?: row.title
   val headerCount = when {
     showCategoryGrid -> "${categories.size} categories • ${scopedItems.size.formattedItemCount()} $itemNoun"
@@ -12466,7 +12955,7 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
           }
         }
       } else {
-        gridItems(filteredItems, key = { "${it.type}-${it.id}" }) { item ->
+        gridItems(filteredItems, key = ::mediaCollectionKey) { item ->
           val disabled = isFavouritesRow && addonFor(item)?.enabled == false
           // Long-pressing anywhere on a live row opens the channel menu, so the TV list has to be
           // refreshed for every layout — not just the landscape-card one.
@@ -12475,7 +12964,7 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
             showsList -> BrowseListRow(item = item, favourite = isFavourite(item), dimmed = disabled, onClick = { handleOpen(item) }, onLongPress = openActions)
             isLiveRow && liveLandscapeCards -> NetworkHomeCard(item = item, sports = true, modifier = Modifier.fillMaxWidth(), dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) }, onLongPress = openActions)
             isNetworkRow -> NetworkHomeCard(item = item, sports = false, modifier = Modifier.fillMaxWidth(), dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) })
-            else -> LibraryPosterTile(item = item, modifier = Modifier.alpha(if (disabled) 0.4f else 1f), showMeta = false, favourite = isLiveRow && isFavourite(item), onClick = { handleOpen(item) }, onLongPress = openActions)
+            else -> LibraryPosterTile(item = item, modifier = Modifier.alpha(if (disabled) 0.4f else 1f), showMeta = row.id == "new-episodes", favourite = isLiveRow && isFavourite(item), onClick = { handleOpen(item) }, onLongPress = openActions)
           }
         }
         if (isLoadingMore) {
@@ -12900,7 +13389,7 @@ private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, cont
       contentPadding = PaddingValues(horizontal = 16.dp),
       horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-      items(items, key = { "${it.type}-${it.id}" }) { item ->
+      items(items, key = ::mediaCollectionKey) { item ->
         val disabled = isFavouritesRow && addonFor(item)?.enabled == false
         if (rowId == "continue") {
           ContinueWatchingCard(item = item, style = continueWatchingStyle, onClick = { onPlayContinueWatching(item) }, onLongPress = { actionItem = item; onRefreshHandoffDevices() })
@@ -13564,7 +14053,14 @@ private fun LibraryPosterTile(item: MediaItem, modifier: Modifier = Modifier, sh
       Column(modifier = Modifier.fillMaxWidth().height(72.dp).padding(10.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
         Text(item.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, lineHeight = 16.sp)
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-          Text(item.year ?: item.type.replaceFirstChar(Char::uppercase), color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.54f), maxLines = 1, fontSize = 11.sp)
+          Text(
+            item.cardSubtitle ?: item.year ?: item.type.replaceFirstChar(Char::uppercase),
+            color = if (item.cardHighlight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.54f),
+            fontWeight = if (item.cardHighlight) FontWeight.Bold else FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            fontSize = 11.sp,
+          )
           item.progress?.takeIf { it > 0.0 }?.let { Text("${it.toInt()}%", color = Color(0xFF22C55E), fontWeight = FontWeight.Bold, fontSize = 10.sp) }
         }
       }
@@ -13597,6 +14093,7 @@ private fun BrowseListRow(
   onLongPress: () -> Unit,
 ) {
   val subtitle = listOfNotNull(
+    item.cardSubtitle?.takeIf { it.isNotBlank() },
     item.sourceCatalogGenre?.takeIf { it.isNotBlank() },
     item.sourceCatalogName?.takeIf { it.isNotBlank() },
     item.year?.takeIf { it.isNotBlank() },
@@ -15365,6 +15862,7 @@ private fun SettingsTab(
   onUpdateProfile: (String, String, Int) -> Unit,
   onDeleteProfile: (String) -> Unit,
   onMakeDefaultProfile: (String) -> Unit,
+  onRememberLastProfileAtStartupChange: (Boolean) -> Unit,
   onUpdateProfilePin: (String, String?) -> Unit,
   onSignOut: () -> Unit,
   onSignIn: () -> Unit,
@@ -15462,6 +15960,8 @@ private fun SettingsTab(
   onRefreshM3uPlaylists: () -> Unit,
   onDownloadsEnabledChange: (Boolean) -> Unit,
   onEpisodeRemindersChange: (Boolean) -> Unit,
+  onUpcomingEpisodeRemindersChange: (Boolean) -> Unit,
+  onUpcomingEpisodeReminderDaysChange: (Int) -> Unit,
   onDv7HevcFallbackChange: (Boolean) -> Unit,
   onTunneledPlaybackChange: (Boolean) -> Unit,
   onRefreshDownloads: () -> Unit,
@@ -15838,11 +16338,14 @@ private fun SettingsTab(
               SettingsChoiceRow(
                 "SRC",
                 Color(0xFF38BDF8),
-                "Preferred Source",
-                "Which list the player's subtitle picker opens on.",
-                listOf("Built-in", "Add-ons"),
-                if (uiState.subtitleDefaultSource == "Addons") "Add-ons" else "Built-in",
-              ) { selected -> onSubtitleDefaultSourceChange(if (selected == "Add-ons") "Addons" else "BuiltIn") }
+                "Subtitle Sources",
+                "Choose which subtitle sources the player searches and shows.",
+                subtitleSourceChoices.map { it.second },
+                subtitleSourceLabel(uiState.subtitleDefaultSource),
+              ) { selected ->
+                subtitleSourceChoices.firstOrNull { it.second == selected }
+                  ?.let { onSubtitleDefaultSourceChange(it.first) }
+              }
             }
           }
           item {
@@ -15946,14 +16449,33 @@ private fun SettingsTab(
           item {
             SettingsSection("New Episodes") {
               SettingsSwitchRow(
-                "NEW", Color(0xFF0EA5E9), "New Episode Reminders",
+                "NEW", Color(0xFF0EA5E9), "New episode notifications",
                 if (!uiState.episodeRemindersPermitted && uiState.episodeRemindersEnabled) {
                   "Notifications are switched off for StreamDek. Turn them on in Android settings to get these."
                 } else {
-                  "Get a notification on the morning a new episode of a series on your watchlist, or one you are part-way through, is out."
+                  "Notify me when a new episode of a series I follow or am watching becomes available."
                 },
                 uiState.episodeRemindersEnabled, onEpisodeRemindersChange,
               )
+              SettingsDivider()
+              SettingsSwitchRow(
+                "SOON", Color(0xFF8B5CF6), "Upcoming episode notifications",
+                if (!uiState.episodeRemindersPermitted && uiState.upcomingEpisodeRemindersEnabled) {
+                  "Notifications are switched off for StreamDek. Turn them on in Android settings to get these."
+                } else {
+                  "Notify me before a new episode is released."
+                },
+                uiState.upcomingEpisodeRemindersEnabled, onUpcomingEpisodeRemindersChange,
+              )
+              SettingsDivider()
+              SettingsChoiceRow(
+                "TIME", Color(0xFFF59E0B), "Notify me before release",
+                "Choose how early upcoming episode notifications arrive.",
+                listOf("1 day", "2 days", "1 week"),
+                when (uiState.upcomingEpisodeReminderDays) { 2 -> "2 days"; 7 -> "1 week"; else -> "1 day" },
+              ) { selected ->
+                onUpcomingEpisodeReminderDaysChange(when (selected) { "2 days" -> 2; "1 week" -> 7; else -> 1 })
+              }
             }
           }
           item {
@@ -16169,7 +16691,7 @@ private fun SettingsTab(
         SettingsRoute.Simkl -> item { DeviceCodeSyncServiceSummary(SyncService.Simkl, uiState, onRequestSyncServiceDeviceCode, onPollSyncServiceAuthorization, onDisconnectSyncService, onRefreshSyncServices) }
         SettingsRoute.Punchplay -> item { DeviceCodeSyncServiceSummary(SyncService.Punchplay, uiState, onRequestSyncServiceDeviceCode, onPollSyncServiceAuthorization, onDisconnectSyncService, onRefreshSyncServices) }
         SettingsRoute.Mdblist -> item { ApiKeySyncServiceSummary(SyncService.Mdblist, uiState, uiState.mdblistApiKey, onConnectSyncServiceApiKey, onDisconnectSyncService, onRefreshSyncServices) }
-        SettingsRoute.Profiles -> item { ProfilesSettingsSummary(uiState, onSwitchProfile, onSelectProfile, onSubmitProfilePin, onCancelProfilePin, onCreateProfile, onUpdateProfile, onDeleteProfile, onMakeDefaultProfile, onUpdateProfilePin) }
+        SettingsRoute.Profiles -> item { ProfilesSettingsSummary(uiState, onSwitchProfile, onSelectProfile, onSubmitProfilePin, onCancelProfilePin, onCreateProfile, onUpdateProfile, onDeleteProfile, onMakeDefaultProfile, onRememberLastProfileAtStartupChange, onUpdateProfilePin) }
         SettingsRoute.Account -> item { AccountSettingsSummary(uiState, onSignOut, onSignIn, onRefreshSync) }
         SettingsRoute.AppUpdates -> item { AppUpdatesSettingsSummary(uiState, onAutoUpdateChecksChange, onCheckForUpdates, onStartUpdate) }
       }
@@ -16197,6 +16719,7 @@ private fun ProfilesSettingsSummary(
   onUpdateProfile: (String, String, Int) -> Unit,
   onDeleteProfile: (String) -> Unit,
   onMakeDefaultProfile: (String) -> Unit,
+  onRememberLastProfileAtStartupChange: (Boolean) -> Unit,
   onUpdateProfilePin: (String, String?) -> Unit,
 ) {
   var createExpanded by rememberSaveable { mutableStateOf(false) }
@@ -16252,6 +16775,17 @@ private fun ProfilesSettingsSummary(
 
   val activeProfile = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }
   Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+    SettingsSection("Startup") {
+      SettingsSwitchRow(
+        "AUTO",
+        Color(0xFF22C55E),
+        "Remember Last profile at startup",
+        "Skip the profile picker when this phone opens and continue with the last profile used.",
+        uiState.rememberLastProfileAtStartup,
+        onRememberLastProfileAtStartupChange,
+      )
+    }
+
     activeProfile?.let { profile ->
       Surface(
         color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
@@ -17359,7 +17893,7 @@ private fun LanguageChoiceSheet(
   }
   Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
     Box(
-      modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.66f)).clickable(onClick = onDismiss),
+      modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.66f)).imePadding().clickable(onClick = onDismiss),
       contentAlignment = Alignment.BottomCenter,
     ) {
       Surface(
@@ -20829,6 +21363,9 @@ private fun DetailScreen(
   onPlayBestStream: (EpisodeItem?) -> Unit,
   onLoadSeason: (String, Int) -> Unit,
   onToggleWatchlist: (MediaItem) -> Unit,
+  onToggleEpisodeWatched: (MediaDetail, EpisodeItem, Boolean) -> Unit,
+  onSetSeasonWatched: (MediaDetail, List<EpisodeItem>, Boolean) -> Unit,
+  onRefreshPlaybackProgress: () -> Unit,
   onToggleFavourite: () -> Unit,
   onOpenPerson: (CastMember) -> Unit,
   onClosePerson: () -> Unit,
@@ -20866,11 +21403,13 @@ private fun DetailScreen(
   LaunchedEffect(detail.id, watchedOwnerKey, uiState.watchedEpisodeRevision) {
     watchedEpisodeIds = watchedEpisodeStore.load(watchedOwnerKey, detail.id)
   }
-  val detailScope = rememberCoroutineScope()
-  fun persistWatchedEpisodeIds(updated: List<String>) {
-    watchedEpisodeIds = updated.distinct()
-    watchedEpisodeStore.save(watchedOwnerKey, detail.id, watchedEpisodeIds)
+  LaunchedEffect(detail.id, watchedOwnerKey) {
+    while (true) {
+      delay(4_000L)
+      onRefreshPlaybackProgress()
+    }
   }
+  val detailScope = rememberCoroutineScope()
   var watchedMovieIds by rememberSaveable(watchedOwnerKey) { mutableStateOf(watchedMovieStore.load(watchedOwnerKey)) }
   val movieWatched = detail.type == "movie" && detail.id in watchedMovieIds
   fun persistMovieWatched(watched: Boolean) {
@@ -21102,13 +21641,7 @@ private fun DetailScreen(
                   val fullSeasonWatched = selectedSeasonIds.isNotEmpty() && selectedSeasonIds.all { it in watchedEpisodeIds }
                   OutlinedButton(
                     onClick = {
-                      persistWatchedEpisodeIds(
-                        if (fullSeasonWatched) {
-                          watchedEpisodeIds.filterNot { it in selectedSeasonIds }
-                        } else {
-                          (watchedEpisodeIds + selectedSeasonIds).distinct()
-                        }
-                      )
+                      onSetSeasonWatched(detail, uiState.selectedSeasonEpisodes, !fullSeasonWatched)
                     },
                     enabled = selectedSeasonIds.isNotEmpty(),
                     shape = RoundedCornerShape(999.dp),
@@ -21117,7 +21650,7 @@ private fun DetailScreen(
                   ) {
                     Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = if (fullSeasonWatched) Color(0xFF22C55E) else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.76f), modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(if (fullSeasonWatched) "Season watched" else "Mark season", fontWeight = FontWeight.Bold)
+                    Text(if (fullSeasonWatched) "Mark Season as Unwatched" else "Mark Season as Watched", fontWeight = FontWeight.Bold)
                   }
                 }
                 Box(modifier = Modifier.padding(horizontal = 24.dp)) {
@@ -21142,7 +21675,7 @@ private fun DetailScreen(
                         watched = watchedKey in watchedEpisodeIds,
                         blurUnwatched = uiState.blurUnwatchedEpisodes,
                         onToggleWatched = {
-                          persistWatchedEpisodeIds(if (watchedKey in watchedEpisodeIds) watchedEpisodeIds - watchedKey else watchedEpisodeIds + watchedKey)
+                          onToggleEpisodeWatched(detail, episode, watchedKey in watchedEpisodeIds)
                         },
                         onOpen = {
                           if (uiState.showStreamsList) {
@@ -21271,7 +21804,7 @@ private fun DetailScreen(
         },
         onReload = { onLoadStreams(episode) },
         onToggleWatched = {
-          persistWatchedEpisodeIds(if (watchedKey in watchedEpisodeIds) watchedEpisodeIds - watchedKey else watchedEpisodeIds + watchedKey)
+          onToggleEpisodeWatched(detail, episode, watchedKey in watchedEpisodeIds)
         },
         onPlayStream = onPlayEpisodeStream,
         onDownloadStream = onDownloadStream,
@@ -24514,7 +25047,7 @@ private fun EpisodeViewportCard(
         TextButton(onClick = onToggleWatched) {
           Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = if (watched) Color(0xFF22C55E) else Color(0xFFF2F2EE), modifier = Modifier.size(18.dp))
           Spacer(modifier = Modifier.width(5.dp))
-          Text(if (watched) "Watched" else "Mark watched", color = if (watched) Color(0xFF22C55E) else Color(0xFFF2F2EE))
+          Text(if (watched) "Mark as Unwatched" else "Mark as Watched", color = if (watched) Color(0xFF22C55E) else Color(0xFFF2F2EE))
         }
       }
     }
@@ -24623,7 +25156,7 @@ private fun EpisodeStreamsPage(
                   modifier = Modifier.size(15.dp),
                 )
                 Text(
-                  if (watched) "Watched" else "Mark watched",
+                  if (watched) "Mark as Unwatched" else "Mark as Watched",
                   color = if (watched) Color(0xFF22C55E) else Color(0xFFF2F2EE),
                   style = MaterialTheme.typography.labelSmall,
                   fontWeight = FontWeight.Bold,
@@ -24910,47 +25443,3 @@ private fun GlassCard(modifier: Modifier = Modifier, containerAlpha: Float = 0.8
     Column(modifier = Modifier.fillMaxWidth(), content = content)
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

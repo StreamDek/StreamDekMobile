@@ -89,7 +89,9 @@ object Languages {
     if (value == ORIGINAL || value == NONE) return value
     recognised[value]?.let { return it }
     // "english (sdh)", "spanish [forced]", "português - brasil"
-    val stripped = value.substringBefore('(').substringBefore('[').substringBefore(" - ").trim()
+    val stripped = value.substringBefore('(').substringBefore('[').substringBefore(" - ")
+      .replace(Regex("""\s+(?:cc|sdh|forced|hearing[ _-]?impaired)\b.*$"""), "")
+      .trim()
     recognised[stripped]?.let { return it }
     // "en-US", "pt_BR", "zh-Hans-CN"
     val base = stripped.split('-', '_').firstOrNull()?.trim().orEmpty()

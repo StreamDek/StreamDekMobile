@@ -63,6 +63,8 @@ class LanguagesTest {
   @Test
   fun `the notes subtitle listings carry are ignored`() {
     assertEquals("en", Languages.normalize("English (SDH)"))
+    assertEquals("en", Languages.normalize("English CC"))
+    assertEquals("en", Languages.normalize("English SDH"))
     assertEquals("es", Languages.normalize("Spanish [forced]"))
     assertEquals("en", Languages.normalize("  English  "))
   }

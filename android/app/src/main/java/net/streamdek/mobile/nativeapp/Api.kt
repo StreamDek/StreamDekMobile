@@ -529,7 +529,10 @@ data class PlaybackProgressRecord(
   val durationSec: Double,
   val progress: Double,
   val completed: Boolean,
+  val unwatched: Boolean = false,
   val updatedAt: Long,
+  val lastDevice: String? = null,
+  val lastPlatform: String? = null,
 )
 
 class StreamDekApiClient(context: Context? = null) {
@@ -1752,6 +1755,7 @@ class StreamDekApiClient(context: Context? = null) {
     seasonNumber: Int? = null,
     episodeNumber: Int? = null,
     completed: Boolean = false,
+    unwatched: Boolean = false,
   ): Result<Unit> = withContext(Dispatchers.IO) {
     runCatching {
       val metadata = JSONObject()
@@ -1768,6 +1772,15 @@ class StreamDekApiClient(context: Context? = null) {
         .put("year", year)
         .put("seasonNumber", seasonNumber)
         .put("episodeNumber", episodeNumber)
+        // Keep both representations on the wire. Current SyncDek stores the scalar fields for
+        // indexing and returns this nested shape to playback clients; older backends may only
+        // preserve metadata, so sending both keeps Mobile -> TV episode identity lossless.
+        .put(
+          "episode",
+          if (seasonNumber != null && episodeNumber != null) {
+            JSONObject().put("seasonNumber", seasonNumber).put("episodeNumber", episodeNumber)
+          } else null,
+        )
       val body = JSONObject()
         .put("entityType", if (entityType.equals("movie", true)) "movie" else "tv")
         .put("entityId", entityId)
@@ -1775,9 +1788,12 @@ class StreamDekApiClient(context: Context? = null) {
         .put("positionSec", positionSec)
         .put("durationSec", durationSec)
         .put("updatedAt", java.time.Instant.now().toString())
+        .put("lastDevice", clientIdentity?.deviceName ?: "StreamDek Mobile")
+        .put("lastPlatform", "mobile")
         // Said outright rather than inferred from the position: "mark as watched" is pressed on a
         // card, so there is no position and usually no runtime for the server to work it out from.
         .put("completed", completed)
+        .put("unwatched", unwatched)
         .put("metadata", metadata)
       val response = execute(
         Request.Builder()
@@ -1791,13 +1807,82 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
 
+  /**
+   * Writes one logical watched-state change as a single request.
+   *
+   * A season action can contain many episodes. Sending those as unrelated requests allowed a
+   * transient failure to leave SyncDek with only part of the season while the optimistic local UI
+   * showed all of it as watched. The endpoint is idempotent per episode key, so callers may retry
+   * the complete batch safely.
+   */
+  suspend fun putPlaybackProgressBatch(
+    session: AuthSession,
+    profileId: String?,
+    records: List<PlaybackProgressRecord>,
+  ): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val items = JSONArray()
+      records.forEach { record ->
+        val metadata = JSONObject()
+          .put("title", record.title)
+          .put("posterUrl", record.poster)
+          .put("backdropUrl", record.backdrop)
+          .put("poster", record.poster)
+          .put("backdrop", record.backdrop)
+          .put("year", record.year)
+          .put("seasonNumber", record.seasonNumber)
+          .put("episodeNumber", record.episodeNumber)
+          .put(
+            "episode",
+            if (record.seasonNumber != null && record.episodeNumber != null) {
+              JSONObject().put("seasonNumber", record.seasonNumber).put("episodeNumber", record.episodeNumber)
+            } else null,
+          )
+        items.put(
+          JSONObject()
+            .put("entityType", if (record.entityType.equals("movie", true)) "movie" else "tv")
+            .put("entityId", record.entityId)
+            .put("episodeKey", record.episodeKey)
+            .put("positionSec", record.positionSec)
+            .put("durationSec", record.durationSec)
+            .put("updatedAt", java.time.Instant.ofEpochMilli(record.updatedAt).toString())
+            .put("lastDevice", clientIdentity?.deviceName ?: record.lastDevice ?: "StreamDek Mobile")
+            .put("lastPlatform", record.lastPlatform ?: "mobile")
+            .put("completed", record.completed)
+            .put("unwatched", record.unwatched)
+            .put("metadata", metadata),
+        )
+      }
+      val response = execute(
+        Request.Builder()
+          .url("$apiBaseUrl/sync/progress/batch")
+          .headers(authHeaders(session, profileId = profileId))
+          .post(JSONObject().put("items", items).toString().toRequestBody(jsonMediaType))
+          .build(),
+      )
+      ensureOk(response, "Failed to save season watched state")
+      Unit
+    }
+  }
+
   /** Everything the account knows about where things were left, newest first. */
-  suspend fun fetchPlaybackProgress(session: AuthSession, profileId: String?, limit: Int = 100): Result<List<PlaybackProgressRecord>> =
+  suspend fun fetchPlaybackProgress(
+    session: AuthSession,
+    profileId: String?,
+    limit: Int = 100,
+    entityType: String? = null,
+    entityId: String? = null,
+  ): Result<List<PlaybackProgressRecord>> =
     withContext(Dispatchers.IO) {
       runCatching {
+        val filters = buildString {
+          append("limit=").append(limit)
+          entityType?.takeIf { it.isNotBlank() }?.let { append("&entityType=").append(encodeQuery(it)) }
+          entityId?.takeIf { it.isNotBlank() }?.let { append("&entityId=").append(encodeQuery(it)) }
+        }
         val response = execute(
           Request.Builder()
-            .url("$apiBaseUrl/sync/progress?limit=$limit")
+            .url("$apiBaseUrl/sync/progress?$filters")
             .headers(authHeaders(session, includeContentType = false, profileId = profileId))
             .build(),
         )
@@ -1823,9 +1908,12 @@ class StreamDekApiClient(context: Context? = null) {
                 durationSec = item.optDouble("durationSec", 0.0),
                 progress = item.optDouble("progress", 0.0),
                 completed = item.optString("status").equals("completed", true),
+                unwatched = item.optString("status").equals("unwatched", true),
                 // Compared against the local entry's own stamp when the two disagree, so the
                 // newer of them wins rather than whichever happened to be read last.
                 updatedAt = parseIsoInstantMillis(item.optString("updatedAt")),
+                lastDevice = item.optStringOrNull("lastDevice"),
+                lastPlatform = item.optStringOrNull("lastPlatform"),
               ),
             )
           }
@@ -2642,6 +2730,50 @@ class StreamDekApiClient(context: Context? = null) {
   suspend fun fetchTraktWatchlist(session: AuthSession, profileId: String): Result<List<TraktItem>> =
     traktList(session, profileId, "/trakt/sync/watchlist/enriched")
 
+  suspend fun fetchTraktWatchedEpisodeKeys(session: AuthSession, profileId: String, seriesId: String): Result<Set<String>> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = execute(
+          Request.Builder().url("$apiBaseUrl/trakt/sync/history")
+            .headers(authHeaders(session, includeContentType = false, profileId = profileId)).build(),
+        )
+        ensureOk(response, "Failed to load watched episodes")
+        val results = response.json.optJSONArray("results") ?: JSONArray()
+        buildSet {
+          for (index in 0 until results.length()) {
+            val item = results.optJSONObject(index) ?: continue
+            if (!item.optString("type").equals("episode", true)) continue
+            val showId = item.optJSONObject("show")?.optJSONObject("ids")?.opt("tmdb").asOptionalInt()?.toString() ?: continue
+            if (showId != seriesId) continue
+            val node = item.optJSONObject("episode") ?: continue
+            val season = node.opt("season").asOptionalInt() ?: continue
+            val episode = node.opt("number").asOptionalInt() ?: continue
+            add("$seriesId:s$season:e$episode")
+          }
+        }
+      }
+    }
+
+  suspend fun syncWatchedEpisode(
+    session: AuthSession,
+    profileId: String,
+    detail: MediaDetail,
+    episode: EpisodeItem,
+    watched: Boolean,
+  ): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val episodeNode = JSONObject().put("number", episode.episodeNumber).put("watched_at", Instant.now().toString())
+      val show = JSONObject()
+        .put("title", detail.title)
+        .put("ids", JSONObject().put("tmdb", detail.id.toIntOrNull()).put("imdb", detail.imdbId))
+        .put("seasons", JSONArray().put(JSONObject().put("number", episode.seasonNumber).put("episodes", JSONArray().put(episodeNode))))
+      val payload = JSONObject().put("movies", JSONArray()).put("shows", JSONArray().put(show))
+      val endpoint = if (watched) "/trakt/sync/watched" else "/trakt/sync/history/remove"
+      val response = executeJson(endpoint, payload, session = session, profileId = profileId)
+      ensureOk(response, "Failed to update episode watched state")
+    }
+  }
+
   suspend fun fetchTraktRecommendations(session: AuthSession, profileId: String): Result<List<TraktItem>> =
     traktList(session, profileId, "/trakt/recommendations/movies")
 
@@ -2814,6 +2946,11 @@ class StreamDekApiClient(context: Context? = null) {
               status = item.optString("status").ifBlank { null },
               nextEpisode = parseAiringEpisode(item.optJSONObject("nextEpisodeToAir")),
               lastEpisode = parseAiringEpisode(item.optJSONObject("lastEpisodeToAir")),
+              episodes = item.optJSONArray("episodes")?.let { values ->
+                buildList {
+                  for (episodeIndex in 0 until values.length()) parseAiringEpisode(values.optJSONObject(episodeIndex))?.let(::add)
+                }
+              }.orEmpty(),
             ),
           )
         }
@@ -3909,8 +4046,22 @@ private fun parseReleaseDate(json: JSONObject): String? =
     }
   }
 
-private fun parseMediaDetail(json: JSONObject): MediaDetail =
-  MediaDetail(
+private fun parseMediaDetail(json: JSONObject): MediaDetail {
+  val releasedSeasons = buildList {
+    val source = json.optJSONArray("seasons") ?: JSONArray()
+    for (index in 0 until source.length()) {
+      val season = source.optJSONObject(index) ?: continue
+      val summary = SeasonSummary(
+        seasonNumber = season.optInt("season_number"),
+        name = season.optString("name").ifBlank { "Season ${season.optInt("season_number")}" },
+        episodeCount = season.optInt("episode_count"),
+        poster = season.optString("poster").ifBlank { tmdbImageUrl(season.optString("poster_path"), "w342") },
+        airDate = season.optString("air_date").ifBlank { null },
+      )
+      if (isSeasonAvailable(summary)) add(summary)
+    }
+  }
+  return MediaDetail(
     id = json.opt("tmdbId")?.toString() ?: json.opt("id")?.toString().orEmpty(),
     type = parseMediaItemType(json),
     title = json.optString("title").ifBlank { json.optString("name") },
@@ -3930,27 +4081,15 @@ private fun parseMediaDetail(json: JSONObject): MediaDetail =
     externalRatings = parseExternalRatings(json),
     genres = parseGenreNames(json),
     runtimeMinutes = json.optInt("runtime").takeIf { it > 0 },
-    seasonsCount = json.optInt("numberOfSeasons").takeIf { it > 0 },
+    seasonsCount = releasedSeasons.size.takeIf { it > 0 },
     imdbId = json.optString("imdbId").ifBlank { json.optString("imdb_id").ifBlank { json.optJSONObject("external_ids")?.optString("imdb_id").orEmpty().ifBlank { null } } },
-    seasons = buildList {
-      val source = json.optJSONArray("seasons") ?: JSONArray()
-      for (index in 0 until source.length()) {
-        val season = source.optJSONObject(index) ?: continue
-        add(
-          SeasonSummary(
-            seasonNumber = season.optInt("season_number"),
-            name = season.optString("name").ifBlank { "Season ${season.optInt("season_number")}" },
-            episodeCount = season.optInt("episode_count"),
-            poster = season.optString("poster").ifBlank { tmdbImageUrl(season.optString("poster_path"), "w342") },
-          )
-        )
-      }
-    },
+    seasons = releasedSeasons,
     cast = parseCastList(json.optJSONArray("cast") ?: json.optJSONObject("credits")?.optJSONArray("cast")),
     similarTitles = (json.optJSONArray("similarTitles") ?: json.optJSONArray("similar") ?: json.optJSONArray("recommendations")).toMediaItems(),
     availableOn = parseWatchProviders(json),
     traktComments = parseTraktComments(json),
   )
+}
 
 private fun parseEpisode(json: JSONObject, fallbackSeasonNumber: Int? = null): EpisodeItem =
   EpisodeItem(
@@ -4226,6 +4365,10 @@ private fun parseTraktItem(json: JSONObject): TraktItem =
     backdrop = parseTrackingArtwork(json, "w780", "backdrop", "backdrop_path", "backdropUrl", "backdrop_url", "fanart"),
     description = json.optString("description").ifBlank { null },
     progress = json.optDouble("progress").takeUnless { it.isNaN() || it == 0.0 },
+    positionSec = json.optDouble("positionSec").takeIf { json.has("positionSec") && it.isFinite() && it >= 0.0 },
+    durationSec = json.optDouble("durationSec").takeIf { json.has("durationSec") && it.isFinite() && it > 0.0 },
+    seasonNumber = json.optInt("seasonNumber").takeIf { it > 0 },
+    episodeNumber = json.optInt("episodeNumber").takeIf { it > 0 },
     addedAt = parseFlexibleTimestamp(json, "listed_at", "listedAt", "added_at", "addedAt"),
     updatedAt = parseFlexibleTimestamp(json, "updated_at", "updatedAt", "paused_at", "pausedAt", "last_watched_at", "lastWatchedAt", "watched_at", "watchedAt"),
   )

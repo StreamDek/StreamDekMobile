@@ -17,6 +17,8 @@ import androidx.core.view.WindowInsetsControllerCompat
 import net.streamdek.mobile.nativeapp.StreamDekNativeApp
 import net.streamdek.mobile.nativeapp.normalizeAddonManifestUrl
 import net.streamdek.mobile.nativeapp.localizedAppContext
+import net.streamdek.mobile.nativeapp.EpisodeNotificationSystem
+import net.streamdek.mobile.nativeapp.EpisodeNotificationTarget
 
 class MainActivity : ComponentActivity() {
   override fun attachBaseContext(newBase: Context) {
@@ -24,6 +26,7 @@ class MainActivity : ComponentActivity() {
   }
 
   private val pendingAddonManifestUrl = mutableStateOf<String?>(null)
+  private val pendingEpisodeNotification = mutableStateOf<EpisodeNotificationTarget?>(null)
 
   companion object {
     @JvmStatic
@@ -92,6 +95,8 @@ class MainActivity : ComponentActivity() {
       StreamDekNativeApp(
         pendingAddonManifestUrl = pendingAddonManifestUrl.value,
         onAddonManifestConsumed = { pendingAddonManifestUrl.value = null },
+        pendingEpisodeNotification = pendingEpisodeNotification.value,
+        onEpisodeNotificationConsumed = { pendingEpisodeNotification.value = null },
       )
     }
   }
@@ -103,6 +108,14 @@ class MainActivity : ComponentActivity() {
   }
 
   private fun handleDeepLink(intent: Intent?) {
+    intent?.getStringExtra(EpisodeNotificationSystem.KEY_MEDIA_ID)?.takeIf { it.isNotBlank() }?.let { mediaId ->
+      pendingEpisodeNotification.value = EpisodeNotificationTarget(
+        mediaId = mediaId,
+        season = intent.getIntExtra(EpisodeNotificationSystem.KEY_SEASON, -1).takeIf { it >= 0 },
+        episode = intent.getIntExtra(EpisodeNotificationSystem.KEY_EPISODE, -1).takeIf { it >= 0 },
+      )
+      intent.removeExtra(EpisodeNotificationSystem.KEY_MEDIA_ID)
+    }
     if (intent?.action != Intent.ACTION_VIEW) return
     val link = intent.dataString ?: return
     pendingAddonManifestUrl.value = normalizeAddonManifestUrl(link)

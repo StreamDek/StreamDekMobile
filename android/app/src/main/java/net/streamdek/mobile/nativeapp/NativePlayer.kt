@@ -168,6 +168,12 @@ internal fun initialPlaybackEngine(preference: String): ActivePlaybackEngine =
 /** How often playback position is written back while a title is running. */
 private const val PROGRESS_CHECKPOINT_SECONDS = 30.0
 
+internal fun playerResumePosition(durationSec: Double, exactPositionSec: Double, percent: Double): Double {
+  if (durationSec <= 0.0) return 0.0
+  val requested = exactPositionSec.takeIf { it > 0.0 } ?: (durationSec * (percent / 100.0))
+  return requested.coerceIn(0.0, (durationSec - 5.0).coerceAtLeast(0.0))
+}
+
 internal fun shouldAutoFallbackToMpv(preference: String, activeEngine: ActivePlaybackEngine, fallbackUsed: Boolean): Boolean =
   preference.equals("Auto", ignoreCase = true) && activeEngine == ActivePlaybackEngine.Media3 && !fallbackUsed
 internal fun nextUntriedPlaybackSource(
@@ -178,8 +184,35 @@ internal fun nextUntriedPlaybackSource(
   val excluded = if (currentStream == null) failedKeys else failedKeys + playerStreamIdentity(currentStream)
   return availableStreams.firstOrNull { playerStreamIdentity(it) !in excluded }
 }
-private enum class SubtitlePanelTab { BuiltIn, Addons, Style }
-private data class ExternalSubtitle(val id: String, val language: String, val label: String, val url: String)
+private enum class SubtitlePanelTab { All, BuiltIn, Addons, Style }
+internal enum class ExternalSubtitleOrigin { BuiltIn, Addon }
+internal fun externalSubtitleOrigin(sourceId: String): ExternalSubtitleOrigin =
+  if (sourceId.startsWith("addon:")) ExternalSubtitleOrigin.Addon else ExternalSubtitleOrigin.BuiltIn
+
+internal fun subtitleOriginVisible(tab: String, origin: ExternalSubtitleOrigin): Boolean = when (tab) {
+  "All" -> true
+  "BuiltIn" -> origin == ExternalSubtitleOrigin.BuiltIn
+  "Addons" -> origin == ExternalSubtitleOrigin.Addon
+  else -> false
+}
+internal fun subtitleSourceAllowsOrigin(selection: String?, origin: ExternalSubtitleOrigin): Boolean =
+  subtitleOriginVisible(normalizeSubtitleDefaultSource(selection), origin)
+
+internal fun preferredSubtitleLanguageAllowed(
+  language: String?,
+  primary: String?,
+  secondary: String?,
+  strict: Boolean,
+): Boolean = !strict || Languages.normalize(language) in preferredSubtitleLanguages(primary.orEmpty(), secondary.orEmpty())
+private data class ExternalSubtitle(
+  val id: String,
+  val language: String,
+  val label: String,
+  val url: String,
+  val origin: ExternalSubtitleOrigin,
+  val sourceName: String,
+  val release: String? = null,
+)
 private data class SkipSegment(val type: String, val startSeconds: Double, val endSeconds: Double)
 
 private fun episodeContext(session: PlayerSession): String? = if (session.seasonNumber != null && session.episodeNumber != null) {
@@ -203,6 +236,7 @@ fun NativePlayerScreen(
   nextEpisodeLoadingLabel: String? = null,
   onPreviousEpisode: () -> Unit = {},
   onNextEpisode: () -> Unit = {},
+  onNextEpisodeAtEnding: () -> Unit = onNextEpisode,
   isFavourite: Boolean = false,
   onToggleFavourite: () -> Unit = {},
   liveChannels: List<MediaItem> = emptyList(),
@@ -243,11 +277,14 @@ fun NativePlayerScreen(
   // currentTime) stays keyed by session.url, since those SHOULD reset per channel - that's what
   // drives the "switching..." overlay while the new channel's own load callback hasn't fired yet.
   val liveEngineKey = if (session.isLive) "live" else session.url
-  var isPaused by remember(session.url) { mutableStateOf(false) }
-  var currentTime by remember(session.url) { mutableDoubleStateOf(0.0) }
-  var duration by remember(session.url) { mutableDoubleStateOf(0.0) }
+  val playbackIdentity = remember(session.mediaType, session.mediaId, session.seasonNumber, session.episodeNumber, session.url) {
+    listOf(session.mediaType, session.mediaId, session.seasonNumber, session.episodeNumber, session.url).joinToString(":")
+  }
+  var isPaused by remember(playbackIdentity) { mutableStateOf(false) }
+  var currentTime by remember(playbackIdentity) { mutableDoubleStateOf(0.0) }
+  var duration by remember(playbackIdentity) { mutableDoubleStateOf(0.0) }
   var error by remember(session.url) { mutableStateOf<String?>(null) }
-  var hasLoaded by remember(session.url) { mutableStateOf(false) }
+  var hasLoaded by remember(playbackIdentity) { mutableStateOf(false) }
   var playerView by remember(liveEngineKey) { mutableStateOf<MPVView?>(null) }
   var exoPlayerView by remember(liveEngineKey) { mutableStateOf<ExoPlaybackView?>(null) }
   var activeEngine by remember(liveEngineKey, session.playerEngine) { mutableStateOf(initialPlaybackEngine(session.playerEngine)) }
@@ -282,7 +319,18 @@ fun NativePlayerScreen(
   var preferredAudioTrackKey by remember(session.url) { mutableStateOf<String?>(null) }
   var preferredSubtitleTrackKey by remember(session.url) { mutableStateOf<String?>(null) }
   var subtitleTab by remember(session.subtitleDefaultSource) {
-    mutableStateOf(SubtitlePanelTab.entries.firstOrNull { it.name == session.subtitleDefaultSource } ?: SubtitlePanelTab.BuiltIn)
+    mutableStateOf(
+      SubtitlePanelTab.entries.firstOrNull { it.name == normalizeSubtitleDefaultSource(session.subtitleDefaultSource) }
+        ?: SubtitlePanelTab.All,
+    )
+  }
+  val configuredSubtitleSource = normalizeSubtitleDefaultSource(session.subtitleDefaultSource)
+  val availableSubtitleTabs = remember(configuredSubtitleSource) {
+    when (configuredSubtitleSource) {
+      "BuiltIn" -> listOf(SubtitlePanelTab.BuiltIn, SubtitlePanelTab.Style)
+      "Addons" -> listOf(SubtitlePanelTab.Addons, SubtitlePanelTab.Style)
+      else -> SubtitlePanelTab.entries
+    }
   }
   var subtitleDisabledByUser by remember(session.url) { mutableStateOf(false) }
   /** Shown in the add-on tab when a chosen subtitle could not be loaded at all. */
@@ -302,8 +350,8 @@ fun NativePlayerScreen(
   var showUnlockControl by remember(session.url) { mutableStateOf(false) }
   var unlockActivityVersion by remember(session.url) { mutableIntStateOf(0) }
   var controlActivityVersion by remember(session.url) { mutableIntStateOf(0) }
-  var playbackEnded by remember(session.url) { mutableStateOf(false) }
-  var completionDispatched by remember(session.url) { mutableStateOf(false) }
+  var playbackEnded by remember(playbackIdentity) { mutableStateOf(false) }
+  var completionDispatched by remember(playbackIdentity) { mutableStateOf(false) }
   var liveReconnectVersion by remember(session.url) { mutableIntStateOf(0) }
   var liveStalled by remember(session.url) { mutableStateOf(false) }
   var liveRetryAttempts by remember(session.url) { mutableIntStateOf(0) }
@@ -343,8 +391,8 @@ fun NativePlayerScreen(
   var showFavouriteDrawer by remember(session.url) { mutableStateOf(false) }
   var pendingChannelSelection by remember(session.url) { mutableStateOf<MediaItem?>(null) }
   var showChannelSwipeCue by remember(session.url) { mutableStateOf(false) }
-  var didApplyResume by remember(session.url) { mutableStateOf(false) }
-  var lastCheckpointSecond by remember(session.url) { mutableDoubleStateOf(0.0) }
+  var didApplyResume by remember(playbackIdentity) { mutableStateOf(false) }
+  var lastCheckpointSecond by remember(playbackIdentity) { mutableDoubleStateOf(0.0) }
   var slowLoadHintVisible by remember(session.url) { mutableStateOf(false) }
   var avMismatchFallbackTried by remember(session.url) { mutableStateOf(false) }
   var loadedVideoWidth by remember(session.url) { mutableIntStateOf(0) }
@@ -545,7 +593,7 @@ fun NativePlayerScreen(
     }
   }
 
-  LaunchedEffect(session.url, session.skipIntroEnabled, session.skipRecapEnabled, session.skipEndingEnabled, session.introdbApiKey, session.isLive) {
+  LaunchedEffect(playbackIdentity, session.skipIntroEnabled, session.skipRecapEnabled, session.skipEndingEnabled, session.introdbApiKey, session.isLive) {
     if (session.isLive) {
       skipSegments = emptyList()
       return@LaunchedEffect
@@ -568,7 +616,7 @@ fun NativePlayerScreen(
   // the viewer has switched subtitles off is not a reason to have no list either: the panel is
   // where they go to switch them back on, and it has to have something in it when they get there.
   // The list is fetched once per source, and what is done with it is decided below.
-  LaunchedEffect(session.url, session.autoLoadSubtitles, playerView, exoPlayerView, session.isLive, userSubtitleSources) {
+  LaunchedEffect(playbackIdentity, session.autoLoadSubtitles, playerView, exoPlayerView, session.isLive, userSubtitleSources) {
     if (session.isLive) return@LaunchedEffect
     if (playerView == null && exoPlayerView == null) return@LaunchedEffect
     delay(1_200)
@@ -579,7 +627,8 @@ fun NativePlayerScreen(
     if (session.autoLoadSubtitles && selectedSubtitleTrackId == null && selectedExternalSubtitleId == null &&
       !subtitleDisabledByUser && !userPickedSubtitle
     ) {
-      results.firstOrNull { it.language == "en" }?.let { subtitle ->
+      val preferredLanguages = preferredSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage)
+      results.firstOrNull { Languages.normalize(it.language) in preferredLanguages }?.let { subtitle ->
         selectedExternalSubtitleId = subtitle.id
         // Download off the player thread first — handing mpv a remote URL stalls
         // playback while it fetches the file.
@@ -683,10 +732,13 @@ fun NativePlayerScreen(
     if (session.isLive && channelSwitchLoading) onChannelSwitchPlaybackStarted()
     duration = loadedDuration
     error = null
-    if (session.autoLoadSubtitles && !userPickedSubtitle && !subtitleDisabledByUser && selectedSubtitleTrackId == null) {
-      subtitleTracks.firstOrNull { normalizeSubtitleLanguage(it.language) == "en" }?.let { englishSubtitle ->
-        selectedSubtitleTrackId = englishSubtitle.id
-        activeSetSubtitleTrack(englishSubtitle.id)
+    if (session.autoLoadSubtitles && !userPickedSubtitle && !subtitleDisabledByUser && selectedSubtitleTrackId == null &&
+      subtitleSourceAllowsOrigin(session.subtitleDefaultSource, ExternalSubtitleOrigin.BuiltIn)
+    ) {
+      val preferredLanguages = preferredSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage)
+      subtitleTracks.firstOrNull { normalizeSubtitleLanguage(it.language ?: it.title) in preferredLanguages }?.let { preferredSubtitle ->
+        selectedSubtitleTrackId = preferredSubtitle.id
+        activeSetSubtitleTrack(preferredSubtitle.id)
       }
     }
     if (pendingEngineResumeSeconds > 0.0 && loadedDuration > 0.0) {
@@ -694,11 +746,14 @@ fun NativePlayerScreen(
       pendingEngineResumeSeconds = 0.0
       activeSeekTo(resumeAt)
       currentTime = resumeAt
-    } else if (!didApplyResume && session.resumePercent > 0.0 && loadedDuration > 0.0) {
-      val resumeAt = (loadedDuration * (session.resumePercent / 100.0)).coerceIn(0.0, (loadedDuration - 5.0).coerceAtLeast(0.0))
+    } else if (!didApplyResume && (session.resumePositionSec > 0.0 || session.resumePercent > 0.0) && loadedDuration > 0.0) {
+      val requested = session.resumePositionSec.takeIf { it > 0.0 }
+        ?: (loadedDuration * (session.resumePercent / 100.0))
+      val resumeAt = playerResumePosition(loadedDuration, session.resumePositionSec, session.resumePercent)
       activeSeekTo(resumeAt)
       currentTime = resumeAt
       didApplyResume = true
+      Log.i("StreamDekPlayer", "[Player] content=${session.mediaType}:${session.mediaId}:${session.seasonNumber ?: "-"}:${session.episodeNumber ?: "-"} requestedResumePosition=${requested.toInt()} seekApplied=${resumeAt.toInt()}")
     }
   }
   val playerProgressCallback: (Double, Double) -> Unit = { position, total ->
@@ -802,13 +857,18 @@ fun NativePlayerScreen(
       }
     } else if (hasLoaded) {
       selectedSubtitleTrackId = subtitleId
-      val englishSubtitle = subtitles.firstOrNull { normalizeSubtitleLanguage(it.language) == "en" }
+      val allowedLanguages = preferredSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage)
+      val preferredSubtitle = subtitles.firstOrNull {
+        normalizeSubtitleLanguage(it.language ?: it.title) in allowedLanguages
+      }
       when {
-        session.autoLoadSubtitles && englishSubtitle != null && subtitleId != englishSubtitle.id -> {
-          selectedSubtitleTrackId = englishSubtitle.id
-          activeSetSubtitleTrack(englishSubtitle.id)
+        session.autoLoadSubtitles && subtitleSourceAllowsOrigin(session.subtitleDefaultSource, ExternalSubtitleOrigin.BuiltIn) &&
+          preferredSubtitle != null && subtitleId != preferredSubtitle.id -> {
+          selectedSubtitleTrackId = preferredSubtitle.id
+          activeSetSubtitleTrack(preferredSubtitle.id)
         }
-        (!session.autoLoadSubtitles || englishSubtitle == null) && subtitleId != null -> {
+        (!session.autoLoadSubtitles || preferredSubtitle == null ||
+          !subtitleSourceAllowsOrigin(session.subtitleDefaultSource, ExternalSubtitleOrigin.BuiltIn)) && subtitleId != null -> {
           selectedSubtitleTrackId = null
           activeDisableSubtitleTrack()
         }
@@ -923,7 +983,7 @@ fun NativePlayerScreen(
       Button(
         onClick = {
           if (nextEpisodeActionAvailable) {
-            onNextEpisode()
+            onNextEpisodeAtEnding()
           } else {
             activeSkipSegment?.let { segment ->
               currentTime = segment.endSeconds
@@ -1336,7 +1396,7 @@ fun NativePlayerScreen(
           modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(Color.White.copy(alpha = 0.06f)).padding(6.dp),
           horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-          SubtitlePanelTab.entries.forEach { tab ->
+          availableSubtitleTabs.forEach { tab ->
             val selected = subtitleTab == tab
             Box(
               modifier = Modifier
@@ -1351,11 +1411,21 @@ fun NativePlayerScreen(
                 }
                 .padding(vertical = 11.dp),
               contentAlignment = Alignment.Center,
-            ) { Text(if (tab == SubtitlePanelTab.BuiltIn) "Built-in" else tab.name, color = if (selected) Color.Black else Color.White.copy(alpha = 0.72f), fontWeight = FontWeight.Bold) }
+            ) {
+              Text(
+                when (tab) {
+                  SubtitlePanelTab.All -> "All"
+                  SubtitlePanelTab.BuiltIn -> "Built-in"
+                  else -> tab.name
+                },
+                color = if (selected) Color.Black else Color.White.copy(alpha = 0.72f),
+                fontWeight = FontWeight.Bold,
+              )
+            }
           }
         }
         when (subtitleTab) {
-          SubtitlePanelTab.BuiltIn -> {
+          SubtitlePanelTab.All, SubtitlePanelTab.BuiltIn, SubtitlePanelTab.Addons -> {
             PlayerOptionRow("None", selected = selectedSubtitleTrackId == null && selectedExternalSubtitleId == null) {
               subtitleDisabledByUser = true
               userPickedSubtitle = true
@@ -1364,9 +1434,31 @@ fun NativePlayerScreen(
               preferredSubtitleTrackKey = null
               activeDisableSubtitleTrack()
             }
-            if (subtitleTracks.isEmpty()) Text("No embedded subtitle tracks.", color = Color.White.copy(alpha = 0.64f))
-            subtitleTracks.forEach { track ->
-              PlayerOptionRow(trackLabel(track), selected = selectedSubtitleTrackId == track.id) {
+            val visibleEmbeddedTracks = if (subtitleSourceIncludesBuiltIn(subtitleTab.name)) subtitleTracks.filter { track ->
+              preferredSubtitleLanguageAllowed(
+                track.language ?: track.title,
+                session.subtitleLanguage,
+                session.secondarySubtitleLanguage,
+                session.showOnlyPreferredSubtitleLanguages,
+              )
+            } else emptyList()
+            val visibleExternalSubtitles = externalSubtitles.filter { subtitle ->
+              subtitleOriginVisible(subtitleTab.name, subtitle.origin) && preferredSubtitleLanguageAllowed(
+                subtitle.language,
+                session.subtitleLanguage,
+                session.secondarySubtitleLanguage,
+                session.showOnlyPreferredSubtitleLanguages,
+              )
+            }
+            if (visibleEmbeddedTracks.isNotEmpty()) {
+              Text("Embedded in video", color = Color.White.copy(alpha = 0.64f), fontWeight = FontWeight.Bold)
+            }
+            visibleEmbeddedTracks.forEach { track ->
+              PlayerOptionRow(
+                label = trackLanguageName(track.language) ?: track.title ?: "Subtitle ${track.id}",
+                supportingText = listOfNotNull("Embedded", track.title, track.codec).distinct().joinToString(" • "),
+                selected = selectedSubtitleTrackId == track.id,
+              ) {
                 subtitleDisabledByUser = false
                 userPickedSubtitle = true
                 selectedExternalSubtitleId = null
@@ -1375,12 +1467,35 @@ fun NativePlayerScreen(
                 activeSetSubtitleTrack(track.id)
               }
             }
-          }
-          SubtitlePanelTab.Addons -> {
-            if (subtitlesLoading) Text("Searching subtitle addons...", color = Color.White.copy(alpha = 0.72f))
-            if (!subtitlesLoading && externalSubtitles.isEmpty()) Text("No matching addon subtitles found.", color = Color.White.copy(alpha = 0.64f))
-            externalSubtitles.forEach { subtitle ->
-              PlayerOptionRow(subtitle.label, selected = selectedExternalSubtitleId == subtitle.id) {
+            if (subtitlesLoading) Text("Searching subtitle sources...", color = Color.White.copy(alpha = 0.72f))
+            if (visibleExternalSubtitles.isNotEmpty()) {
+              Text(
+                when (subtitleTab) {
+                  SubtitlePanelTab.BuiltIn -> "StreamDek sources"
+                  SubtitlePanelTab.Addons -> "Subtitle add-ons"
+                  else -> "Online subtitles"
+                },
+                color = Color.White.copy(alpha = 0.64f),
+                fontWeight = FontWeight.Bold,
+              )
+            }
+            visibleExternalSubtitles.forEachIndexed { index, subtitle ->
+              val duplicateNumber = visibleExternalSubtitles.take(index + 1).count {
+                it.language == subtitle.language && it.sourceName == subtitle.sourceName
+              }
+              val duplicateCount = visibleExternalSubtitles.count {
+                it.language == subtitle.language && it.sourceName == subtitle.sourceName
+              }
+              PlayerOptionRow(
+                label = trackLanguageName(subtitle.language) ?: "Unknown language",
+                supportingText = listOfNotNull(
+                  subtitle.sourceName,
+                  if (subtitle.origin == ExternalSubtitleOrigin.BuiltIn) "Built-in source" else "Add-on",
+                  subtitle.release?.takeIf { it.isNotBlank() },
+                  if (duplicateCount > 1) "Option $duplicateNumber" else null,
+                ).joinToString(" • "),
+                selected = selectedExternalSubtitleId == subtitle.id,
+              ) {
                 subtitleDisabledByUser = false
                 userPickedSubtitle = true
                 selectedSubtitleTrackId = null
@@ -1405,6 +1520,7 @@ fun NativePlayerScreen(
                     if (selectedExternalSubtitleId != subtitle.id) return@launch
                     activeAddSubtitle(localPath, candidate.language)
                     applied = true
+                    Log.i("StreamDekSubtitles", "[Subtitle] source=${candidate.id.substringBefore(':')} language=${candidate.language} format=${localPath.substringAfterLast('.')} load=success trackAttached=true")
                     if (candidate.id != subtitle.id) {
                       Log.i("StreamDekSubtitles", "fell through to " + candidate.label)
                     }
@@ -1418,6 +1534,20 @@ fun NativePlayerScreen(
                   }
                 }
               }
+            }
+            if (!subtitlesLoading && visibleEmbeddedTracks.isEmpty() && visibleExternalSubtitles.isEmpty()) {
+              val requestedLanguages = preferredSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage)
+                .joinToString(" or ") { Languages.label(it) }
+              Text(
+                if (session.showOnlyPreferredSubtitleLanguages && requestedLanguages.isNotBlank()) {
+                  "No subtitles found for $requestedLanguages."
+                } else when (subtitleTab) {
+                  SubtitlePanelTab.BuiltIn -> "No matching embedded or StreamDek subtitles found."
+                  SubtitlePanelTab.Addons -> "No matching subtitle add-on results found."
+                  else -> "No matching subtitles found."
+                },
+                color = Color.White.copy(alpha = 0.64f),
+              )
             }
             subtitleErrorMessage?.let {
               Text(it, color = Color(0xFFF08A8A), style = MaterialTheme.typography.bodyMedium)
@@ -2593,13 +2723,18 @@ private fun PlayerInfoSection(heading: String, rows: List<Pair<String, String>>)
 }
 
 @Composable
-private fun PlayerOptionRow(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun PlayerOptionRow(label: String, selected: Boolean, supportingText: String? = null, onClick: () -> Unit) {
   Row(
     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(if (selected) Color.White else Color.White.copy(alpha = 0.08f)).clickable(onClick = onClick).padding(horizontal = 18.dp, vertical = 16.dp),
     horizontalArrangement = Arrangement.SpaceBetween,
     verticalAlignment = Alignment.CenterVertically,
   ) {
-    Text(label, color = if (selected) Color.Black else Color.White, style = MaterialTheme.typography.titleMedium)
+    Column(modifier = Modifier.weight(1f)) {
+      Text(label, color = if (selected) Color.Black else Color.White, style = MaterialTheme.typography.titleMedium)
+      supportingText?.takeIf { it.isNotBlank() }?.let {
+        Text(it, color = if (selected) Color.Black.copy(alpha = 0.68f) else Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall)
+      }
+    }
     if (selected) Icon(Icons.Rounded.Check, contentDescription = "Selected", tint = Color.Black, modifier = Modifier.size(22.dp))
   }
 }
@@ -2693,15 +2828,15 @@ private fun subtitleLanguageRank(language: String?, session: PlayerSession): Int
  * list, since the viewer is then stuck with no subtitles and no way to pick any from here.
  */
 private fun List<ExternalSubtitle>.filterPreferredSubtitleLanguages(session: PlayerSession): List<ExternalSubtitle> {
-  // Two settings can narrow this list: the viewer's "only my languages" switch, and asking add-ons
-  // for their preferred languages only. Either one is reason enough to filter.
-  val narrowToPreferred = session.showOnlyPreferredSubtitleLanguages ||
-    session.addonSubtitleLoading == "preferred"
-  if (!narrowToPreferred) return this
   val preferred = preferredSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage)
   if (preferred.isEmpty()) return this
   val matching = filter { Languages.normalize(it.language) in preferred }
-  return matching.ifEmpty { this }
+  if (session.showOnlyPreferredSubtitleLanguages) return matching
+  if (session.addonSubtitleLoading != "preferred") return this
+  val builtIn = filter { it.origin == ExternalSubtitleOrigin.BuiltIn }
+  val addons = filter { it.origin == ExternalSubtitleOrigin.Addon }
+  val matchingAddons = addons.filter { Languages.normalize(it.language) in preferred }
+  return builtIn + matchingAddons.ifEmpty { addons }
 }
 
 /**
@@ -2734,6 +2869,12 @@ internal fun subtitleExtensionFor(text: String): String {
  * only ever see one encoding.
  */
 internal fun decodeSubtitleBytes(bytes: ByteArray): String {
+  if (bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte()) {
+    return String(bytes, 2, bytes.size - 2, Charsets.UTF_16LE)
+  }
+  if (bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte()) {
+    return String(bytes, 2, bytes.size - 2, Charsets.UTF_16BE)
+  }
   val body = if (bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte()) {
     bytes.copyOfRange(3, bytes.size)
   } else {
@@ -2745,7 +2886,17 @@ internal fun decodeSubtitleBytes(bytes: ByteArray): String {
       .onUnmappableCharacter(CodingErrorAction.REPORT)
       .decode(ByteBuffer.wrap(body))
       .toString()
-  }.getOrElse { String(body, Charsets.ISO_8859_1) }
+  }.getOrElse { String(body, charset("windows-1252")) }
+}
+
+internal fun subtitleTextHasCues(text: String, extension: String = subtitleExtensionFor(text)): Boolean {
+  val sample = text.take(256_000)
+  return when (extension) {
+    "vtt", "srt" -> Regex("""(?m)^\s*(?:\d{1,2}:)?\d{2}:\d{2}[,.]\d{3}\s*-->\s*(?:\d{1,2}:)?\d{2}:\d{2}[,.]\d{3}""").containsMatchIn(sample)
+    "ass" -> Regex("""(?mi)^Dialogue:\s*\d+,""").containsMatchIn(sample)
+    "ttml" -> Regex("""(?is)<p\b[^>]*(?:begin|end|dur)=""").containsMatchIn(sample)
+    else -> false
+  }
 }
 
 /**
@@ -2763,7 +2914,10 @@ private suspend fun downloadSubtitleToCache(context: Context, url: String): Stri
     // Any extension already written for this URL will do; the content decided it last time.
     stem.parentFile?.listFiles { file -> file.name.startsWith(stem.name + ".") }
       ?.firstOrNull { it.length() > 0L }
-      ?.let { return@runCatching it.absolutePath }
+      ?.let { cached ->
+        if (runCatching { subtitleTextHasCues(cached.readText()) }.getOrDefault(false)) return@runCatching cached.absolutePath
+        cached.delete()
+      }
     stem.parentFile?.mkdirs()
     // Sent as a browser, because several of these hosts answer anything else with a refusal
     // rather than a file -- PenguPlay's returns 403 to a header-less request. The plugin sandbox
@@ -2785,7 +2939,9 @@ private suspend fun downloadSubtitleToCache(context: Context, url: String): Stri
     }
     val text = decodeSubtitleBytes(bytes)
     if (text.isBlank()) error("Subtitle file was empty")
-    val file = File(stem.parentFile, stem.name + "." + subtitleExtensionFor(text))
+    val extension = subtitleExtensionFor(text)
+    if (!subtitleTextHasCues(text, extension)) error("Subtitle response contained no timed cues")
+    val file = File(stem.parentFile, stem.name + "." + extension)
     file.writeText(text, Charsets.UTF_8)
     Log.i("StreamDekSubtitles", "cached " + file.name + " (" + bytes.size + " bytes) from " + url.substringBefore('?').take(90))
     file.absolutePath
@@ -2795,12 +2951,6 @@ private suspend fun downloadSubtitleToCache(context: Context, url: String): Stri
 }
 
 private suspend fun fetchExternalSubtitles(session: PlayerSession, userSources: List<UserSubtitleSource>): List<ExternalSubtitle> = withContext(Dispatchers.IO) {
-  // "Off" means do not ask. Worth honouring before any request goes out rather than fetching and
-  // discarding: each source is a network call on the way into playback.
-  if (session.addonSubtitleLoading == "off") {
-    Log.i("StreamDekSubtitles", "add-on subtitles are switched off in settings")
-    return@withContext emptyList()
-  }
   // Every add-on in this fan-out is a Stremio subtitles endpoint, and those are addressed by IMDb
   // id -- there is no other identifier to ask them with. A session that reaches here without one
   // therefore has no add-on subtitles available at all, which is worth saying out loud: silence
@@ -2820,9 +2970,16 @@ private suspend fun fetchExternalSubtitles(session: PlayerSession, userSources: 
     "$imdbId:$season:$episode"
   } else imdbId
   val type = if (series) "series" else "movie"
+  val sourcePreference = normalizeSubtitleDefaultSource(session.subtitleDefaultSource)
   val sources = buildList {
-    add(UserSubtitleSource("opensubtitles", "OpenSubtitles", "https://opensubtitles-v3.strem.io"))
-    addAll(userSources)
+    if (sourcePreference != "Addons") {
+      add(UserSubtitleSource("opensubtitles", "OpenSubtitles", "https://opensubtitles-v3.strem.io"))
+    }
+    addAll(userSources.filterNot { source ->
+      val origin = externalSubtitleOrigin(source.id)
+      !subtitleSourceAllowsOrigin(sourcePreference, origin) ||
+        (origin == ExternalSubtitleOrigin.Addon && session.addonSubtitleLoading == "off")
+    })
   }.distinctBy { it.baseUrl.lowercase() }
 
   // Every source is reported, answered or not. Failures used to be swallowed whole -- a source
@@ -2845,14 +3002,18 @@ private suspend fun fetchExternalSubtitles(session: PlayerSession, userSources: 
             val item = entries.optJSONObject(index) ?: continue
             val id = item.optString("id").trim()
             val url = item.optString("url").trim()
-            val language = normalizeSubtitleLanguage(item.optString("lang"))
+            val language = sequenceOf("lang", "language", "languageCode", "locale")
+              .map { key -> normalizeSubtitleLanguage(item.optString(key)) }
+              .firstOrNull { it.isNotBlank() }
+              .orEmpty()
             if (id.isBlank() || url.isBlank() || language.isBlank()) continue
             val release = item.optString("m").trim()
             // Named, not coded. "FR - <release> - OpenSubtitles" asks a viewer to know that FR is
             // French before they can pick their own language out of eighty rows; the add-on's
             // two-letter tag is what this list is sorted by, not what it should be read by.
+            val origin = externalSubtitleOrigin(source.id)
             val label = listOf(trackLanguageName(language).orEmpty(), release, source.name).filter { it.isNotBlank() }.joinToString(" - ")
-            add(ExternalSubtitle("${source.id}:$id", language, label, url))
+            add(ExternalSubtitle("${source.id}:$id", language, label, url, origin, source.name, release.ifBlank { null }))
           }
         }.also { parsed ->
           Log.i(

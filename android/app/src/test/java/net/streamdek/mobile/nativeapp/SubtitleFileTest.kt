@@ -61,4 +61,23 @@ class SubtitleFileTest {
     assertEquals("Café", decoded)
     assertTrue("no replacement characters", !decoded.contains('\uFFFD'))
   }
+
+  @Test
+  fun `selectable text must contain timed cues`() {
+    assertTrue(subtitleTextHasCues("WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nBonjour"))
+    assertTrue(subtitleTextHasCues("1\n00:00:01,000 --> 00:00:03,000\nBonjour"))
+    assertTrue(subtitleTextHasCues("[Events]\nDialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,Bonjour"))
+  }
+
+  @Test
+  fun `html error pages are not accepted as subtitle tracks`() {
+    assertTrue(!subtitleTextHasCues("<html><body>Access denied</body></html>"))
+  }
+
+  @Test
+  fun `utf-16 subtitles keep their text`() {
+    val body = "1\n00:00:01,000 --> 00:00:03,000\nFrançais"
+    val bytes = byteArrayOf(0xFF.toByte(), 0xFE.toByte()) + body.toByteArray(Charsets.UTF_16LE)
+    assertEquals(body, decodeSubtitleBytes(bytes))
+  }
 }

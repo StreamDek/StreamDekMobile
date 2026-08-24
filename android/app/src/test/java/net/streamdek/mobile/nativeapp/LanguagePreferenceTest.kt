@@ -73,4 +73,50 @@ class LanguagePreferenceTest {
     // An unknown stored value reads as the default rather than as a blank row.
     assertEquals("Preferred languages", addonSubtitleLoadingLabel("nonsense"))
   }
+
+  @Test
+  fun `subtitle source preference offers a combined source view`() {
+    assertEquals(listOf("All", "BuiltIn", "Addons"), subtitleSourceChoices.map { it.first })
+    assertEquals("All sources", subtitleSourceLabel("All"))
+    assertEquals("BuiltIn", normalizeSubtitleDefaultSource("built-in"))
+    assertEquals("Addons", normalizeSubtitleDefaultSource("add-ons"))
+    assertEquals("All", normalizeSubtitleDefaultSource(null))
+    assertEquals("All", normalizeSubtitleDefaultSource("unknown"))
+    assertTrue(subtitleSourceIncludesBuiltIn("All"))
+    assertTrue(subtitleSourceIncludesAddons("All"))
+    assertFalse(subtitleSourceIncludesAddons("BuiltIn"))
+    assertFalse(subtitleSourceIncludesBuiltIn("Addons"))
+  }
+
+  @Test
+  fun `built in and addon subtitle results stay in their own source tabs`() {
+    val openSubtitles = externalSubtitleOrigin("opensubtitles")
+    val addon = externalSubtitleOrigin("addon:flix-streams")
+
+    assertTrue(subtitleOriginVisible("BuiltIn", openSubtitles))
+    assertFalse(subtitleOriginVisible("Addons", openSubtitles))
+    assertTrue(subtitleOriginVisible("Addons", addon))
+    assertFalse(subtitleOriginVisible("BuiltIn", addon))
+    assertTrue(subtitleOriginVisible("All", openSubtitles))
+    assertTrue(subtitleOriginVisible("All", addon))
+  }
+
+  @Test
+  fun `strict subtitle language filtering allows only primary and real secondary`() {
+    assertTrue(preferredSubtitleLanguageAllowed("English SDH", "en", Languages.NONE, strict = true))
+    assertFalse(preferredSubtitleLanguageAllowed("Hindi", "en", Languages.NONE, strict = true))
+    assertTrue(preferredSubtitleLanguageAllowed("eng", "English", "Hindi", strict = true))
+    assertTrue(preferredSubtitleLanguageAllowed("hin", "English", "Hindi", strict = true))
+    assertFalse(preferredSubtitleLanguageAllowed("French", "English", "Hindi", strict = true))
+  }
+
+  @Test
+  fun `subtitle source setting is a filter rather than only a landing tab`() {
+    assertTrue(subtitleSourceAllowsOrigin("BuiltIn", ExternalSubtitleOrigin.BuiltIn))
+    assertFalse(subtitleSourceAllowsOrigin("BuiltIn", ExternalSubtitleOrigin.Addon))
+    assertTrue(subtitleSourceAllowsOrigin("Addons", ExternalSubtitleOrigin.Addon))
+    assertFalse(subtitleSourceAllowsOrigin("Addons", ExternalSubtitleOrigin.BuiltIn))
+    assertTrue(subtitleSourceAllowsOrigin("All", ExternalSubtitleOrigin.BuiltIn))
+    assertTrue(subtitleSourceAllowsOrigin("All", ExternalSubtitleOrigin.Addon))
+  }
 }

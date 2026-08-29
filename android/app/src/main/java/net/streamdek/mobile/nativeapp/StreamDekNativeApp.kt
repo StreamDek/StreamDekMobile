@@ -568,7 +568,7 @@ internal enum class SettingsRoute {
   // Sources — where titles and streams come from. Peer-to-peer sits last as the advanced one.
   Addons, Plugins, M3uPlaylists, Debrid, PeerToPeer,
   // Connections — other services and devices.
-  SyncServices, Trakt, Simkl, Mdblist, Punchplay, ConnectTv,
+  ContentServices, SyncServices, Trakt, Simkl, Mdblist, Punchplay, ConnectTv, Network,
   // Account and app.
   Account, Profiles, AppUpdates,
 }
@@ -935,6 +935,9 @@ private data class AppUiState(
   val skipIntroEnabled: Boolean = true,
   val skipRecapEnabled: Boolean = true,
   val skipEndingEnabled: Boolean = true,
+  val autoSkipIntroEnabled: Boolean = false,
+  val autoSkipRecapEnabled: Boolean = false,
+  val autoSkipEndingEnabled: Boolean = false,
   /** The viewer's own IntroDB key. Blank uses the key StreamDek ships with. */
   val introdbApiKey: String = "",
   val autoPlayNextEpisode: Boolean = true,
@@ -971,7 +974,19 @@ private data class AppUiState(
   val ratingsEnabled: Boolean = true,
   val externalRatingsEnabled: Boolean = true,
   val enabledRatingProviders: Set<String> = DEFAULT_RATING_PROVIDER_IDS,
-  val mdblistApiKey: String = "",
+  /**
+   * The viewer's own TMDB and MDBList keys, and where each one is kept.
+   *
+   * Replaces the `mdblistApiKey` string that used to sit here. That was a secret held in
+   * plain preferences and synced as ordinary settings; this is the masked state of a key
+   * kept either in the Android keystore or, encrypted, in the StreamDek account. Nothing in
+   * the UI layer can reach the key itself any more.
+   */
+  val contentServices: ContentServicesState = ContentServicesState(),
+  /** Whether the one-time setup card is on screen. See ServiceCredentialManager. */
+  val contentServicesPromptVisible: Boolean = false,
+  /** The service a contextual nudge is currently offering to set up, if any. */
+  val contentServiceHint: ContentService? = null,
   val vividAmbient: Boolean = true,
   /**
    * Seeded from [vividAmbient] on first run and kept in its own right afterwards — the old boolean
@@ -1635,6 +1650,7 @@ private class AppSettingsStore(context: Context) {
     "hero_trailer_muted", "show_hero_synopsis", "continue_watching_style", "live_landscape_cards", "live_favourite_drawer_cards",
     "live_categories_enabled", "live_progress_bar", "mdblist_api_key", "primary_sync_service",
     "remember_last_source", "skip_intro_enabled", "skip_segments_enabled", "skip_recap_enabled", "skip_ending_enabled",
+    "auto_skip_intro_enabled", "auto_skip_recap_enabled", "auto_skip_ending_enabled",
     "introdb_api_key",
     "auto_play_next_episode", "prefer_binge_group", "auto_load_subtitles", "blur_unwatched_episodes",
     "subtitle_text_size", "subtitle_vertical_offset", "subtitle_bold", "subtitle_text_color",
@@ -1717,6 +1733,9 @@ private class AppSettingsStore(context: Context) {
     skipIntroEnabled = profilePrefs.getBoolean("skip_intro_enabled", profilePrefs.getBoolean("skip_segments_enabled", true)),
     skipRecapEnabled = profilePrefs.getBoolean("skip_recap_enabled", true),
     skipEndingEnabled = profilePrefs.getBoolean("skip_ending_enabled", true),
+    autoSkipIntroEnabled = profilePrefs.getBoolean("auto_skip_intro_enabled", false),
+    autoSkipRecapEnabled = profilePrefs.getBoolean("auto_skip_recap_enabled", false),
+    autoSkipEndingEnabled = profilePrefs.getBoolean("auto_skip_ending_enabled", false),
     introdbApiKey = profilePrefs.getString("introdb_api_key", "") ?: "",
     autoPlayNextEpisode = profilePrefs.getBoolean("auto_play_next_episode", true),
     preferBingeGroup = profilePrefs.getBoolean("prefer_binge_group", true),
@@ -1744,7 +1763,6 @@ private class AppSettingsStore(context: Context) {
     ratingsEnabled = profilePrefs.getBoolean("ratings_enabled", true),
     externalRatingsEnabled = profilePrefs.getBoolean("external_ratings_enabled", true),
     enabledRatingProviders = parseRatingProviderIds(profilePrefs.getString("enabled_rating_providers", null)),
-    mdblistApiKey = profilePrefs.getString("mdblist_api_key", "") ?: "",
     vividAmbient = profilePrefs.getBoolean("vivid_ambient", true),
     detailBackgroundMode = runCatching {
       BackgroundMode.valueOf(
@@ -1830,6 +1848,9 @@ private class AppSettingsStore(context: Context) {
   fun saveSkipIntroEnabled(value: Boolean) { profilePrefs.edit().putBoolean("skip_intro_enabled", value).putBoolean("skip_segments_enabled", value).apply() }
   fun saveSkipRecapEnabled(value: Boolean) { profilePrefs.edit().putBoolean("skip_recap_enabled", value).apply() }
   fun saveSkipEndingEnabled(value: Boolean) { profilePrefs.edit().putBoolean("skip_ending_enabled", value).apply() }
+  fun saveAutoSkipIntroEnabled(value: Boolean) { profilePrefs.edit().putBoolean("auto_skip_intro_enabled", value).apply() }
+  fun saveAutoSkipRecapEnabled(value: Boolean) { profilePrefs.edit().putBoolean("auto_skip_recap_enabled", value).apply() }
+  fun saveAutoSkipEndingEnabled(value: Boolean) { profilePrefs.edit().putBoolean("auto_skip_ending_enabled", value).apply() }
   fun saveIntrodbApiKey(value: String) { profilePrefs.edit().putString("introdb_api_key", value.trim()).apply() }
   fun saveAutoPlayNextEpisode(value: Boolean) { profilePrefs.edit().putBoolean("auto_play_next_episode", value).apply() }
   fun savePreferBingeGroup(value: Boolean) { profilePrefs.edit().putBoolean("prefer_binge_group", value).apply() }
@@ -1862,7 +1883,18 @@ private class AppSettingsStore(context: Context) {
   fun saveExternalRatingsEnabled(value: Boolean) { profilePrefs.edit().putBoolean("external_ratings_enabled", value).apply() }
   fun saveEnabledRatingProviders(value: Set<String>) { profilePrefs.edit().putString("enabled_rating_providers", JSONArray(value.toList()).toString()).apply() }
   // Profile-scoped: a tracking key belongs to the profile using it, not to the whole account.
-  fun saveMdblistApiKey(value: String) { profilePrefs.edit().putString("mdblist_api_key", value.trim()).apply() }
+  /**
+   * The legacy plaintext MDBList key, if this install still has one.
+   *
+   * Read once, moved into secure storage, and then removed. Nothing writes this key any
+   * more — see ServiceCredentialManager for where it lives now.
+   */
+  fun legacyMdblistApiKey(): String = profilePrefs.getString("mdblist_api_key", "").orEmpty().trim()
+
+  fun clearLegacyMdblistApiKey() {
+    profilePrefs.edit().remove("mdblist_api_key").apply()
+    prefs.edit().remove("mdblist_api_key").apply()
+  }
   fun saveVividAmbient(value: Boolean) { profilePrefs.edit().putBoolean("vivid_ambient", value).apply() }
   fun saveDetailBackgroundMode(value: BackgroundMode) { profilePrefs.edit().putString("detail_background_mode", value.name).apply() }
   fun saveHomeBackgroundMode(value: BackgroundMode) { profilePrefs.edit().putString("home_background_mode", value.name).apply() }
@@ -2036,6 +2068,29 @@ internal fun preferredSubtitleLanguages(primary: String, secondary: String): Lis
 private const val PLAYBACK_NOTICE_DURATION_MS = 12_000L
 private const val APP_NOTICE_ERROR_DURATION_MS = 10_000L
 private const val APP_NOTICE_DURATION_MS = 5_000L
+private const val CROSS_DEVICE_CONTINUE_NOTICE_DURATION_MS = 7_000L
+
+internal fun crossDeviceContinueNotice(
+  mediaType: String,
+  seasonNumber: Int? = null,
+  episodeNumber: Int? = null,
+): String {
+  val isSeries = mediaType.trim().lowercase() in setOf("tv", "series", "show")
+  val kind = if (isSeries) "series" else "movie"
+  val sourceTarget = if (isSeries && seasonNumber != null && episodeNumber != null) {
+    " for Season $seasonNumber, Episode $episodeNumber"
+  } else {
+    ""
+  }
+  return "You started this $kind on another device. Choose a source$sourceTarget to continue watching from where you left off."
+}
+
+internal fun appInfoNoticeDuration(message: String): Long =
+  if (message.startsWith("You started this ") && message.contains(" on another device.")) {
+    CROSS_DEVICE_CONTINUE_NOTICE_DURATION_MS
+  } else {
+    APP_NOTICE_DURATION_MS
+  }
 
 /** Trailer cache housekeeping: daily, at nine in the morning. */
 internal const val DEFAULT_TRAILER_CACHE_CLEAR_HOURS = 24
@@ -2476,6 +2531,16 @@ private fun normalizedMediaType(type: String): String = when (type.trim().lowerc
   else -> type.trim().lowercase()
 }
 
+internal fun progressCameFromAnotherPlatform(lastPlatform: String?, destination: String): Boolean {
+  val origin = lastPlatform?.trim()?.lowercase().orEmpty()
+  if (origin.isBlank()) return false
+  return when (destination.trim().lowercase()) {
+    "mobile" -> origin !in setOf("mobile", "android", "android-mobile")
+    "tv" -> origin !in setOf("tv", "androidtv", "firetv")
+    else -> origin != destination.trim().lowercase()
+  }
+}
+
 /**
  * Keeps the Stremio resource type used by the catalog that produced a card.
  *
@@ -2670,10 +2735,25 @@ private val legacyDefaultCatalogIds = setOf(
   "trending_series",
 )
 
+/**
+ * StreamDek rows that Home assembles itself rather than fetching from the catalog registry.
+ *
+ * They are listed as ordinary built-in rows so they can be switched on and off beside the rest,
+ * under the same master switch -- but they are not catalog ids, so they must never be asked for
+ * from `/tmdb/home`. See [streamDekFeatureRowIds].
+ */
+internal val streamDekFeatureRows: List<HomeCatalogRow> = listOf(
+  HomeCatalogRow("recommended", "Recommended For You", "Provided by StreamDek", builtin = true),
+  HomeCatalogRow("trending", "Trending On Trakt", "Provided by StreamDek", builtin = true),
+  HomeCatalogRow("watchlist", "Watchlist", "Provided by StreamDek", builtin = true),
+)
+
+internal val streamDekFeatureRowIds: Set<String> = streamDekFeatureRows.mapTo(mutableSetOf()) { it.id }
+
 internal fun builtinHomeCatalogCandidates(definitions: List<CatalogDefinition>): List<HomeCatalogRow> =
   definitions.ifEmpty { fallbackCatalogDefinitions }.map { definition ->
     HomeCatalogRow(definition.id, definition.title, "Provided by StreamDek", builtin = true)
-  }
+  } + streamDekFeatureRows
 
 private fun addonHomeCatalogTitle(addonName: String, catalogName: String, type: String, needsDifferentiator: Boolean): String {
   val cleaned = cleanAddonCatalogLabel(catalogName, addonName)
@@ -2715,6 +2795,25 @@ internal fun addonHomeCatalogCandidates(addons: List<InstalledAddon>): List<Home
   }
 }
 
+/**
+ * The part of a row id that names the catalogue rather than where it sat in a manifest.
+ *
+ * Add-on row ids are `addon:<addonId>:<type>:<catalogId>:<index>`, and that trailing index is the
+ * catalogue's position in the add-on's manifest. It moves whenever the add-on reorders, adds or
+ * removes a catalogue — and when it moved, every saved row stopped matching its candidate and the
+ * viewer's whole layout was rebuilt from defaults. Matching on everything but the index survives
+ * that, and the row quietly adopts the new id.
+ */
+internal fun homeCatalogRowMatchKey(id: String): String {
+  if (!id.startsWith("addon:")) return id
+  val parts = id.split(":")
+  return if (parts.size >= 5) parts.take(4).joinToString(":") else id
+}
+
+/** The add-on a saved row came from, or null when the row is a built-in one. */
+internal fun homeCatalogRowAddonId(id: String): String? =
+  if (id.startsWith("addon:")) id.split(":").getOrNull(1)?.takeIf { it.isNotBlank() } else null
+
 private fun isLiveHomeCatalogRowId(id: String): Boolean {
   if (!id.startsWith("addon:")) return false
   val rawType = id.split(":").getOrNull(2)?.lowercase().orEmpty()
@@ -2728,6 +2827,38 @@ internal fun mergeHomeCatalogRows(
 ): List<HomeCatalogRow> {
   val builtins = builtinHomeCatalogCandidates(definitions)
   val candidates = (builtins + addonHomeCatalogCandidates(addons)).associateBy { it.id }
+  val candidatesByMatchKey = candidates.values.associateBy { homeCatalogRowMatchKey(it.id) }
+  // Which sources have actually reported in. An add-on list that has not loaded yet says nothing
+  // about whether a catalogue still exists, and neither does an empty registry.
+  val liveAddonIds = addons.filter { it.enabled }.map { it.id }.toSet()
+  val registryKnown = definitions.isNotEmpty()
+
+  /**
+   * The candidate a saved row now corresponds to, the row itself when its source has not reported
+   * in, or null when the source is present and has genuinely dropped it.
+   *
+   * This used to be a plain `candidates[row.id]` lookup, so a row with no candidate was forgotten.
+   * On a cold start the home load runs before the add-on list arrives, which meant every add-on row
+   * was dropped from the layout and immediately saved that way -- and when the add-ons did land a
+   * moment later, all of them looked new and came back switched on, in registry order. A viewer who
+   * had turned nineteen of seventy rows on found all seventy on again after every restart, however
+   * many times they set it.
+   */
+  fun resolve(row: HomeCatalogRow): HomeCatalogRow? {
+    val candidate = candidates[row.id] ?: candidatesByMatchKey[homeCatalogRowMatchKey(row.id)]
+    if (candidate != null) return candidate.copy(enabled = row.enabled)
+    val addonId = homeCatalogRowAddonId(row.id)
+    return when {
+      // The add-on is installed and switched on, and no longer offers this catalogue. Gone.
+      addonId != null && addonId in liveAddonIds -> null
+      // The add-on has not loaded, or is switched off. Keep the row and its switch: the viewer's
+      // arrangement outlives a list that is merely absent.
+      addonId != null -> row
+      // Same reasoning for the built-in registry.
+      registryKnown -> null
+      else -> row
+    }
+  }
   // A layout saved before the catalog registry existed knows nothing but the original five rows,
   // so honouring its order would bury twenty-five new rows underneath them. Those five carried no
   // deliberate arrangement worth keeping — but a viewer who switched one off meant it, and one who
@@ -2737,7 +2868,7 @@ internal fun mergeHomeCatalogRows(
   val isLegacyLayout = savedBuiltinIds.isNotEmpty() && savedBuiltinIds.all { it in legacyDefaultCatalogIds }
   val persisted = if (isLegacyLayout) {
     val disabled = existing.filterNot { it.enabled }.map { it.id }.toSet()
-    val addonRows = existing.filterNot { isBuiltinHomeCatalog(it.id) }.mapNotNull { row -> candidates[row.id]?.copy(enabled = row.enabled) }
+    val addonRows = existing.filterNot { isBuiltinHomeCatalog(it.id) }.mapNotNull(::resolve)
     val pinnedToTop = existing.indexOfFirst { isBuiltinHomeCatalog(it.id) }.let { firstBuiltin ->
       existing.take(firstBuiltin).count { !isBuiltinHomeCatalog(it.id) }
     }
@@ -2745,10 +2876,12 @@ internal fun mergeHomeCatalogRows(
       builtins.map { candidate -> candidate.copy(enabled = candidate.id !in disabled) } +
       addonRows.drop(pinnedToTop)
   } else {
-    existing.mapNotNull { row -> candidates[row.id]?.copy(enabled = row.enabled) }
+    existing.mapNotNull(::resolve)
   }
 
-  val merged = persisted.toMutableList()
+  // Two saved rows can resolve onto one candidate when an add-on's manifest reorders, and a
+  // repeated id is a crash in a lazy list rather than a cosmetic duplicate.
+  val merged = persisted.distinctBy { it.id }.toMutableList()
   val builtinOrder = builtins.withIndex().associate { (index, row) -> row.id to index }
   candidates.values.forEach { candidate ->
     if (merged.any { it.id == candidate.id }) return@forEach
@@ -2796,6 +2929,42 @@ internal fun applyHomeCatalogLayout(sections: List<MediaSection>, rows: List<Hom
     if (row.builtin && !defaultBuiltinsEnabled) return@mapNotNull null
     sectionMap[row.id]
   }
+}
+
+/** Provider-advertised catalogs worth fetching for the spotlight, independent of row visibility. */
+internal fun heroCatalogIds(definitions: List<CatalogDefinition>, limit: Int = 6): List<String> {
+  if (definitions.isEmpty()) {
+    // Compatibility with a backend predating the catalog registry. These are the legacy provider
+    // endpoints fetchHomeSections already knows how to resolve, and none implies a visible row.
+    return listOf("new_movies", "new_series", "trending_movies", "trending_series").take(limit.coerceAtLeast(1))
+  }
+  fun rank(definition: CatalogDefinition): Int {
+    val identity = "${definition.id} ${definition.title} ${definition.group}".lowercase()
+    return when {
+      "recommend" in identity -> 0
+      "trending" in identity -> 1
+      "popular" in identity -> 2
+      "new release" in identity || "new_release" in identity || "recent" in identity -> 3
+      "top rated" in identity || "top_rated" in identity -> 4
+      "theatre" in identity || "cinema" in identity -> 5
+      else -> 10
+    }
+  }
+  fun isEligible(definition: CatalogDefinition): Boolean {
+    if (!definition.mediaType.equals("movie", true) &&
+      !definition.mediaType.equals("tv", true) &&
+      !definition.mediaType.equals("series", true)
+    ) return false
+    val identity = "${definition.id} ${definition.title} ${definition.group}".lowercase()
+    return listOf("streaming_network", "streaming network", "live tv", "live_tv", "live-tv", "iptv", "channel").none { it in identity }
+  }
+  return definitions
+    .filter(::isEligible)
+    .withIndex()
+    .sortedWith(compareBy<IndexedValue<CatalogDefinition>>({ rank(it.value) }, { it.index }))
+    .map { it.value.id }
+    .distinct()
+    .take(limit.coerceAtLeast(1))
 }
 
 private fun normalizeFusionBadgeSource(json: JSONObject, url: String): FusionBadgeSource {
@@ -2965,8 +3134,18 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private data class PlaybackAttempt(
     val correlationId: String,
     val startedAt: Long,
+    val mediaId: String,
+    val mediaType: String,
+    val seasonNumber: Int?,
+    val episodeNumber: Int?,
     var sourcesTried: Int,
-  )
+  ) {
+    fun owns(detail: MediaDetail, episode: EpisodeItem?): Boolean =
+      mediaId == detail.id &&
+        normalizedMediaType(mediaType) == normalizedMediaType(detail.type) &&
+        seasonNumber == episode?.seasonNumber &&
+        episodeNumber == episode?.episodeNumber
+  }
 
   private var playbackAttempt: PlaybackAttempt? = null
 
@@ -2982,6 +3161,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private var searchRequestGeneration: Long = 0L
   private var streamRequestGeneration: Long = 0L
   private var playbackRequestGeneration: Long = 0L
+  private var watchlistMutationGeneration: Long = 0L
   private var liveChannelCatalogGeneration: Long = 0L
   private var m3uLoadGeneration: Long = 0L
   private var liveChannelSwitchSnapshot: LiveChannelSwitchSnapshot? = null
@@ -3192,6 +3372,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     sessionStore.clear()
     // The premium service keys belong to the account that just left, not to the device.
     DebridKeyStore.clear(getApplication())
+    // Same reasoning for the content-service keys, including a device-only one: it was this
+    // viewer's key, and leaving it behind would hand it to whoever signs in next.
+    apiClient.serviceCredentials?.clearAll()
     deviceDebridManager = null
     uiState = appSettingsStore.applyTo(AppUiState(booting = false, rememberedEmail = authEntryStore.loadEmail(), mergedWatchlist = watchlistStore.load(GUEST_OWNER_KEY), favouriteChannels = favouriteChannelStore.load(GUEST_OWNER_KEY)))
     bootstrapAfterAuth(forceHome = true)
@@ -3249,7 +3432,18 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     )
   }
 
+  private fun invalidatePendingPlaybackRequest(clearPendingContinue: Boolean = true) {
+    playbackRequestGeneration += 1
+    playbackAttempt = null
+    if (clearPendingContinue) {
+      pendingDirectContinueEntry = null
+      pendingDirectContinueFallback = null
+      pendingDirectContinueEpisode = null
+    }
+  }
+
   fun dismissPlayer(progressPercent: Double? = null) {
+    invalidatePendingPlaybackRequest()
     liveChannelSwitchSnapshot = null
     progressPercent?.let {
       saveCurrentPlaybackSnapshot(it)
@@ -3263,7 +3457,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   fun cancelPlayerLaunch() {
-    playbackRequestGeneration += 1
+    invalidatePendingPlaybackRequest()
     uiState = uiState.copy(playerLaunching = false, playerLaunchingLabel = null, playerLaunchingPeerHash = null, streamLoading = false, returnToDetailAfterPlayer = false, playerReturnEpisodeId = null)
   }
 
@@ -3675,11 +3869,75 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       .copy(isLive = false)
     apiClient.sendPlaybackHandoff(session, uiState.activeProfileId, device, player, positionSeconds).getOrThrow()
   }
-  fun loadHome(force: Boolean = false) {
+  /**
+   * Loads the home rows.
+   *
+   * [silent] leaves `homeLoading` alone. That flag does double duty -- it draws the splash while
+   * there is nothing to show, and it drives the pull-to-refresh indicator once there is -- so a
+   * refresh the app started by itself, after the first load has landed, renders exactly like one
+   * the viewer pulled down for. Background reloads pass `silent` and simply swap the rows in when
+   * they arrive.
+   */
+  /**
+   * Puts a set of home rows on screen.
+   *
+   * Shared by the progressive hand-off and the final result so the two cannot drift: the partial
+   * publish has to produce exactly the screen the complete one would, only with fewer rows in it.
+   */
+  /** Releases the coalescing latch and runs the one reload any mid-flight caller asked for. */
+  private fun finishHomeLoad() {
+    homeLoadInFlight = false
+    if (homeReloadPending) {
+      homeReloadPending = false
+      loadHome(force = true, silent = true)
+    }
+  }
+
+  private fun publishHomeSections(
+    sections: List<MediaSection>,
+    definitions: List<CatalogDefinition>,
+    rows: List<HomeCatalogRow>,
+  ) {
+    val mergedRows = if (definitions.isEmpty()) rows else mergeHomeCatalogRows(uiState.homeCatalogRows, uiState.addons, definitions)
+    // homeLoading is cleared either way: a silent load never set it, and clearing a flag that
+    // is already false costs nothing and keeps the two paths from drifting apart.
+    uiState = uiState.copy(
+      homeLoading = false,
+      allHomeSections = sections,
+      catalogDefinitions = definitions.ifEmpty { uiState.catalogDefinitions },
+      catalogNextPages = sections.mapNotNull { section -> section.nextPage?.let { section.id to it } }.toMap(),
+      homeCatalogRows = mergedRows,
+      homeSections = applyHomeCatalogLayout(sections, mergedRows, uiState.defaultAppCatalogsEnabled),
+    )
+    appSettingsStore.saveHomeCatalogRows(mergedRows)
+  }
+
+  /**
+   * Whether a home load is running, and whether another was asked for while it was.
+   *
+   * A cold start fires [loadHome] from several independent places — the first composition, the
+   * session bootstrap, the profile becoming active, the add-on list arriving — and each of them
+   * legitimately wants fresh rows. Measured on a cold start that was five full loads: five
+   * catalog-manifest reads, five `/tmdb/home` requests and five add-on fan-outs for one screen.
+   *
+   * They are coalesced rather than suppressed. A request that arrives mid-flight sets
+   * [homeReloadPending] instead of starting a second pass, and one more load runs when the
+   * current one finishes — so the last caller's intent is still honoured, once.
+   */
+  private var homeLoadInFlight = false
+  private var homeReloadPending = false
+
+  fun loadHome(force: Boolean = false, silent: Boolean = false) {
     if (uiState.homeSections.isNotEmpty() && !force) return
+    if (homeLoadInFlight) {
+      if (force) homeReloadPending = true
+      return
+    }
+    homeLoadInFlight = true
     launchWork(
-      onStart = { uiState = uiState.copy(homeLoading = true, errorMessage = null) },
+      onStart = { if (!silent) uiState = uiState.copy(homeLoading = true, errorMessage = null) },
       block = {
+        val perf = Perf.span("home", if (force) "forced" else "normal")
         // The registry says which default rows exist; the viewer's saved layout says which of
         // them to actually fetch, so switching rows off makes the home request smaller rather
         // than fetching thirty rows and throwing most of them away.
@@ -3688,30 +3946,67 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           emptyList()
         }
         val rows = mergeHomeCatalogRows(uiState.homeCatalogRows, uiState.addons, definitions.ifEmpty { uiState.catalogDefinitions })
-        val wantedIds = if (!uiState.defaultAppCatalogsEnabled) {
-          emptyList()
-        } else {
-          rows.filter { it.builtin && it.enabled }.map { it.id }
-        }
+        val visibleIds = if (!uiState.defaultAppCatalogsEnabled) emptyList() else rows
+          .filter { it.builtin && it.enabled && it.id !in streamDekFeatureRowIds }
+          .map { it.id }
+        // The spotlight is a consumer of the active catalog provider, not a Home row. Fetch a
+        // small provider-ranked fallback set even when the matching visible row is switched off.
+        // applyHomeCatalogLayout still decides which rows are actually rendered below it.
+        val heroIds = if (!uiState.defaultAppCatalogsEnabled) emptyList() else heroCatalogIds(
+          definitions.ifEmpty { uiState.catalogDefinitions },
+        )
+        val wantedIds = (visibleIds + heroIds).distinct()
+        // Recorded before the call, not after: what came back cannot answer "did we ask for
+        // this", because the backend omits a row that turned out to be empty.
+        requestedHomeCatalogIds = wantedIds.toSet()
+        perf.mark("catalogManifest", "rows=${wantedIds.size}")
         apiClient
-          .fetchHomeSections(uiState.session, uiState.addons, uiState.activeProfileId, catalogIds = wantedIds)
+          .fetchHomeSections(
+            uiState.session,
+            uiState.addons,
+            uiState.activeProfileId,
+            catalogIds = wantedIds,
+            // The built-in rows go on screen the moment they land, so the add-on fan-out no
+            // longer holds the whole screen behind a splash. The complete set replaces them
+            // below; until then the viewer has something real to look at and scroll.
+            onDefaults = { defaults ->
+              withContext(Dispatchers.Main) {
+                perf.mark("publishDefaults", "count=${defaults.size}")
+                publishHomeSections(defaults, definitions, rows)
+              }
+            },
+          )
+          .also { perf.mark("sections", "count=${it.getOrNull()?.size ?: -1}") }
           .map { sections -> Triple(sections, definitions, rows) }
+          .also { perf.end("loaded") }
       },
       onSuccess = { (sections, definitions, rows) ->
-        val mergedRows = if (definitions.isEmpty()) rows else mergeHomeCatalogRows(uiState.homeCatalogRows, uiState.addons, definitions)
-        uiState = uiState.copy(
-          homeLoading = false,
-          allHomeSections = sections,
-          catalogDefinitions = definitions.ifEmpty { uiState.catalogDefinitions },
-          catalogNextPages = sections.mapNotNull { section -> section.nextPage?.let { section.id to it } }.toMap(),
-          homeCatalogRows = mergedRows,
-          homeSections = applyHomeCatalogLayout(sections, mergedRows, uiState.defaultAppCatalogsEnabled),
-        )
-        appSettingsStore.saveHomeCatalogRows(mergedRows)
+        publishHomeSections(sections, definitions, rows)
+        finishHomeLoad()
       },
-      onFailure = { message -> uiState = uiState.copy(homeLoading = false, errorMessage = message) },
+      // A background reload that fails leaves the rows already on screen alone rather than
+      // replacing them with an error the viewer did not ask for and cannot act on.
+      onFailure = { message ->
+        uiState = if (silent) {
+          uiState.copy(homeLoading = false)
+        } else {
+          uiState.copy(homeLoading = false, errorMessage = message)
+        }
+        finishHomeLoad()
+      },
     )
   }
+
+  /**
+   * What the home screen's shape depends on, as one comparable value.
+   *
+   * Used to decide whether synced preferences arriving are worth a reload at all. Most launches
+   * they are not: the rows are the same ones the device already had, and the second fetch was a
+   * full home request whose answer was identical to the first.
+   */
+  private fun homeLayoutSignature(): String =
+    uiState.homeCatalogRows.joinToString(",") { row -> row.id + ":" + row.enabled } +
+      "|" + uiState.defaultAppCatalogsEnabled
 
   fun resolveHomeHeroTitleLogos(items: List<MediaItem>) {
     val requests = items
@@ -3906,7 +4201,12 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     return fetched
   }
   fun resumeContinueWatching(item: MediaItem, onUnavailable: () -> Unit): Boolean {
-    if (uiState.playerLaunching || uiState.streamLoading || pendingDirectContinueEntry != null) return true
+    if (uiState.playerLaunching) return true
+    // streamLoading is also used by an ordinary detail page. It can still be true after the
+    // viewer has returned Home, and must not turn a Continue Watching tap into a silent no-op.
+    // Likewise, retire an orphaned resume left by a failed/empty metadata response before starting
+    // the newly requested title.
+    if (pendingDirectContinueEntry != null) invalidatePendingPlaybackRequest()
     val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
     // Downloads saved before the media record existed are keyed by download id. Those play from
     // disk directly — sending that id through loadDetail is what opened an unrelated title.
@@ -3943,11 +4243,38 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     // if the viewer has started watching something else in the meantime, that load arriving is no
     // reason to yank them into a different title mid-playback.
     uiState.playerSession?.let { active -> if (active.mediaId != detail.id) return false }
-    val entry = pendingDirectContinueEntry?.takeIf {
-      (it.mediaId == detail.id || it.mediaId == uiState.detailFallbackItem?.id) && normalizedMediaType(it.mediaType) == normalizedMediaType(detail.type)
-    } ?: return false
+    val pending = pendingDirectContinueEntry ?: return false
+    val matchesDetail =
+      (pending.mediaId == detail.id || pending.mediaId == uiState.detailFallbackItem?.id) &&
+        normalizedMediaType(pending.mediaType) == normalizedMediaType(detail.type)
+    if (!matchesDetail) {
+      // A metadata response that no longer belongs to the requested card must not leave the
+      // full-screen launch state (and every later Continue Watching tap) locked indefinitely.
+      invalidatePendingPlaybackRequest()
+      uiState = uiState.copy(
+        playerLaunching = false,
+        playerLaunchingLabel = null,
+        streamLoading = false,
+      )
+      return false
+    }
+    val entry = pending
     pendingDirectContinueEntry = null
     val stream = entry.stream
+    if (stream == null && progressCameFromAnotherPlatform(entry.lastPlatform, destination = "mobile")) {
+      val showDetails = pendingDirectContinueFallback
+      pendingDirectContinueFallback = null
+      pendingDirectContinueEpisode = null
+      uiState = uiState.copy(
+        playerLaunching = false,
+        playerLaunchingLabel = null,
+        streamLoading = false,
+        infoMessage = crossDeviceContinueNotice(detail.type, episode?.seasonNumber, episode?.episodeNumber),
+      )
+      showDetails?.invoke()
+      loadStreamsForCurrentDetail(episode)
+      return true
+    }
     if (stream != null && (!stream.url.isNullOrBlank() || !stream.infoHash.isNullOrBlank())) {
       playStream(stream, episode, entry.progressPercent)
     } else {
@@ -4000,9 +4327,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       return
     }
     if (!preservePendingContinue) {
-      pendingDirectContinueEntry = null
-      pendingDirectContinueFallback = null
-      pendingDirectContinueEpisode = null
+      // A resolver launched by the title the viewer just left can still complete at the network
+      // layer. Retire its ownership before changing detail identity so its callback cannot open a
+      // player or borrow metadata from this newly opened title.
+      invalidatePendingPlaybackRequest()
     }
     // A fresh correlation id per title opened; every stage that follows carries it.
     detailCorrelationId = Telemetry.newCorrelationId()
@@ -4222,8 +4550,11 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     if (detailLocalEpisodes.isNotEmpty()) {
       val episodes = detailLocalEpisodes.filter { it.seasonNumber == seasonNumber }.sortedBy(EpisodeItem::episodeNumber)
       uiState = uiState.copy(seasonLoading = false, selectedSeasonEpisodes = episodes, selectedSeasonNumber = seasonNumber, errorMessage = null)
-      (episodes.firstOrNull { it.episodeNumber == preferredEpisodeNumber } ?: episodes.firstOrNull())?.let { episode ->
-        if (!resumeKnownSource || !playPendingContinue(uiState.detail ?: return@let, episode)) loadStreamsForCurrentDetail(episode)
+      val episode = episodes.firstOrNull { it.episodeNumber == preferredEpisodeNumber }
+        ?: episodes.firstOrNull()
+        ?: pendingDirectContinueEpisode?.takeIf { it.seasonNumber == seasonNumber }
+      episode?.let {
+        if (!resumeKnownSource || !playPendingContinue(uiState.detail ?: return@let, it)) loadStreamsForCurrentDetail(it)
       }
       return
     }
@@ -4232,11 +4563,29 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       block = { apiClient.fetchSeason(tvId, seasonNumber) },
       onSuccess = { episodes ->
         uiState = uiState.copy(seasonLoading = false, selectedSeasonEpisodes = episodes, selectedSeasonNumber = seasonNumber)
-        (episodes.firstOrNull { it.episodeNumber == preferredEpisodeNumber } ?: episodes.firstOrNull())?.let { episode ->
-          if (!resumeKnownSource || !playPendingContinue(uiState.detail ?: return@let, episode)) loadStreamsForCurrentDetail(episode)
+        val episode = episodes.firstOrNull { it.episodeNumber == preferredEpisodeNumber }
+          ?: episodes.firstOrNull()
+          ?: pendingDirectContinueEpisode?.takeIf { it.seasonNumber == seasonNumber }
+        episode?.let {
+          if (!resumeKnownSource || !playPendingContinue(uiState.detail ?: return@let, it)) loadStreamsForCurrentDetail(it)
         }
       },
-      onFailure = { message -> uiState = uiState.copy(seasonLoading = false, errorMessage = message) },
+      onFailure = { message ->
+        val detail = uiState.detail
+        val fallbackEpisode = pendingDirectContinueEpisode?.takeIf { it.seasonNumber == seasonNumber }
+        if (resumeKnownSource && detail != null && fallbackEpisode != null && playPendingContinue(detail, fallbackEpisode)) {
+          uiState = uiState.copy(seasonLoading = false, errorMessage = null)
+        } else {
+          invalidatePendingPlaybackRequest()
+          uiState = uiState.copy(
+            seasonLoading = false,
+            playerLaunching = false,
+            playerLaunchingLabel = null,
+            streamLoading = false,
+            errorMessage = message,
+          )
+        }
+      },
     )
   }
 
@@ -4517,8 +4866,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       val deviceDebrid = deviceDebrid()
       val answer = if (deviceDebrid != null) {
         runCatching { deviceDebrid.checkCacheAll(hashes, releaseNames) }
-      } else {
+      } else if (uiState.serverSideStreamsEnabled) {
         apiClient.fetchDebridCachedHashes(session, hashes, releaseNames)
+      } else {
+        return@launch
       }
       answer.onSuccess { cached ->
         if (generation != streamRequestGeneration || cached.isEmpty()) return@onSuccess
@@ -4796,8 +5147,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     if (uiState.session != null && uiState.debridAccounts.any { it.enabled }) {
       // Streaming directly means this device talks to its own premium services, so the provider
       // sees the viewer's address rather than one StreamDek server address shared by everyone.
-      // The server path is kept for accounts set to go through it, and as the fallback for a
-      // device that has no keys stored yet — a first run, or a sync that has not landed.
+      // The server path exists only when this account explicitly enabled Server-Side Streaming.
       val deviceDebrid = deviceDebrid()
 
       if (deviceDebrid != null) {
@@ -4825,7 +5175,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         } else {
           resolution.failures.firstOrNull()?.let { lastFailure = IllegalStateException(it.message) }
         }
-      } else {
+      } else if (uiState.serverSideStreamsEnabled) {
         apiClient.resolveStream(uiState.session!!, playbackStream, maxSizeBytes)
           .onFailure { error ->
             lastFailure = error
@@ -4861,6 +5211,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
               infoHash,
               buildPeerMagnet(playbackStream, infoHash),
               playbackStream.filename,
+              detail.title,
+              episode?.seasonNumber,
+              episode?.episodeNumber,
             )
           }
             .onFailure {
@@ -4872,11 +5225,6 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
             }
         }
 
-      apiClient.streamViaBackend(playbackStream)
-        .onFailure { lastFailure = it }
-        .getOrNull()?.takeIf { it.isNotBlank() }?.let { backendUrl ->
-          return@runCatching ResolvedPlayback(backendUrl, playbackStream)
-        }
     }
 
     throw debridDownloading
@@ -4901,6 +5249,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       ?: PlaybackAttempt(
         correlationId = detailCorrelationId ?: Telemetry.newCorrelationId(),
         startedAt = System.currentTimeMillis(),
+        mediaId = detail.id,
+        mediaType = detail.type,
+        seasonNumber = selectedEpisode?.seasonNumber,
+        episodeNumber = selectedEpisode?.episodeNumber,
         sourcesTried = 1,
       ).also { playbackAttempt = it }
     launchWork(
@@ -4922,7 +5274,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       },
       block = { resolvePlayback(stream, detail, selectedEpisode) },
       onSuccess = success@ { playback ->
-        if (requestGeneration != playbackRequestGeneration) return@success
+        if (requestGeneration != playbackRequestGeneration || !attempt.owns(detail, selectedEpisode)) return@success
         val resumeEntry = loadPlaybackMemoryEntry(detail, selectedEpisode)
         val resumePercent = resumePercentOverride ?: resumeEntry?.progressPercent ?: 0.0
         val resumePositionSec = if (resumePercentOverride != null) 0.0 else resumeEntry?.positionSeconds ?: 0.0
@@ -4968,7 +5320,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         playbackAttempt = null
       },
       onFailure = failure@ { message ->
-        if (requestGeneration != playbackRequestGeneration) return@failure
+        if (requestGeneration != playbackRequestGeneration || !attempt.owns(detail, selectedEpisode)) return@failure
         // A failed resolver should not stop automatic playback at the first ranked source.
         // Preserve position for VOD and roll live channels on from zero.
         if (playNextStreamSource(stream, selectedEpisode, if (uiState.detailIsLive) 0.0 else resumePercentOverride)) return@failure
@@ -6462,6 +6814,346 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
   fun disconnectTrakt() { val session = uiState.session ?: return; val profileId = uiState.activeProfileId ?: return; launchWork(onStart = {}, block = { apiClient.disconnectTrakt(session, profileId) }, onSuccess = { refreshTraktData() }) }
 
+  // --- Content services (TMDB, MDBList) --------------------------------------------------------
+  //
+  // The viewer's own enrichment keys. Everything below funnels through ServiceCredentialManager,
+  // which owns the vault, the precedence and the prompting policy — nothing here decides on its
+  // own which key is in play or whether it may be uploaded.
+
+  private val credentials: ServiceCredentialManager? get() = apiClient.serviceCredentials
+
+  /**
+   * Re-reads what the account holds and folds it together with what this device holds.
+   *
+   * Called on sign-in, on resume and after any change made here — which is also how a key added
+   * on the web portal or another phone reaches this one, without a restart and without a
+   * long-lived cached copy of somebody's secret.
+   */
+  fun refreshContentServices() {
+    val manager = credentials ?: return
+    val session = uiState.session
+    if (session == null) {
+      // Signed out, the device vault is the whole story. Cards still work; only the account
+      // column is unknown, and it is shown as absent rather than guessed at.
+      uiState = uiState.copy(contentServices = mergeContentServices(manager, null, uiState.contentServices))
+      return
+    }
+    launchWork(
+      onStart = { uiState = uiState.copy(contentServices = uiState.contentServices.copy(loading = true)) },
+      block = { apiClient.fetchContentServiceCredentials(session) },
+      onSuccess = { account ->
+        migrateLegacyMdblistKey(manager, account)
+        uiState = uiState.copy(contentServices = mergeContentServices(manager, account, uiState.contentServices))
+        maybeOfferContentServicesSetup()
+      },
+      // A failed read is not a reason to tell someone their keys have gone. The device half is
+      // still true, so it is shown, and the account half is retried on the next refresh.
+      onFailure = {
+        uiState = uiState.copy(contentServices = mergeContentServices(manager, null, uiState.contentServices))
+      },
+    )
+  }
+
+  private fun mergeContentServices(
+    manager: ServiceCredentialManager,
+    account: AccountCredentials?,
+    previous: ContentServicesState,
+  ): ContentServicesState = previous.copy(
+    tmdb = manager.merge(ContentService.Tmdb, account?.tmdb),
+    mdblist = manager.merge(ContentService.Mdblist, account?.mdblist),
+    sharedFallbackAvailable = account?.sharedFallbackAvailable ?: previous.sharedFallbackAvailable,
+    loading = false,
+    busy = null,
+    loaded = true,
+  )
+
+  /**
+   * Moves a pre-existing plaintext MDBList key off this device.
+   *
+   * The old key lived in ordinary preferences. The backend has already moved the account's copy
+   * into encrypted storage, so in the common case there is simply nothing to keep and the
+   * plaintext is deleted. Where the account has none — a viewer who was signed out, or whose key
+   * only ever existed locally — it is moved into the keystore vault as a device key rather than
+   * uploaded, because it was never the viewer's choice to share it.
+   */
+  private fun migrateLegacyMdblistKey(manager: ServiceCredentialManager, account: AccountCredentials?) {
+    val legacy = appSettingsStore.legacyMdblistApiKey()
+    if (legacy.isBlank()) return
+    if (account?.mdblist?.configured != true && !manager.hasDeviceKey(ContentService.Mdblist)) {
+      manager.saveDeviceKey(ContentService.Mdblist, legacy)
+    }
+    appSettingsStore.clearLegacyMdblistApiKey()
+  }
+
+  /**
+   * Checks a key and puts it where the viewer asked.
+   *
+   * The check happens first in both cases, so "This device only" gets the same confirmation as
+   * saving to the account. It is also the only path by which a key ever leaves this device: a
+   * device-only key is checked and stored locally, and nothing is written to the account.
+   */
+  fun submitContentServiceKey(service: ContentService, apiKey: String, choice: StorageChoice) {
+    val manager = credentials ?: return
+    val trimmed = apiKey.trim()
+    if (trimmed.length < 8) {
+      uiState = uiState.copy(
+        contentServices = uiState.contentServices.copy(
+          notice = CredentialFailure.Malformed.message,
+          noticeIsError = true,
+          noticeService = service,
+        ),
+      )
+      return
+    }
+    val session = uiState.session
+    if (session == null) {
+      // No account to check the key through, so the device asks the service directly. Storing it
+      // unverified would mean the card claimed a working connection that nothing had established.
+      launchWork(
+        onStart = {
+          uiState = uiState.copy(
+            contentServices = uiState.contentServices.copy(busy = service, notice = null),
+          )
+        },
+        block = { apiClient.validateContentServiceKeyDirect(service, trimmed) },
+        onSuccess = { outcome ->
+          when (outcome) {
+            is CredentialCheck.Valid -> storeDeviceKey(manager, service, trimmed, verified = true)
+            is CredentialCheck.Failed -> uiState = uiState.copy(
+              contentServices = uiState.contentServices.copy(
+                busy = null,
+                notice = outcome.failure.message,
+                noticeIsError = true,
+                noticeService = service,
+              ),
+            )
+          }
+        },
+        onFailure = { message ->
+          uiState = uiState.copy(
+            contentServices = uiState.contentServices.copy(
+              busy = null,
+              notice = message,
+              noticeIsError = true,
+              noticeService = service,
+            ),
+          )
+        },
+      )
+      return
+    }
+
+    val savingToAccount = choice == StorageChoice.SaveToStreamDek
+    launchWork(
+      onStart = { uiState = uiState.copy(contentServices = uiState.contentServices.copy(busy = service, notice = null)) },
+      block = {
+        if (savingToAccount) {
+          apiClient.saveContentServiceKey(session, service, trimmed).map { it as Any }
+        } else {
+          apiClient.validateContentServiceKey(session, service, trimmed).map { it as Any }
+        }
+      },
+      onSuccess = { outcome ->
+        when (outcome) {
+          is AccountCredentialState -> {
+            // Saved to the account, so this device deliberately keeps no copy of its own: one
+            // key, one place, and removing it from the account removes it everywhere.
+            manager.clearDeviceKey(service)
+            noteContentServiceResult(
+              service,
+              "${service.label} connected and saved to your StreamDek account. Your TV will pick it up automatically.",
+            )
+          }
+          is CredentialCheck.Valid -> storeDeviceKey(manager, service, trimmed, verified = true)
+          is CredentialCheck.Failed -> uiState = uiState.copy(
+            contentServices = uiState.contentServices.copy(
+              busy = null,
+              notice = outcome.failure.message,
+              noticeIsError = true,
+              noticeService = service,
+            ),
+          )
+          else -> uiState = uiState.copy(contentServices = uiState.contentServices.copy(busy = null))
+        }
+      },
+      onFailure = { message ->
+        uiState = uiState.copy(
+          contentServices = uiState.contentServices.copy(
+            busy = null,
+            notice = message,
+            noticeIsError = true,
+            noticeService = service,
+          ),
+        )
+      },
+    )
+  }
+
+  private fun storeDeviceKey(
+    manager: ServiceCredentialManager,
+    service: ContentService,
+    apiKey: String,
+    verified: Boolean,
+  ) {
+    if (!manager.saveDeviceKey(service, apiKey)) {
+      uiState = uiState.copy(
+        contentServices = uiState.contentServices.copy(
+          busy = null,
+          notice = "This device could not store the key securely, so it has not been saved. " +
+            "Saving it to your StreamDek account instead will work.",
+          noticeIsError = true,
+          noticeService = service,
+        ),
+      )
+      return
+    }
+    noteContentServiceResult(
+      service,
+      if (verified) {
+        "${service.label} accepted your key. It is connected and kept on this device only."
+      } else {
+        "${service.label} key saved on this device. It will be checked the first time it is used."
+      },
+    )
+  }
+
+  /**
+   * Copies a device key up to the account, at the viewer's request.
+   *
+   * The only route by which a device-only key ever reaches StreamDek, and it exists because
+   * changing your mind should not mean finding the key again. The local copy is dropped once the
+   * account has it, so there is one key in one place afterwards.
+   */
+  fun copyContentServiceKeyToAccount(service: ContentService) {
+    val manager = credentials ?: return
+    val session = uiState.session ?: return
+    val key = manager.deviceKey(service) ?: return
+    launchWork(
+      onStart = { uiState = uiState.copy(contentServices = uiState.contentServices.copy(busy = service, notice = null)) },
+      block = { apiClient.saveContentServiceKey(session, service, key) },
+      onSuccess = {
+        manager.clearDeviceKey(service)
+        noteContentServiceResult(
+          service,
+          "${service.label} is now saved to your StreamDek account and available on your other devices.",
+        )
+      },
+      onFailure = { message ->
+        uiState = uiState.copy(
+          contentServices = uiState.contentServices.copy(
+            busy = null,
+            notice = message,
+            noticeIsError = true,
+            noticeService = service,
+          ),
+        )
+      },
+    )
+  }
+
+  /**
+   * Removes a key, from wherever the viewer said.
+   *
+   * The two scopes are never conflated. Removing the account copy is announced as affecting every
+   * device, because it does; removing the device copy is local and leaves the account key — and
+   * this device — working from that.
+   */
+  fun removeContentServiceKey(service: ContentService, scope: CredentialRemoval) {
+    val manager = credentials ?: return
+    if (scope == CredentialRemoval.Device) {
+      manager.clearDeviceKey(service)
+      noteContentServiceResult(service, "${service.label} key removed from this device.")
+      return
+    }
+    val session = uiState.session ?: return
+    launchWork(
+      onStart = { uiState = uiState.copy(contentServices = uiState.contentServices.copy(busy = service, notice = null)) },
+      block = { apiClient.removeContentServiceKey(session, service) },
+      onSuccess = {
+        noteContentServiceResult(
+          service,
+          "${service.label} key removed from your StreamDek account. Your other devices will stop using it.",
+        )
+      },
+      onFailure = { message ->
+        uiState = uiState.copy(
+          contentServices = uiState.contentServices.copy(
+            busy = null,
+            notice = message,
+            noticeIsError = true,
+            noticeService = service,
+          ),
+        )
+      },
+    )
+  }
+
+  private fun noteContentServiceResult(service: ContentService, message: String) {
+    val manager = credentials ?: return
+    uiState = uiState.copy(
+      contentServices = uiState.contentServices.copy(
+        busy = null,
+        notice = message,
+        noticeIsError = false,
+        noticeService = service,
+      ),
+    )
+    refreshContentServices()
+    // Whatever was blank because of a missing key is worth another go now that there is one.
+    if (service == ContentService.Mdblist) uiState.detail?.let(::refreshExternalRatings)
+  }
+
+  fun dismissContentServiceNotice() {
+    uiState = uiState.copy(
+      contentServices = uiState.contentServices.copy(notice = null, noticeService = null),
+    )
+  }
+
+  // --- Prompting ------------------------------------------------------------------------------
+
+  /** Offers the setup card, if the manager's own policy says now is a reasonable moment. */
+  private fun maybeOfferContentServicesSetup() {
+    val manager = credentials ?: return
+    if (uiState.contentServicesPromptVisible) return
+    if (!manager.shouldOfferSetup(uiState.contentServices)) return
+    uiState = uiState.copy(contentServicesPromptVisible = true)
+  }
+
+  fun showContentServicesSetup() {
+    uiState = uiState.copy(contentServicesPromptVisible = true)
+  }
+
+  /**
+   * "Do this later", honoured.
+   *
+   * The deferral is written down, so the next launch does not ask again — the reminder comes back
+   * after the interval the viewer selected rather than on every refresh.
+   */
+  fun deferContentServicesSetup(deferral: SetupDeferral) {
+    credentials?.deferSetup(deferral)
+    uiState = uiState.copy(contentServicesPromptVisible = false)
+  }
+
+  fun dismissContentServicesSetup() {
+    // "Done" or "Continue" closes an incomplete setup for at least a day as well. Without this,
+    // the next resume refresh immediately recreated the prompt even though it had just been read.
+    if (!uiState.contentServices.allConfigured) credentials?.deferSetup(SetupDeferral.Tomorrow)
+    uiState = uiState.copy(contentServicesPromptVisible = false)
+  }
+
+  /** The small in-place nudge, shown at most once a day per service and never as a modal. */
+  private fun offerContentServiceHint(service: ContentService) {
+    val manager = credentials ?: return
+    if (uiState.contentServiceHint != null || uiState.contentServicesPromptVisible) return
+    if (!manager.shouldHintFor(service)) return
+    manager.noteHintShown(service)
+    uiState = uiState.copy(contentServiceHint = service)
+  }
+
+  fun dismissContentServiceHint() {
+    uiState = uiState.copy(contentServiceHint = null)
+  }
+
   // --- SIMKL / MDBList -------------------------------------------------------------------------
   // Connections are per profile, so every call carries the active profile and switching profiles
   // clears the cached statuses before refetching.
@@ -6575,9 +7267,11 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       onSuccess = { status ->
         uiState = uiState.copy(syncServiceLoading = null, infoMessage = "Connected to ${syncServiceLabel(serviceId)}.")
         if (serviceId == SyncService.Mdblist.id) {
-          // The same key drives the MDBList rating lookups, so keep both in step.
-          appSettingsStore.saveMdblistApiKey(trimmed)
-          uiState = uiState.copy(mdblistApiKey = trimmed, mdblistStatus = status)
+          // The same key answers for ratings, and the backend saves it as this account's
+          // MDBList content-service credential in the same step — so rather than keeping a
+          // second copy in step by hand, the credential state is simply re-read.
+          uiState = uiState.copy(mdblistStatus = status)
+          refreshContentServices()
           uiState.detail?.let(::refreshExternalRatings)
         }
         refreshSyncServices()
@@ -6716,10 +7410,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     preferences.ratingsEnabled?.let(appSettingsStore::saveRatingsEnabled)
     preferences.externalRatingsEnabled?.let(appSettingsStore::saveExternalRatingsEnabled)
     ratingProviders?.let(appSettingsStore::saveEnabledRatingProviders)
-    // The MDBList key is account-level in cloud preferences but profile-scoped on device, so the
-    // cloud copy only seeds a profile that has none yet. Applying it unconditionally would let
-    // every cloud refresh overwrite each profile's own key with the account one.
-    if (uiState.mdblistApiKey.isBlank()) preferences.mdblistApiKey?.takeIf { it.isNotBlank() }?.let(appSettingsStore::saveMdblistApiKey)
+    // The MDBList key deliberately does not come from here any more. It was a secret riding
+    // on an ordinary settings document, readable by anything that could read preferences;
+    // the backend has moved any existing one into encrypted per-account storage and blanks
+    // the field, so there is nothing left here to apply.
     preferences.pictureInPictureEnabled?.let(appSettingsStore::savePictureInPictureEnabled)
     decoderMode?.let(appSettingsStore::saveDecoderMode)
     renderSurface?.let(appSettingsStore::saveRenderSurface)
@@ -6728,6 +7422,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     preferences.skipIntroEnabled?.let(appSettingsStore::saveSkipIntroEnabled)
     preferences.skipRecapEnabled?.let(appSettingsStore::saveSkipRecapEnabled)
     preferences.skipEndingEnabled?.let(appSettingsStore::saveSkipEndingEnabled)
+    preferences.autoSkipIntroEnabled?.let(appSettingsStore::saveAutoSkipIntroEnabled)
+    preferences.autoSkipRecapEnabled?.let(appSettingsStore::saveAutoSkipRecapEnabled)
+    preferences.autoSkipEndingEnabled?.let(appSettingsStore::saveAutoSkipEndingEnabled)
     // Same account-level/profile-scoped split as the MDBList key above: the cloud copy only seeds
     // a profile that has none of its own.
     if (uiState.introdbApiKey.isBlank()) preferences.introdbApiKey?.takeIf { it.isNotBlank() }?.let(appSettingsStore::saveIntrodbApiKey)
@@ -6788,7 +7485,6 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       ratingsEnabled = preferences.ratingsEnabled ?: uiState.ratingsEnabled,
       externalRatingsEnabled = preferences.externalRatingsEnabled ?: uiState.externalRatingsEnabled,
       enabledRatingProviders = ratingProviders ?: uiState.enabledRatingProviders,
-      mdblistApiKey = uiState.mdblistApiKey.ifBlank { preferences.mdblistApiKey?.trim().orEmpty() },
       pictureInPictureEnabled = preferences.pictureInPictureEnabled ?: uiState.pictureInPictureEnabled,
       decoderMode = decoderMode ?: uiState.decoderMode,
       renderSurface = renderSurface ?: uiState.renderSurface,
@@ -6797,6 +7493,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       skipIntroEnabled = preferences.skipIntroEnabled ?: uiState.skipIntroEnabled,
       skipRecapEnabled = preferences.skipRecapEnabled ?: uiState.skipRecapEnabled,
       skipEndingEnabled = preferences.skipEndingEnabled ?: uiState.skipEndingEnabled,
+      autoSkipIntroEnabled = preferences.autoSkipIntroEnabled ?: uiState.autoSkipIntroEnabled,
+      autoSkipRecapEnabled = preferences.autoSkipRecapEnabled ?: uiState.autoSkipRecapEnabled,
+      autoSkipEndingEnabled = preferences.autoSkipEndingEnabled ?: uiState.autoSkipEndingEnabled,
       introdbApiKey = uiState.introdbApiKey.ifBlank { preferences.introdbApiKey?.trim().orEmpty() },
       autoPlayNextEpisode = preferences.autoPlayNextEpisode ?: uiState.autoPlayNextEpisode,
       preferBingeGroup = preferences.preferBingeGroup ?: uiState.preferBingeGroup,
@@ -6848,9 +7547,20 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
               if (primaryIsTrakt || primaryIsSyncDek) SyncServiceStatus()
               else apiClient.fetchSyncServiceStatus(session, profileId, primary).getOrElse { SyncServiceStatus() }
             }
+            // Connection status is the authority for provider-backed reads. Starting the list
+            // requests alongside it caused a predictable 401 whenever an unconnected provider
+            // happened to be selected as primary.
+            val status = traktStatusDeferred.await()
+            val primaryStatus = when {
+              primaryIsSyncDek -> SyncServiceStatus(connected = true, supportsWatchlist = true, supportsPlayback = false)
+              primaryIsTrakt -> SyncServiceStatus(connected = status.connected)
+              else -> primaryStatusDeferred.await()
+            }
+            val primaryConnected = if (primaryIsTrakt) status.connected else primaryStatus.connected
             val continueWatchingDeferred = async {
               when {
                 primaryIsSyncDek -> emptyList()
+                !primaryConnected || !primaryStatus.supportsPlayback -> emptyList()
                 primaryIsTrakt -> apiClient.fetchTraktContinueWatching(session, profileId).getOrElse { emptyList() }
                 else -> apiClient.fetchSyncServicePlayback(session, profileId, primary).getOrElse { emptyList() }
               }
@@ -6858,34 +7568,28 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
             val watchlistDeferred = async {
               when {
                 primaryIsSyncDek -> apiClient.fetchSyncDekWatchlist(session, profileId).getOrElse { emptyList() }
+                !primaryConnected || !primaryStatus.supportsWatchlist -> emptyList()
                 primaryIsTrakt -> apiClient.fetchTraktWatchlist(session, profileId).getOrElse { emptyList() }
                 else -> apiClient.fetchSyncServiceWatchlist(session, profileId, primary).getOrElse { emptyList() }
               }
             }
-            val recommendationsDeferred = async { apiClient.fetchTraktRecommendations(session, profileId).getOrElse { emptyList() } }
-
-            val status = traktStatusDeferred.await()
-            val primaryStatus = when {
-              // Always connected, and it keeps a watchlist but not a Continue Watching row of its
-              // own -- that comes from the resume store on the device.
-              primaryIsSyncDek -> SyncServiceStatus(connected = true, supportsWatchlist = true, supportsPlayback = false)
-              primaryIsTrakt -> SyncServiceStatus(connected = status.connected)
-              else -> primaryStatusDeferred.await()
+            val recommendationsDeferred = async {
+              if (status.connected) apiClient.fetchTraktRecommendations(session, profileId).getOrElse { emptyList() }
+              else emptyList()
             }
-            val primaryConnected = if (primaryIsTrakt) status.connected else primaryStatus.connected
-            val cw = continueWatchingDeferred.await().takeIf { primaryConnected && primaryStatus.supportsPlayback } ?: emptyList()
-            val wl = watchlistDeferred.await().takeIf { primaryConnected && primaryStatus.supportsWatchlist } ?: emptyList()
-            val recs = recommendationsDeferred.await().takeIf { status.connected } ?: emptyList()
+
+            val cw = continueWatchingDeferred.await()
+            val wl = watchlistDeferred.await()
+            val recs = recommendationsDeferred.await()
             Result.success(TraktDashboardState(status, cw, wl, recs, trendingDeferred.await()))
           }
         }
       },
       onSuccess = { dashboard ->
-        val watchedTitles = watchedTitleStore.load(activeOwnerKey() ?: GUEST_OWNER_KEY)
         uiState = uiState.copy(
           traktLoading = false,
           traktStatus = dashboard.status,
-          traktContinueWatching = dashboard.continueWatching.filterNot { watchedTitleKey(it.type, it.tmdbId?.toString() ?: it.id) in watchedTitles },
+          traktContinueWatching = dashboard.continueWatching,
           traktWatchlist = dashboard.watchlist,
           traktRecommendations = dashboard.recommendations,
           traktTrending = dashboard.trending,
@@ -6949,7 +7653,11 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   fun toggleWatchlist(item: MediaItem) {
     val ownerKey = activeOwnerKey() ?: return
-    val current = loadLocalWatchlist().toMutableList()
+    val previousLocal = loadLocalWatchlist()
+    val previousTrakt = uiState.traktWatchlist
+    val previousMerged = uiState.mergedWatchlist
+    val mutationGeneration = ++watchlistMutationGeneration
+    val current = previousLocal.toMutableList()
     val localIndex = current.indexOfFirst { it.id == item.id && normalizedMediaType(it.type) == normalizedMediaType(item.type) }
     // The saved/unsaved state the UI shows comes from the merged list, so that is what a tap has
     // to toggle. A title that is only on the watchlist through Trakt has no local row, and keying
@@ -6977,7 +7685,20 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val session = uiState.session
     val profileId = uiState.activeProfileId
     if (session != null && profileId != null && uiState.traktStatus.connected) {
-      launchWork(onStart = {}, block = { apiClient.syncWatchlist(session, profileId, item, remove) }, onSuccess = { refreshTraktData() })
+      launchWork(
+        onStart = {},
+        block = { apiClient.syncWatchlist(session, profileId, item, remove) },
+        onSuccess = { if (mutationGeneration == watchlistMutationGeneration) refreshTraktData() },
+        onFailure = { message ->
+          if (mutationGeneration != watchlistMutationGeneration) return@launchWork
+          watchlistStore.save(ownerKey, previousLocal)
+          uiState = uiState.copy(
+            traktWatchlist = previousTrakt,
+            mergedWatchlist = previousMerged,
+            errorMessage = "Watchlist was not updated: $message",
+          )
+        },
+      )
     }
     fanOutWatchlistToSyncServices(item, remove)
     // Adding or removing a series changes what there is to be reminded about. Called here rather
@@ -6989,6 +7710,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   fun clearWatchlist() {
     val ownerKey = activeOwnerKey() ?: return
     val itemsToRemove = uiState.mergedWatchlist
+    val previousLocal = loadLocalWatchlist()
+    val previousTrakt = uiState.traktWatchlist
+    val mutationGeneration = ++watchlistMutationGeneration
     watchlistStore.clear(ownerKey)
     uiState = uiState.copy(mergedWatchlist = emptyList())
     val session = uiState.session
@@ -7000,7 +7724,16 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           itemsToRemove.forEach { item -> apiClient.syncWatchlist(session, profileId, item, remove = true) }
           Result.success(Unit)
         },
-        onSuccess = { refreshTraktData() },
+        onSuccess = { if (mutationGeneration == watchlistMutationGeneration) refreshTraktData() },
+        onFailure = { message ->
+          if (mutationGeneration != watchlistMutationGeneration) return@launchWork
+          watchlistStore.save(ownerKey, previousLocal)
+          uiState = uiState.copy(
+            traktWatchlist = previousTrakt,
+            mergedWatchlist = itemsToRemove,
+            errorMessage = "Watchlist was not cleared: $message",
+          )
+        },
       )
     }
   }
@@ -7026,6 +7759,15 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     )
   }
 
+  private fun applyFavouriteChannels(updated: List<MediaItem>) {
+    val favouritesOpen = uiState.browseRow?.id == "favourites"
+    uiState = uiState.copy(
+      favouriteChannels = updated,
+      browseRow = if (favouritesOpen) uiState.browseRow?.copy(items = updated) else uiState.browseRow,
+      browseLoadedItems = if (favouritesOpen) updated else uiState.browseLoadedItems,
+    )
+  }
+
   fun toggleFavouriteChannel(item: MediaItem) {
     val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
     val stored = loadLocalFavouriteChannels()
@@ -7040,7 +7782,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       listOf(item.copy(addedAt = item.addedAt ?: System.currentTimeMillis())) + stored
     }
     favouriteChannelStore.save(ownerKey, updated)
-    uiState = uiState.copy(favouriteChannels = updated)
+    applyFavouriteChannels(updated)
     syncLiveFavouriteChannels(updated)
   }
 
@@ -7077,7 +7819,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   fun clearFavouriteChannels() {
     val ownerKey = activeOwnerKey() ?: return
     favouriteChannelStore.clear(ownerKey)
-    uiState = uiState.copy(favouriteChannels = emptyList())
+    applyFavouriteChannels(emptyList())
     syncLiveFavouriteChannels(emptyList())
   }
 
@@ -7103,7 +7845,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           // Read back through the store so a cloud copy written by an older build cannot
           // reintroduce duplicates the local list has already been cleaned of.
           favouriteChannelStore.save(ownerKey, cloud.items)
-          uiState = uiState.copy(favouriteChannels = favouriteChannelStore.load(ownerKey))
+          applyFavouriteChannels(favouriteChannelStore.load(ownerKey))
         } else if (local.isNotEmpty()) {
           apiClient.saveLiveFavouriteChannels(session, profileId, local)
         }
@@ -7134,18 +7876,33 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   fun markWatched(item: MediaItem) {
     val ownerKey = activeOwnerKey() ?: return
     watchedTitleStore.add(ownerKey, item)
-    playbackResumeStore.removeTitle(ownerKey, item.id, item.type)
+    val seasonNumber = item.resumeSeasonNumber
+    val episodeNumber = item.resumeEpisodeNumber
+    if (normalizedMediaType(item.type) == "tv" && seasonNumber != null && episodeNumber != null) {
+      playbackResumeStore.remove(ownerKey, item.id, item.type, seasonNumber, episodeNumber)
+      val watchedKey = watchedEpisodeKey(item.id, seasonNumber, episodeNumber)
+      watchedEpisodeStore.save(
+        ownerKey,
+        item.id,
+        (watchedEpisodeStore.load(ownerKey, item.id) + watchedKey).distinct(),
+      )
+    } else {
+      playbackResumeStore.removeTitle(ownerKey, item.id, item.type)
+    }
     if (item.type == "movie") {
       watchedMovieStore.save(ownerKey, (watchedMovieStore.load(ownerKey) + item.id).distinct())
     }
 
-    pushWatchedProgress(item)
+    pushWatchedProgress(item, seasonNumber, episodeNumber)
     val localWatchlist = loadLocalWatchlist().filterNot { it.id == item.id && normalizedMediaType(it.type) == normalizedMediaType(item.type) }
     watchlistStore.save(ownerKey, localWatchlist)
     uiState = uiState.copy(
       mergedWatchlist = uiState.mergedWatchlist.filterNot { it.id == item.id && normalizedMediaType(it.type) == normalizedMediaType(item.type) },
       localContinueWatching = loadLocalContinueWatching(), localResumeEntries = loadResumeEntries(),
-      traktContinueWatching = uiState.traktContinueWatching.filterNot { (it.tmdbId?.toString() ?: it.id) == item.id && normalizedMediaType(it.type) == normalizedMediaType(item.type) },
+      traktContinueWatching = uiState.traktContinueWatching.filterNot {
+        (it.tmdbId?.toString() ?: it.id) == item.id && normalizedMediaType(it.type) == normalizedMediaType(item.type) &&
+          (seasonNumber == null || episodeNumber == null || (it.seasonNumber == seasonNumber && it.episodeNumber == episodeNumber))
+      },
       infoMessage = "${item.title} marked as watched.",
     )
 
@@ -7162,6 +7919,14 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         if (item.type == "movie") {
           apiClient.fetchDetails(item.type, item.id, item.title, item.year)
             .onSuccess { detail -> apiClient.syncWatchedMovie(session, profileId, detail) }
+        } else if (seasonNumber != null && episodeNumber != null) {
+          apiClient.fetchDetails("tv", item.id, item.title, item.year).onSuccess { detail ->
+            apiClient.fetchSeason(detail.id, seasonNumber).onSuccess { episodes ->
+              episodes.firstOrNull { it.episodeNumber == episodeNumber }?.let { episode ->
+                apiClient.syncWatchedEpisode(session, profileId, detail, episode, true)
+              }
+            }
+          }
         }
         refreshTraktData()
       }
@@ -7310,33 +8075,212 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
   }
 
+  fun markPreviousEpisodesWatched(detail: MediaDetail, selected: EpisodeItem) {
+    val ownerKey = activeOwnerKey() ?: return
+    viewModelScope.launch {
+      val seasonNumbers = detail.seasons.map { it.seasonNumber }
+        .filter { it > 0 && it <= selected.seasonNumber }
+        .distinct()
+      val previous = coroutineScope {
+        seasonNumbers.map { number -> async { apiClient.fetchSeason(detail.id, number).getOrDefault(emptyList()) } }
+          .awaitAll()
+          .flatten()
+      }.filter { episode ->
+        !isEpisodeUnreleased(episode) &&
+          (episode.seasonNumber < selected.seasonNumber ||
+            (episode.seasonNumber == selected.seasonNumber && episode.episodeNumber < selected.episodeNumber))
+      }
+      if (previous.isEmpty()) {
+        uiState = uiState.copy(infoMessage = "There are no previous released episodes to update.")
+        return@launch
+      }
+      val keys = previous.map { watchedEpisodeKey(detail.id, it.seasonNumber, it.episodeNumber) }
+      watchedEpisodeStore.save(ownerKey, detail.id, (watchedEpisodeStore.load(ownerKey, detail.id) + keys).distinct())
+      previous.forEach { playbackResumeStore.remove(ownerKey, detail.id, "tv", it.seasonNumber, it.episodeNumber) }
+      val now = System.currentTimeMillis()
+      val records = previous.map { episode ->
+        PlaybackProgressRecord(
+          entityType = "tv",
+          entityId = detail.id,
+          episodeKey = playbackEpisodeKey(episode.seasonNumber, episode.episodeNumber),
+          seasonNumber = episode.seasonNumber,
+          episodeNumber = episode.episodeNumber,
+          title = detail.title,
+          poster = detail.poster,
+          backdrop = detail.backdrop,
+          year = detail.year,
+          positionSec = 0.0,
+          durationSec = 0.0,
+          progress = 0.0,
+          completed = true,
+          updatedAt = now,
+          lastDevice = "StreamDek Mobile",
+          lastPlatform = "mobile",
+        )
+      }
+      uiState = uiState.copy(
+        playbackProgressRecords = uiState.playbackProgressRecords.filterNot { existing ->
+          existing.entityId == detail.id && records.any { it.episodeKey == existing.episodeKey }
+        } + records,
+        localContinueWatching = loadLocalContinueWatching(),
+        localResumeEntries = loadResumeEntries(),
+        watchedEpisodeRevision = uiState.watchedEpisodeRevision + 1,
+        infoMessage = "Previous episodes marked as watched.",
+      )
+      val session = uiState.session ?: return@launch
+      val profileId = uiState.activeProfileId ?: return@launch
+      if (apiClient.putPlaybackProgressBatch(session, profileId, records).isFailure) {
+        uiState = uiState.copy(infoMessage = "Updated on this device, but SyncDek could not sync it yet. Please retry.")
+      } else {
+        pullPlaybackProgress()
+      }
+    }
+  }
+
+  fun markEarlierEpisodesWatched(item: MediaItem) {
+    val seasonNumber = item.resumeSeasonNumber
+    val episodeNumber = item.resumeEpisodeNumber
+    if (seasonNumber == null || episodeNumber == null || (seasonNumber == 1 && episodeNumber == 1)) {
+      uiState = uiState.copy(infoMessage = "This Continue Watching item does not identify any earlier episodes.")
+      return
+    }
+    viewModelScope.launch {
+      val detail = apiClient.fetchDetails(
+        type = normalizedMediaType(item.type),
+        id = item.id,
+        fallbackTitle = item.title,
+        fallbackYear = item.year,
+      ).getOrElse {
+        uiState = uiState.copy(errorMessage = "Could not load the episode list. Please try again.")
+        return@launch
+      }
+      markPreviousEpisodesWatched(
+        detail,
+        EpisodeItem(
+          id = "${detail.id}:$seasonNumber:$episodeNumber",
+          episodeNumber = episodeNumber,
+          seasonNumber = seasonNumber,
+          name = "Episode $episodeNumber",
+          overview = "",
+          still = null,
+          runtime = null,
+        ),
+      )
+    }
+  }
+
   /**
    * Takes one title off Continue Watching without claiming it was watched.
    *
-   * Two things have to happen for a removal to stick. The resume point is what puts a local title
-   * in the row, so it goes. But a title can also arrive from Trakt's own progress list, which is
-   * re-fetched on every dashboard refresh — dropping the in-memory copy alone would let the row
-   * come straight back on the next load. The watched-title store is the local filter both
-   * [loadLocalContinueWatching] and the Trakt merge already consult, and recording the title there
-   * is what makes a single removal survive a refresh. It is the same mechanism
-   * [clearContinueWatching] uses for the whole row; nothing else reads that store, so this does
-   * not mark the title watched anywhere a viewer would see it.
+   * The account stores a distinct dismissed tombstone. It suppresses a stale provider playback
+   * row on every device without being interpreted as completed or watched, and new playback
+   * replaces it with an in-progress event.
    */
   fun removeFromContinueWatching(item: MediaItem) {
     val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
-    watchedTitleStore.add(ownerKey, item)
-    playbackResumeStore.removeTitle(ownerKey, item.id, item.type)
-    // Recorded as finished rather than deleted: this app already treats "remove from Continue
-    // Watching" as watched locally, and a finished row is the only form the other devices read.
-    pushWatchedProgress(item)
+    val seasonNumber = item.resumeSeasonNumber
+    val episodeNumber = item.resumeEpisodeNumber
+    val episodeKey = playbackEpisodeKey(seasonNumber, episodeNumber)
+    if (episodeKey != null) {
+      playbackResumeStore.remove(ownerKey, item.id, item.type, seasonNumber, episodeNumber)
+    } else {
+      playbackResumeStore.removeTitle(ownerKey, item.id, item.type)
+    }
+    val now = System.currentTimeMillis()
+    val removedIdentity = mediaIdentityOf(item.type, item.id)
+    val dismissal = PlaybackProgressRecord(
+      entityType = normalizedMediaType(item.type),
+      entityId = item.id,
+      tmdbId = removedIdentity.tmdbId,
+      imdbId = removedIdentity.imdbId,
+      episodeKey = episodeKey,
+      seasonNumber = seasonNumber,
+      episodeNumber = episodeNumber,
+      title = item.title,
+      poster = item.poster,
+      backdrop = item.backdrop,
+      year = item.year,
+      positionSec = 0.0,
+      durationSec = 0.0,
+      progress = 0.0,
+      completed = false,
+      dismissed = true,
+      updatedAt = now,
+      lastDevice = "StreamDek Mobile",
+      lastPlatform = "mobile",
+    )
     uiState = uiState.copy(
+      playbackProgressRecords = uiState.playbackProgressRecords.filterNot { record ->
+        sameMediaIdentity(
+          mediaIdentityOf(record.entityType, record.entityId, record.tmdbId, record.imdbId),
+          removedIdentity,
+        ) && (episodeKey == null || record.episodeKey.equals(episodeKey, ignoreCase = true))
+      } + dismissal,
       localContinueWatching = loadLocalContinueWatching(),
       localResumeEntries = loadResumeEntries(),
-      traktContinueWatching = uiState.traktContinueWatching.filterNot {
-        (it.tmdbId?.toString() ?: it.id) == item.id && normalizedMediaType(it.type) == normalizedMediaType(item.type)
+      // Same identity rule as everywhere else. This filter used to compare the provider row's id
+      // against the card's directly, so the card vanished only when the two sources happened to
+      // agree on a spelling -- and where they did not, the row the viewer had just removed was
+      // still on screen underneath it.
+      traktContinueWatching = uiState.traktContinueWatching.filterNot { provider ->
+        sameMediaIdentity(
+          mediaIdentityOf(provider.type, provider.id, provider.tmdbId),
+          removedIdentity,
+        ) && removalCoversEpisode(seasonNumber, episodeNumber, provider.seasonNumber, provider.episodeNumber)
       },
       infoMessage = "${item.title} removed from Continue Watching.",
     )
+    val session = uiState.session ?: return
+    viewModelScope.launch {
+      var synced = false
+      repeat(3) { attempt ->
+        if (!synced) {
+          synced = apiClient.removeFromContinueWatching(
+            session = session,
+            profileId = uiState.activeProfileId,
+            entityType = item.type,
+            entityId = item.id,
+            episodeKey = episodeKey,
+            seasonNumber = seasonNumber,
+            episodeNumber = episodeNumber,
+            // Sent so the removal can be recognised later against a provider row that spells this
+            // title a different way -- the reason removed films used to come back.
+            tmdbId = removedIdentity.tmdbId,
+            imdbId = removedIdentity.imdbId,
+            title = item.title,
+            poster = item.poster,
+            backdrop = item.backdrop,
+            year = item.year,
+          ).isSuccess
+          if (!synced) {
+            // An account still on a SyncDek without the canonical route gets the tombstone written
+            // the way this app wrote it before. The removal is weaker -- the server cannot suppress
+            // the provider row on the other devices -- but far better than removal not working at
+            // all until the backend is deployed.
+            synced = apiClient.putPlaybackProgress(
+              session = session,
+              profileId = uiState.activeProfileId,
+              entityType = item.type,
+              entityId = item.id,
+              episodeKey = episodeKey,
+              positionSec = 0.0,
+              durationSec = 0.0,
+              title = item.title,
+              poster = item.poster,
+              backdrop = item.backdrop,
+              year = item.year,
+              seasonNumber = seasonNumber,
+              episodeNumber = episodeNumber,
+              dismissed = true,
+            ).isSuccess
+          }
+          if (!synced && attempt < 2) delay(500L * (attempt + 1))
+        }
+      }
+      if (!synced) {
+        uiState = uiState.copy(errorMessage = "Removed on this device, but SyncDek could not save the change yet. Please retry when connected.")
+      }
+    }
   }
 
   fun restartFromBeginning(item: MediaItem) {
@@ -7464,7 +8408,10 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       ratingsEnabled = uiState.ratingsEnabled,
       externalRatingsEnabled = uiState.externalRatingsEnabled,
       enabledRatingProviders = uiState.enabledRatingProviders.sorted(),
-      mdblistApiKey = uiState.mdblistApiKey,
+      // Deliberately null rather than "": an API key does not belong in a settings document,
+      // and a blank would overwrite a legacy value the backend has not yet migrated out of
+      // one. Null means "not sent", which leaves whatever is there for the migration to move.
+      mdblistApiKey = null,
       pictureInPictureEnabled = uiState.pictureInPictureEnabled,
       decoderMode = uiState.decoderMode,
       renderSurface = uiState.renderSurface,
@@ -7473,6 +8420,9 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       skipIntroEnabled = uiState.skipIntroEnabled,
       skipRecapEnabled = uiState.skipRecapEnabled,
       skipEndingEnabled = uiState.skipEndingEnabled,
+      autoSkipIntroEnabled = uiState.autoSkipIntroEnabled,
+      autoSkipRecapEnabled = uiState.autoSkipRecapEnabled,
+      autoSkipEndingEnabled = uiState.autoSkipEndingEnabled,
       introdbApiKey = uiState.introdbApiKey,
       autoPlayNextEpisode = uiState.autoPlayNextEpisode,
       preferBingeGroup = uiState.preferBingeGroup,
@@ -7578,6 +8528,9 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setSkipIntroEnabled(value: Boolean) { appSettingsStore.saveSkipIntroEnabled(value); uiState = uiState.copy(skipIntroEnabled = value); syncCloudPreferences() }
   fun setSkipRecapEnabled(value: Boolean) { appSettingsStore.saveSkipRecapEnabled(value); uiState = uiState.copy(skipRecapEnabled = value); syncCloudPreferences() }
   fun setSkipEndingEnabled(value: Boolean) { appSettingsStore.saveSkipEndingEnabled(value); uiState = uiState.copy(skipEndingEnabled = value); syncCloudPreferences() }
+  fun setAutoSkipIntroEnabled(value: Boolean) { appSettingsStore.saveAutoSkipIntroEnabled(value); uiState = uiState.copy(autoSkipIntroEnabled = value); syncCloudPreferences() }
+  fun setAutoSkipRecapEnabled(value: Boolean) { appSettingsStore.saveAutoSkipRecapEnabled(value); uiState = uiState.copy(autoSkipRecapEnabled = value); syncCloudPreferences() }
+  fun setAutoSkipEndingEnabled(value: Boolean) { appSettingsStore.saveAutoSkipEndingEnabled(value); uiState = uiState.copy(autoSkipEndingEnabled = value); syncCloudPreferences() }
   fun setIntrodbApiKey(value: String) {
     val trimmed = value.trim()
     appSettingsStore.saveIntrodbApiKey(trimmed)
@@ -7673,14 +8626,29 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setAmbientTintPercent(value: Int) { val clamped = value.coerceIn(20, 100); appSettingsStore.saveAmbientTintPercent(clamped); uiState = uiState.copy(ambientTintPercent = clamped); syncCloudPreferences() }
   fun setDetailAmbientTintPercent(value: Int) { val clamped = value.coerceIn(20, 100); appSettingsStore.saveDetailAmbientTintPercent(clamped); uiState = uiState.copy(detailAmbientTintPercent = clamped); syncCloudPreferences() }
   /**
+   * The catalog ids the last home request asked the backend for.
+   *
+   * Not derivable from the answer: the backend leaves a row out of its response when that row came
+   * back with nothing in it. Asking "is this row in allHomeSections" therefore says "no" forever
+   * for any switched-on row that happens to be empty -- which is what made the check below fire on
+   * every single launch, refetching the whole home screen to arrive at the same rows.
+   */
+  @Volatile
+  private var requestedHomeCatalogIds: Set<String> = emptySet()
+
+  /**
    * A default row is only fetched while it is switched on, so switching one back on has nothing
    * to show until home is loaded again. Turning rows off never needs a refetch — the rows already
    * in hand are simply not laid out.
+   *
+   * Silent, because nothing here was asked for by the viewer: this runs when synced preferences
+   * arrive, and `homeLoading` is what draws the pull-to-refresh indicator once there are rows on
+   * screen. A refresh the app decided on by itself should not look like a gesture.
    */
   private fun refreshHomeIfCatalogsMissing() {
-    val wanted = uiState.homeCatalogRows.filter { it.builtin && it.enabled }.map { it.id }
+    val wanted = uiState.homeCatalogRows.filter { it.builtin && it.enabled && it.id !in streamDekFeatureRowIds }.map { it.id }
     if (!uiState.defaultAppCatalogsEnabled || wanted.isEmpty()) return
-    if (wanted.any { id -> uiState.allHomeSections.none { it.id == id } }) loadHome(force = true)
+    if (wanted.any { id -> id !in requestedHomeCatalogIds }) loadHome(force = true, silent = true)
   }
 
   fun setDefaultAppCatalogsEnabled(value: Boolean) {
@@ -7707,6 +8675,26 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     uiState = uiState.copy(homeCatalogRows = current, homeSections = applyHomeCatalogLayout(uiState.allHomeSections, current, uiState.defaultAppCatalogsEnabled))
     syncCloudPreferences()
   }
+  /**
+   * Forgets saved rows for good.
+   *
+   * Only ever called for rows whose add-on is no longer installed. The merge deliberately keeps a
+   * row whose add-on is merely switched off, or has not loaded yet, so that neither loses the
+   * viewer's arrangement -- but once the add-on is genuinely gone those rows can never come back
+   * on their own, and this is the only way to be rid of them.
+   */
+  fun removeHomeCatalogRows(rowIds: Set<String>) {
+    if (rowIds.isEmpty()) return
+    val rows = uiState.homeCatalogRows.filterNot { it.id in rowIds }
+    if (rows.size == uiState.homeCatalogRows.size) return
+    appSettingsStore.saveHomeCatalogRows(rows)
+    uiState = uiState.copy(
+      homeCatalogRows = rows,
+      homeSections = applyHomeCatalogLayout(uiState.allHomeSections, rows, uiState.defaultAppCatalogsEnabled),
+    )
+    syncCloudPreferences()
+  }
+
   fun setFusionBadgesEnabled(value: Boolean) { appSettingsStore.saveFusionBadges(value); uiState = uiState.copy(fusionBadgesEnabled = value); syncCloudPreferences() }
   fun setStreamDekFormattingEnabled(value: Boolean) { appSettingsStore.saveStreamDekFormatting(value); uiState = uiState.copy(streamDekFormattingEnabled = value); syncCloudPreferences() }
   fun setShowSizeBadges(value: Boolean) { appSettingsStore.saveShowSizeBadges(value); uiState = uiState.copy(showSizeBadges = value); syncCloudPreferences() }
@@ -7876,12 +8864,27 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     )
   }
 
+  /**
+   * MDBList ratings for the open title.
+   *
+   * No key is read here any more. Whether one exists, where it is kept and which one wins
+   * are all answered further down — by the request interceptor for a device key, and by the
+   * backend for an account key. This only has to know whether the viewer has one at all,
+   * so it can offer to set one up instead of quietly showing nothing.
+   */
   private fun refreshExternalRatings(detail: MediaDetail) {
-    val key = uiState.mdblistApiKey
-    if (!uiState.externalRatingsEnabled || key.isBlank() || uiState.enabledRatingProviders.isEmpty()) return
+    if (!uiState.externalRatingsEnabled || uiState.enabledRatingProviders.isEmpty()) return
+    // Only skipped once the credential state is actually known. Before the first read has
+    // landed, the request is made anyway: the backend resolves the key and answers with an
+    // empty list if there is none, which costs one call and beats suppressing ratings on a
+    // device that has a perfectly good account key we simply have not read yet.
+    if (uiState.contentServices.loaded && !uiState.contentServices.mdblist.configured) {
+      offerContentServiceHint(ContentService.Mdblist)
+      return
+    }
     launchWork(
       onStart = {},
-      block = { apiClient.fetchMdblistRatings(detail.type, detail.id, detail.imdbId, key, uiState.enabledRatingProviders.toList()) },
+      block = { apiClient.fetchMdblistRatings(uiState.session, detail.type, detail.id, detail.imdbId, uiState.enabledRatingProviders.toList()) },
       onSuccess = { ratings ->
         if (ratings.isEmpty()) return@launchWork
         val current = uiState.detail ?: return@launchWork
@@ -7976,8 +8979,11 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     uiState.session?.let { session ->
       viewModelScope.launch {
         apiClient.fetchCloudPlaybackPreferences(session, uiState.activeProfileId).onSuccess { preferences ->
+          val before = homeLayoutSignature()
           applyCloudPlaybackPreferences(preferences)
-          loadHome(force = true)
+          // Only when the account actually asks for different rows. Reloading unconditionally
+          // spent a second full home request on every launch to arrive at what was already there.
+          if (homeLayoutSignature() != before) loadHome(force = true, silent = true)
         }
       }
     }
@@ -7990,6 +8996,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     syncPlaylistsWithAccount()
     refreshTraktData()
     refreshSyncServices()
+    refreshContentServices()
     uiState = uiState.copy(mergedWatchlist = loadLocalWatchlist(), favouriteChannels = loadLocalFavouriteChannels(), localContinueWatching = loadLocalContinueWatching(), localResumeEntries = loadResumeEntries())
     if (uiState.session != null) {
       refreshProfiles()
@@ -8030,9 +9037,12 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       viewModelScope.launch {
         apiClient.fetchCloudPlaybackPreferences(session, profileId).onSuccess { preferences ->
           if (uiState.activeProfileId == profileId) {
+            val before = homeLayoutSignature()
             applyCloudPlaybackPreferences(preferences)
             syncCloudPreferences(force = true)
-            loadHome(force = true)
+            // Switching profile already reloads home; this only has to catch the case where the
+            // profile's synced preferences turn out to want a different set of rows.
+            if (homeLayoutSignature() != before) loadHome(force = true, silent = true)
           }
         }
       }
@@ -8245,7 +9255,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       SeriesProgressEvent(it.seasonNumber!!, it.episodeNumber!!, it.positionSeconds ?: 0.0, "in-progress", it.updatedAt ?: 0L)
     }
     val providerEvents = uiState.traktContinueWatching.filter {
-      (it.tmdbId?.toString() ?: it.id) == detail.id && it.seasonNumber != null && it.episodeNumber != null
+      (it.tmdbId?.toString() ?: it.id) == detail.id && it.seasonNumber != null && it.episodeNumber != null &&
+        uiState.playbackProgressRecords.none { record -> progressRecordSuppressesProviderItem(record, it.toMediaItem()) }
     }.map {
       SeriesProgressEvent(
         it.seasonNumber!!,
@@ -8265,6 +9276,14 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     resumeKnownSource: Boolean = false,
   ) {
     uiState = uiState.copy(seasonLoading = true)
+    // A direct Continue Watching request already names the exact episode. Loading watched-history
+    // and migration state first only delays playback and lets an unrelated sync failure strand the
+    // launch. Fetch the requested season immediately; the normal detail refresh can reconcile
+    // watched state independently.
+    if (resumeKnownSource && preferredSeasonNumber != null && preferredEpisodeNumber != null) {
+      loadSeason(detail.id, preferredSeasonNumber, preferredEpisodeNumber, resumeKnownSource = true)
+      return
+    }
     viewModelScope.launch {
       val session = uiState.session
       val profileId = uiState.activeProfileId
@@ -8489,6 +9508,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
             )
           }
           playbackResumeStore.remove(ownerKey, record.entityId, type, record.seasonNumber, record.episodeNumber)
+        } else if (record.dismissed) {
+          playbackResumeStore.removeTitle(ownerKey, record.entityId, type)
         } else if (record.completed) {
           // Finished elsewhere -- either played out, or marked watched, which now writes the same
           // kind of row rather than deleting one. The same two moves markWatched makes locally.
@@ -8573,14 +9594,19 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
 
   private fun loadLocalContinueWatching(): List<MediaItem> {
     val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
-    val watchedTitles = watchedTitleStore.load(ownerKey)
+    val watchedMovies = watchedMovieStore.load(ownerKey).toSet()
     return playbackResumeStore.loadAll(ownerKey)
-      .filterNot { entry -> watchedTitleKey(entry.mediaType, entry.mediaId) in watchedTitles }
       .filter { entry -> !entry.isLive && entry.mediaType.lowercase() !in setOf("live", "channel", "sports", "sport") }
-      // Continue Watching has one series card: its newest episode event, with that episode's own
-      // position. Keeping every row and later merging by series id let an older episode overwrite
-      // the newer one depending on iteration order.
-      .groupBy { entry -> "${normalizedMediaType(entry.mediaType)}:${entry.mediaId}" }
+      // A viewer can genuinely have more than one episode in progress. Collapse duplicate writes
+      // for the same episode, not the whole series, so each started episode keeps its own card.
+      .groupBy { entry ->
+        buildString {
+          append("${normalizedMediaType(entry.mediaType)}:${entry.mediaId}")
+          if (normalizedMediaType(entry.mediaType) == "tv" && entry.seasonNumber != null && entry.episodeNumber != null) {
+            append(":s${entry.seasonNumber}:e${entry.episodeNumber}")
+          }
+        }
+      }
       .mapNotNull { (_, entries) -> entries.maxByOrNull { it.updatedAt } }
       .sortedByDescending { it.updatedAt }
       .map { entry ->
@@ -8597,6 +9623,12 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
           updatedAt = entry.updatedAt,
           resumeSeasonNumber = entry.seasonNumber,
           resumeEpisodeNumber = entry.episodeNumber,
+          historicallyWatched = if (normalizedMediaType(entry.mediaType) == "movie") {
+            entry.mediaId in watchedMovies
+          } else if (entry.seasonNumber != null && entry.episodeNumber != null) {
+            watchedEpisodeKey(entry.mediaId, entry.seasonNumber, entry.episodeNumber) in
+              watchedEpisodeStore.load(ownerKey, entry.mediaId)
+          } else false,
           // Which episode you are part-way through, rather than the year the series began. The
           // card is an invitation to carry on, and "2026" answers a question nobody asked.
           cardSubtitle = episodeLabel(entry.seasonNumber, entry.episodeNumber),
@@ -8707,27 +9739,10 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   }
 
   private fun mergedContinueWatchingItems(): List<MediaItem> {
-    val merged = linkedMapOf<String, MediaItem>()
-    uiState.traktContinueWatching.forEach { item ->
-      val media = MediaItem(item.tmdbId?.toString() ?: item.id, item.type, item.title, item.year, item.poster, item.backdrop, item.rating, item.description ?: "", item.progress)
-      merged["${media.type}:${media.id}"] = media
-    }
-    uiState.localContinueWatching.forEach { item ->
-      val key = "${item.type}:${item.id}"
-      val existing = merged[key]
-      merged[key] = if (existing == null) item else existing.copy(
-        title = item.title.ifBlank { existing.title },
-        year = item.year ?: existing.year,
-        poster = item.poster ?: existing.poster,
-        backdrop = item.backdrop ?: existing.backdrop,
-        // Position and episode are one state. Never combine an older episode's larger percentage
-        // with the newest episode identity.
-        progress = item.progress ?: existing.progress,
-        resumeSeasonNumber = item.resumeSeasonNumber ?: existing.resumeSeasonNumber,
-        resumeEpisodeNumber = item.resumeEpisodeNumber ?: existing.resumeEpisodeNumber,
-      )
-    }
-    return merged.values.sortedByDescending { it.updatedAt ?: 0L }
+    val providerItems = uiState.traktContinueWatching.filterNot { provider ->
+      uiState.playbackProgressRecords.any { record -> progressRecordSuppressesProviderItem(record, provider.toMediaItem()) }
+    }.map(TraktItem::toMediaItem)
+    return mergeContinueWatchingItems(providerItems, uiState.localContinueWatching)
   }
 
   private fun mergeWatchlistWithLocal(traktItems: List<TraktItem>, localOverride: List<MediaItem>? = null): List<MediaItem> {
@@ -8847,6 +9862,9 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     skipIntroEnabled = uiState.skipIntroEnabled,
     skipRecapEnabled = uiState.skipRecapEnabled,
     skipEndingEnabled = uiState.skipEndingEnabled,
+    autoSkipIntroEnabled = uiState.autoSkipIntroEnabled,
+    autoSkipRecapEnabled = uiState.autoSkipRecapEnabled,
+    autoSkipEndingEnabled = uiState.autoSkipEndingEnabled,
     introdbApiKey = uiState.introdbApiKey,
     autoPlayNextEpisode = uiState.autoPlayNextEpisode,
     preferBingeGroup = uiState.preferBingeGroup,
@@ -8956,7 +9974,7 @@ fun StreamDekNativeApp(
   LaunchedEffect(uiState.errorMessage, uiState.infoMessage) {
     val message = uiState.errorMessage ?: uiState.infoMessage
     if (message.isNullOrBlank()) return@LaunchedEffect
-    delay(if (uiState.errorMessage != null) APP_NOTICE_ERROR_DURATION_MS else APP_NOTICE_DURATION_MS)
+    delay(if (uiState.errorMessage != null) APP_NOTICE_ERROR_DURATION_MS else appInfoNoticeDuration(message))
     viewModel.clearTransientMessage()
   }
 
@@ -9907,11 +10925,49 @@ private fun MainScene(
     )
   }
 
+  /**
+   * The one-time Content Services card.
+   *
+   * Held back until the viewer is actually in the app -- not over the sign-in screen, the profile
+   * picker or a profile switch, where it would be an interruption in the middle of something else.
+   */
+  if (uiState.contentServicesPromptVisible && !showAuth && !showProfilePicker &&
+    !requireGuestProfile && !uiState.profileTransitioning && uiState.pinPromptProfileId == null
+  ) {
+    ContentServicesSetupPrompt(
+      state = uiState.contentServices,
+      signedIn = uiState.session != null,
+      actions = ContentServiceActions(
+        onSubmitKey = viewModel::submitContentServiceKey,
+        onCopyDeviceKeyToAccount = viewModel::copyContentServiceKeyToAccount,
+        onRemove = viewModel::removeContentServiceKey,
+        onRefresh = viewModel::refreshContentServices,
+        onDismissNotice = viewModel::dismissContentServiceNotice,
+        onShowSetupGuide = viewModel::showContentServicesSetup,
+      ),
+      onLater = { deferral -> viewModel.deferContentServicesSetup(deferral) },
+      onDone = viewModel::dismissContentServicesSetup,
+    )
+  }
+
   val hazeState = rememberHazeState()
   Scaffold(
     containerColor = Color.Transparent,
     bottomBar = {
       if (!showProfilePicker && !showAuth && !requireGuestProfile && !uiState.profileTransitioning && uiState.pinPromptProfileId == null) {
+      // The contextual nudge sits above the navigation rather than over the page: the viewer
+      // came here to watch something, and a modal about API keys would be the wrong trade.
+      // Hosted by a composable of its own so its Column scope stays out of the navigation
+      // bar below it, where an enclosing ColumnScope changes which AnimatedVisibility
+      // overload the caret animation resolves to.
+      ContentServiceHintHost(
+        hint = uiState.contentServiceHint,
+        onSetUp = {
+          viewModel.dismissContentServiceHint()
+          viewModel.showContentServicesSetup()
+        },
+        onLater = { viewModel.dismissContentServiceHint() },
+      ) {
         Box(
           modifier = Modifier
             .fillMaxWidth()
@@ -10124,6 +11180,7 @@ private fun MainScene(
           }
         }
       }
+      }
     },  ) { padding ->
     // Keeps scroll positions (and other saveable UI state) alive while screens are
     // temporarily removed from composition — e.g. Home while a detail page is open.
@@ -10209,13 +11266,13 @@ private fun MainScene(
           ) { tab ->
           when (tab) {
             MainTab.Home -> browseStateHolder.SaveableStateProvider("tab_home") {
-              HomeTab(uiState = uiState, scrollToTopSignal = homeScrollToTopSignal, onReload = { viewModel.loadHome(force = true) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onPlayContinueWatching = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onViewAll = { row -> if (row.id == "continue") selectedTab = MainTab.Continue else viewModel.setBrowseRow(when (row.id) { "m3u_playlists_live" -> row.copy(items = uiState.m3uChannels); "m3u_playlists_vod" -> row.copy(items = uiState.m3uVodItems); else -> row }) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onRemoveFromContinueWatching = viewModel::removeFromContinueWatching, onResolveHeroTitleLogos = viewModel::resolveHomeHeroTitleLogos, onResolveAddonRatings = viewModel::resolveAddonCatalogRatings, onToggleFavourite = viewModel::toggleFavouriteChannel, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel, onHandoffContinueWatching = viewModel::handoffContinueWatching)
+              HomeTab(uiState = uiState, scrollToTopSignal = homeScrollToTopSignal, onReload = { viewModel.loadHome(force = true) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onPlayContinueWatching = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onViewAll = { row -> if (row.id == "continue") selectedTab = MainTab.Continue else viewModel.setBrowseRow(when (row.id) { "m3u_playlists_live" -> row.copy(items = uiState.m3uChannels); "m3u_playlists_vod" -> row.copy(items = uiState.m3uVodItems); else -> fullSectionRow(uiState, row) }) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onMarkEarlierEpisodesWatched = viewModel::markEarlierEpisodesWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onRemoveFromContinueWatching = viewModel::removeFromContinueWatching, onResolveHeroTitleLogos = viewModel::resolveHomeHeroTitleLogos, onResolveAddonRatings = viewModel::resolveAddonCatalogRatings, onToggleFavourite = viewModel::toggleFavouriteChannel, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel, onHandoffContinueWatching = viewModel::handoffContinueWatching)
             }
             MainTab.Search -> browseStateHolder.SaveableStateProvider("tab_search") {
               SearchTab(uiState = uiState, ownerKey = watchedOwnerKey(uiState.session, uiState.activeProfileId), onSearch = viewModel::search, onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched)
             }
             MainTab.Continue -> browseStateHolder.SaveableStateProvider("tab_continue") {
-              ContinueTab(uiState = uiState, onOpen = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onOpenDetails = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onRemoveFromContinueWatching = viewModel::removeFromContinueWatching, onClearContinueWatching = viewModel::clearContinueWatching, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffContinueWatching = viewModel::handoffContinueWatching)
+              ContinueTab(uiState = uiState, onOpen = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onOpenDetails = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onMarkEarlierEpisodesWatched = viewModel::markEarlierEpisodesWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onRemoveFromContinueWatching = viewModel::removeFromContinueWatching, onClearContinueWatching = viewModel::clearContinueWatching, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffContinueWatching = viewModel::handoffContinueWatching)
             }
             MainTab.Watchlist -> browseStateHolder.SaveableStateProvider("tab_watchlist") {
               WatchlistTab(uiState = uiState, onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onClearWatchlist = viewModel::clearWatchlist)
@@ -10272,6 +11329,9 @@ private fun MainScene(
                 onSkipIntroEnabledChange = viewModel::setSkipIntroEnabled,
                 onSkipRecapEnabledChange = viewModel::setSkipRecapEnabled,
                 onSkipEndingEnabledChange = viewModel::setSkipEndingEnabled,
+                onAutoSkipIntroEnabledChange = viewModel::setAutoSkipIntroEnabled,
+                onAutoSkipRecapEnabledChange = viewModel::setAutoSkipRecapEnabled,
+                onAutoSkipEndingEnabledChange = viewModel::setAutoSkipEndingEnabled,
                 onIntrodbApiKeyChange = viewModel::setIntrodbApiKey,
                 onAutoPlayNextEpisodeChange = viewModel::setAutoPlayNextEpisode,
                 onPreferBingeGroupChange = viewModel::setPreferBingeGroup,
@@ -10331,6 +11391,7 @@ private fun MainScene(
                 onDefaultAppCatalogsEnabledChange = viewModel::setDefaultAppCatalogsEnabled,
                 onHomeCatalogRowEnabledChange = viewModel::setHomeCatalogRowEnabled,
                 onMoveHomeCatalogRow = viewModel::moveHomeCatalogRow,
+                onRemoveHomeCatalogRows = viewModel::removeHomeCatalogRows,
                 onRefreshHome = { viewModel.loadHome(force = true) },
                 onRefreshAddons = viewModel::refreshAddons,
                 onRefreshPlugins = { viewModel.refreshProfilePlugins(manual = true) },
@@ -10368,6 +11429,14 @@ private fun MainScene(
                 onSetDebridEnabled = viewModel::setDebridAccountEnabled,
                 onMoveDebrid = viewModel::moveDebridAccount,
                 onSetDebridCloudSync = viewModel::setDebridCloudSync,
+                contentServiceActions = ContentServiceActions(
+                  onSubmitKey = viewModel::submitContentServiceKey,
+                  onCopyDeviceKeyToAccount = viewModel::copyContentServiceKeyToAccount,
+                  onRemove = viewModel::removeContentServiceKey,
+                  onRefresh = viewModel::refreshContentServices,
+                  onDismissNotice = viewModel::dismissContentServiceNotice,
+                  onShowSetupGuide = viewModel::showContentServicesSetup,
+                ),
                 onPremiumizeSignIn = if (viewModel.premiumizeSignInAvailable()) {
                   { viewModel.startPremiumizeSignIn() }
                 } else null,
@@ -10411,6 +11480,7 @@ private fun MainScene(
           onLoadSeason = viewModel::loadSeason,
           onToggleWatchlist = viewModel::toggleWatchlist,
           onToggleEpisodeWatched = viewModel::toggleEpisodeWatched,
+          onMarkPreviousEpisodesWatched = viewModel::markPreviousEpisodesWatched,
           onSetSeasonWatched = viewModel::setSeasonWatched,
           onRefreshPlaybackProgress = viewModel::pullPlaybackProgress,
           onToggleFavourite = viewModel::toggleFavouriteChannelForCurrentDetail,
@@ -10965,6 +12035,7 @@ private fun TraktItem.toMediaItem(): MediaItem = MediaItem(
   rating = rating,
   description = description.orEmpty(),
   progress = progress,
+  cardSubtitle = if (seasonNumber != null && episodeNumber != null) "S$seasonNumber E$episodeNumber" else null,
   resumeSeasonNumber = seasonNumber,
   resumeEpisodeNumber = episodeNumber,
   addedAt = addedAt,
@@ -10972,24 +12043,77 @@ private fun TraktItem.toMediaItem(): MediaItem = MediaItem(
 )
 
 private fun combinedContinueWatching(uiState: AppUiState): List<MediaItem> {
-  val merged = linkedMapOf<String, MediaItem>()
-  uiState.traktContinueWatching.forEach { item ->
-    val media = item.toMediaItem()
-    merged["${media.type}:${media.id}"] = media
+  val providerItems = uiState.traktContinueWatching.filterNot { provider ->
+    uiState.playbackProgressRecords.any { record -> progressRecordSuppressesProviderItem(record, provider.toMediaItem()) }
+  }.map(TraktItem::toMediaItem)
+  return mergeContinueWatchingItems(providerItems, uiState.localContinueWatching)
+}
+
+private fun continueWatchingTitleKey(item: MediaItem): String =
+  "${normalizedMediaType(item.type)}:${item.id}"
+
+private fun continueWatchingItemKey(item: MediaItem): String = buildString {
+  append(continueWatchingTitleKey(item))
+  if (normalizedMediaType(item.type) == "tv" && item.resumeSeasonNumber != null && item.resumeEpisodeNumber != null) {
+    append(":s${item.resumeSeasonNumber}:e${item.resumeEpisodeNumber}")
   }
-  uiState.localContinueWatching.forEach { item ->
-    val key = "${item.type}:${item.id}"
+}
+
+/**
+ * Combines provider and device resume rows without inventing a second, title-only series card.
+ * Episode identity is deliberately part of the key: two episodes can both be in progress, while
+ * `tv`, `series`, and `show` are aliases for the same canonical title.
+ */
+internal fun mergeContinueWatchingItems(providerItems: List<MediaItem>, localItems: List<MediaItem>): List<MediaItem> {
+  val merged = linkedMapOf<String, MediaItem>()
+  providerItems.forEach { item -> merged[continueWatchingItemKey(item)] = item }
+  localItems.forEach { item ->
+    val key = continueWatchingItemKey(item)
     val existing = merged[key]
-    merged[key] = if (existing == null) item else existing.copy(
+    merged[key] = if (existing == null) item else item.copy(
       title = item.title.ifBlank { existing.title },
       year = item.year ?: existing.year,
       poster = item.poster ?: existing.poster,
       backdrop = item.backdrop ?: existing.backdrop,
-      progress = maxOf(existing.progress ?: 0.0, item.progress ?: 0.0),
-      updatedAt = maxOf(existing.updatedAt ?: 0L, item.updatedAt ?: 0L).takeIf { it > 0L } ?: existing.updatedAt ?: item.updatedAt,
+      rating = item.rating ?: existing.rating,
+      description = item.description.ifBlank { existing.description },
+      progress = item.progress ?: existing.progress,
+      cardSubtitle = item.cardSubtitle ?: existing.cardSubtitle,
+      updatedAt = item.updatedAt ?: existing.updatedAt,
     )
   }
-  return merged.values.sortedWith(compareByDescending<MediaItem> { it.updatedAt ?: 0L }.thenByDescending { it.progress ?: 0.0 })
+  val episodeSpecificTitles = merged.values.asSequence()
+    .filter { normalizedMediaType(it.type) == "tv" && it.resumeSeasonNumber != null && it.resumeEpisodeNumber != null }
+    .map(::continueWatchingTitleKey)
+    .toSet()
+  return merged.values
+    .filterNot { item ->
+      normalizedMediaType(item.type) == "tv" &&
+        item.resumeSeasonNumber == null && item.resumeEpisodeNumber == null &&
+        continueWatchingTitleKey(item) in episodeSpecificTitles
+    }
+    .sortedWith(compareByDescending<MediaItem> { it.updatedAt ?: 0L }.thenByDescending { it.progress ?: 0.0 })
+}
+
+/**
+ * A provider resume row cannot override an explicit completion or dismissal from SyncDek.
+ *
+ * The identity comparison used to be `record.entityId != item.id` — raw string equality between two
+ * sources that spell the same title differently. A removal recorded against `tt1160419` therefore
+ * did not suppress the provider row that came back as `438631`, and the title reappeared on the
+ * next refresh. `mediaIdentityOf` is the same rule the server applies before it answers, so this
+ * only has to hold the line between an optimistic removal and the next fetch.
+ */
+internal fun progressRecordSuppressesProviderItem(record: PlaybackProgressRecord, item: MediaItem): Boolean {
+  if (!record.completed && !record.dismissed) return false
+  val recordIdentity = mediaIdentityOf(record.entityType, record.entityId, record.tmdbId, record.imdbId)
+  if (!sameMediaIdentity(recordIdentity, mediaIdentityOf(item.type, item.id))) return false
+  return removalCoversEpisode(
+    record.seasonNumber,
+    record.episodeNumber,
+    item.resumeSeasonNumber,
+    item.resumeEpisodeNumber,
+  )
 }
 
 private fun isSeriesType(type: String): Boolean = type == "tv" || type == "series" || type == "show"
@@ -11014,6 +12138,43 @@ internal fun mediaCollectionKey(item: MediaItem): String = buildString {
   }
 }
 
+/**
+ * The TMDB ratings resolved for add-on catalog cards, folded back into the items they belong to.
+ *
+ * Ratings arrive after the row does — they are looked up per card once the row is on screen — so
+ * they are stitched on at the point of display rather than stored on the section.
+ */
+private fun List<MediaItem>.withAddonRatings(uiState: AppUiState): List<MediaItem> {
+  if (!uiState.showAddonTmdbRatings || uiState.addonCatalogRatings.isEmpty()) return this
+  return map { item ->
+    if (item.rating != null) item else uiState.addonCatalogRatings[homeHeroMediaKey(item)]?.let { item.copy(rating = it) } ?: item
+  }
+}
+
+/**
+ * What a Home row shows of a section.
+ *
+ * Only add-on sections are trimmed, and only because they are now held complete: a built-in row
+ * arrives from the backend already the length it is meant to be, and shortening one here would
+ * change a row that has never been wrong.
+ */
+private fun MediaSection.homePreviewItems(): List<MediaItem> =
+  if (isBuiltinHomeCatalog(id)) items else items.take(HOME_ROW_PREVIEW_LIMIT)
+
+/**
+ * Everything the add-on catalog behind a Home row returned, not just the row's preview.
+ *
+ * Home rows carry [HOME_ROW_PREVIEW_LIMIT] items; the section they came from holds the full
+ * response. Opening "View All" on the preview alone left the rest recoverable only by asking the
+ * add-on again with a `skip` offset, which an add-on that answers with its whole catalog every
+ * time (TvVoo and live TV add-ons generally) simply ignores — so the page stayed at twenty.
+ */
+private fun fullSectionRow(uiState: AppUiState, row: HomeRow): HomeRow {
+  val section = uiState.homeSections.firstOrNull { it.id == row.id } ?: return row
+  if (section.items.size <= row.items.size) return row
+  return row.copy(items = section.items.withAddonRatings(uiState))
+}
+
 private fun profileSwitcherHeroItems(sections: List<MediaSection>): List<MediaItem> {
   // Preferred sources first, then any remaining sections as a fallback, so the
   // hero keeps working even when the user disables or re-arranges builtin rows.
@@ -11028,8 +12189,18 @@ private fun profileSwitcherHeroItems(sections: List<MediaSection>): List<MediaIt
 }
 
 private fun mixedHeroItems(sections: List<MediaSection>, continueWatching: List<MediaItem>, watchlist: List<MediaItem>): List<MediaItem> {
-  fun section(id: String): List<MediaItem> = sections.firstOrNull { it.id == id }?.items.orEmpty()
-  val buckets = listOf(
+  fun eligibleItems(items: List<MediaItem>): List<MediaItem> = items.filter { item ->
+    (item.type.equals("movie", true) || isSeriesType(item.type)) && !item.isLiveCatalogItem()
+  }
+  fun eligibleSection(section: MediaSection): Boolean {
+    val identity = "${section.id} ${section.title}".lowercase()
+    return listOf("streaming_network", "streaming network", "live tv", "live_tv", "live-tv", "iptv", "channel").none { it in identity }
+  }
+  fun section(id: String): List<MediaItem> = sections.firstOrNull { it.id == id && eligibleSection(it) }
+    ?.items
+    ?.let(::eligibleItems)
+    .orEmpty()
+  val preferredIds = listOf(
     section("new_movies"),
     section("new_series"),
     section("trending_movies"),
@@ -11037,9 +12208,15 @@ private fun mixedHeroItems(sections: List<MediaSection>, continueWatching: List<
     // What is in cinemas right now is the most current thing the catalog knows about, and it is
     // the one bucket here that is not already the opening rows of the home screen.
     section("in_theatres"),
-    continueWatching,
-    watchlist,
+    eligibleItems(continueWatching),
+    eligibleItems(watchlist),
   )
+  val preferredSectionIds = setOf("new_movies", "new_series", "trending_movies", "trending_series", "in_theatres")
+  // Providers do not share one fixed catalog vocabulary. Once the familiar categories have been
+  // tried, every other non-empty provider section is a valid graceful fallback.
+  val buckets = preferredIds + sections
+    .filter { it.id !in preferredSectionIds && eligibleSection(it) }
+    .map { eligibleItems(it.items) }
   val selected = mutableListOf<MediaItem>()
   val seen = mutableSetOf<String>()
   var position = 0
@@ -11056,19 +12233,22 @@ private fun mixedHeroItems(sections: List<MediaSection>, continueWatching: List<
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () -> Unit, onOpen: (MediaItem) -> Unit, onPlayContinueWatching: (MediaItem) -> Unit, onViewAll: (HomeRow) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onMarkWatched: (MediaItem) -> Unit, onRestartFromBeginning: (MediaItem) -> Unit, onRemoveFromContinueWatching: (MediaItem) -> Unit = {}, onResolveHeroTitleLogos: (List<MediaItem>) -> Unit, onResolveAddonRatings: (List<MediaItem>) -> Unit = {}, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onHandoffContinueWatching: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }) {
+private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () -> Unit, onOpen: (MediaItem) -> Unit, onPlayContinueWatching: (MediaItem) -> Unit, onViewAll: (HomeRow) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onMarkWatched: (MediaItem) -> Unit, onMarkEarlierEpisodesWatched: (MediaItem) -> Unit, onRestartFromBeginning: (MediaItem) -> Unit, onRemoveFromContinueWatching: (MediaItem) -> Unit = {}, onResolveHeroTitleLogos: (List<MediaItem>) -> Unit, onResolveAddonRatings: (List<MediaItem>) -> Unit = {}, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onHandoffContinueWatching: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }) {
   if (uiState.homeLoading && uiState.homeSections.isEmpty()) {
     SplashScene()
     return
   }
 
   val continueWatching = remember(uiState.traktContinueWatching, uiState.localContinueWatching) { combinedContinueWatching(uiState) }
-  val rawHeroItems = remember(uiState.homeSections, continueWatching, uiState.mergedWatchlist) {
-    mixedHeroItems(uiState.homeSections, continueWatching, uiState.mergedWatchlist)
+  val rawHeroItems = remember(uiState.allHomeSections, uiState.homeSections, continueWatching, uiState.mergedWatchlist) {
+    mixedHeroItems(uiState.allHomeSections.ifEmpty { uiState.homeSections }, continueWatching, uiState.mergedWatchlist)
   }
   LaunchedEffect(rawHeroItems) { onResolveHeroTitleLogos(rawHeroItems) }
   LaunchedEffect(uiState.homeSections, uiState.showAddonTmdbRatings, uiState.addonCatalogRatings.size) {
-    if (uiState.showAddonTmdbRatings) onResolveAddonRatings(uiState.homeSections.flatMap { it.items })
+    // Only what a Home row actually shows: a section now holds an add-on's whole catalog, and
+    // looking up a TMDB rating for every one of several hundred cards nobody has scrolled to
+    // would be a lot of requests for nothing.
+    if (uiState.showAddonTmdbRatings) onResolveAddonRatings(uiState.homeSections.flatMap { it.homePreviewItems() })
   }
   val heroItems = remember(rawHeroItems, uiState.homeHeroTitleLogos) {
     rawHeroItems.map { item ->
@@ -11131,7 +12311,7 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
       )
     }
   }
-  val rows = remember(uiState.homeSections, continueWatching, recommendations, trending, uiState.mergedWatchlist, uiState.favouriteChannels, uiState.m3uChannels, uiState.m3uVodItems, uiState.addonCatalogRatings, uiState.showAddonTmdbRatings, uiState.newEpisodeItems) {
+  val rows = remember(uiState.homeSections, continueWatching, recommendations, trending, uiState.mergedWatchlist, uiState.favouriteChannels, uiState.m3uChannels, uiState.m3uVodItems, uiState.addonCatalogRatings, uiState.showAddonTmdbRatings, uiState.newEpisodeItems, uiState.defaultAppCatalogsEnabled, uiState.homeCatalogRows) {
     buildList {
       if (continueWatching.isNotEmpty()) add(HomeRow("continue", "Continue Watching", continueWatching))
       // Straight after Continue Watching, as on the television: both answer "what should I put on
@@ -11142,16 +12322,40 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
       // keeps composition and card clicks bounded even for very large IPTV playlists.
       if (uiState.m3uChannels.isNotEmpty()) add(HomeRow("m3u_playlists_live", "Playlist Live TV", uiState.m3uChannels.take(30)))
       if (uiState.m3uVodItems.isNotEmpty()) add(HomeRow("m3u_playlists_vod", "Playlist VOD", uiState.m3uVodItems.take(30)))
-      uiState.homeSections.forEach { section ->
-        if (section.items.isEmpty()) return@forEach
-        val items = if (!uiState.showAddonTmdbRatings) section.items else section.items.map { item ->
-          if (item.rating != null) item else uiState.addonCatalogRatings[homeHeroMediaKey(item)]?.let { item.copy(rating = it) } ?: item
-        }
-        add(HomeRow(section.id, section.title, items))
+      // Catalogue rows and StreamDek's own assembled rows, in the one order the viewer arranged.
+      //
+      // Both come out of the saved layout, so the walk is over that rather than over the fetched
+      // sections: Recommended, Trending On Trakt and Watchlist have no section behind them -- Home
+      // builds their contents itself -- and appending them afterwards, as this used to, meant the
+      // drag handles in settings moved them somewhere the screen ignored.
+      //
+      // Continue Watching, New Episodes, the live favourites and the playlist rows above are not
+      // in the layout at all: they are the viewer's own content and their own configured sources,
+      // so they are neither ordered here nor gated by StreamDek Home Rows.
+      val sectionsById = uiState.homeSections.associateBy { it.id }
+      val assembled = mapOf(
+        "recommended" to { HomeRow("recommended", "Recommended For You", recommendations) },
+        "trending" to { HomeRow("trending", "Trending On Trakt", trending) },
+        "watchlist" to { HomeRow("watchlist", "Watchlist", uiState.mergedWatchlist) },
+      )
+      // Before the first merge the layout is empty, and falling through to it would leave Home
+      // blank; the fetched order is the right answer until the viewer has arranged one.
+      val layout = uiState.homeCatalogRows.ifEmpty {
+        uiState.homeSections.map { HomeCatalogRow(it.id, it.title, "", builtin = true) }
       }
-      if (recommendations.isNotEmpty()) add(HomeRow("recommended", "Recommended For You", recommendations))
-      if (trending.isNotEmpty()) add(HomeRow("trending", "Trending On Trakt", trending))
-      if (uiState.mergedWatchlist.isNotEmpty()) add(HomeRow("watchlist", "Watchlist", uiState.mergedWatchlist))
+      layout.forEach { row ->
+        if (!row.enabled) return@forEach
+        if (row.builtin && !uiState.defaultAppCatalogsEnabled) return@forEach
+        val built = assembled[row.id]?.invoke()
+          ?: sectionsById[row.id]?.let { section ->
+            // An add-on catalog is held complete rather than trimmed to the preview length, so the
+            // trim happens here: Home shows the opening titles, and "View All" is handed the whole
+            // section (see onViewAll).
+            HomeRow(section.id, section.title, section.homePreviewItems().withAddonRatings(uiState))
+          }
+          ?: return@forEach
+        if (built.items.isNotEmpty()) add(built)
+      }
     }.map { row -> row.copy(items = row.items.distinctBy(::mediaCollectionKey)) }
   }
   val heroBackdrop = heroItems.getOrNull(pagerState.currentPage.coerceIn(0, (heroItems.size - 1).coerceAtLeast(0)))
@@ -11216,7 +12420,7 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
       itemsIndexed(rows, key = { _, row -> row.id }) { index, row ->
         Column {
           if (heroItems.isNotEmpty() && index > 0) Spacer(modifier = Modifier.height(14.dp))
-          HomeStrip(rowId = row.id, title = row.title, items = row.items, continueWatchingStyle = uiState.continueWatchingStyle, liveLandscapeCards = uiState.liveLandscapeCards, newEpisodesLandscape = uiState.newEpisodesLandscape, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = handoffDevices, onRefreshHandoffDevices = onRefreshHandoffDevices, onHandoffLive = onHandoffLive, onHandoffContinueWatching = onHandoffContinueWatching, onOpen = onOpen, onViewAll = { onViewAll(row) }, onToggleWatchlist = onToggleWatchlist, onToggleFavourite = onToggleFavourite, onEnableAddon = onEnableAddon, onMarkWatched = onMarkWatched, onRestartFromBeginning = onRestartFromBeginning, onRemoveFromContinueWatching = onRemoveFromContinueWatching, onPlayContinueWatching = onPlayContinueWatching)
+          HomeStrip(rowId = row.id, title = row.title, items = row.items, continueWatchingStyle = uiState.continueWatchingStyle, liveLandscapeCards = uiState.liveLandscapeCards, newEpisodesLandscape = uiState.newEpisodesLandscape, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = handoffDevices, onRefreshHandoffDevices = onRefreshHandoffDevices, onHandoffLive = onHandoffLive, onHandoffContinueWatching = onHandoffContinueWatching, onOpen = onOpen, onViewAll = { onViewAll(row) }, onToggleWatchlist = onToggleWatchlist, onToggleFavourite = onToggleFavourite, onEnableAddon = onEnableAddon, onMarkWatched = onMarkWatched, onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched, onRestartFromBeginning = onRestartFromBeginning, onRemoveFromContinueWatching = onRemoveFromContinueWatching, onPlayContinueWatching = onPlayContinueWatching)
         }
       }
     }
@@ -13352,7 +14556,7 @@ private fun NetworkHomeCard(item: MediaItem, sports: Boolean = false, modifier: 
 }
 
 @Composable
-private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, continueWatchingStyle: ContinueWatchingStyle, liveLandscapeCards: Boolean, newEpisodesLandscape: Boolean = true, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onHandoffContinueWatching: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onOpen: (MediaItem) -> Unit, onViewAll: () -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, onRestartFromBeginning: (MediaItem) -> Unit, onRemoveFromContinueWatching: (MediaItem) -> Unit = {}, onPlayContinueWatching: (MediaItem) -> Unit) {
+private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, continueWatchingStyle: ContinueWatchingStyle, liveLandscapeCards: Boolean, newEpisodesLandscape: Boolean = true, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onHandoffContinueWatching: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onOpen: (MediaItem) -> Unit, onViewAll: () -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, onMarkEarlierEpisodesWatched: (MediaItem) -> Unit, onRestartFromBeginning: (MediaItem) -> Unit, onRemoveFromContinueWatching: (MediaItem) -> Unit = {}, onPlayContinueWatching: (MediaItem) -> Unit) {
   fun isFavourite(item: MediaItem): Boolean = favouriteItems.hasFavouriteChannel(item)
   val isAddonRow = rowId.startsWith("addon:")
   val isFavouritesRow = rowId == "favourites"
@@ -13420,6 +14624,7 @@ private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, cont
         onOpenDetails = { onOpen(item) },
         onAddToWatchlist = { onToggleWatchlist(item) },
         onMarkWatched = { onMarkWatched(item) },
+        onMarkEarlierEpisodesWatched = { onMarkEarlierEpisodesWatched(item) },
         onRemoveFromContinueWatching = { onRemoveFromContinueWatching(item) },
         onDismiss = { actionItem = null },
         handoffDevices = handoffDevices,
@@ -13657,7 +14862,7 @@ private fun MediaCardActionsDialog(
           onDismiss()
         }
       }
-      AmbientActionRow("Mark as Watched", icon = Icons.Rounded.CheckCircle) {
+      AmbientActionRow(if (item.historicallyWatched && (item.progress ?: 0.0) > 0.0) "Mark as Watched Again" else "Mark as Watched", icon = Icons.Rounded.CheckCircle) {
         onMarkWatched()
         onDismiss()
       }
@@ -13681,6 +14886,7 @@ private fun ContinueWatchingActionsDialog(
   onOpenDetails: () -> Unit,
   onAddToWatchlist: () -> Unit,
   onMarkWatched: () -> Unit,
+  onMarkEarlierEpisodesWatched: (() -> Unit)? = null,
   onRemoveFromContinueWatching: (() -> Unit)? = null,
   onDismiss: () -> Unit,
   handoffDevices: List<LinkedTvDevice> = emptyList(),
@@ -13688,7 +14894,7 @@ private fun ContinueWatchingActionsDialog(
   onHandoffToTv: (suspend (LinkedTvDevice) -> Result<PlaybackHandoffReceipt>)? = null,
 ) {
   val context = LocalContext.current
-  var choosingTv by remember(item.id) { mutableStateOf(false) }
+  var choosingTv by remember(mediaCollectionKey(item)) { mutableStateOf(false) }
   Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
     CardActionsAmbientScaffold(item = item, onDismiss = onDismiss) {
       if (choosingTv && onHandoffToTv != null) {
@@ -13725,6 +14931,16 @@ private fun ContinueWatchingActionsDialog(
       AmbientActionRow("Mark as Watched", icon = Icons.Rounded.CheckCircle) {
         onMarkWatched()
         onDismiss()
+      }
+      if (
+        onMarkEarlierEpisodesWatched != null &&
+        item.resumeSeasonNumber != null && item.resumeEpisodeNumber != null &&
+        (item.resumeSeasonNumber > 1 || item.resumeEpisodeNumber > 1)
+      ) {
+        AmbientActionRow("Mark All Previous Episodes as Watched", icon = Icons.Rounded.CheckCircle) {
+          onMarkEarlierEpisodesWatched()
+          onDismiss()
+        }
       }
       // Distinct from "Mark as Watched", which is the other way a title leaves this row: that one
       // says you finished it and syncs outward as such. This one only says stop showing me this.
@@ -13967,6 +15183,7 @@ private fun MediaGrid(
   watchlistItems: List<MediaItem> = emptyList(),
   includeRemoveAction: Boolean = false,
   onMarkWatched: ((MediaItem) -> Unit)? = null,
+  onMarkEarlierEpisodesWatched: ((MediaItem) -> Unit)? = null,
   continueWatchingActions: Boolean = false,
   onRestartFromBeginning: ((MediaItem) -> Unit)? = null,
   onRemoveFromContinueWatching: ((MediaItem) -> Unit)? = null,
@@ -14002,6 +15219,7 @@ private fun MediaGrid(
         onOpenDetails = { (onOpenDetails ?: onOpen)(item) },
         onAddToWatchlist = { onToggleWatchlist?.invoke(item) },
         onMarkWatched = { onMarkWatched?.invoke(item) },
+        onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched?.let { markEarlier -> { markEarlier(item) } },
         onRemoveFromContinueWatching = onRemoveFromContinueWatching?.let { remove -> { remove(item) } },
         onDismiss = { actionItem = null },
         handoffDevices = handoffDevices,
@@ -14206,6 +15424,7 @@ private fun ContinueTab(
   onOpenDetails: (MediaItem) -> Unit,
   onToggleWatchlist: (MediaItem) -> Unit,
   onMarkWatched: (MediaItem) -> Unit,
+  onMarkEarlierEpisodesWatched: (MediaItem) -> Unit,
   onRestartFromBeginning: (MediaItem) -> Unit,
   onRemoveFromContinueWatching: (MediaItem) -> Unit,
   onClearContinueWatching: () -> Unit,
@@ -14268,6 +15487,7 @@ private fun ContinueTab(
             onToggleWatchlist = onToggleWatchlist,
             watchlistItems = uiState.mergedWatchlist,
             onMarkWatched = onMarkWatched,
+            onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched,
             continueWatchingActions = true,
             onRestartFromBeginning = onRestartFromBeginning,
             onRemoveFromContinueWatching = onRemoveFromContinueWatching,
@@ -14872,7 +16092,7 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
           }
         }
         else -> {
-          item { MediaGrid(discoverItems, onOpen, columns = columns, showMeta = false, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched) }
+          item { MediaGrid(discoverItems, onOpen, columns = columns, showMeta = true, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched) }
           if (discoverPage < discoverTotalPages) {
             item {
               Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), contentAlignment = Alignment.Center) {
@@ -14920,7 +16140,7 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
         }
         else -> {
           if (searchResults.isNotEmpty()) {
-            item { MediaGrid(searchResults.take(60), onOpen, columns = columns, showMeta = false, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched) }
+            item { MediaGrid(searchResults.take(60), onOpen, columns = columns, showMeta = true, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched) }
           }
         }
       }
@@ -14931,7 +16151,7 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
       if (addonMatches.isNotEmpty()) {
         item { PlaylistResultsHeader("From your add-ons", addonMatches.size) }
         item {
-          MediaGrid(addonMatches.take(60), onOpen, columns = columns, showMeta = false, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched)
+          MediaGrid(addonMatches.take(60), onOpen, columns = columns, showMeta = true, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched)
         }
       }
 
@@ -15887,6 +17107,9 @@ private fun SettingsTab(
   onSkipIntroEnabledChange: (Boolean) -> Unit,
   onSkipRecapEnabledChange: (Boolean) -> Unit,
   onSkipEndingEnabledChange: (Boolean) -> Unit,
+  onAutoSkipIntroEnabledChange: (Boolean) -> Unit,
+  onAutoSkipRecapEnabledChange: (Boolean) -> Unit,
+  onAutoSkipEndingEnabledChange: (Boolean) -> Unit,
   onIntrodbApiKeyChange: (String) -> Unit,
   onAutoPlayNextEpisodeChange: (Boolean) -> Unit,
   onPreferBingeGroupChange: (Boolean) -> Unit,
@@ -15946,6 +17169,7 @@ private fun SettingsTab(
   onDefaultAppCatalogsEnabledChange: (Boolean) -> Unit,
   onHomeCatalogRowEnabledChange: (String, Boolean) -> Unit,
   onMoveHomeCatalogRow: (String, Int) -> Unit,
+  onRemoveHomeCatalogRows: (Set<String>) -> Unit,
   onRefreshHome: () -> Unit,
   onRefreshAddons: () -> Unit,
   onRefreshPlugins: () -> Unit,
@@ -15974,6 +17198,8 @@ private fun SettingsTab(
   onSetDebridEnabled: (String, Boolean) -> Unit,
   onMoveDebrid: (String, Int) -> Unit,
   onSetDebridCloudSync: (Boolean) -> Unit,
+  /** Everything the Content Services page can ask for; see ContentServicesUi. */
+  contentServiceActions: ContentServiceActions,
   onPremiumizeSignIn: (() -> Unit)?,
   onRealDebridSignIn: (() -> Unit)?,
   onDismissDebridSignIn: (() -> Unit)?,
@@ -15994,6 +17220,11 @@ private fun SettingsTab(
   onRefreshLinkedTvs: () -> Unit = {},
   onStartUpdate: () -> Unit,
 ) {
+  val settingsContext = LocalContext.current
+  val dohSettings = remember(settingsContext) { DoHSettings(settingsContext) }
+  var dohEnabled by remember { mutableStateOf(dohSettings.enabled) }
+  var dohProviderId by remember { mutableStateOf(dohSettings.providerId) }
+  var customDohDialogVisible by remember { mutableStateOf(false) }
   var settingsRefreshing by remember { mutableStateOf(false) }
   var settingsSearchVisible by rememberSaveable { mutableStateOf(false) }
   var settingsSearchQuery by rememberSaveable { mutableStateOf("") }
@@ -16042,6 +17273,18 @@ private fun SettingsTab(
   }
   previewFusionSource?.let { source ->
     FusionBadgePreviewDialog(source = source, onDismiss = { previewFusionSource = null })
+  }
+  if (customDohDialogVisible) {
+    CustomDoHEndpointDialog(
+      initialValue = dohSettings.customEndpoint,
+      onSave = { endpoint ->
+        dohSettings.customEndpoint = endpoint
+        dohSettings.providerId = "custom"
+        dohProviderId = "custom"
+        customDohDialogVisible = false
+      },
+      onDismiss = { customDohDialogVisible = false },
+    )
   }
   if (route == SettingsRoute.Profiles && uiState.pinPromptProfileId != null) {
     val profile = uiState.profiles.firstOrNull { it.id == uiState.pinPromptProfileId }
@@ -16191,9 +17434,13 @@ private fun SettingsTab(
       }
       item {
         SettingsSection("Connections") {
+          SettingsNavRow("API", Color(0xFF01B4E4), "Content Services", contentServicesSubtitle(uiState.contentServices), onClick = { onRouteChange(SettingsRoute.ContentServices) })
+          SettingsDivider()
           SettingsNavRow("SYN", Color(0xFFA78BFA), "Sync Services", syncServicesSubtitle(uiState), onClick = { onRouteChange(SettingsRoute.SyncServices) })
           SettingsDivider()
           SettingsNavRow("TV", Color(0xFF38BDF8), "Connect to TV", "Scan or enter a pairing code and manage linked TVs.", onClick = { onRouteChange(SettingsRoute.ConnectTv) })
+          SettingsDivider()
+          SettingsNavRow("NET", Color(0xFF22C55E), "Network", if (dohEnabled) "DNS over HTTPS - ${StreamDekDoHProviders.firstOrNull { it.id == dohProviderId }?.label ?: "Custom"}" else "DNS over HTTPS is off", onClick = { onRouteChange(SettingsRoute.Network) })
         }
       }
       item {
@@ -16218,7 +17465,7 @@ private fun SettingsTab(
                 onHeaderStyleChange(if (selected == "Modern") HeaderStyle.Modern else HeaderStyle.Classic)
               }
               SettingsDivider()
-              SettingsChoiceRow("XA", Color(0xFFA78BFA), "Language", "Choose the language used for the app interface.", supportedAppLanguages.keys.toList(), uiState.appLanguage, onAppLanguageChange)
+              SettingsChoiceRow("XA", Color(0xFFA78BFA), "Language", "Choose the language used for the app interface.", supportedAppLanguages.keys.toList(), uiState.appLanguage, onSelected = onAppLanguageChange)
             }
           }
           item {
@@ -16237,12 +17484,31 @@ private fun SettingsTab(
         }
         SettingsRoute.SkipAndAutoplay -> {
           item {
+            // Each segment's own pair, together: the switch that offers the button, then the one
+            // that acts on it without being asked. They used to be two separate sections -- all
+            // three automatic ones, then all three manual ones -- so the setting that governs a
+            // control and the control it governs were a section apart, and turning off "Skip Intro"
+            // left "Auto Skip Intro" in the section above still reading as on.
             SettingsSection("Skipping") {
               SettingsSwitchRow("IN", Color(0xFF60A5FA), "Skip Intro", "Show a button when an intro can be skipped.", uiState.skipIntroEnabled, onSkipIntroEnabledChange)
+              // Only while the control it automates is on. Automatically skipping a segment the
+              // viewer has asked not to be offered is a setting that cannot do anything.
+              if (uiState.skipIntroEnabled) {
+                SettingsDivider()
+                SettingsSwitchRow("AIN", Color(0xFF60A5FA), "Auto Skip Intro", "Skip a detected intro without waiting to be asked.", uiState.autoSkipIntroEnabled, onAutoSkipIntroEnabledChange)
+              }
               SettingsDivider()
               SettingsSwitchRow("RE", Color(0xFF38BDF8), "Skip Recap", "Show a button when a recap can be skipped.", uiState.skipRecapEnabled, onSkipRecapEnabledChange)
+              if (uiState.skipRecapEnabled) {
+                SettingsDivider()
+                SettingsSwitchRow("ARE", Color(0xFF38BDF8), "Auto Skip Recap", "Skip a detected recap without waiting to be asked.", uiState.autoSkipRecapEnabled, onAutoSkipRecapEnabledChange)
+              }
               SettingsDivider()
               SettingsSwitchRow("END", Color(0xFFF59E0B), "Skip Ending", "Show a button when the ending can be skipped.", uiState.skipEndingEnabled, onSkipEndingEnabledChange)
+              if (uiState.skipEndingEnabled) {
+                SettingsDivider()
+                SettingsSwitchRow("AEND", Color(0xFFF59E0B), "Auto Skip Ending", "Skip a detected ending without waiting to be asked, when autoplay is not taking over.", uiState.autoSkipEndingEnabled, onAutoSkipEndingEnabledChange)
+              }
             }
           }
           item {
@@ -16418,7 +17684,7 @@ private fun SettingsTab(
             }
           }
         }
-        SettingsRoute.HomeLayout -> item { CatalogHomeLayoutSettings(uiState, onDefaultAppCatalogsEnabledChange, onHomeCatalogRowEnabledChange, onMoveHomeCatalogRow, dragScrollBy = { delta -> settingsListState.scrollBy(delta) }) }
+        SettingsRoute.HomeLayout -> item { CatalogHomeLayoutSettings(uiState, onDefaultAppCatalogsEnabledChange, onHomeCatalogRowEnabledChange, onMoveHomeCatalogRow, onRemoveHomeCatalogRows, dragScrollBy = { delta -> settingsListState.scrollBy(delta) }) }
         SettingsRoute.TitlePages -> {
           item {
             // Lives here rather than under Home Screen, which is where it used to sit: it only ever
@@ -16555,7 +17821,7 @@ private fun SettingsTab(
         SettingsRoute.Streams -> {
           item {
             SettingsSection("Choosing a Stream") {
-              SettingsChoiceRow("Q", Color(0xFF22C55E), "Preferred Quality", "Put your preferred video quality near the top.", listOf("2160p", "1080p", "720p", "Auto"), uiState.preferredQuality, onPreferredQualityChange)
+              SettingsChoiceRow("Q", Color(0xFF22C55E), "Preferred Quality", "Put your preferred video quality near the top.", listOf("2160p", "1080p", "720p", "Auto"), uiState.preferredQuality, onSelected = onPreferredQualityChange)
               SettingsDivider()
               SettingsChoiceRow("GB", Color(0xFFF97316), "Max File Size", "Exclude streams larger than this size.", listOf("0", "4", "8", "12", "20"), uiState.maxFileSizeGb.toString()) { onMaxFileSizeChange(it.toInt()) }
               SettingsDivider()
@@ -16570,7 +17836,7 @@ private fun SettingsTab(
               SettingsDivider()
               SettingsSwitchRow("SIZ", Color(0xFFF97316), "Size Badges", "Show the download size on stream choices.", uiState.showSizeBadges, onShowSizeBadgesChange)
               SettingsDivider()
-              SettingsChoiceRow("POS", Color(0xFF22D3EE), "Badge Position", "Choose whether stream labels appear at the top or bottom.", listOf("Top", "Bottom"), uiState.badgePosition, onBadgePositionChange)
+              SettingsChoiceRow("POS", Color(0xFF22D3EE), "Badge Position", "Choose whether stream labels appear at the top or bottom.", listOf("Top", "Bottom"), uiState.badgePosition, onSelected = onBadgePositionChange)
               SettingsDivider()
               SettingsNavRow("TAG", Color(0xFFA78BFA), "Badge Styles", fusionBadgeSourceSummary(uiState), onClick = { showFusionBadgeUrls = true })
               SettingsDivider()
@@ -16598,7 +17864,7 @@ private fun SettingsTab(
         SettingsRoute.Player -> {
           item {
             SettingsSection("Player") {
-              SettingsChoiceRow("PLY", Color(0xFF22C55E), "Default Player", "Automatic starts with Media3 and switches to mpv if a source cannot play.", listOf("Auto", "Media3", "MPV"), uiState.playerEngine, onPlayerEngineChange)
+              SettingsChoiceRow("PLY", Color(0xFF22C55E), "Default Player", "Automatic starts with Media3 and switches to mpv if a source cannot play.", listOf("Auto", "Media3", "MPV"), uiState.playerEngine, onSelected = onPlayerEngineChange)
               SettingsDivider()
               SettingsSwitchRow("PIP", Color(0xFF6366F1), "Floating Player", "Keep the video in a small window when you leave StreamDek.", uiState.pictureInPictureEnabled, onPictureInPictureEnabledChange)
             }
@@ -16625,9 +17891,58 @@ private fun SettingsTab(
           item {
             // Last on the page: only worth opening when something will not play.
             SettingsSection("If a Video Will Not Play") {
-              SettingsChoiceRow("HW", Color(0xFFA78BFA), "mpv Video Compatibility", "Used when mpv is selected or Automatic switches to it. Recommended works for most videos.", listOf("HW+", "HW", "SW"), uiState.decoderMode, onDecoderModeChange)
+              SettingsChoiceRow("HW", Color(0xFFA78BFA), "mpv Video Compatibility", "Used when mpv is selected or Automatic switches to it. Recommended works for most videos.", listOf("HW+", "HW", "SW"), uiState.decoderMode, onSelected = onDecoderModeChange)
               SettingsDivider()
-              SettingsChoiceRow("SF", Color(0xFF06B6D4), "mpv Display", "Used when mpv is selected or Automatic switches to it. Try Compatibility if the picture is missing.", listOf("Standard", "Compatibility"), uiState.renderSurface, onRenderSurfaceChange)
+              SettingsChoiceRow("SF", Color(0xFF06B6D4), "mpv Display", "Used when mpv is selected or Automatic switches to it. Try Compatibility if the picture is missing.", listOf("Standard", "Compatibility"), uiState.renderSurface, onSelected = onRenderSurfaceChange)
+            }
+          }
+        }
+        SettingsRoute.Network -> {
+          item {
+            SettingsSection("DNS Privacy") {
+              SettingsSwitchRow("NET", Color(0xFF22C55E), "DNS over HTTPS", "Encrypt DNS lookups made by StreamDek's shared HTTP client. This is not a VPN.", dohEnabled, onCheckedChange = { enabled ->
+                if (!enabled || dohSettings.endpoint() != null) {
+                  dohSettings.enabled = enabled
+                  dohEnabled = enabled
+                } else {
+                  customDohDialogVisible = true
+                }
+              })
+              if (dohEnabled) {
+                SettingsDivider()
+                val providerLabels = StreamDekDoHProviders.map { it.label }
+                val selectedLabel = StreamDekDoHProviders.firstOrNull { it.id == dohProviderId }?.label ?: "Cloudflare"
+                SettingsChoiceRow(
+                  "DNS",
+                  Color(0xFF38BDF8),
+                  "DoH Provider",
+                  "Use the provider's official HTTPS RFC 8484 endpoint.",
+                  providerLabels,
+                  selectedLabel,
+                  optionDescriptions = StreamDekDoHProviders.associate { provider ->
+                    provider.label to (provider.endpoint ?: dohSettings.customEndpoint.ifBlank { "Not configured" })
+                  },
+                ) { label ->
+                  val provider = StreamDekDoHProviders.first { it.label == label }
+                  if (provider.id == "custom") {
+                    customDohDialogVisible = true
+                  } else {
+                    dohSettings.providerId = provider.id
+                    dohProviderId = provider.id
+                  }
+                }
+                if (dohProviderId == "custom") {
+                  SettingsDivider()
+                  SettingsNavRow("URL", Color(0xFFA78BFA), "Custom DoH Endpoint", dohSettings.customEndpoint.ifBlank { "Enter an HTTPS endpoint" }, onClick = { customDohDialogVisible = true })
+                }
+              }
+            }
+          }
+          item {
+            SettingsSection("Coverage") {
+              SettingsStaticRow("HI", Color(0xFF94A3B8), "App requests", "API and app-controlled HTTP use the selected resolver. Media3, MPV and third-party extensions may resolve independently.")
+              SettingsDivider()
+              SettingsStaticRow("SF", Color(0xFF94A3B8), "Failure policy", "No silent system-DNS fallback while DNS over HTTPS is enabled.")
             }
           }
         }
@@ -16677,6 +17992,13 @@ private fun SettingsTab(
           }
         }
         SettingsRoute.Plugins -> item { PluginsSettingsSummary(uiState.pluginsLoading, onRefreshPlugins) }
+        SettingsRoute.ContentServices -> item {
+          ContentServicesSettings(
+            state = uiState.contentServices,
+            signedIn = uiState.session != null,
+            actions = contentServiceActions,
+          )
+        }
         SettingsRoute.Debrid -> item { DebridSettingsSummary(uiState, onRefreshDebrid, onAddDebrid, onRemoveDebrid, onSetDebridEnabled, onMoveDebrid, onSetDebridCloudSync, onPremiumizeSignIn, onRealDebridSignIn, onDismissDebridSignIn, onDismissDebridNotice) }
         SettingsRoute.SyncServices -> {
           item { SyncServicesSettingsSummary(uiState, onRouteChange, onRefreshSyncServices, onPrimarySyncServiceChange) }
@@ -16690,7 +18012,7 @@ private fun SettingsTab(
         SettingsRoute.Trakt -> item { TraktSettingsSummary(uiState, onRequestTraktDeviceCode, onPollTraktAuthorization, onDisconnectTrakt, onRefreshTrakt) }
         SettingsRoute.Simkl -> item { DeviceCodeSyncServiceSummary(SyncService.Simkl, uiState, onRequestSyncServiceDeviceCode, onPollSyncServiceAuthorization, onDisconnectSyncService, onRefreshSyncServices) }
         SettingsRoute.Punchplay -> item { DeviceCodeSyncServiceSummary(SyncService.Punchplay, uiState, onRequestSyncServiceDeviceCode, onPollSyncServiceAuthorization, onDisconnectSyncService, onRefreshSyncServices) }
-        SettingsRoute.Mdblist -> item { ApiKeySyncServiceSummary(SyncService.Mdblist, uiState, uiState.mdblistApiKey, onConnectSyncServiceApiKey, onDisconnectSyncService, onRefreshSyncServices) }
+        SettingsRoute.Mdblist -> item { ApiKeySyncServiceSummary(SyncService.Mdblist, uiState, uiState.contentServices.mdblist.maskedKey.orEmpty(), onConnectSyncServiceApiKey, onDisconnectSyncService, onRefreshSyncServices) }
         SettingsRoute.Profiles -> item { ProfilesSettingsSummary(uiState, onSwitchProfile, onSelectProfile, onSubmitProfilePin, onCancelProfilePin, onCreateProfile, onUpdateProfile, onDeleteProfile, onMakeDefaultProfile, onRememberLastProfileAtStartupChange, onUpdateProfilePin) }
         SettingsRoute.Account -> item { AccountSettingsSummary(uiState, onSignOut, onSignIn, onRefreshSync) }
         SettingsRoute.AppUpdates -> item { AppUpdatesSettingsSummary(uiState, onAutoUpdateChecksChange, onCheckForUpdates, onStartUpdate) }
@@ -17486,6 +18808,7 @@ internal fun settingsRouteKeywords(route: SettingsRoute): String = when (route) 
   SettingsRoute.Plugins -> "plugin source provider repository javascript cloudstream cs3 extension collection scraper"
   SettingsRoute.M3uPlaylists -> "m3u m3u8 iptv playlist url link xtream provider channels live vod refresh import"
   SettingsRoute.Debrid -> "premium debrid real debrid alldebrid premiumize torbox debrid-link deepbrid account cached api key keys cloud sync store device only"
+  SettingsRoute.ContentServices -> "content services tmdb mdblist api key keys metadata artwork posters ratings enrichment own key personal key device only save to streamdek account credential"
   SettingsRoute.PeerToPeer -> "peer to peer p2p torrent magnet seed cache storage engine background service"
   SettingsRoute.SyncServices -> "sync services tracking tracker trakt simkl mdblist scrobble watchlist history connect cellular mobile data"
   SettingsRoute.Trakt -> "trakt scrobble watchlist history sync"
@@ -17493,6 +18816,7 @@ internal fun settingsRouteKeywords(route: SettingsRoute): String = when (route) 
   SettingsRoute.Punchplay -> "punchplay tracking scrobble watchlist sync connect continue watching"
   SettingsRoute.Mdblist -> "mdblist list ratings access key tracking sync connect"
   SettingsRoute.ConnectTv -> "tv television pair pairing code connect cast handoff"
+  SettingsRoute.Network -> "network dns doh dns over https privacy resolver cloudflare google adguard quad9 custom"
   SettingsRoute.Account -> "account sign in sign out email sync services subscription"
   SettingsRoute.Profiles -> "profile switch kids pin default avatar family"
   SettingsRoute.AppUpdates -> "update version apk install release changelog about"
@@ -17514,6 +18838,7 @@ internal fun settingsRouteTitle(route: SettingsRoute): String = when (route) {
   SettingsRoute.Plugins -> "Plugins"
   SettingsRoute.M3uPlaylists -> "Playlists"
   SettingsRoute.Debrid -> "Premium Services"
+  SettingsRoute.ContentServices -> "Content Services"
   SettingsRoute.PeerToPeer -> "Peer-to-Peer"
   SettingsRoute.SyncServices -> "Sync Services"
   SettingsRoute.Trakt -> "Trakt"
@@ -17521,6 +18846,7 @@ internal fun settingsRouteTitle(route: SettingsRoute): String = when (route) {
   SettingsRoute.Punchplay -> "PunchPlay"
   SettingsRoute.Mdblist -> "MDBList"
   SettingsRoute.ConnectTv -> "Connect to TV"
+  SettingsRoute.Network -> "Network"
   SettingsRoute.Account -> "Account"
   SettingsRoute.Profiles -> "Profiles"
   SettingsRoute.AppUpdates -> "App Updates"
@@ -17542,6 +18868,7 @@ internal fun settingsRouteSubtitle(route: SettingsRoute): String = when (route) 
   SettingsRoute.Plugins -> "Add plugin and CloudStream collections, and choose the streaming sources they provide."
   SettingsRoute.M3uPlaylists -> "Add IPTV M3U or M3U8 playlist URLs and choose which ones are on."
   SettingsRoute.Debrid -> "Connect premium services and choose which one StreamDek tries first."
+  SettingsRoute.ContentServices -> "Use your own TMDB and MDBList keys, and choose whether StreamDek keeps them for your other devices."
   SettingsRoute.PeerToPeer -> "Play peer-to-peer and magnet sources through this phone, and limit what they store."
   SettingsRoute.SyncServices -> "Connect Trakt, SIMKL, or MDBList to the profile you are using."
   SettingsRoute.Trakt -> "Connect Trakt and keep the current profile up to date."
@@ -17549,9 +18876,39 @@ internal fun settingsRouteSubtitle(route: SettingsRoute): String = when (route) 
   SettingsRoute.Punchplay -> "Connect PunchPlay and keep the current profile up to date."
   SettingsRoute.Mdblist -> "Connect MDBList with an access key for the current profile."
   SettingsRoute.ConnectTv -> "Pair this phone with StreamDek TV and manage authorized televisions."
+  SettingsRoute.Network -> "Choose encrypted DNS resolution for StreamDek network requests."
   SettingsRoute.Account -> "Refresh account state or sign in and out."
   SettingsRoute.Profiles -> "Create, switch, secure, and manage local viewing profiles."
   SettingsRoute.AppUpdates -> "See your app version and check for updates."
+}
+
+@Composable
+private fun CustomDoHEndpointDialog(initialValue: String, onSave: (String) -> Unit, onDismiss: () -> Unit) {
+  var value by remember(initialValue) { mutableStateOf(initialValue) }
+  var error by remember { mutableStateOf<String?>(null) }
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text("Custom DNS over HTTPS") },
+    text = {
+      Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("Enter an HTTPS endpoint implementing RFC 8484, for example https://resolver.example/dns-query.")
+        OutlinedTextField(
+          value = value,
+          onValueChange = { value = it; error = null },
+          singleLine = true,
+          label = { Text("DoH endpoint") },
+          supportingText = { error?.let { Text(it, color = MaterialTheme.colorScheme.error) } },
+        )
+      }
+    },
+    confirmButton = {
+      TextButton(onClick = {
+        val validation = DoHSettings.validateEndpoint(value)
+        if (validation == null) onSave(value.trim()) else error = validation
+      }, enabled = value.isNotBlank()) { Text("Save") }
+    },
+    dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+  )
 }
 
 private fun settingsGlyph(icon: String): ImageVector = when (icon) {
@@ -17816,7 +19173,16 @@ private fun SettingsSwitchRow(icon: String, iconColor: Color, title: String, sub
 }
 
 @Composable
-private fun SettingsChoiceRow(icon: String, iconColor: Color, title: String, subtitle: String, options: List<String>, selected: String, onSelected: (String) -> Unit) {
+private fun SettingsChoiceRow(
+  icon: String,
+  iconColor: Color,
+  title: String,
+  subtitle: String,
+  options: List<String>,
+  selected: String,
+  optionDescriptions: Map<String, String> = emptyMap(),
+  onSelected: (String) -> Unit,
+) {
   var showSheet by rememberSaveable(title) { mutableStateOf(false) }
   SettingsNavRow(icon = icon, iconColor = iconColor, title = title, subtitle = subtitle, value = settingsOptionLabel(title, selected), onClick = { showSheet = true })
   if (showSheet) {
@@ -17824,6 +19190,7 @@ private fun SettingsChoiceRow(icon: String, iconColor: Color, title: String, sub
       title = title,
       options = options,
       selected = selected,
+      optionDescriptions = optionDescriptions,
       onDismiss = { showSheet = false },
       onSelected = {
         onSelected(it)
@@ -17961,7 +19328,14 @@ private fun LanguageChoiceSheet(
 }
 
 @Composable
-private fun SettingsChoiceSheet(title: String, options: List<String>, selected: String, onDismiss: () -> Unit, onSelected: (String) -> Unit) {
+private fun SettingsChoiceSheet(
+  title: String,
+  options: List<String>,
+  selected: String,
+  optionDescriptions: Map<String, String> = emptyMap(),
+  onDismiss: () -> Unit,
+  onSelected: (String) -> Unit,
+) {
   Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
     Box(
       modifier = Modifier
@@ -18007,7 +19381,7 @@ private fun SettingsChoiceSheet(title: String, options: List<String>, selected: 
                       )
                     }
                     Text(settingsOptionLabel(title, option), color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    settingsOptionDescription(title, option)?.let { Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodySmall) }
+                    (optionDescriptions[option] ?: settingsOptionDescription(title, option))?.let { Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodySmall) }
                   }
                 }
                 if (rowOptions.size == 1) Spacer(modifier = Modifier.weight(1f))
@@ -18023,7 +19397,7 @@ private fun SettingsChoiceSheet(title: String, options: List<String>, selected: 
               ) {
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                   Text(settingsOptionLabel(title, option), color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                  settingsOptionDescription(title, option)?.let { Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodySmall) }
+                  (optionDescriptions[option] ?: settingsOptionDescription(title, option))?.let { Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodySmall) }
                 }
                 if (isSelected) Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary) else Box(modifier = Modifier.size(22.dp).clip(CircleShape).border(2.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f), CircleShape))
               }
@@ -18241,6 +19615,9 @@ private fun settingsOptionLabel(title: String, option: String): String = when {
 }
 
 private fun settingsOptionDescription(title: String, option: String): String? = when (title) {
+  "DoH Provider" -> StreamDekDoHProviders.firstOrNull { it.label == option }?.let { provider ->
+    provider.endpoint ?: "Not configured"
+  }
   "Background Mode" -> runCatching { backgroundModeDescription(BackgroundMode.valueOf(option)) }.getOrNull()
   "Language" -> when (normalizeAppLanguage(option)) {
     "en" -> "English"
@@ -18297,6 +19674,7 @@ private fun CatalogHomeLayoutSettings(
   onDefaultAppCatalogsEnabledChange: (Boolean) -> Unit,
   onHomeCatalogRowEnabledChange: (String, Boolean) -> Unit,
   onMoveHomeCatalogRow: (String, Int) -> Unit,
+  onRemoveHomeCatalogRows: (Set<String>) -> Unit,
   dragScrollBy: suspend (Float) -> Float,
 ) {
   val density = LocalDensity.current
@@ -18305,37 +19683,222 @@ private fun CatalogHomeLayoutSettings(
   LaunchedEffect(uiState.homeCatalogRows) {
     localRows = uiState.homeCatalogRows
   }
+  val groups = remember(localRows, uiState.addons, uiState.defaultAppCatalogsEnabled) {
+    buildHomeRowGroups(localRows, uiState.addons, uiState.defaultAppCatalogsEnabled)
+  }
+  var expandedGroups by rememberSaveable { mutableStateOf(emptySet<String>()) }
+  // Dropping a whole group's rows in one tap is worth asking about, and the count is the part the
+  // viewer needs to see before they agree to it.
+  var confirmClearCount by remember { mutableStateOf<Int?>(null) }
+
+  confirmClearCount?.let { count ->
+    AlertDialog(
+      onDismissRequest = { confirmClearCount = null },
+      title = { Text("Remove these rows?") },
+      text = {
+        Text(
+          count.toString() + " saved rows belong to add-ons that are no longer installed. This only " +
+            "clears the entries here, and reinstalling an add-on brings its rows back.",
+        )
+      },
+      confirmButton = {
+        TextButton(onClick = {
+          confirmClearCount = null
+          val orphaned = groups.firstOrNull { it.key == ORPHAN_ROW_GROUP_KEY }?.rows.orEmpty().map { it.id }.toSet()
+          localRows = localRows.filterNot { it.id in orphaned }
+          onRemoveHomeCatalogRows(orphaned)
+        }) { Text("Remove") }
+      },
+      dismissButton = { TextButton(onClick = { confirmClearCount = null }) { Text("Keep") } },
+    )
+  }
+
   Column(verticalArrangement = Arrangement.spacedBy(22.dp)) {
     SettingsSection("Home Rows") {
       SettingsSwitchRow("GRID", Color(0xFF22C55E), "StreamDek Home Rows", "Show the rows that come with StreamDek.", uiState.defaultAppCatalogsEnabled, onDefaultAppCatalogsEnabledChange)
     }
     SettingsSection("Choose and Reorder Rows") {
-      Text("Drag a row by its handle to place it exactly where you want. Use the switch to show or hide it.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodySmall)
-      localRows.forEachIndexed { index, row ->
-        key(row.id) {
-          if (index > 0) SettingsDivider()
-          HomeCatalogRowItem(
-            row = row,
-            onEnabledChange = { enabled ->
-              localRows = localRows.map { current -> if (current.id == row.id) current.copy(enabled = enabled) else current }
-              onHomeCatalogRowEnabledChange(row.id, enabled)
+      Text(
+        "Open a source to choose its rows. Drag a row by its handle to place it exactly where you want.",
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
+        style = MaterialTheme.typography.bodySmall,
+      )
+      groups.forEachIndexed { groupIndex, group ->
+        key(group.key) {
+          if (groupIndex > 0) SettingsDivider()
+          val expanded = group.gatedNote == null && group.key in expandedGroups
+          HomeRowGroupHeader(
+            title = group.title,
+            rowCount = group.rows.size,
+            enabledCount = group.rows.count { it.enabled },
+            expanded = expanded,
+            gatedNote = group.gatedNote,
+            onClear = if (group.key == ORPHAN_ROW_GROUP_KEY && group.rows.isNotEmpty()) {
+              { confirmClearCount = group.rows.size }
+            } else {
+              null
             },
-            onMove = { delta ->
-              val from = localRows.indexOfFirst { it.id == row.id }
-              val to = (from + delta).coerceIn(0, localRows.lastIndex)
-              if (from >= 0 && from != to) {
-                val reordered = localRows.toMutableList()
-                val moved = reordered.removeAt(from)
-                reordered.add(to, moved)
-                localRows = reordered
-                onMoveHomeCatalogRow(row.id, delta)
-              }
+            onToggle = {
+              expandedGroups = if (group.key in expandedGroups) expandedGroups - group.key else expandedGroups + group.key
             },
-            reorderThresholdPx = reorderThresholdPx,
-            dragScrollBy = dragScrollBy,
           )
+          if (expanded) {
+            group.rows.forEach { row ->
+              key(row.id) {
+                HomeCatalogRowItem(
+                  row = row,
+                  onEnabledChange = { enabled ->
+                    localRows = localRows.map { current -> if (current.id == row.id) current.copy(enabled = enabled) else current }
+                    onHomeCatalogRowEnabledChange(row.id, enabled)
+                  },
+                  onMove = { direction ->
+                    // Reordering stays inside the group the viewer can see. The underlying list is
+                    // one flat arrangement shared with Home, and a group's rows need not be
+                    // adjacent in it, so the step is the distance to the neighbour within this
+                    // group rather than a fixed one: everything else keeps its place.
+                    val from = localRows.indexOfFirst { it.id == row.id }
+                    if (from >= 0) {
+                      val siblingPositions = group.rows
+                        .mapNotNull { sibling -> localRows.indexOfFirst { it.id == sibling.id }.takeIf { it >= 0 } }
+                        .sorted()
+                      val neighbour = siblingPositions.getOrNull(siblingPositions.indexOf(from) + direction)
+                      if (neighbour != null) {
+                        val reordered = localRows.toMutableList()
+                        val moved = reordered.removeAt(from)
+                        reordered.add(neighbour, moved)
+                        localRows = reordered
+                        onMoveHomeCatalogRow(row.id, neighbour - from)
+                      }
+                    }
+                  },
+                  reorderThresholdPx = reorderThresholdPx,
+                  dragScrollBy = dragScrollBy,
+                )
+              }
+            }
+          }
         }
       }
+    }
+  }
+}
+
+/** The key StreamDek's own rows group under; no add-on id can collide with it. */
+internal const val STREAMDEK_ROW_GROUP_KEY = "__streamdek__"
+
+/** Rows whose add-on is no longer installed, kept together rather than one nameless group each. */
+internal const val ORPHAN_ROW_GROUP_KEY = "__orphaned__"
+
+internal data class HomeRowGroup(
+  val key: String,
+  val title: String,
+  /** Why this group's rows cannot reach Home, or null when they can. */
+  val gatedNote: String?,
+  val rows: List<HomeCatalogRow>,
+)
+
+/**
+ * Splits the saved layout into one group per source, in the order the sources first appear in it.
+ *
+ * The saved layout is only a list of ids and on/off flags -- a row's title and the add-on it came
+ * from are reconstructed at load time from whichever add-ons are currently installed. So the name
+ * has to come from [addons] here, not from the row: a row belonging to an add-on that is switched
+ * off has no candidate to be rebuilt from and arrives carrying an empty subtitle.
+ *
+ * That same lookup is what tells the group whether its add-on is switched off, which is the other
+ * reason its rows would not be on Home.
+ */
+internal fun buildHomeRowGroups(
+  rows: List<HomeCatalogRow>,
+  addons: List<InstalledAddon>,
+  streamDekRowsEnabled: Boolean,
+): List<HomeRowGroup> {
+  val addonsById = addons.associateBy { it.id }
+  // Until the add-on list has arrived there is nothing to say a row is orphaned, and routing every
+  // add-on row into "no longer installed" for the second the list takes to load would be alarming
+  // and wrong. While it is empty, rows keep their own add-on's group and simply go unnamed.
+  val addonsKnown = addons.isNotEmpty()
+  return rows
+    .groupBy { row ->
+      val addonId = if (row.builtin) null else homeCatalogRowAddonId(row.id)
+      when {
+        row.builtin -> STREAMDEK_ROW_GROUP_KEY
+        addonId == null -> ORPHAN_ROW_GROUP_KEY
+        addonsKnown && addonId !in addonsById -> ORPHAN_ROW_GROUP_KEY
+        else -> addonId
+      }
+    }
+    .map { (key, groupRows) ->
+      val addon = addonsById[key]
+      val title = when {
+        key == STREAMDEK_ROW_GROUP_KEY -> "StreamDek"
+        key == ORPHAN_ROW_GROUP_KEY -> "No longer installed"
+        else -> addon?.manifest?.name?.trim()?.takeIf { it.isNotEmpty() }
+          ?: groupRows.firstNotNullOfOrNull { row -> row.subtitle.removePrefix("From ").trim().takeIf { it.isNotEmpty() } }
+          ?: "Add-on"
+      }
+      val gatedNote = when {
+        key == STREAMDEK_ROW_GROUP_KEY && !streamDekRowsEnabled -> "hidden by StreamDek Home Rows"
+        key == ORPHAN_ROW_GROUP_KEY -> "the add-on they came from is not installed"
+        addon != null && !addon.enabled -> "hidden while this add-on is off"
+        else -> null
+      }
+      HomeRowGroup(key = key, title = title, gatedNote = gatedNote, rows = groupRows)
+    }
+}
+
+/**
+ * One source in the Home rows list, collapsed by default.
+ *
+ * [gatedNote] says why the group's rows cannot currently reach Home: the master switch is off, the
+ * add-on they come from is off, or that add-on is gone. A gated group is greyed and does not open.
+ * It stays listed rather than being removed, so the viewer can see their rows are kept and why
+ * they are not showing.
+ *
+ * [onClear] is offered only where the rows can never come back on their own -- the add-on they came
+ * from is gone, so there is nothing left to switch on and no reason to keep the entries.
+ */
+@Composable
+private fun HomeRowGroupHeader(
+  title: String,
+  rowCount: Int,
+  enabledCount: Int,
+  expanded: Boolean,
+  gatedNote: String?,
+  onClear: (() -> Unit)? = null,
+  onToggle: () -> Unit,
+) {
+  val gatedOff = gatedNote != null
+  val contentAlpha = if (gatedOff) 0.38f else 1f
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .clip(RoundedCornerShape(14.dp))
+      .then(if (gatedOff) Modifier else Modifier.clickable(onClick = onToggle))
+      .padding(vertical = 12.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(12.dp),
+  ) {
+    Icon(
+      if (expanded) Icons.Rounded.KeyboardArrowDown else Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+      contentDescription = if (expanded) "Collapse " + title else "Expand " + title,
+      tint = MaterialTheme.colorScheme.onBackground.copy(alpha = contentAlpha * 0.7f),
+    )
+    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+      Text(
+        title,
+        color = MaterialTheme.colorScheme.onBackground.copy(alpha = contentAlpha),
+        style = MaterialTheme.typography.bodyLarge,
+        fontWeight = FontWeight.SemiBold,
+      )
+      Text(
+        if (gatedNote != null) rowCount.toString() + " rows kept, " + gatedNote else enabledCount.toString() + " of " + rowCount + " rows on",
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = contentAlpha * 0.68f),
+        style = MaterialTheme.typography.bodySmall,
+      )
+    }
+    if (onClear != null) {
+      TextButton(onClick = onClear) { Text("Remove") }
     }
   }
 }
@@ -21212,9 +22775,10 @@ private fun RatingsSettingsSummary(
     SettingsSection("Where Extra Ratings Come From") {
       SettingsNavRow(
         "MDB", Color(0xFFF5C518), "MDBList",
-        if (uiState.mdblistApiKey.isBlank()) "Needed for IMDb, Rotten Tomatoes, and other services" else "Access key saved",
-        value = if (uiState.mdblistStatus.connected) "Connected" else null,
-        onClick = { onRouteChange(SettingsRoute.Mdblist) },
+        if (uiState.contentServices.mdblist.configured) "Key saved - ${uiState.contentServices.mdblist.storage?.label ?: ""}"
+        else "Needed for IMDb, Rotten Tomatoes, and other services",
+        value = if (uiState.contentServices.mdblist.configured) "Connected" else null,
+        onClick = { onRouteChange(SettingsRoute.ContentServices) },
       )
     }
     SettingsSection("Rating Services") {
@@ -21364,6 +22928,7 @@ private fun DetailScreen(
   onLoadSeason: (String, Int) -> Unit,
   onToggleWatchlist: (MediaItem) -> Unit,
   onToggleEpisodeWatched: (MediaDetail, EpisodeItem, Boolean) -> Unit,
+  onMarkPreviousEpisodesWatched: (MediaDetail, EpisodeItem) -> Unit,
   onSetSeasonWatched: (MediaDetail, List<EpisodeItem>, Boolean) -> Unit,
   onRefreshPlaybackProgress: () -> Unit,
   onToggleFavourite: () -> Unit,
@@ -21806,6 +23371,7 @@ private fun DetailScreen(
         onToggleWatched = {
           onToggleEpisodeWatched(detail, episode, watchedKey in watchedEpisodeIds)
         },
+        onMarkPreviousWatched = { onMarkPreviousEpisodesWatched(detail, episode) },
         onPlayStream = onPlayEpisodeStream,
         onDownloadStream = onDownloadStream,
         isStreamDownloadEligible = isStreamDownloadEligible,
@@ -24209,6 +25775,7 @@ private fun StreamResultCard(
     stream.addonName.takeIf { it.isNotBlank() },
     stream.source?.takeIf { it.isNotBlank() },
   ).distinct().joinToString(" • ")
+  val readyProvider = stream.cachedBy.firstOrNull()
   val secondaryText = listOf(stream.title, stream.description, stream.filename)
     .firstNotNullOfOrNull { candidate -> streamSingleLine(candidate)?.takeIf { it != primaryText } }
   Card(
@@ -24221,12 +25788,17 @@ private fun StreamResultCard(
     colors = CardDefaults.cardColors(containerColor = streamCardColor),
     shape = RoundedCornerShape(22.dp),
   ) {
+    Box(modifier = Modifier.fillMaxWidth()) {
     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 13.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
       // "Top" places the badges at the very top of the card so the setting is
       // visibly honored for every addon result, including ones without a
       // secondary description line.
       if (uiState.fusionBadgesEnabled && uiState.badgePosition.equals("Top", ignoreCase = true)) {
-        FusionBadgeRow(stream = stream, uiState = uiState)
+        FusionBadgeRow(
+          stream = stream,
+          uiState = uiState,
+          modifier = Modifier.padding(end = if (readyProvider != null) 174.dp else 0.dp),
+        )
       }
       Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -24236,10 +25808,9 @@ private fun StreamResultCard(
           // release is offered by five sources. Verbatim mode keeps it too: that mode's promise
           // is that the add-on's own text is never rewritten, and a line the app adds above it
           // does not touch a word of what was sent.
-          val readyProvider = stream.cachedBy.firstOrNull()
-          if (attributionText.isNotEmpty() || originText != null || readyProvider != null) {
+          if (attributionText.isNotEmpty() || originText != null) {
             Row(
-              modifier = Modifier.fillMaxWidth(),
+              modifier = Modifier.fillMaxWidth().padding(end = if (readyProvider != null) 174.dp else 0.dp),
               horizontalArrangement = Arrangement.spacedBy(7.dp),
               verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -24268,27 +25839,6 @@ private fun StreamResultCard(
                     style = MaterialTheme.typography.labelSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                  )
-                }
-              }
-              // Beside the source's own name, where the eye already is when scanning which of
-              // five copies of a release to press. "Ready" rather than "Cached", and named: it
-              // describes what happens when this is pressed and which service is promising it.
-              // Its absence means nobody could be asked — Real-Debrid answers no such question
-              // any more — not that this will fail.
-              readyProvider?.let { provider ->
-                Box(
-                  modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(streamForeground)
-                    .padding(horizontal = 9.dp, vertical = 4.dp),
-                ) {
-                  Text(
-                    "Ready · ${debridProviderLabel(provider)}",
-                    color = MaterialTheme.colorScheme.surface,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Black,
-                    maxLines = 1,
                   )
                 }
               }
@@ -24389,6 +25939,27 @@ private fun StreamResultCard(
       }
       if (uiState.fusionBadgesEnabled && uiState.badgePosition.equals("Bottom", ignoreCase = true)) {
         FusionBadgeRow(stream = stream, uiState = uiState)
+      }
+    }
+      // Availability is card-level state, so pin it to the card rather than to the title column.
+      // The size/download rail no longer pushes this badge toward the middle of wide cards.
+      readyProvider?.let { provider ->
+        Box(
+          modifier = Modifier
+            .align(Alignment.TopEnd)
+            .padding(top = 13.dp, end = 14.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .background(streamForeground)
+            .padding(horizontal = 9.dp, vertical = 4.dp),
+        ) {
+          Text(
+            "Ready · ${debridProviderLabel(provider)}",
+            color = MaterialTheme.colorScheme.surface,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Black,
+            maxLines = 1,
+          )
+        }
       }
     }
   }
@@ -25063,6 +26634,7 @@ private fun EpisodeStreamsPage(
   onBack: () -> Unit,
   onReload: () -> Unit,
   onToggleWatched: () -> Unit,
+  onMarkPreviousWatched: () -> Unit,
   onPlayStream: (AddonStream, EpisodeItem?) -> Unit,
   onDownloadStream: (AddonStream, String) -> Unit = { _, _ -> },
   isStreamDownloadEligible: (AddonStream) -> Boolean = { false },
@@ -25125,20 +26697,19 @@ private fun EpisodeStreamsPage(
               maxLines = 2,
               overflow = TextOverflow.Ellipsis,
             )
+            Text(
+              detail.title,
+              color = Color.White.copy(alpha = 0.74f),
+              style = MaterialTheme.typography.titleMedium,
+              fontWeight = FontWeight.SemiBold,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
             Row(
               modifier = Modifier.fillMaxWidth(),
               verticalAlignment = Alignment.CenterVertically,
               horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-              Text(
-                detail.title,
-                modifier = Modifier.weight(1f),
-                color = Color.White.copy(alpha = 0.74f),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-              )
               Row(
                 modifier = Modifier
                   .clip(RoundedCornerShape(999.dp))
@@ -25161,6 +26732,21 @@ private fun EpisodeStreamsPage(
                   style = MaterialTheme.typography.labelSmall,
                   fontWeight = FontWeight.Bold,
                 )
+              }
+              if (episode.seasonNumber > 1 || episode.episodeNumber > 1) {
+                Row(
+                  modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(Color.White.copy(alpha = 0.10f))
+                    .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(999.dp))
+                    .clickable(onClick = onMarkPreviousWatched)
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                  Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
+                  Text("Mark Previous Episodes Watched", color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                }
               }
             }
           }

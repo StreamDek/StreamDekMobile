@@ -28,6 +28,7 @@ import net.streamdek.mobile.nativeapp.EpisodeNotificationSystem
  */
 class MainApplication : Application(), ImageLoaderFactory {
   override fun onCreate() {
+    net.streamdek.mobile.nativeapp.Perf.startupMark("application.onCreate")
     super.onCreate()
     EpisodeNotificationSystem.ensureBackgroundWork(this)
   }

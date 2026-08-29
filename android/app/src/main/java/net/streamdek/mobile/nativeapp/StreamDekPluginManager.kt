@@ -14,6 +14,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -28,6 +29,14 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.net.URI
 import java.util.concurrent.TimeUnit
+
+/**
+ * How many plugin providers may be scraping at once.
+ *
+ * Kept at the previous value so the move onto the IO pool could be measured on its own; the
+ * fan-out width is tuned separately against a device, not guessed at.
+ */
+private const val MAX_CONCURRENT_PLUGIN_PROVIDERS = 5
 
 data class PluginRepo(val url: String, val name: String, val version: String, val description: String?, val enabled: Boolean = true)
 data class PluginProvider(
@@ -313,26 +322,42 @@ class StreamDekPluginManager(context: Context) {
   }
   fun enableProvider(id: String, value: Boolean) { state = state.copy(enabled = state.enabled || value, providers = state.providers.map { if (it.id == id) it.copy(enabled = value) else it }); save() }
 
+  /**
+   * The pool the scrapers run on.
+   *
+   * Not [Dispatchers.Default], which is what this was. Default is sized for CPU work — roughly one
+   * thread per core — so on a phone with four usable cores only four providers could be in flight
+   * however high the semaphore was set, and a provider blocked on a socket was occupying a thread
+   * meant for computation. A scraper spends nearly all of its time waiting on the network, so the
+   * IO pool is the right home for it: parking there is what those threads are for, and the
+   * semaphore below then genuinely governs how many run at once.
+   */
+  @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+  private val pluginDispatcher = Dispatchers.IO.limitedParallelism(MAX_CONCURRENT_PLUGIN_PROVIDERS)
+
   suspend fun streams(id: String, type: String, season: Int?, episode: Int?, onProviderResults: suspend (List<AddonStream>) -> Unit = {}): List<AddonStream> {
     if (!state.enabled) return emptyList()
     val normalized = normalizeType(type)
     val enabledRepos = state.repos.filter { it.enabled }.mapTo(mutableSetOf()) { it.url }
     val providers = state.providers.filter { it.enabled && it.repoUrl in enabledRepos && it.types.any { candidate -> normalizeType(candidate) == normalized } }
     Log.i("StreamDekPlugin", "Loading streams type=" + normalized + " id=" + id + " providers=" + providers.size)
+    val perf = Perf.span("pluginStreams", "providers=" + providers.size)
     return supervisorScope {
-      val providerGate = Semaphore(5)
+      val providerGate = Semaphore(MAX_CONCURRENT_PLUGIN_PROVIDERS)
       providers.map { provider ->
-        async(Dispatchers.Default) {
+        async(pluginDispatcher) {
           providerGate.withPermit {
+            val began = android.os.SystemClock.uptimeMillis()
             val streams = runCatching { runStreams(provider, id, normalized, season, episode) }
               .onFailure { Log.e("StreamDekPlugin", "Provider failed: " + provider.name, it) }
               .onSuccess { Log.i("StreamDekPlugin", "Provider " + provider.name + " returned " + it.size + " streams") }
               .getOrDefault(emptyList())
+            perf.mark("provider:" + provider.name, "took=" + (android.os.SystemClock.uptimeMillis() - began) + " results=" + streams.size)
             if (streams.isNotEmpty()) onProviderResults(streams)
             streams
           }
         }
-      }.awaitAll().flatten()
+      }.awaitAll().flatten().also { perf.end("done", "total=" + it.size) }
     }
   }
 

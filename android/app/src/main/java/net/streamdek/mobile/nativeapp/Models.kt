@@ -66,6 +66,8 @@ data class MediaItem(
   val drmClearKeys: Map<String, String> = emptyMap(),
   val resumeSeasonNumber: Int? = null,
   val resumeEpisodeNumber: Int? = null,
+  /** True when this title/episode was completed before the current resume session began. */
+  val historicallyWatched: Boolean = false,
 )
 
 /**
@@ -324,6 +326,9 @@ data class CloudPlaybackPreferences(
   val skipIntroEnabled: Boolean? = null,
   val skipRecapEnabled: Boolean? = null,
   val skipEndingEnabled: Boolean? = null,
+  val autoSkipIntroEnabled: Boolean? = null,
+  val autoSkipRecapEnabled: Boolean? = null,
+  val autoSkipEndingEnabled: Boolean? = null,
   val autoPlayNextEpisode: Boolean? = null,
   val preferBingeGroup: Boolean? = null,
   val autoLoadSubtitles: Boolean? = null,
@@ -593,6 +598,9 @@ data class PlayerSession(
   val skipIntroEnabled: Boolean = true,
   val skipRecapEnabled: Boolean = true,
   val skipEndingEnabled: Boolean = true,
+  val autoSkipIntroEnabled: Boolean = false,
+  val autoSkipRecapEnabled: Boolean = false,
+  val autoSkipEndingEnabled: Boolean = false,
   /** The viewer's own IntroDB key. Blank falls back to the key built into the app. */
   val introdbApiKey: String = "",
   val autoPlayNextEpisode: Boolean = true,

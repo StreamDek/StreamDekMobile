@@ -308,9 +308,14 @@ class PeerStreamService : Service() {
       infoHash: String,
       magnetLink: String,
       preferredFilename: String?,
+      mediaTitle: String?,
+      seasonNumber: Int?,
+      episodeNumber: Int?,
     ): String {
       val engine = peerEngineRef ?: throw IllegalStateException("Torrent engine is not ready.")
-      val playbackSession = engine.createPlaybackSession(config, infoHash, magnetLink, preferredFilename)
+      val playbackSession = engine.createPlaybackSession(
+        config, infoHash, magnetLink, preferredFilename, mediaTitle, seasonNumber, episodeNumber,
+      )
       val port = if (isOnline) activePort else config.port
       return "http://127.0.0.1:$port/torrent/${playbackSession.sessionId}"
     }
@@ -329,8 +334,8 @@ class PeerStreamService : Service() {
       peerEngineRef?.prepareForByteRange(sessionId, startByte)
     }
 
-    fun waitForPeerBytes(sessionId: String, targetByteExclusive: Long, timeoutMs: Long): Boolean {
-      return peerEngineRef?.waitForAvailableBytes(sessionId, targetByteExclusive, timeoutMs) ?: false
+    fun waitForPeerBytes(sessionId: String, startByte: Long, targetByteExclusive: Long, timeoutMs: Long): Boolean {
+      return peerEngineRef?.waitForAvailableBytes(sessionId, startByte, targetByteExclusive, timeoutMs) ?: false
     }
 
     fun peerBytesAvailable(sessionId: String): Long {

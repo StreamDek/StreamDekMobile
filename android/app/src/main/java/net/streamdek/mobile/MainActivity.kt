@@ -85,6 +85,7 @@ class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     installSplashScreen()
     super.onCreate(savedInstanceState)
+    net.streamdek.mobile.nativeapp.Perf.startupMark("activity.onCreate")
     applyOrientationPolicy()
     WindowCompat.setDecorFitsSystemWindows(window, false)
     window.statusBarColor = Color.TRANSPARENT
@@ -92,6 +93,7 @@ class MainActivity : ComponentActivity() {
     WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightStatusBars = false
     handleDeepLink(intent)
     setContent {
+      net.streamdek.mobile.nativeapp.Perf.startupMark("activity.firstComposition")
       StreamDekNativeApp(
         pendingAddonManifestUrl = pendingAddonManifestUrl.value,
         onAddonManifestConsumed = { pendingAddonManifestUrl.value = null },

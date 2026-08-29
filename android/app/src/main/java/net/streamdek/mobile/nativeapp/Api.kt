@@ -38,7 +38,23 @@ private const val FAVOURITE_CHANNELS_PREFS = "streamdek_native_favourite_channel
 private const val CLIENT_IDENTITY_PREFS = "streamdek_native_client_identity"
 private const val CLIENT_DEVICE_ID_KEY = "device_id"
 private const val CLIENT_PREVIOUS_DEVICE_ID_KEY = "previous_device_id"
-private const val HOME_CATALOG_PREVIEW_LIMIT = 20
+/** How many items of an add-on catalog a Home row previews before "View All" takes over. */
+internal const val HOME_ROW_PREVIEW_LIMIT = 20
+
+/**
+ * How much of an add-on catalog's answer is kept.
+ *
+ * This used to be the preview length, so 20 items were kept and the rest of a response the
+ * add-on had already sent in full was thrown away. "View All" then had to ask for those items
+ * again with a Stremio `skip` offset — which only works on add-ons that implement `skip`. A live
+ * TV add-on typically does not: TvVoo answers every request with its entire country list (684 UK
+ * channels, and the same 684 whatever `skip` says) and declares no `skip` extra at all, so its
+ * "View All" could never show more than the twenty the preview had kept.
+ *
+ * The whole response is kept now, bounded only so that one enormous catalog cannot sit in memory
+ * unchecked. Catalogs that do support `skip` still page past this from "View All".
+ */
+private const val ADDON_CATALOG_MAX_ITEMS = 2_000
 
 private data class ClientIdentity(
   val deviceId: String,
@@ -530,6 +546,16 @@ data class PlaybackProgressRecord(
   val progress: Double,
   val completed: Boolean,
   val unwatched: Boolean = false,
+  val dismissed: Boolean = false,
+  /**
+   * The ids this row can also be recognised by, when SyncDek recorded them.
+   *
+   * `entityId` alone is whatever spelling the device that wrote the row was holding, so matching on
+   * it is what let a removal made here fail to suppress the same title arriving from a provider
+   * under a different id. See [mediaIdentityOf].
+   */
+  val tmdbId: Int? = null,
+  val imdbId: String? = null,
   val updatedAt: Long,
   val lastDevice: String? = null,
   val lastPlatform: String? = null,
@@ -538,7 +564,59 @@ data class PlaybackProgressRecord(
 class StreamDekApiClient(context: Context? = null) {
   private val appContext = context?.applicationContext
   private val clientIdentity = appContext?.let { ClientIdentityStore(it).load() }
+
+  /**
+   * The viewer's own content-service keys, for the device-only case.
+   *
+   * Held here rather than passed in per call because the attachment happens in an interceptor:
+   * TMDB and MDBList requests are built in sixty different places in this file, and threading a
+   * key through every one of them is how half of them end up not carrying it.
+   */
+  internal val serviceCredentials = appContext?.let { ServiceCredentialManager(it) }
+
+  /**
+   * The host of StreamDek's own API, resolved once.
+   *
+   * Only used to decide whether a request may carry a content-service key. Parsed as a URL rather
+   * than matched as a string, and null when the configured base URL cannot be parsed — the safe
+   * answer to "is this our host" when we cannot tell is no, and null compares equal to nothing.
+   */
+  private val apiHost: String? =
+    runCatching { java.net.URI(BuildConfig.API_BASE_URL).host }.getOrNull()?.takeIf { it.isNotBlank() }
   private val client = OkHttpClient.Builder()
+    .apply { appContext?.let { dns(StreamDekDns(it)) } }
+    /**
+     * Attaches a device-only content-service key to the requests that need one.
+     *
+     * A key the viewer chose to keep on this device is still needed by the backend, because the
+     * backend is what talks to TMDB. It travels on the request that needs it, over TLS, is used
+     * for that request, and is never stored server-side — which is exactly what "this device
+     * only" means here, and is said in those words on the screen where the choice is made.
+     *
+     * Scoped tightly on purpose: only StreamDek's own API host, only the paths that spend the
+     * credential. An add-on, a plugin's scraper or a poster CDN never sees a header.
+     *
+     * The host is compared as a host, not as a URL prefix. A prefix test would also match
+     * `https://api.streamdek.net.example.com/`, and a plugin is free to return a stream URL —
+     * which this same client fetches — so that is a way to be handed somebody's API key.
+     */
+    .addInterceptor { chain ->
+      val request = chain.request()
+      val manager = serviceCredentials
+      if (manager == null || apiHost == null || !request.url.host.equals(apiHost, ignoreCase = true)) {
+        chain.proceed(request)
+      } else {
+        val path = request.url.encodedPath
+        val builder = request.newBuilder()
+        if (path.startsWith("/tmdb/") || path == "/tmdb" || path.startsWith("/addons/resolve-id/")) {
+          manager.requestKey(ContentService.Tmdb)?.let { builder.header("x-tmdb-api-key", it) }
+        }
+        if (path.startsWith("/mdblist/") || path.startsWith("/sync/")) {
+          manager.requestKey(ContentService.Mdblist)?.let { builder.header("x-mdblist-api-key", it) }
+        }
+        chain.proceed(builder.build())
+      }
+    }
     // Every request the app makes to StreamDek's own API passes through here. Only failures are
     // written, and only the method, path and status: enough to tell a refusal from the API apart
     // from a gateway that never reached it, which is otherwise invisible from a device — the
@@ -722,18 +800,37 @@ class StreamDekApiClient(context: Context? = null) {
    * older backend, say — the original five rows are fetched the way they always were, so the home
    * screen degrades rather than disappears.
    */
+  /**
+   * @param onDefaults the built-in catalog rows, handed over the moment they arrive rather than
+   *   when the whole screen is ready. The add-on fan-out is the slow half by a wide margin — it
+   *   was measured at 15.6 s against 0.9 s for the defaults on the same load — and there is no
+   *   dependency between the two, so making the viewer wait for the second to see the first was
+   *   costing the entire difference.
+   */
   suspend fun fetchHomeSections(
     session: AuthSession?,
     addons: List<InstalledAddon> = emptyList(),
     profileId: String? = null,
     catalogIds: List<String>? = null,
+    onDefaults: suspend (List<MediaSection>) -> Unit = {},
   ): Result<List<MediaSection>> = withContext(Dispatchers.IO) {
     runCatching {
+      val perf = Perf.span("homeSections")
       val sections = supervisorScope {
-        val defaults = async { fetchDefaultCatalogSections(catalogIds) }
-        val addonSections = async { fetchAddonHomeSections(session, addons, profileId) }
+        val defaults = async {
+          fetchDefaultCatalogSections(catalogIds).also {
+            perf.mark("defaults", "count=${it.size}")
+            // Never let a failure in the progressive hand-off take the whole load down with it:
+            // the complete result below is still returned either way.
+            runCatching { onDefaults(it) }
+          }
+        }
+        val addonSections = async {
+          fetchAddonHomeSections(session, addons, profileId).also { perf.mark("addons", "count=${it.size}") }
+        }
         defaults.await() + addonSections.await()
       }
+      perf.end("ok", "total=${sections.size}")
       sections
     }
   }
@@ -909,10 +1006,13 @@ class StreamDekApiClient(context: Context? = null) {
             .firstNotNullOfOrNull { path -> runCatching { fetchMediaList(path) }.getOrNull()?.takeIf { it.isNotEmpty() } }
             .orEmpty()
           val resolved = searchItems
-            .filter { normalizeMediaType(it.type) == normalizedType }
+            .filter { item ->
+              normalizeMediaType(item.type) == normalizedType &&
+                normalizeTitle(item.title) == normalizeTitle(title) &&
+                (fallbackYear == null || item.year == null || item.year.take(4) == fallbackYear.take(4))
+            }
             .sortedWith(
               compareByDescending<MediaItem> { it.year != null && fallbackYear != null && it.year.take(4) == fallbackYear.take(4) }
-                .thenByDescending { normalizeTitle(it.title) == normalizeTitle(title) }
                 .thenByDescending { it.title.equals(title, ignoreCase = true) }
                 .thenByDescending { it.rating ?: 0.0 },
             )
@@ -988,7 +1088,24 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
 
-  suspend fun fetchMdblistRatings(type: String, tmdbId: String, imdbId: String?, apiKey: String, providers: List<String> = listOf("imdb", "tmdb", "tomatoes", "metacritic", "trakt", "letterboxd", "audience")): Result<List<ExternalRating>> = withContext(Dispatchers.IO) {
+  /**
+   * MDBList ratings for one title.
+   *
+   * Goes through StreamDek rather than straight to MDBList, and the reason is the storage choice:
+   * a key kept on this device travels on the request (see the interceptor above), a key saved to
+   * the account is resolved server-side, and neither case needs a second code path here. The
+   * merging below is unchanged -- only where the answers come from moved.
+   *
+   * [session] is passed so an account-saved key can be found. A signed-out viewer with a device
+   * key still gets ratings; one with neither gets an empty list rather than an error.
+   */
+  suspend fun fetchMdblistRatings(
+    session: AuthSession?,
+    type: String,
+    tmdbId: String,
+    imdbId: String?,
+    providers: List<String> = listOf("imdb", "tmdb", "tomatoes", "metacritic", "trakt", "letterboxd", "audience"),
+  ): Result<List<ExternalRating>> = withContext(Dispatchers.IO) {
     runCatching {
       val mediaType = if (type == "tv" || type == "series") "show" else "movie"
       val normalizedImdbId = imdbId?.let { Regex("tt\\d+", RegexOption.IGNORE_CASE).find(it)?.value }
@@ -999,12 +1116,16 @@ class StreamDekApiClient(context: Context? = null) {
           val payload = JSONObject().put("ids", JSONArray().put(normalizedImdbId)).put("provider", "imdb")
           val response = execute(
             Request.Builder()
-              .url("https://api.mdblist.com/rating/$mediaType/$provider?apikey=${encodeQuery(apiKey)}")
+              .url("$apiBaseUrl/mdblist/rating/$mediaType/${encodeQuery(provider)}")
               .post(payload.toString().toRequestBody(jsonMediaType))
+              .headers(authHeaders(session, includeContentType = false))
               .addHeader("Accept", "application/json")
               .build(),
           )
-          if (!response.ok) return@mapNotNull null
+          if (!response.ok) {
+            noteMdblistRefusal(response)
+            return@mapNotNull null
+          }
           val rating = parseMdblistProviderRating(response.json, allowPercent = providerAllowsPercent(provider)) ?: return@mapNotNull null
           ExternalRating(provider = normalizeMdblistProviderId(provider), rating = rating)
         }.forEach { rating ->
@@ -1013,39 +1134,46 @@ class StreamDekApiClient(context: Context? = null) {
       }
 
       val candidates = buildList {
-        if (tmdbId.isNotBlank()) add("https://api.mdblist.com/tmdb/$mediaType/${encodeQuery(tmdbId)}?apikey=${encodeQuery(apiKey)}")
-        if (!imdbId.isNullOrBlank()) add("https://api.mdblist.com/imdb/$mediaType/${encodeQuery(imdbId)}?apikey=${encodeQuery(apiKey)}")
+        if (tmdbId.isNotBlank()) add("$apiBaseUrl/mdblist/lookup/tmdb/$mediaType/${encodeQuery(tmdbId)}")
+        if (!normalizedImdbId.isNullOrBlank()) add("$apiBaseUrl/mdblist/lookup/imdb/$mediaType/${encodeQuery(normalizedImdbId)}")
       }
       for (url in candidates) {
-        val response = execute(Request.Builder().url(url).build())
+        val response = execute(
+          Request.Builder().url(url).headers(authHeaders(session, includeContentType = false)).build(),
+        )
         if (response.ok) {
           val ratings = parseExternalRatings(response.json)
           ratings.forEach { rating ->
             mergedRatings.putIfAbsent(normalizeMdblistProviderId(rating.provider).lowercase(), rating)
           }
+        } else {
+          noteMdblistRefusal(response)
         }
       }
       mergedRatings.values.toList()
     }
   }
 
+  /**
+   * Marks a device-held MDBList key that the service has refused.
+   *
+   * Only an explicit refusal counts. A 502 means MDBList was unreachable, which says nothing
+   * about the key, and treating the two alike is how a working key gets flagged as broken
+   * during an outage the viewer can do nothing about.
+   */
+  private fun noteMdblistRefusal(response: JsonResponse) {
+    if (response.statusCode != 401) return
+    if (!response.json.optBoolean("credentialRejected", false)) return
+    serviceCredentials?.markDeviceKeyRejected(ContentService.Mdblist)
+  }
+
   suspend fun fetchTraktComments(session: AuthSession?, type: String, tmdbId: String, imdbId: String?): Result<List<TraktComment>> = withContext(Dispatchers.IO) {
     runCatching {
-      val mediaType = if (type == "tv" || type == "series") "shows" else "movies"
-      val id = imdbId?.takeIf { it.isNotBlank() } ?: tmdbId
-      val candidates = listOf(
-        "$apiBaseUrl/trakt/$mediaType/${encodeQuery(id)}/comments",
-        "$apiBaseUrl/trakt/comments/$type/${encodeQuery(tmdbId)}",
-        "$apiBaseUrl/trakt/comments?type=${encodeQuery(type)}&tmdbId=${encodeQuery(tmdbId)}",
-      )
-      for (url in candidates) {
-        val response = execute(Request.Builder().url(url).headers(authHeaders(session, includeContentType = false)).build())
-        if (response.ok) {
-          val comments = parseTraktComments(response.json)
-          if (comments.isNotEmpty()) return@runCatching comments
-        }
-      }
-      emptyList()
+      val canonicalType = if (type == "tv" || type == "series") "tv" else "movie"
+      val url = "$apiBaseUrl/trakt/comments/$canonicalType/${encodeQuery(tmdbId)}"
+      val response = execute(Request.Builder().url(url).headers(authHeaders(session, includeContentType = false)).build())
+      ensureOk(response, "Failed to load Trakt comments")
+      parseTraktComments(response.json)
     }
   }
 
@@ -1347,7 +1475,9 @@ class StreamDekApiClient(context: Context? = null) {
       val request = Request.Builder()
         .url(apiBaseUrl + "/playlists/" + encodeQuery(id))
         .delete()
-        .headers(authHeaders(session, profileId = profileId))
+        // Fastify rejects an empty request advertised as JSON. This DELETE has no payload, so it
+        // must not inherit the Content-Type header used by the write helpers.
+        .headers(authHeaders(session, includeContentType = false, profileId = profileId))
         .build()
       val response = execute(request)
       ensureOk(response, "Failed to remove playlist")
@@ -1418,7 +1548,7 @@ class StreamDekApiClient(context: Context? = null) {
                 } else {
                   fetchAddonCatalog(addon.id, addon.manifest.name, catalog.type, catalog.id, catalog.name, session, profileId, defaultGenre)
                 }
-              }.getOrDefault(emptyList()).take(HOME_CATALOG_PREVIEW_LIMIT)
+              }.getOrDefault(emptyList()).take(ADDON_CATALOG_MAX_ITEMS)
             }
             Triple(addon to catalog, index, mappedType to items)
           }
@@ -1756,6 +1886,7 @@ class StreamDekApiClient(context: Context? = null) {
     episodeNumber: Int? = null,
     completed: Boolean = false,
     unwatched: Boolean = false,
+    dismissed: Boolean = false,
   ): Result<Unit> = withContext(Dispatchers.IO) {
     runCatching {
       val metadata = JSONObject()
@@ -1794,6 +1925,7 @@ class StreamDekApiClient(context: Context? = null) {
         // card, so there is no position and usually no runtime for the server to work it out from.
         .put("completed", completed)
         .put("unwatched", unwatched)
+        .put("dismissed", dismissed)
         .put("metadata", metadata)
       val response = execute(
         Request.Builder()
@@ -1803,6 +1935,63 @@ class StreamDekApiClient(context: Context? = null) {
           .build(),
       )
       ensureOk(response, "Failed to save playback progress")
+      Unit
+    }
+  }
+
+  /**
+   * Removes one title from Continue Watching. The canonical operation, shared with the television.
+   *
+   * This used to be a dismissed progress write assembled here, and the television assembled its own
+   * — subtly different — version of the same thing. The server owns the whole lifecycle now:
+   * recording the intent under an identity that every source can be matched against, dropping the
+   * provider caches that would otherwise replay the title for the next few minutes, and suppressing
+   * the provider row on every device from then on. A removal made here and one made on the
+   * television are the same operation.
+   *
+   * The ids matter. A removal recorded only against the spelling this card happened to carry could
+   * not be matched to the same title arriving from a provider under a different one, which is why
+   * removed films came back.
+   */
+  suspend fun removeFromContinueWatching(
+    session: AuthSession?,
+    profileId: String?,
+    entityType: String,
+    entityId: String,
+    episodeKey: String?,
+    seasonNumber: Int? = null,
+    episodeNumber: Int? = null,
+    tmdbId: Int? = null,
+    imdbId: String? = null,
+    title: String? = null,
+    poster: String? = null,
+    backdrop: String? = null,
+    year: String? = null,
+  ): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val body = JSONObject()
+        .put("entityType", if (entityType.equals("movie", true)) "movie" else "tv")
+        .put("entityId", entityId)
+        .put("episodeKey", episodeKey)
+        .put("seasonNumber", seasonNumber)
+        .put("episodeNumber", episodeNumber)
+        .put("tmdbId", tmdbId)
+        .put("imdbId", imdbId)
+        .put("title", title)
+        .put("posterUrl", poster)
+        .put("backdropUrl", backdrop)
+        .put("year", year)
+        .put("removedAt", java.time.Instant.now().toString())
+        .put("lastDevice", clientIdentity?.deviceName ?: "StreamDek Mobile")
+        .put("lastPlatform", "mobile")
+      val response = execute(
+        Request.Builder()
+          .url("$apiBaseUrl/sync/continue-watching/remove")
+          .headers(authHeaders(session, profileId = profileId))
+          .post(body.toString().toRequestBody(jsonMediaType))
+          .build(),
+      )
+      ensureOk(response, "Failed to remove this title from Continue Watching")
       Unit
     }
   }
@@ -1850,6 +2039,7 @@ class StreamDekApiClient(context: Context? = null) {
             .put("lastPlatform", record.lastPlatform ?: "mobile")
             .put("completed", record.completed)
             .put("unwatched", record.unwatched)
+            .put("dismissed", record.dismissed)
             .put("metadata", metadata),
         )
       }
@@ -1909,6 +2099,11 @@ class StreamDekApiClient(context: Context? = null) {
                 progress = item.optDouble("progress", 0.0),
                 completed = item.optString("status").equals("completed", true),
                 unwatched = item.optString("status").equals("unwatched", true),
+                dismissed = item.optString("status").equals("dismissed", true),
+                // Read so a dismissal can be matched against a provider row that spells the same
+                // title differently. Without these the record is only findable by `entityId`.
+                tmdbId = item.opt("tmdbId")?.toString()?.toIntOrNull(),
+                imdbId = item.opt("imdbId")?.toString()?.takeIf { it.isNotBlank() && it != "null" },
                 // Compared against the local entry's own stamp when the two disagree, so the
                 // newer of them wins rather than whichever happened to be read last.
                 updatedAt = parseIsoInstantMillis(item.optString("updatedAt")),
@@ -2036,7 +2231,11 @@ class StreamDekApiClient(context: Context? = null) {
         .put("ratingsEnabled", preferences.ratingsEnabled)
         .put("externalRatingsEnabled", preferences.externalRatingsEnabled)
         .put("enabledRatingProviders", preferences.enabledRatingProviders?.let(::JSONArray))
-        .put("mdblistApiKey", preferences.mdblistApiKey)
+        // The MDBList key is deliberately not written here any more. It was a secret riding on
+        // an ordinary settings document; it lives in the encrypted credential store now. The key
+        // is omitted rather than sent as an empty string, because a blank would overwrite a
+        // legacy value the backend has not migrated out of this document yet -- and that
+        // migration is the only thing that knows how to keep it.
         // Also written under `streams` below: the setting is presented on Title Pages now, but
         // clients that have not moved yet still read the older location.
         .put("blurUnwatchedEpisodes", preferences.blurUnwatchedEpisodes)
@@ -2052,6 +2251,9 @@ class StreamDekApiClient(context: Context? = null) {
         .put("skipIntroEnabled", preferences.skipIntroEnabled)
         .put("skipRecapEnabled", preferences.skipRecapEnabled)
         .put("skipEndingEnabled", preferences.skipEndingEnabled)
+        .put("autoSkipIntroEnabled", preferences.autoSkipIntroEnabled)
+        .put("autoSkipRecapEnabled", preferences.autoSkipRecapEnabled)
+        .put("autoSkipEndingEnabled", preferences.autoSkipEndingEnabled)
         .put("introdbApiKey", preferences.introdbApiKey)
         .put("autoPlayNextEpisodeEnabled", preferences.autoPlayNextEpisode)
         .put("autoplayNextEpisode", preferences.autoPlayNextEpisode)
@@ -2114,6 +2316,9 @@ class StreamDekApiClient(context: Context? = null) {
           .put("skipIntroEnabled", preferences.skipIntroEnabled)
           .put("skipRecapEnabled", preferences.skipRecapEnabled)
           .put("skipEndingEnabled", preferences.skipEndingEnabled)
+          .put("autoSkipIntroEnabled", preferences.autoSkipIntroEnabled)
+          .put("autoSkipRecapEnabled", preferences.autoSkipRecapEnabled)
+          .put("autoSkipEndingEnabled", preferences.autoSkipEndingEnabled)
           .put("autoPlayNextEpisodeEnabled", preferences.autoPlayNextEpisode)
           .put("autoplayNextEpisode", preferences.autoPlayNextEpisode)
           .put("preferBingeGroupNextEpisode", preferences.preferBingeGroup)
@@ -2231,6 +2436,9 @@ class StreamDekApiClient(context: Context? = null) {
         skipIntroEnabled = optionalBoolean(playback, "skipIntroEnabled"),
         skipRecapEnabled = optionalBoolean(playback, "skipRecapEnabled"),
         skipEndingEnabled = optionalBoolean(playback, "skipEndingEnabled"),
+        autoSkipIntroEnabled = optionalBoolean(playback, "autoSkipIntroEnabled"),
+        autoSkipRecapEnabled = optionalBoolean(playback, "autoSkipRecapEnabled"),
+        autoSkipEndingEnabled = optionalBoolean(playback, "autoSkipEndingEnabled"),
         autoPlayNextEpisode = optionalBoolean(playback, "autoPlayNextEpisodeEnabled") ?: optionalBoolean(playback, "autoplayNextEpisode"),
         preferBingeGroup = optionalBoolean(playback, "preferBingeGroupNextEpisode"),
         autoLoadSubtitles = optionalBoolean(playback, "autoLoadSubtitles"),
@@ -2695,19 +2903,6 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
 
-  suspend fun streamViaBackend(stream: AddonStream): Result<String?> = withContext(Dispatchers.IO) {
-    runCatching {
-      if (stream.infoHash.isNullOrBlank()) return@runCatching null
-      val payload = JSONObject()
-        .put("infoHash", stream.infoHash)
-        .put("magnetLink", buildMagnet(stream))
-      stream.filename?.let { payload.put("filename", it) }
-      val response = executeJson("/stream/torrent/add", payload)
-      ensureOk(response, "Could not start peer-to-peer stream")
-      response.json.optString("streamUrl").ifBlank { null }
-    }
-  }
-
   suspend fun fetchTraktStatus(session: AuthSession, profileId: String): Result<TraktStatus> = withContext(Dispatchers.IO) {
     runCatching {
       val response = execute(
@@ -2989,6 +3184,158 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
 
+  // --- Content services (TMDB, MDBList) --------------------------------------------------------
+  //
+  // Three calls, and the split between them is the storage choice the viewer makes:
+  //
+  //   validate  checks a key and stores nothing, anywhere. This is what a "This device only"
+  //             key goes through, so the viewer gets the same green tick without StreamDek
+  //             keeping a copy.
+  //   save      checks a key and stores it, encrypted, against the account.
+  //   remove    deletes the account copy. The device's own key, if any, is untouched.
+  //
+  // Nothing here ever reads a key back: the backend has no route that returns one.
+
+  /** Whatever the account holds, masked. Also reports whether the shared fallback is still on. */
+  suspend fun fetchContentServiceCredentials(session: AuthSession): Result<AccountCredentials> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = execute(
+          Request.Builder()
+            .url("$apiBaseUrl/services/credentials")
+            .headers(authHeaders(session, includeContentType = false))
+            .build(),
+        )
+        ensureOk(response, "Could not load your content services")
+        parseAccountCredentials(response.json)
+      }
+    }
+
+  /**
+   * Asks the service whether this key works, without saving it.
+   *
+   * A refused key and an unreachable service come back as different failures, because one is the
+   * viewer's to fix and the other is nobody's — and telling someone their correct key is wrong
+   * because TMDB had a bad minute is how a working key gets deleted.
+   */
+  /**
+   * Checks a key by asking the service itself, from this device.
+   *
+   * Used when nobody is signed in: there is no StreamDek account to check the key through, and
+   * storing it unverified would mean telling the viewer a key works when nothing had established
+   * that. The request goes to the service that issued the key and carries nothing else.
+   *
+   * TMDB hands out two different things people both call an API key -- a v3 key, which goes in a
+   * query parameter, and a v4 read access token, which goes in a bearer header. Sending one as
+   * the other is a 401 that looks exactly like a typo, so the shape of the key decides.
+   */
+  suspend fun validateContentServiceKeyDirect(
+    service: ContentService,
+    apiKey: String,
+  ): Result<CredentialCheck> = withContext(Dispatchers.IO) {
+    runCatching {
+      val trimmed = apiKey.trim()
+      val request = when (service) {
+        ContentService.Tmdb -> {
+          val builder = Request.Builder().addHeader("Accept", "application/json")
+          if (Regex("^[A-Fa-f0-9]{32}$").matches(trimmed)) {
+            builder.url("https://api.themoviedb.org/3/authentication?api_key=" + encodeQuery(trimmed))
+          } else {
+            builder
+              .url("https://api.themoviedb.org/3/authentication")
+              .addHeader("Authorization", "Bearer " + trimmed)
+          }
+          builder.build()
+        }
+        ContentService.Mdblist -> Request.Builder()
+          .url("https://api.mdblist.com/user?apikey=" + encodeQuery(trimmed))
+          .addHeader("Accept", "application/json")
+          .build()
+      }
+
+      val response = execute(request)
+      when {
+        // A refusal is the viewer's to fix. Anything else is not, and saying "check your key"
+        // during an outage is how a correct key gets thrown away and typed in again.
+        response.statusCode == 401 || response.statusCode == 403 || response.statusCode == 404 ->
+          CredentialCheck.Failed(CredentialFailure.InvalidKey)
+        !response.ok -> CredentialCheck.Failed(CredentialFailure.ServiceUnavailable)
+        // MDBList answers 200 with an error body for a key it does not recognise.
+        response.json.optString("error").isNotBlank() ->
+          CredentialCheck.Failed(CredentialFailure.InvalidKey)
+        response.json.has("success") && !response.json.optBoolean("success", true) ->
+          CredentialCheck.Failed(CredentialFailure.InvalidKey)
+        else -> CredentialCheck.Valid(response.json.optString("username").ifBlank { null })
+      }
+    }
+  }
+
+  suspend fun validateContentServiceKey(
+    session: AuthSession,
+    service: ContentService,
+    apiKey: String,
+  ): Result<CredentialCheck> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = executeJson(
+        "/services/credentials/${encodeQuery(service.id)}/validate",
+        JSONObject().put("apiKey", apiKey),
+        session = session,
+      )
+      when {
+        // Anything that is not a considered answer from this route -- a 404 from a deployment
+        // that predates it, a gateway error, an outage -- says nothing about the key.
+        !response.ok -> CredentialCheck.Failed(CredentialFailure.ServiceUnavailable)
+        response.json.optBoolean("valid", false) ->
+          CredentialCheck.Valid(response.json.optString("label").ifBlank { null })
+        else -> CredentialCheck.Failed(CredentialFailure.fromId(response.json.optString("failure")))
+      }
+    }
+  }
+
+  /** Saves the key to the StreamDek account, so every signed-in device can use it. */
+  suspend fun saveContentServiceKey(
+    session: AuthSession,
+    service: ContentService,
+    apiKey: String,
+  ): Result<AccountCredentialState> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = executePut(
+        "/services/credentials/${encodeQuery(service.id)}",
+        JSONObject().put("apiKey", apiKey),
+        session = session,
+      )
+      if (!response.ok) {
+        // The backend refuses a key it has checked with a 400 and a `failure`; everything else is
+        // StreamDek being unreachable or out of date, which is not the viewer's key to fix.
+        val checked = response.statusCode == 400 && response.json.has("failure")
+        throw IllegalStateException(
+          when {
+            checked -> response.json.optString("error").ifBlank {
+              CredentialFailure.fromId(response.json.optString("failure")).message
+            }
+            else -> CredentialFailure.ServiceUnavailable.message
+          },
+        )
+      }
+      parseAccountCredentialState(service, response.json.optJSONObject("service"))
+    }
+  }
+
+  /** Removes the account copy. Every other device on the account loses it too, and is told so. */
+  suspend fun removeContentServiceKey(session: AuthSession, service: ContentService): Result<Unit> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = execute(
+          Request.Builder()
+            .url("$apiBaseUrl/services/credentials/${encodeQuery(service.id)}")
+            .delete("{}".toRequestBody(jsonMediaType))
+            .headers(authHeaders(session))
+            .build(),
+        )
+        ensureOk(response, "Could not remove the key from your StreamDek account")
+      }
+    }
+
   /** Key-based connect, used by MDBList. The key is stored server-side against the profile. */
   suspend fun connectSyncServiceApiKey(
     session: AuthSession,
@@ -3094,7 +3441,7 @@ class StreamDekApiClient(context: Context? = null) {
         val response = execute(
           Request.Builder()
             .url("$apiBaseUrl$path")
-            .headers(authHeaders(session, profileId = profileId))
+            .headers(authHeaders(session, includeContentType = false, profileId = profileId))
             .build(),
         )
         ensureOk(response, "Failed to load Trakt data")
@@ -3288,6 +3635,20 @@ class StreamDekApiClient(context: Context? = null) {
     val request = Request.Builder()
       .url("$apiBaseUrl$path")
       .post(payload.toString().toRequestBody(jsonMediaType))
+      .headers(authHeaders(session, profileId = profileId))
+      .build()
+    return execute(request)
+  }
+
+  private fun executePut(
+    path: String,
+    payload: JSONObject,
+    session: AuthSession? = null,
+    profileId: String? = null,
+  ): JsonResponse {
+    val request = Request.Builder()
+      .url("$apiBaseUrl$path")
+      .put(payload.toString().toRequestBody(jsonMediaType))
       .headers(authHeaders(session, profileId = profileId))
       .build()
     return execute(request)
@@ -3515,6 +3876,43 @@ private fun parseRatingFromObjects(json: JSONObject, providerNames: List<String>
     parseRatingValue(item, allowPercent || providerAllowsPercent(provider))?.let { return it }
   }
   return null
+}
+
+/**
+ * One service's account state, as the backend reports it.
+ *
+ * Only ever the masked form. There is no branch here that could produce the key itself, because
+ * no response the backend sends contains one.
+ */
+private fun parseAccountCredentialState(service: ContentService, json: JSONObject?): AccountCredentialState {
+  if (json == null) return AccountCredentialState(service, configured = false)
+  return AccountCredentialState(
+    service = service,
+    configured = json.optBoolean("configured", false),
+    maskedKey = json.optString("maskedKey").ifBlank { null },
+    label = json.optString("label").ifBlank { null },
+    needsAttention = json.optString("status") == "needs_attention",
+    lastValidatedAt = json.optString("lastValidatedAt").ifBlank { null },
+  )
+}
+
+private fun parseAccountCredentials(json: JSONObject): AccountCredentials {
+  val services = json.optJSONArray("services") ?: JSONArray()
+  var tmdb: AccountCredentialState? = null
+  var mdblist: AccountCredentialState? = null
+  for (index in 0 until services.length()) {
+    val entry = services.optJSONObject(index) ?: continue
+    when (ContentService.fromId(entry.optString("service"))) {
+      ContentService.Tmdb -> tmdb = parseAccountCredentialState(ContentService.Tmdb, entry)
+      ContentService.Mdblist -> mdblist = parseAccountCredentialState(ContentService.Mdblist, entry)
+      null -> Unit
+    }
+  }
+  return AccountCredentials(
+    tmdb = tmdb,
+    mdblist = mdblist,
+    sharedFallbackAvailable = json.optBoolean("sharedFallbackAvailable", true),
+  )
 }
 
 private fun parseMdblistProviderRating(json: JSONObject, allowPercent: Boolean = false): Double? {

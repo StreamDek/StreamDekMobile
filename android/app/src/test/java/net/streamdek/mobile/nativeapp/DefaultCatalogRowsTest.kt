@@ -26,12 +26,23 @@ class DefaultCatalogRowsTest {
   private fun savedRow(id: String, enabled: Boolean = true) =
     HomeCatalogRow(id = id, title = id, subtitle = "", builtin = false, enabled = enabled)
 
+  /**
+   * The catalog rows only.
+   *
+   * The saved layout also carries StreamDek's own assembled rows -- Recommended, Trending On Trakt
+   * and Watchlist -- so that they can be switched on and off beside the catalogues. They are not
+   * registry rows and say nothing about registry ordering, so the assertions below look past them.
+   */
+  private fun catalogIds(rows: List<HomeCatalogRow>) = rows.map { it.id }.filterNot { it in streamDekFeatureRowIds }
+
   @Test
   fun `fresh install takes the registry order`() {
     val rows = mergeHomeCatalogRows(emptyList(), emptyList(), fallbackCatalogDefinitions)
 
-    assertEquals(fallbackCatalogDefinitions.map { it.id }, rows.map { it.id })
+    assertEquals(fallbackCatalogDefinitions.map { it.id }, catalogIds(rows))
     assertTrue(rows.all { it.enabled && it.builtin })
+    // The feature rows are part of the layout too, and default to on.
+    assertTrue(streamDekFeatureRowIds.all { id -> rows.any { it.id == id && it.enabled } })
   }
 
   @Test
@@ -52,7 +63,7 @@ class DefaultCatalogRowsTest {
 
     val rows = mergeHomeCatalogRows(legacy, emptyList(), fallbackCatalogDefinitions)
 
-    assertEquals(fallbackCatalogDefinitions.map { it.id }, rows.map { it.id })
+    assertEquals(fallbackCatalogDefinitions.map { it.id }, catalogIds(rows))
     assertFalse(rows.first { it.id == "streaming_networks" }.enabled)
     assertTrue(rows.filterNot { it.id == "streaming_networks" }.all { it.enabled })
   }
@@ -85,7 +96,7 @@ class DefaultCatalogRowsTest {
     val rows = mergeHomeCatalogRows(legacy, listOf(addon), fallbackCatalogDefinitions)
 
     assertEquals(addonRowId, rows.first().id)
-    assertEquals(fallbackCatalogDefinitions.map { it.id }, rows.drop(1).map { it.id })
+    assertEquals(fallbackCatalogDefinitions.map { it.id }, catalogIds(rows.drop(1)))
   }
 
   @Test
@@ -107,7 +118,7 @@ class DefaultCatalogRowsTest {
 
     val rows = mergeHomeCatalogRows(saved, emptyList(), definitions)
 
-    assertEquals(listOf("hidden_gems_movies", "classic_movies", "trending_movies", "anime_series"), rows.map { it.id })
+    assertEquals(listOf("hidden_gems_movies", "classic_movies", "trending_movies", "anime_series"), catalogIds(rows))
     assertFalse(rows.first { it.id == "anime_series" }.enabled)
   }
 
@@ -117,7 +128,7 @@ class DefaultCatalogRowsTest {
 
     val rows = mergeHomeCatalogRows(saved, emptyList(), listOf(definition("trending_movies")))
 
-    assertEquals(listOf("trending_movies"), rows.map { it.id })
+    assertEquals(listOf("trending_movies"), catalogIds(rows))
   }
 
   @Test
@@ -126,7 +137,7 @@ class DefaultCatalogRowsTest {
 
     val rows = mergeHomeCatalogRows(saved, emptyList(), listOf(definition("trending_movies", title = "Hot Right Now")))
 
-    assertEquals("Hot Right Now", rows.single().title)
+    assertEquals("Hot Right Now", rows.single { it.id !in streamDekFeatureRowIds }.title)
   }
 
   @Test

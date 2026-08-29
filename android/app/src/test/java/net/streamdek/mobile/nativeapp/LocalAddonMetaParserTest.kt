@@ -44,6 +44,17 @@ class LocalAddonMetaParserTest {
   }
 
   @Test
+  fun parsesProviderOverviewWhenDescriptionIsMissing() {
+    val payload = JSONObject(
+      """{"meta":{"id":"tmdb:12345","type":"movie","name":"Example","overview":"A provider synopsis."}}""",
+    )
+
+    val meta = parseLocalAddonMetaResponse(payload, rawType = "movie", fallbackId = "tmdb:12345")
+
+    assertEquals("A provider synopsis.", meta.description)
+  }
+
+  @Test
   fun stripsBrokenHlsSubtitleRenditionsWithoutChangingVideoOrAudio() {
     val manifest = """
       #EXTM3U

@@ -23,6 +23,9 @@ class LocalStreamingHttpServer(
   private val cacheStore: StreamCacheStore,
   private val peerEngine: PeerEngine,
 ) {
+  companion object {
+    private const val MAX_TORRENT_RESPONSE_BYTES = 4L * 1024L * 1024L
+  }
   private data class ParsedRequest(
     val method: String,
     val path: String,
@@ -218,16 +221,17 @@ class LocalStreamingHttpServer(
     }
 
     val rangeHeader = requestHeaders["range"]
-    val (start, end, statusCode) = parseRange(rangeHeader, totalLength)
+    val (start, requestedEnd, statusCode) = parseRange(rangeHeader, totalLength)
     if (statusCode == 416) {
       writeRangeNotSatisfiable(output, totalLength)
       return
     }
+    val end = minOf(requestedEnd, start + MAX_TORRENT_RESPONSE_BYTES - 1, totalLength - 1)
 
     PeerStreamService.preparePeerRange(sessionId, start)
     val requiredBytes = (end + 1).coerceAtLeast(start + 1)
-    val ready = PeerStreamService.waitForPeerBytes(sessionId, requiredBytes, 45_000L)
-    val availableBytes = PeerStreamService.peerBytesAvailable(sessionId)
+    val ready = PeerStreamService.waitForPeerBytes(sessionId, start, requiredBytes, 45_000L)
+    val availableBytes = if (ready) requiredBytes else PeerStreamService.peerBytesAvailable(sessionId)
     if (!ready && availableBytes <= start) {
       writeResponse(output, 503, "text/plain; charset=utf-8", "Torrent data not ready")
       return

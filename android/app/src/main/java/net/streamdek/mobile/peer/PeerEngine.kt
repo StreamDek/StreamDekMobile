@@ -9,7 +9,6 @@ import com.frostwire.jlibtorrent.SettingsPack
 import com.frostwire.jlibtorrent.Sha1Hash
 import com.frostwire.jlibtorrent.TorrentFlags
 import com.frostwire.jlibtorrent.TorrentHandle
-import com.frostwire.jlibtorrent.TorrentInfo
 import com.frostwire.jlibtorrent.alerts.Alert
 import com.frostwire.jlibtorrent.swig.alert
 import com.frostwire.jlibtorrent.swig.settings_pack
@@ -106,12 +105,26 @@ class PeerEngine(
     infoHash: String,
     magnetLink: String,
     preferredFilename: String?,
+    mediaTitle: String?,
+    seasonNumber: Int?,
+    episodeNumber: Int?,
   ): PeerPlaybackSession {
     ensureStarted(config)
 
     val normalizedInfoHash = infoHash.lowercase()
     val existing = sessionsByInfoHash[normalizedInfoHash]
     if (existing != null) {
+      if (existing.preferredFilename != preferredFilename ||
+        existing.seasonNumber != seasonNumber || existing.episodeNumber != episodeNumber
+      ) {
+        existing.preferredFilename = preferredFilename
+        existing.mediaTitle = mediaTitle
+        existing.seasonNumber = seasonNumber
+        existing.episodeNumber = episodeNumber
+        existing.fileIndex = -1
+        existing.filePath = ""
+        existing.fileLength = 0L
+      }
       storage.touch(normalizedInfoHash)
       ensureTargetFile(existing)
       return existing
@@ -125,6 +138,9 @@ class PeerEngine(
       magnetLink = magnetLink,
       saveDirectory = saveDirectory,
       preferredFilename = preferredFilename,
+      mediaTitle = mediaTitle,
+      seasonNumber = seasonNumber,
+      episodeNumber = episodeNumber,
       handle = handle,
     )
 
@@ -201,14 +217,23 @@ class PeerEngine(
     }
   }
 
-  fun waitForAvailableBytes(sessionId: String, targetByteExclusive: Long, timeoutMs: Long = 45_000L): Boolean {
+  fun waitForAvailableBytes(
+    sessionId: String,
+    startByte: Long,
+    targetByteExclusive: Long,
+    timeoutMs: Long = 45_000L,
+  ): Boolean {
     val session = getPlaybackSession(sessionId) ?: return false
     val handle = session.handle
+    val torrentInfo = handle.torrentFile() ?: return false
+    val pieceLength = torrentInfo.pieceLength().toLong().coerceAtLeast(1L)
+    val fileOffset = torrentInfo.files().fileOffset(session.fileIndex)
+    val firstPiece = ((fileOffset + startByte.coerceAtLeast(0L)) / pieceLength).toInt()
+    val lastPiece = ((fileOffset + (targetByteExclusive - 1).coerceAtLeast(startByte)) / pieceLength).toInt()
     val start = System.currentTimeMillis()
     while (System.currentTimeMillis() - start < timeoutMs) {
       ensureTargetFile(session)
-      val availableBytes = estimateAvailableBytes(session, handle)
-      if (availableBytes >= targetByteExclusive) {
+      if ((firstPiece..lastPiece).all(handle::havePiece)) {
         storage.touch(session.infoHash)
         return true
       }
@@ -357,17 +382,26 @@ class PeerEngine(
       }
       val torrentFile = handle.torrentFile()
       if (torrentFile != null) {
-        val target = selectTargetFile(torrentFile, session.preferredFilename)
-        session.fileIndex = target.first
-        session.filePath = target.second
-        session.fileLength = target.third
+        val files = torrentFile.files()
+        val target = selectPeerVideoFile(
+          candidates = (0 until torrentFile.numFiles()).map { index ->
+            PeerFileCandidate(index, files.filePath(index), files.fileSize(index))
+          },
+          preferredFilename = session.preferredFilename,
+          title = session.mediaTitle,
+          season = session.seasonNumber,
+          episode = session.episodeNumber,
+        )
+        session.fileIndex = target.index
+        session.filePath = target.path
+        session.fileLength = target.size
         val priorities = Array(torrentFile.numFiles()) { Priority.IGNORE }
         priorities[session.fileIndex] = Priority.NORMAL
         handle.prioritizeFiles(priorities)
         android.util.Log.d(
           TAG,
           "metadata for ${session.infoHash} arrived in ${System.currentTimeMillis() - startedAt}ms; " +
-            "playing file ${target.second} (${target.third} bytes)",
+            "playing file ${target.path} (${target.size} bytes)",
         )
         return
       }
@@ -407,45 +441,8 @@ class PeerEngine(
     )
   }
 
-  private fun selectTargetFile(
-    torrentInfo: TorrentInfo,
-    preferredFilename: String?,
-  ): Triple<Int, String, Long> {
-    val files = torrentInfo.files()
-    val preferred = preferredFilename?.trim()?.lowercase()
-    var bestIndex = 0
-    var bestPath = files.filePath(0)
-    var bestSize = files.fileSize(0)
-
-    for (index in 0 until torrentInfo.numFiles()) {
-      val path = files.filePath(index)
-      val size = files.fileSize(index)
-      val normalizedPath = path.lowercase()
-      if (!preferred.isNullOrBlank() && normalizedPath.contains(preferred)) {
-        return Triple(index, path, size)
-      }
-      if (isLikelyVideoFile(path) && size >= bestSize) {
-        bestIndex = index
-        bestPath = path
-        bestSize = size
-      }
-    }
-
-    return Triple(bestIndex, bestPath, bestSize)
-  }
-
   private fun resolveTargetFile(session: PeerPlaybackSession): File {
     return File(session.saveDirectory, session.filePath)
   }
 
-  private fun isLikelyVideoFile(path: String): Boolean {
-    val normalized = path.lowercase()
-    return normalized.endsWith(".mp4")
-      || normalized.endsWith(".mkv")
-      || normalized.endsWith(".avi")
-      || normalized.endsWith(".mov")
-      || normalized.endsWith(".wmv")
-      || normalized.endsWith(".m4v")
-      || normalized.endsWith(".webm")
-  }
 }

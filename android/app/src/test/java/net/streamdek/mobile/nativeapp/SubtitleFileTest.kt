@@ -13,6 +13,14 @@ import org.junit.Test
 class SubtitleFileTest {
 
   @Test
+  fun `subtitle delay shifts the cue timeline without moving video playback`() {
+    assertEquals(85_000_000L, delayedSubtitlePositionUs(100_000L, 15.0))
+    assertEquals(115_000_000L, delayedSubtitlePositionUs(100_000L, -15.0))
+    assertEquals(100_000_000L, delayedSubtitlePositionUs(100_000L, 0.0))
+    assertEquals(85_000_000L, delayedSubtitlePositionUs(100_000L, 30.0))
+  }
+
+  @Test
   fun `a webvtt file is recognised as webvtt`() {
     val body = "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nHello\n"
     assertEquals("vtt", subtitleExtensionFor(body))

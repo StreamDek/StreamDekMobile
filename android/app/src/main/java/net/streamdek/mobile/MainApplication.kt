@@ -30,6 +30,10 @@ class MainApplication : Application(), ImageLoaderFactory {
   override fun onCreate() {
     net.streamdek.mobile.nativeapp.Perf.startupMark("application.onCreate")
     super.onCreate()
+    // First thing the process does, because what it affects is the *next* launch: the system builds
+    // the splash from the manifest theme before any of this runs, and this is what tells it which
+    // night mode to build it in.
+    net.streamdek.mobile.nativeapp.applyAppNightMode(this)
     EpisodeNotificationSystem.ensureBackgroundWork(this)
   }
 
@@ -61,6 +65,30 @@ class MainApplication : Application(), ImageLoaderFactory {
         .build()
     }
     .respectCacheHeaders(false)
-    .crossfade(false)
+    // Artwork used to appear by popping from empty to opaque in a single frame, which is the
+    // harshest thing a screen made almost entirely of posters can do.
+    //
+    // This is cheaper than it looks. Coil's crossfade transition sits out any result that came
+    // from the memory cache, so scrolling back over a row that is already decoded still snaps
+    // instantly - the fade is only paid on an image the user has genuinely not seen yet. Two call
+    // sites still pass `crossfade(false)` and should keep it: the profile hero already cross-fades
+    // itself through an AnimatedContent, and a 24dp rating badge is too small for a fade to read
+    // as anything but a flicker.
+    .crossfade(if (animationsDisabled()) 0 else 180)
     .build()
+
+  /**
+   * Whether the device has been asked to stop animating.
+   *
+   * The same animator duration scale the UI reads through `LocalReducedMotion`. The image loader
+   * is built before any of the Compose tree exists, so it has to ask the setting directly rather
+   * than through a composition local.
+   */
+  private fun animationsDisabled(): Boolean = runCatching {
+    android.provider.Settings.Global.getFloat(
+      contentResolver,
+      android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,
+      1f,
+    )
+  }.getOrDefault(1f) == 0f
 }

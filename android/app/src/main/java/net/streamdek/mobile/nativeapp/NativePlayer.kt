@@ -993,6 +993,7 @@ fun NativePlayerScreen(
       onLoad = playerLoadCallback,
       onProgress = playerProgressCallback,
       onError = playerErrorCallback,
+      onSubtitleError = { subtitleErrorMessage = it },
       onEnd = playerEndCallback,
       onStallChanged = playerStallCallback,
       onTracksChanged = playerTracksCallback,
@@ -1168,6 +1169,7 @@ private fun PlayerSurface(
   onLoad: (Double, Int, Int) -> Unit,
   onProgress: (Double, Double) -> Unit,
   onError: (String) -> Unit,
+  onSubtitleError: (String) -> Unit,
   onEnd: () -> Unit,
   onStallChanged: (Boolean) -> Unit,
   onTracksChanged: (List<MpvTrackInfo>, List<MpvTrackInfo>, Int?, Int?) -> Unit,
@@ -1184,6 +1186,7 @@ private fun PlayerSurface(
             onLoadCallback = onLoad
             onProgressCallback = onProgress
             onErrorCallback = onError
+            onExternalSubtitleErrorCallback = onSubtitleError
             onEndCallback = onEnd
             onStallChangedCallback = onStallChanged
             onTracksChangedCallback = onTracksChanged
@@ -1215,6 +1218,7 @@ private fun PlayerSurface(
           view.onLoadCallback = onLoad
           view.onProgressCallback = onProgress
           view.onErrorCallback = onError
+          view.onExternalSubtitleErrorCallback = onSubtitleError
           view.onEndCallback = onEnd
           view.onStallChangedCallback = onStallChanged
           view.onTracksChangedCallback = onTracksChanged
@@ -1372,8 +1376,8 @@ private fun LiveChannelTray(
           val selected = channel.id == currentChannelId
           val favourite = channel.id in favouriteChannelIds
           Box(
-            modifier = Modifier.width(160.dp).height(90.dp).clip(RoundedCornerShape(10.dp))
-              .border(if (selected) 2.dp else 1.dp, if (selected) Color.White else Color.White.copy(alpha = 0.20f), RoundedCornerShape(10.dp))
+            modifier = Modifier.width(160.dp).height(90.dp).clip(StreamDekRadius.controlShape)
+              .border(if (selected) 2.dp else 1.dp, if (selected) Color.White else Color.White.copy(alpha = 0.20f), StreamDekRadius.controlShape)
               .clickable { onSelect(channel) },
           ) {
             AsyncImage(model = channel.backdrop ?: channel.poster, contentDescription = channel.title, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
@@ -1468,10 +1472,10 @@ private fun LiveFavouriteDrawer(
             val selected = channel.id == currentChannelId
             if (cardView) {
               Column(
-                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(if (selected) Color.White.copy(alpha = 0.15f) else Color.White.copy(alpha = 0.06f)).clickable { onSelect(channel) }.padding(7.dp),
+                modifier = Modifier.fillMaxWidth().clip(StreamDekRadius.thumbShape).background(if (selected) Color.White.copy(alpha = 0.15f) else Color.White.copy(alpha = 0.06f)).clickable { onSelect(channel) }.padding(7.dp),
                 verticalArrangement = Arrangement.spacedBy(5.dp),
               ) {
-                AsyncImage(model = channel.backdrop ?: channel.poster, contentDescription = channel.title, modifier = Modifier.fillMaxWidth().height(62.dp).clip(RoundedCornerShape(10.dp)), contentScale = ContentScale.Crop)
+                AsyncImage(model = channel.backdrop ?: channel.poster, contentDescription = channel.title, modifier = Modifier.fillMaxWidth().height(62.dp).clip(StreamDekRadius.controlShape), contentScale = ContentScale.Crop)
                 Text(channel.title, color = Color.White, fontSize = 11.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
               }
             } else {
@@ -1479,7 +1483,7 @@ private fun LiveFavouriteDrawer(
               // right-aligned: channel names end on a straight edge against that side and the
               // now-playing dot sits in a fixed column beyond them.
               Row(
-                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(11.dp)).background(if (selected) Color.White.copy(alpha = 0.13f) else Color.Transparent).clickable { onSelect(channel) }.padding(horizontal = 10.dp, vertical = 10.dp),
+                modifier = Modifier.fillMaxWidth().clip(StreamDekRadius.controlShape).background(if (selected) Color.White.copy(alpha = 0.13f) else Color.Transparent).clickable { onSelect(channel) }.padding(horizontal = 10.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
               ) {
@@ -1714,9 +1718,9 @@ private fun PlayerBottomControls(
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
       Row(
         modifier = Modifier
-          .clip(RoundedCornerShape(30.dp))
+          .clip(StreamDekRadius.sheetShape)
           .background(Color(0xD9161A23))
-          .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(30.dp))
+          .border(1.dp, Color.White.copy(alpha = 0.10f), StreamDekRadius.sheetShape)
           .padding(horizontal = 18.dp, vertical = 9.dp),
         horizontalArrangement = Arrangement.spacedBy(15.5.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1881,7 +1885,7 @@ private fun PlayerSourceCard(
     freshText(stream.description),
     stream.cachedBy.takeIf { it.isNotEmpty() }?.joinToString(", "),
   ).joinToString(" | ")
-  val shape: Shape = RoundedCornerShape(24.dp)
+  val shape: Shape = StreamDekRadius.panelShape
   Column(
     modifier = Modifier
       .fillMaxWidth()
@@ -1947,7 +1951,7 @@ private fun StreamInfoPill(
   contentColor: Color = Color.White.copy(alpha = 0.82f),
 ) {
   Row(
-    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(containerColor).padding(horizontal = 10.dp, vertical = 6.dp),
+    modifier = Modifier.clip(StreamDekRadius.pill).background(containerColor).padding(horizontal = 10.dp, vertical = 6.dp),
     horizontalArrangement = Arrangement.spacedBy(6.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
@@ -1968,9 +1972,9 @@ private fun PlayerModalPanel(title: String, onClose: () -> Unit, trailing: @Comp
   ) {
     Column(
       modifier = panelSizeModifier
-        .clip(RoundedCornerShape(28.dp))
+        .clip(StreamDekRadius.sheetShape)
         .background(Color(0xEE111722))
-        .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(28.dp))
+        .border(1.dp, Color.White.copy(alpha = 0.08f), StreamDekRadius.sheetShape)
         .clickable(onClick = {})
         .padding(22.dp),
       verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -1979,7 +1983,7 @@ private fun PlayerModalPanel(title: String, onClose: () -> Unit, trailing: @Comp
         Text(title, color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
           trailing?.invoke()
-          Button(onClick = onClose, colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.12f), contentColor = Color.White), shape = RoundedCornerShape(20.dp)) { Text("Close") }
+          Button(onClick = onClose, colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.12f), contentColor = Color.White), shape = StreamDekRadius.cardShape) { Text("Close") }
         }
       }
       val panelContentModifier = if (compact) Modifier.fillMaxWidth().heightIn(max = 220.dp) else Modifier.weight(1f).fillMaxWidth()
@@ -2067,7 +2071,7 @@ private fun PlayerInfoSection(heading: String, rows: List<Pair<String, String>>)
     Column(
       modifier = Modifier
         .fillMaxWidth()
-        .clip(RoundedCornerShape(18.dp))
+        .clip(StreamDekRadius.cardShape)
         .background(Color.White.copy(alpha = 0.06f))
         .padding(horizontal = 16.dp, vertical = 14.dp),
       verticalArrangement = Arrangement.spacedBy(11.dp),
@@ -2092,7 +2096,7 @@ private fun PlayerInfoSection(heading: String, rows: List<Pair<String, String>>)
 @Composable
 private fun PlayerOptionRow(label: String, selected: Boolean, supportingText: String? = null, onClick: () -> Unit) {
   Row(
-    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(if (selected) Color.White else Color.White.copy(alpha = 0.08f)).clickable(onClick = onClick).padding(horizontal = 18.dp, vertical = 16.dp),
+    modifier = Modifier.fillMaxWidth().clip(StreamDekRadius.thumbShape).background(if (selected) Color.White else Color.White.copy(alpha = 0.08f)).clickable(onClick = onClick).padding(horizontal = 18.dp, vertical = 16.dp),
     horizontalArrangement = Arrangement.SpaceBetween,
     verticalAlignment = Alignment.CenterVertically,
   ) {
@@ -2640,6 +2644,12 @@ private fun PlayerPanels(
   var preferredSubtitleTrackKey by preferredSubtitleTrackKeyState
   var userPickedAudio by userPickedAudioState
   var userPickedSubtitle by userPickedSubtitleState
+  var subtitleSelectionGeneration by remember(session.url) { mutableIntStateOf(0) }
+  LaunchedEffect(subtitleErrorMessage) {
+    if (subtitleErrorMessage == null) return@LaunchedEffect
+    delay(3_000)
+    subtitleErrorMessage = null
+  }
   when (activePanel) {
     PlayerPanel.Audio -> PlayerModalPanel(title = "Audio", onClose = { activePanel = PlayerPanel.None }, compact = true) {
       if (audioTracks.isEmpty()) {
@@ -2657,7 +2667,7 @@ private fun PlayerPanels(
     }
     PlayerPanel.Subtitles -> PlayerModalPanel(title = "Subtitles", onClose = { activePanel = PlayerPanel.None }) {
       Row(
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(Color.White.copy(alpha = 0.06f)).padding(6.dp),
+        modifier = Modifier.fillMaxWidth().clip(StreamDekRadius.panelShape).background(Color.White.copy(alpha = 0.06f)).padding(6.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
       ) {
         availableSubtitleTabs.forEach { tab ->
@@ -2665,7 +2675,7 @@ private fun PlayerPanels(
           Box(
             modifier = Modifier
               .weight(1f)
-              .clip(RoundedCornerShape(20.dp))
+              .clip(StreamDekRadius.cardShape)
               .background(if (selected) Color.White else Color.Transparent)
               .clickable {
                 subtitleTab = tab
@@ -2691,6 +2701,7 @@ private fun PlayerPanels(
       when (subtitleTab) {
         SubtitlePanelTab.All, SubtitlePanelTab.BuiltIn, SubtitlePanelTab.Addons -> {
           PlayerOptionRow("None", selected = selectedSubtitleTrackId == null && selectedExternalSubtitleId == null) {
+            subtitleSelectionGeneration += 1
             subtitleDisabledByUser = true
             userPickedSubtitle = true
             selectedSubtitleTrackId = null
@@ -2723,6 +2734,7 @@ private fun PlayerPanels(
               supportingText = listOfNotNull("Embedded", track.title, track.codec).distinct().joinToString(" • "),
               selected = selectedSubtitleTrackId == track.id,
             ) {
+              subtitleSelectionGeneration += 1
               subtitleDisabledByUser = false
               userPickedSubtitle = true
               selectedExternalSubtitleId = null
@@ -2765,6 +2777,7 @@ private fun PlayerPanels(
               selectedSubtitleTrackId = null
               selectedExternalSubtitleId = subtitle.id
               subtitleErrorMessage = null
+              val requestGeneration = ++subtitleSelectionGeneration
               // Fetched in the background so the video keeps playing while it loads, and moved
               // on from when it will not load. These files sit on hosts that expire links and
               // refuse requests -- one of PenguPlay's answers 403 outright -- and a chosen
@@ -2779,9 +2792,9 @@ private fun PlayerPanels(
                 }
                 var applied = false
                 for (candidate in (listOf(subtitle) + alternates).take(SUBTITLE_ATTEMPT_LIMIT)) {
-                  if (selectedExternalSubtitleId != subtitle.id) return@launch
+                  if (selectedExternalSubtitleId != subtitle.id || subtitleSelectionGeneration != requestGeneration) return@launch
                   val localPath = downloadSubtitleToCache(playerContext, candidate.url) ?: continue
-                  if (selectedExternalSubtitleId != subtitle.id) return@launch
+                  if (selectedExternalSubtitleId != subtitle.id || subtitleSelectionGeneration != requestGeneration) return@launch
                   activeAddSubtitle(localPath, candidate.language)
                   applied = true
                   Log.i("StreamDekSubtitles", "[Subtitle] source=${candidate.id.substringBefore(':')} language=${candidate.language} format=${localPath.substringAfterLast('.')} load=success trackAttached=true")
@@ -2790,7 +2803,7 @@ private fun PlayerPanels(
                   }
                   break
                 }
-                if (!applied && selectedExternalSubtitleId == subtitle.id) {
+                if (!applied && selectedExternalSubtitleId == subtitle.id && subtitleSelectionGeneration == requestGeneration) {
                   selectedExternalSubtitleId = null
                   subtitleErrorMessage =
                     "That subtitle could not be downloaded, and neither could the others in " +
@@ -2842,7 +2855,7 @@ private fun PlayerPanels(
           )
           Text("Colour, outline and background are in Settings > Subtitles.", color = Color.White.copy(alpha = 0.52f), fontSize = 11.5.sp)
           Text("Delay: ${"%.1f".format(subtitleDelay)}s", color = Color.White.copy(alpha = 0.72f))
-          Slider(value = subtitleDelay, valueRange = -5f..5f, onValueChange = {
+          Slider(value = subtitleDelay, valueRange = -15f..15f, onValueChange = {
             subtitleDelay = it
             activeSetSubtitleDelay(it.toDouble())
           })
@@ -2996,7 +3009,7 @@ private fun BoxScope.PlayerOverlays(
   ) {
     Surface(
       color = Color(0xD9161A23),
-      shape = RoundedCornerShape(999.dp),
+      shape = StreamDekRadius.pill,
       border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
     ) {
       Row(
@@ -3025,7 +3038,7 @@ private fun BoxScope.PlayerOverlays(
     val delta = (target - currentTime).roundToInt()
     Surface(
       color = Color(0xD9161A23),
-      shape = RoundedCornerShape(22.dp),
+      shape = StreamDekRadius.panelShape,
       border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
     ) {
       Column(
@@ -3056,7 +3069,7 @@ private fun BoxScope.PlayerOverlays(
   ) {
     Surface(
       color = Color(0xD9161A23),
-      shape = RoundedCornerShape(22.dp),
+      shape = StreamDekRadius.panelShape,
       border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
     ) {
       Column(
@@ -3091,9 +3104,9 @@ private fun BoxScope.PlayerOverlays(
   ) {
     Surface(
       color = Color(0xD9161A23),
-      shape = RoundedCornerShape(24.dp),
+      shape = StreamDekRadius.panelShape,
       modifier = Modifier
-        .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(24.dp))
+        .border(1.dp, Color.White.copy(alpha = 0.12f), StreamDekRadius.panelShape)
         .pointerInput(session.url) {
           detectTapGestures(onLongPress = {
             controlsLocked = false
@@ -3547,7 +3560,7 @@ private fun BoxScope.PlayerSurfaceOverlays(
   ) {
     Surface(
       color = Color(0xEA161A23),
-      shape = RoundedCornerShape(22.dp),
+      shape = StreamDekRadius.panelShape,
       border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
     ) {
       Row(
@@ -3594,7 +3607,7 @@ private fun BoxScope.PlayerSurfaceOverlays(
         }
       },
       colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black),
-      shape = RoundedCornerShape(22.dp),
+      shape = StreamDekRadius.panelShape,
     ) { Text(if (nextEpisodeActionAvailable) "Next Episode" else when (activeSkipSegment?.type) { "recap" -> "Skip Recap"; "outro" -> "Skip Ending"; else -> "Skip Intro" }, fontWeight = FontWeight.Bold) }
   }
   AnimatedVisibility(
@@ -3603,7 +3616,7 @@ private fun BoxScope.PlayerSurfaceOverlays(
     enter = fadeIn(animationSpec = tween(160)),
     exit = fadeOut(animationSpec = tween(180)),
   ) {
-    Surface(color = Color(0xD91A1D24), shape = RoundedCornerShape(999.dp)) {
+    Surface(color = Color(0xD91A1D24), shape = StreamDekRadius.pill) {
       Text(autoSkipNotice.orEmpty(), modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp), color = Color.White, fontWeight = FontWeight.SemiBold)
     }
   }

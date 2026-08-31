@@ -168,7 +168,7 @@ private val ContentServiceDialogProperties = DialogProperties(usePlatformDefault
 @Composable
 private fun contentServiceDialogModifier(sub: Boolean = false): Modifier {
   val screenHeight = LocalConfiguration.current.screenHeightDp
-  val shape = RoundedCornerShape(28.dp)
+  val shape = StreamDekRadius.sheetShape
   return Modifier
     .fillMaxWidth(if (sub) SubDialogWidthFraction else PrimaryDialogWidthFraction)
     .widthIn(max = DialogMaxWidth)
@@ -201,7 +201,7 @@ private fun ContentServicesCard(
 ) {
   Surface(
     modifier = modifier.fillMaxWidth(),
-    shape = RoundedCornerShape(26.dp),
+    shape = StreamDekRadius.panelShape,
     color = MaterialTheme.colorScheme.surface,
     border = BorderStroke(1.dp, accent.copy(alpha = 0.22f)),
   ) {
@@ -237,7 +237,7 @@ private fun StatusBadge(status: CredentialStatus) {
     CredentialStatus.NotConfigured -> "Not configured" to MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
   }
   Surface(
-    shape = RoundedCornerShape(999.dp),
+    shape = StreamDekRadius.pill,
     color = tint.copy(alpha = 0.12f),
   ) {
     Row(
@@ -248,7 +248,7 @@ private fun StatusBadge(status: CredentialStatus) {
       if (status == CredentialStatus.Checking) {
         CircularProgressIndicator(modifier = Modifier.size(11.dp), strokeWidth = 2.dp, color = tint)
       } else {
-        Box(modifier = Modifier.size(8.dp).background(tint, RoundedCornerShape(50)))
+        Box(modifier = Modifier.size(8.dp).background(tint, StreamDekRadius.pill))
       }
       Text(
         label,
@@ -278,7 +278,7 @@ private fun ServiceHeader(service: ContentService, state: ContentServiceState) {
     verticalAlignment = Alignment.Top,
   ) {
     Surface(
-      shape = RoundedCornerShape(16.dp),
+      shape = StreamDekRadius.thumbShape,
       color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
       modifier = Modifier.size(48.dp),
     ) {
@@ -329,7 +329,7 @@ private fun ServiceUses(service: ContentService, limit: Int = Int.MAX_VALUE) {
           modifier = Modifier
             .padding(top = 7.dp)
             .size(5.dp)
-            .background(serviceAccent(service).copy(alpha = 0.8f), RoundedCornerShape(50)),
+            .background(serviceAccent(service).copy(alpha = 0.8f), StreamDekRadius.pill),
         )
         Text(
           use,
@@ -381,7 +381,7 @@ private fun NoticeBar(notice: String, isError: Boolean, onDismiss: () -> Unit) {
   val tint = if (isError) MaterialTheme.colorScheme.error else Color(0xFF22C55E)
   Surface(
     modifier = Modifier.fillMaxWidth(),
-    shape = RoundedCornerShape(18.dp),
+    shape = StreamDekRadius.cardShape,
     color = tint.copy(alpha = 0.10f),
     border = BorderStroke(1.dp, tint.copy(alpha = 0.28f)),
   ) {
@@ -558,7 +558,7 @@ fun ContentServiceKeyDialog(
             }
             OutlinedButton(
               onClick = { openUrl(context, service.keyUrl) },
-              shape = RoundedCornerShape(999.dp),
+              shape = StreamDekRadius.pill,
             ) {
               Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(17.dp))
               Text("  Open ${service.label}")
@@ -578,7 +578,7 @@ fun ContentServiceKeyDialog(
       Button(
         onClick = { onSubmit(key.trim(), choice) },
         enabled = key.trim().length >= 8 && !busy && verified == null,
-        shape = RoundedCornerShape(999.dp),
+        shape = StreamDekRadius.pill,
       ) {
         when {
           busy -> {
@@ -662,7 +662,7 @@ private fun StorageOption(
       .fillMaxWidth()
       .alpha(if (enabled) 1f else 0.45f)
       .clickable(enabled = enabled, onClick = onSelect),
-    shape = RoundedCornerShape(18.dp),
+    shape = StreamDekRadius.cardShape,
     color = if (selected) accent.copy(alpha = 0.10f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f),
     border = BorderStroke(
       1.dp,
@@ -807,7 +807,7 @@ fun ContentServiceCard(
     if (state.status == CredentialStatus.NeedsAttention) {
       Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = StreamDekRadius.thumbShape,
         color = Color(0xFFF59E0B).copy(alpha = 0.12f),
       ) {
         Row(
@@ -839,7 +839,7 @@ fun ContentServiceCard(
     if (state.storage == CredentialStorage.Device && !state.accountKeyAlsoAvailable && signedIn) {
       Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = StreamDekRadius.thumbShape,
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f),
       ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
@@ -858,7 +858,7 @@ fun ContentServiceCard(
           OutlinedButton(
             onClick = { actions.onCopyDeviceKeyToAccount(service) },
             enabled = !busy,
-            shape = RoundedCornerShape(999.dp),
+            shape = StreamDekRadius.pill,
           ) { Text("Save to StreamDek") }
         }
       }
@@ -882,7 +882,7 @@ fun ContentServiceCard(
           entryOpen = true
         },
         enabled = !busy,
-        shape = RoundedCornerShape(999.dp),
+        shape = StreamDekRadius.pill,
       ) {
         Text(
           when {
@@ -944,7 +944,7 @@ fun ContentServiceCard(
 fun ContentServiceSetupRoutes(modifier: Modifier = Modifier) {
   Surface(
     modifier = modifier.fillMaxWidth(),
-    shape = RoundedCornerShape(22.dp),
+    shape = StreamDekRadius.panelShape,
     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f),
   ) {
     Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -1014,7 +1014,7 @@ fun ContentServicesSettings(
     if (!signedIn) {
       Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        shape = StreamDekRadius.cardShape,
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
       ) {
         Text(
@@ -1139,7 +1139,7 @@ fun ContentServicesSetupPrompt(
       }
     },
     confirmButton = {
-      Button(onClick = onDone, shape = RoundedCornerShape(999.dp)) {
+      Button(onClick = onDone, shape = StreamDekRadius.pill) {
         Text(if (state.anyConfigured) "Done" else "Continue")
       }
     },
@@ -1179,12 +1179,12 @@ fun ContentServiceHint(
       .fillMaxWidth()
       .shadow(
         elevation = 12.dp,
-        shape = RoundedCornerShape(18.dp),
+        shape = StreamDekRadius.cardShape,
         clip = false,
         ambientColor = Color.Black.copy(alpha = 0.45f),
         spotColor = Color.Black.copy(alpha = 0.55f),
       ),
-    shape = RoundedCornerShape(18.dp),
+    shape = StreamDekRadius.cardShape,
     color = MaterialTheme.colorScheme.surface,
     tonalElevation = 6.dp,
     shadowElevation = 6.dp,

@@ -236,7 +236,7 @@ class PeerStreamService : Service() {
     return NotificationCompat.Builder(this, CHANNEL_ID)
       .setContentTitle("StreamDek Server")
       .setContentText(text)
-      .setSmallIcon(R.mipmap.ic_launcher)
+      .setSmallIcon(R.drawable.ic_stat_streamdek)
       .setOngoing(true)
       .setOnlyAlertOnce(true)
       .build()

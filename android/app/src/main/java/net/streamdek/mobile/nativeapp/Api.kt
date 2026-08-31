@@ -2207,6 +2207,7 @@ class StreamDekApiClient(context: Context? = null) {
       val home = JSONObject()
         .put("detailPageStyle", preferences.detailPageStyle)
         .put("continueWatchingStyle", preferences.continueWatchingStyle)
+        .put("networkCardStyle", preferences.networkCardStyle)
         .put("liveLandscapeCards", preferences.liveLandscapeCards)
         .put("liveFavouriteDrawerCards", preferences.liveFavouriteDrawerCards)
         .put("liveCategoriesEnabled", preferences.liveCategoriesEnabled)
@@ -2398,6 +2399,7 @@ class StreamDekApiClient(context: Context? = null) {
         syncOnCellular = optionalBoolean(app, "syncOverCellular"),
         detailPageStyle = optionalString(home, "detailPageStyle"),
         continueWatchingStyle = optionalString(home, "continueWatchingStyle"),
+        networkCardStyle = optionalString(home, "networkCardStyle"),
         liveLandscapeCards = optionalBoolean(home, "liveLandscapeCards"),
         liveFavouriteDrawerCards = optionalBoolean(home, "liveFavouriteDrawerCards"),
         liveCategoriesEnabled = optionalBoolean(home, "liveCategoriesEnabled"),

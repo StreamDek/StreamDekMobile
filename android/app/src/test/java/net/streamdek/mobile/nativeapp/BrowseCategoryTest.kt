@@ -63,14 +63,14 @@ class BrowseCategoryTest {
 
   @Test
   fun prefersPublishedCategoriesWhenTheyCoverTheList() {
-    // Ordered by size, so the biggest category is the first thing on screen.
+    // Ordered by name, not by size: News comes first despite Sports holding three of the four.
     val items = listOf(
       channel("One", genres = listOf("SPORTS")),
       channel("Two", genres = listOf("SPORTS")),
       channel("Three", genres = listOf("SPORTS")),
       channel("Four", genres = listOf("NEWS")),
     )
-    assertEquals(listOf("Sports", "News"), buildBrowseCategories(items).map { it.name })
+    assertEquals(listOf("News", "Sports"), buildBrowseCategories(items).map { it.name })
   }
 
   @Test

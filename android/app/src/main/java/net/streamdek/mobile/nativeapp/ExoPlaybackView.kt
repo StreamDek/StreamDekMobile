@@ -35,6 +35,8 @@ import androidx.media3.ui.PlayerView
 import net.streamdek.mobile.mpv.MpvTrackInfo
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 
 /** Media3 playback path used for CNCVerse Bridge VODs. */
 @OptIn(UnstableApi::class)
@@ -49,17 +51,13 @@ class ExoPlaybackView @JvmOverloads constructor(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-    /**
-     * Marks the side-loaded subtitle so it can be found in the track list. Also what the track
-     * shows as its name, which is why it reads as something a viewer would recognise.
-     */
-    private const val EXTERNAL_SUBTITLE_LABEL = "Add-on subtitle"
   }
 
   var onLoadCallback: ((duration: Double, width: Int, height: Int) -> Unit)? = null
   var onProgressCallback: ((position: Double, duration: Double) -> Unit)? = null
   var onEndCallback: (() -> Unit)? = null
   var onErrorCallback: ((message: String) -> Unit)? = null
+  var onExternalSubtitleErrorCallback: ((message: String) -> Unit)? = null
   var onTracksChangedCallback: ((List<MpvTrackInfo>, List<MpvTrackInfo>, Int?, Int?) -> Unit)? = null
 
   /**
@@ -104,9 +102,10 @@ class ExoPlaybackView @JvmOverloads constructor(
   private var subtitleOutlineColor = Color.BLACK
   private var subtitleOutlineEnabled = true
   private var subtitleBold = false
-  private var pendingSubtitle: MediaItem.SubtitleConfiguration? = null
-  /** Set between side-loading a subtitle and selecting it. See [addSubtitleFile]. */
-  private var selectExternalSubtitleWhenReady = false
+  private var subtitleDelaySeconds = 0.0
+  private val subtitleExecutor = Executors.newCachedThreadPool()
+  private val subtitleRequestGeneration = AtomicLong()
+  private var externalSubtitleCues: List<androidx.media3.extractor.text.CuesWithTiming>? = null
   private var lastLoggedCueCount = -1
   private val audioSelections = mutableMapOf<Int, Pair<Tracks.Group, Int>>()
   private val subtitleSelections = mutableMapOf<Int, Pair<Tracks.Group, Int>>()
@@ -117,6 +116,20 @@ class ExoPlaybackView @JvmOverloads constructor(
         onProgressCallback?.invoke(active.currentPosition / 1000.0, durationMs / 1000.0)
       }
       postDelayed(this, if (exoPlayer?.isPlaying == true) 500L else 1_500L)
+    }
+  }
+  private val externalSubtitleTicker = object : Runnable {
+    override fun run() {
+      val timeline = externalSubtitleCues ?: return
+      val positionUs = delayedSubtitlePositionUs(exoPlayer?.currentPosition ?: 0L, subtitleDelaySeconds)
+      val cues = timeline.asSequence()
+        .filter { positionUs >= it.startTimeUs && positionUs < it.endTimeUs }
+        .flatMap { it.cues.asSequence() }
+        .map { it.buildUpon().setLine(Cue.DIMEN_UNSET, Cue.TYPE_UNSET).setPosition(Cue.DIMEN_UNSET).build() }
+        .toList()
+      subtitleView?.setCues(cues)
+      subtitleView?.setBottomPaddingFraction(((100 - subtitlePositionPercent) / 100f).coerceIn(0.02f, 0.50f))
+      postDelayed(this, if (exoPlayer?.isPlaying == true) 100L else 250L)
     }
   }
 
@@ -140,6 +153,7 @@ class ExoPlaybackView @JvmOverloads constructor(
 
   override fun onDetachedFromWindow() {
     removeCallbacks(progressTicker)
+    clearExternalSubtitleOverlay()
     releasePendingPlayer()
     releasePlayer()
     clearCallbacks()
@@ -296,7 +310,7 @@ class ExoPlaybackView @JvmOverloads constructor(
     val active = exoPlayer ?: return
     // A track chosen by hand is as explicit as a file chosen by hand, and stops the side-loaded
     // one being re-selected the next time the track list is reported.
-    selectExternalSubtitleWhenReady = false
+    clearExternalSubtitleOverlay()
     active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
       .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
       .clearOverridesOfType(C.TRACK_TYPE_TEXT)
@@ -306,86 +320,53 @@ class ExoPlaybackView @JvmOverloads constructor(
 
   fun disableSubtitleTrack() {
     val active = exoPlayer ?: return
-    selectExternalSubtitleWhenReady = false
+    clearExternalSubtitleOverlay()
     active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
       .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
       .clearOverridesOfType(C.TRACK_TYPE_TEXT)
       .build()
   }
 
-  /**
-   * Side-loads a subtitle file and selects it, rather than hoping the track selector will.
-   *
-   * Three things were wrong with leaving that to selection. The file was tagged `en` whatever it
-   * actually was, so a French subtitle claimed to be English. [applyLanguagePreferences] then set
-   * the viewer's own preferred text languages on the rebuilt player, with
-   * `setSelectUndeterminedTextLanguage(false)` -- so a side-loaded file whose (wrong) tag did not
-   * match the preference was loaded and never selected, and the viewer saw nothing at all. And if
-   * subtitles had been switched off at any point, [disableSubtitleTrack]'s disabled flag survived
-   * the rebuild and suppressed it regardless.
-   *
-   * Picking a subtitle is an explicit instruction, so it is now carried out as one: the real
-   * language is attached, text tracks are re-enabled, and the track is overridden onto this file
-   * once it appears. [language] is the viewer-facing language of the file, in whatever spelling
-   * the source used; it is normalised here.
-   */
+  /** Parses and presents a sidecar independently; the active ExoPlayer is never prepared again. */
   fun addSubtitleFile(path: String, language: String? = null) {
-    val current = source ?: return
-    val tag = Languages.normalize(language).takeIf { it.isNotEmpty() }
-    pendingSubtitle = MediaItem.SubtitleConfiguration.Builder(Uri.parse(path))
-      .setMimeType(subtitleMimeType(path))
-      // Labelled so it can be found again in the track list: a side-loaded track carries no id of
-      // its own, and matching on language alone would pick the embedded track of the same
-      // language -- which is exactly the one the viewer just chose to replace.
-      .setLabel(EXTERNAL_SUBTITLE_LABEL)
-      .apply { tag?.let(::setLanguage) }
-      .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
-      .setRoleFlags(C.ROLE_FLAG_SUBTITLE)
-      .build()
-    selectExternalSubtitleWhenReady = true
-    prepareSource(current, exoPlayer?.currentPosition ?: 0L)
-  }
-
-  /** Selects the side-loaded subtitle once Media3 reports it. See [addSubtitleFile]. */
-  /**
-   * Drops the viewer's standing text-language preference for as long as a chosen file is active.
-   *
-   * [applyLanguagePreferences] runs on every rebuilt player and would otherwise re-impose it --
-   * and a preference naming a different language than the file just chosen is a selector actively
-   * working against the choice. The preference is what to fall back on when nobody has chosen;
-   * it is not a veto over someone who has.
-   */
-  private fun clearTextLanguagePreference(active: ExoPlayer) {
-    active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
-      .setPreferredTextLanguages()
-      .setPreferredTextRoleFlags(C.ROLE_FLAG_SUBTITLE)
-      .setSelectUndeterminedTextLanguage(true)
-      .build()
-  }
-
-  private fun selectExternalSubtitle(tracks: Tracks): Boolean {
-    val active = exoPlayer ?: return false
-    tracks.groups.forEach { group ->
-      if (group.type != C.TRACK_TYPE_TEXT) return@forEach
-      for (index in 0 until group.length) {
-        if (!group.isTrackSupported(index)) continue
-        if (group.getTrackFormat(index).label != EXTERNAL_SUBTITLE_LABEL) continue
-        clearTextLanguagePreference(active)
-        active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
-          // Off, then cleared, then set: a stale override from a previously chosen track outranks
-          // the new one, and a text type left disabled suppresses whatever is chosen after it.
-          .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-          .clearOverridesOfType(C.TRACK_TYPE_TEXT)
-          .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, index))
-          .build()
-        Log.i(TAG, "Selected side-loaded subtitle (" + (group.getTrackFormat(index).language ?: "no language") + ")")
-        return true
+    val generation = subtitleRequestGeneration.incrementAndGet()
+    subtitleExecutor.execute {
+      val parsed = runCatching { parseExternalSubtitleCues(path) }
+      post {
+        if (subtitleRequestGeneration.get() != generation) return@post
+        parsed.onSuccess { timeline ->
+          externalSubtitleCues = timeline
+          exoPlayer?.let { active ->
+            active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
+              .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+              .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+              .build()
+          }
+          removeCallbacks(externalSubtitleTicker)
+          externalSubtitleTicker.run()
+          Log.i(TAG, "External subtitle ready: ${timeline.size} timed cue groups (${language.orEmpty()})")
+        }.onFailure {
+          Log.w(TAG, "External subtitle parse failed", it)
+          onExternalSubtitleErrorCallback?.invoke("That subtitle could not be loaded. Try another subtitle source.")
+        }
       }
     }
-    return false
   }
 
-  fun setSubtitleDelay(seconds: Double) = Unit
+  private fun clearExternalSubtitleOverlay() {
+    subtitleRequestGeneration.incrementAndGet()
+    externalSubtitleCues = null
+    removeCallbacks(externalSubtitleTicker)
+    subtitleView?.setCues(emptyList())
+  }
+
+  fun setSubtitleDelay(seconds: Double) {
+    subtitleDelaySeconds = seconds.coerceIn(-15.0, 15.0)
+    if (externalSubtitleCues != null) {
+      removeCallbacks(externalSubtitleTicker)
+      externalSubtitleTicker.run()
+    }
+  }
 
   fun setSubtitleFontSize(size: Int) {
     subtitleView?.setApplyEmbeddedStyles(false)
@@ -513,7 +494,6 @@ class ExoPlaybackView @JvmOverloads constructor(
       val item = MediaItem.Builder()
         .setUri(url)
         .apply { inferMimeType(url)?.let(::setMimeType) }
-        .apply { pendingSubtitle?.let { setSubtitleConfigurations(listOf(it)) } }
         .build()
       active.setMediaItem(item, startPositionMs.coerceAtLeast(0L))
       active.setPlaybackSpeed(pendingSpeed.toFloat())
@@ -640,6 +620,7 @@ class ExoPlaybackView @JvmOverloads constructor(
     override fun onTracksChanged(tracks: Tracks) = dispatchTracks(tracks)
 
     override fun onCues(cueGroup: CueGroup) {
+      if (externalSubtitleCues != null) return
       // The one thing that separates "the file was chosen but never decoded" from "it is decoding
       // and this passage has no dialogue". Both look identical on screen, and only one is a bug.
       if (cueGroup.cues.isNotEmpty() && cueGroup.cues.size != lastLoggedCueCount) {
@@ -686,9 +667,6 @@ class ExoPlaybackView @JvmOverloads constructor(
   private fun dispatchTracks(tracks: Tracks) {
     // Before the list is reported, so the selection this makes is the one the viewer is told about
     // rather than one that arrives a frame later and leaves the panel showing the wrong row.
-    if (selectExternalSubtitleWhenReady && selectExternalSubtitle(tracks)) {
-      selectExternalSubtitleWhenReady = false
-    }
     audioSelections.clear()
     subtitleSelections.clear()
     val audio = mutableListOf<MpvTrackInfo>()

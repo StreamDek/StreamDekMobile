@@ -9,7 +9,12 @@
   <!-- Everything every platform understands. The v33 copy adds what only Tiramisu has. -->
   <style name="Theme.App.SplashScreen.Base" parent="Theme.SplashScreen">
     <item name="windowSplashScreenBackground">@color/splashscreen_background</item>
-    <item name="windowSplashScreenAnimatedIcon">@drawable/splashscreen_logo_small</item>
+    <item name="windowSplashScreenAnimatedIcon">@drawable/splashscreen_logo</item>
+    <!-- The bitmap already carries the padding the platform expects: a 288dp canvas with
+         the mark inside the 192dp circle the splash masks to. The old splashscreen_logo_small
+         wrapper insetted a layer-list instead, but its bitmap used gravity="center", which
+         centres at native size rather than scaling - so a full-bleed logo overflowed the
+         inset box and the circular mask sliced the left side off the mark. -->
     <item name="postSplashScreenTheme">@style/AppTheme</item>
   </style>
   <style name="Theme.App.SplashScreen" parent="Theme.App.SplashScreen.Base"/>

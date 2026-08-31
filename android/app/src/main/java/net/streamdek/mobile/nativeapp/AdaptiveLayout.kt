@@ -325,15 +325,24 @@ fun profilePickerMetrics(): ProfilePickerMetrics {
   return when (window.widthClass) {
     // Unchanged from what the phone has always shown.
     WindowWidthClass.Compact -> ProfilePickerMetrics(
-      heroHeight = 560.dp,
-      scrimHeight = 480.dp,
+      // The artwork runs past the bottom of the glass pane rather than stopping level with it, so
+      // the pane always has image behind it all the way down and the picker reads as one
+      // photograph the controls sit on, not a photo with a grey band under it.
+      //
+      // Capped against the window rather than simply fixed, because the block underneath -
+      // headline, avatars, Manage Profiles - is anchored to the bottom edge, so how far down the
+      // screen its text begins depends on how tall the screen is. A fixed hero that clears the
+      // headline on a 924dp phone would sit behind it on a short one. The reserve is that block's
+      // height plus a margin, measured from the laid-out screen.
+      heroHeight = minOf(620.dp, window.heightDp - 365.dp),
+      scrimHeight = 430.dp,
       avatarSize = 92.dp,
       avatarSpacing = 34.dp,
       contentPadding = 22.dp,
     )
     WindowWidthClass.Medium -> ProfilePickerMetrics(
-      heroHeight = window.heightDp * 0.52f,
-      scrimHeight = window.heightDp * 0.50f,
+      heroHeight = minOf(window.heightDp * 0.58f, window.heightDp - 400.dp),
+      scrimHeight = window.heightDp * 0.46f,
       avatarSize = 116.dp,
       avatarSpacing = 44.dp,
       contentPadding = 32.dp,
@@ -343,8 +352,8 @@ fun profilePickerMetrics(): ProfilePickerMetrics {
     // of the portrait ones, with the headline scaled to match. Portrait tablets keep the larger
     // treatment above, and no phone reaches this branch.
     WindowWidthClass.Expanded -> ProfilePickerMetrics(
-      heroHeight = window.heightDp * 0.56f,
-      scrimHeight = window.heightDp * 0.54f,
+      heroHeight = minOf(window.heightDp * 0.62f, window.heightDp - 300.dp),
+      scrimHeight = window.heightDp * 0.50f,
       avatarSize = 76.dp,
       avatarSpacing = 34.dp,
       contentPadding = 40.dp,

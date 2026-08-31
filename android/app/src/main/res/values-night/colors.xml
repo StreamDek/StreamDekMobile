@@ -1,1 +1,9 @@
-<resources/>
+<resources>
+  <!--
+    #000000, not the brand's #0d0d1a, because these two have to match the first thing Compose
+    paints and the dark scheme's background is Color.Black. A near-black splash handing over to a
+    true-black app is a visible step on an OLED panel.
+  -->
+  <color name="splashscreen_background">#000000</color>
+  <color name="activityBackground">#000000</color>
+</resources>

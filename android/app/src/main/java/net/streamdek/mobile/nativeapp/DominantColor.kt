@@ -181,7 +181,8 @@ object DominantColor {
     return Triple(if (hue < 0f) hue + 360f else hue, if (max == 0f) 0f else delta / max, max)
   }
 
-  private fun hsvToColor(hue: Float, saturation: Float, value: Float): Color {
+  /** Internal so the ambient accent can be worked out with the same maths, off an Android device. */
+  internal fun hsvToColor(hue: Float, saturation: Float, value: Float): Color {
     val c = value * saturation
     val x = c * (1f - kotlin.math.abs(((hue / 60f) % 2f) - 1f))
     val m = value - c

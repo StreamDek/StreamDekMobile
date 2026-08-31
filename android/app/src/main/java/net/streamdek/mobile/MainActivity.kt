@@ -17,12 +17,16 @@ import androidx.core.view.WindowInsetsControllerCompat
 import net.streamdek.mobile.nativeapp.StreamDekNativeApp
 import net.streamdek.mobile.nativeapp.normalizeAddonManifestUrl
 import net.streamdek.mobile.nativeapp.localizedAppContext
+import net.streamdek.mobile.nativeapp.themedAppContext
 import net.streamdek.mobile.nativeapp.EpisodeNotificationSystem
 import net.streamdek.mobile.nativeapp.EpisodeNotificationTarget
 
 class MainActivity : ComponentActivity() {
   override fun attachBaseContext(newBase: Context) {
-    super.attachBaseContext(localizedAppContext(newBase))
+    // Night mode as well as language, so the window background this activity opens with is the
+    // app's own rather than the phone's. On Android 12 and above the system splash has already been
+    // steered to match by applyAppNightMode; below that this is the earliest the app gets a say.
+    super.attachBaseContext(themedAppContext(localizedAppContext(newBase)))
   }
 
   private val pendingAddonManifestUrl = mutableStateOf<String?>(null)

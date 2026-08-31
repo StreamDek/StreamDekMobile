@@ -1,6 +1,27 @@
 <resources>
-  <color name="splashscreen_background">#0d0d1a</color>
+  <!--
+    Light values. The -night copies carry the dark ones.
+
+    These two follow dark mode so the splash hands over to the first screen without a flash,
+    instead of always being dark.
+
+    Which dark mode is the app's, not the phone's. The platform does build the starting window from
+    the manifest theme before any of our code runs — but UiModeManager.setApplicationNightMode
+    records this app's night mode with the system, so that resolution goes the way the Appearance
+    setting asks. See applyAppNightMode; MainApplication sets it on every start and the setting
+    itself sets it when it changes. Below Android 12 that hook does not exist and the starting
+    window still follows the phone; themedAppContext covers the activity from attach onwards, so
+    the mismatch is limited to the starting window rather than the first screen.
+  -->
+  <color name="splashscreen_background">#F5F4F0</color>
+  <color name="activityBackground">#F5F4F0</color>
+
+  <!--
+    Not theme-aware, deliberately. This is the plate behind the launcher icon's negative space -
+    the play triangle and the swoosh strokes are holes in the mark, and they read as the mark only
+    against something dark. A launcher icon also does not follow the app's theme, so there is no
+    handover to match here.
+  -->
   <color name="iconBackground">#0d0d1a</color>
   <color name="colorPrimary">#023c69</color>
-  <color name="activityBackground">#0d0d1a</color>
 </resources>

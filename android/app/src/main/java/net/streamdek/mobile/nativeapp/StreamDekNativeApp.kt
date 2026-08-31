@@ -19,6 +19,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
@@ -37,6 +38,7 @@ import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -73,6 +75,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
@@ -100,7 +105,6 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.automirrored.rounded.Backspace
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.ViewList
@@ -238,7 +242,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -256,6 +263,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.layout.ContentScale
@@ -355,6 +364,16 @@ private enum class SeasonTabStyle { Regular, Posters }
 private enum class ContinueWatchingStyle { Cinematic, Glass, Ticket, Mini, Stacked }
 
 /**
+ * How the Streaming Networks row draws its cards.
+ *
+ * [Classic] is the original: the service's logo fitted onto a white tile with its name beneath.
+ * [Branded] uses the bundled tile artwork (see [networkTileArt]) full-bleed and drops the caption,
+ * because the artwork already carries the wordmark. A service with no bundled tile still draws in
+ * the branded shape -- its logo centred on a dark tile -- so a row never mixes card heights.
+ */
+private enum class NetworkCardStyle { Classic, Branded }
+
+/**
  * How artwork appears behind a page.
  *
  * Normal leaves the theme background alone. Cinematic is the blurred backdrop this app has always
@@ -387,6 +406,65 @@ internal fun sectionSurfaceColor(pageColor: Color): Color {
   hsv[1] = hsv[1] * 0.92f
   return Color(android.graphics.Color.HSVToColor(hsv))
 }
+
+/**
+ * A control colour for a page painted [pageColor].
+ *
+ * The page colour is deliberately settled into a narrow lightness band so text can sit on it, which
+ * is exactly what makes it useless as an accent: a chip filled with it disappears into the page.
+ * This keeps the hue and pushes saturation and lightness in the direction the page is not - bright
+ * on a dark page, deep on a light one - so a selected chip, a progress bar or a primary button
+ * belongs to the artwork without dissolving into it.
+ *
+ * A page with no colour of its own - the plain theme background, or grey artwork - has no hue worth
+ * amplifying, so [fallback], the theme's own accent, is used instead.
+ */
+internal fun ambientAccentColor(pageColor: Color, fallback: Color): Color {
+  // Deliberately the same conversion the page colour itself was settled with, rather than the
+  // Android one: it is plain arithmetic either way, and this way the accent can be checked for
+  // contrast in a unit test instead of only on a device.
+  val red = (pageColor.red * 255).toInt().coerceIn(0, 255)
+  val green = (pageColor.green * 255).toInt().coerceIn(0, 255)
+  val blue = (pageColor.blue * 255).toInt().coerceIn(0, 255)
+  val (hue, saturation, _) = DominantColor.rgbToHsv(red, green, blue)
+  // Chroma, not saturation. HSV saturation is a ratio, so a near-black page - the plain dark theme
+  // background, or a failed extraction - reports a saturation of 0.4 off a difference of nine
+  // values out of 255, and amplifying that gives a muddy almost-grey rather than an accent. The
+  // absolute spread is what actually says whether there is a colour here to work with.
+  if ((maxOf(red, green, blue) - minOf(red, green, blue)) / 255f < 0.06f) return fallback
+  return if (pageColor.luminance() > 0.5f) {
+    DominantColor.hsvToColor(hue, (saturation * 2.8f).coerceIn(0.48f, 0.88f), 0.44f)
+  } else {
+    DominantColor.hsvToColor(hue, (saturation * 0.95f).coerceIn(0.30f, 0.58f), 0.94f)
+  }
+}
+
+/**
+ * Black or white, whichever can actually be read on [color].
+ *
+ * Chosen by measuring both rather than by a luminance threshold. The crossover is not at the middle
+ * of the range - it sits near 0.18 relative luminance - so a threshold picked by eye gets pastel
+ * blues and greens wrong in exactly the way that leaves a chip label at 4:1 instead of 4.5:1.
+ */
+internal fun readableOn(color: Color): Color =
+  if (contrastRatio(Color.Black, color) >= contrastRatio(Color.White, color)) Color.Black else Color.White
+
+/**
+ * The WCAG contrast ratio between two opaque colours, 1.0 (identical) to 21.0 (black on white).
+ *
+ * Used to check the theme's ink against a page colour taken from artwork, which is the one place
+ * in the app where neither side of the pair is known in advance.
+ */
+internal fun contrastRatio(a: Color, b: Color): Float {
+  val first = a.luminance() + 0.05f
+  val second = b.luminance() + 0.05f
+  return if (first > second) first / second else second / first
+}
+
+/** What the aggregate scraper sources are called in the search status. */
+internal const val PLUGIN_SOURCE_LABEL = "Plugins"
+internal const val CLOUDSTREAM_SOURCE_LABEL = "CloudStream"
+internal const val SKYSTREAM_SOURCE_LABEL = "SkyStream"
 
 /**
  * The Background Mode setting, wherever it appears.
@@ -440,7 +518,10 @@ internal fun rememberDominantBackgroundColor(artworkUrl: String?, enabled: Boole
   // change in one step, which reads as a glitch rather than as artwork being taken in.
   val animated by animateColorAsState(
     targetValue = color ?: themeBackground,
-    animationSpec = tween(durationMillis = 650, easing = FastOutSlowInEasing),
+    // Three crossfades long: a page changing colour underneath its content should be slow enough
+    // that it reads as light changing rather than as a repaint, and a multiple of the shared token
+    // keeps it moving with the viewer's setting rather than being a number of its own.
+    animationSpec = tween(durationMillis = LocalMotionSettings.current.crossfade(MotionDuration.crossfade * 3), easing = FastOutSlowInEasing),
     label = "page_background",
   )
   return if (color == null) null else animated
@@ -742,6 +823,46 @@ private data class AppUiState(
   val nextEpisodeLoadingLabel: String? = null,
   val watchedEpisodeRevision: Int = 0,
   val pendingStreamSources: Int = 0,
+  /**
+   * How the progressive source search is going, for the status the sources page shows.
+   *
+   * Plain counts and name lists rather than a per-provider map: the search fans out across
+   * add-ons, the JS plugin collections and the CloudStream/SkyStream bridges, which report at
+   * different granularities, and the page only ever asks how far along the search is, what has
+   * not answered yet, and what gave up. [pendingStreamSources] stays the number still outstanding
+   * so every existing reader of it keeps working unchanged.
+   */
+  val totalStreamSources: Int = 0,
+  /**
+   * Whether a source search has been asked for at all for what is on screen now.
+   *
+   * "Nothing found" and "not asked yet" produce identical numbers - no results, nothing pending,
+   * no sources counted - and the pages have to tell them apart, because one is a dead end worth
+   * explaining and the other is a page that is about to fill itself in. There is a deliberate
+   * delay before a title page starts searching, and without this the gap read as a finished
+   * search that found nothing configured. Cleared when a new title loads, set when a search is
+   * dispatched.
+   */
+  val streamSearchStarted: Boolean = false,
+  /** Sources still being waited on, named where a name is known. */
+  val searchingStreamSources: List<String> = emptyList(),
+  /** Sources that failed or timed out. Reported on their own rather than failing the search. */
+  val failedStreamSources: List<String> = emptyList(),
+  /**
+   * A refresh that is deliberately keeping the previous results on screen.
+   *
+   * Set while a re-run of the search has not produced anything yet, so the page can say it is
+   * refreshing instead of blanking a list the viewer was reading.
+   */
+  val streamRefreshing: Boolean = false,
+  /**
+   * Which result is currently being resolved into playback.
+   *
+   * Only meaningful while [playerLaunching] is set — it is written when a source is chosen and
+   * left alone afterwards, so the row that was tapped can show the resolving state without every
+   * exit path having to remember to clear it.
+   */
+  val launchingStreamKey: String? = null,
   val availableStreams: List<AddonStream> = emptyList(),
   val profilesLoading: Boolean = false,
   val profiles: List<StreamProfile> = emptyList(),
@@ -830,6 +951,14 @@ private data class AppUiState(
   /** Device-local startup preference; profile identity itself remains account/profile scoped. */
   val rememberLastProfileAtStartup: Boolean = false,
   val appAppearance: AppAppearance = AppAppearance.System,
+  /**
+   * How fast the app animates, for this installation.
+   *
+   * Device-local by design and deliberately absent from the cloud-preference payload: see
+   * [AnimationSpeed]. A phone and a television are watched from very different distances and
+   * can reasonably want different answers, so this one setting does not follow the account.
+   */
+  val animationSpeed: AnimationSpeed = AnimationSpeed.Default,
   val appLanguage: String = "en",
   val themePreset: AppThemePreset = AppThemePreset.Monochrome,
   val headerStyle: HeaderStyle = HeaderStyle.Classic,
@@ -880,6 +1009,7 @@ private data class AppUiState(
   /** Off by default, matching the TV app: the spotlight reads better as artwork and title alone. */
   val showHeroSynopsis: Boolean = false,
   val continueWatchingStyle: ContinueWatchingStyle = ContinueWatchingStyle.Glass,
+  val networkCardStyle: NetworkCardStyle = NetworkCardStyle.Branded,
   val liveLandscapeCards: Boolean = true,
   /**
    * Wide cards showing the episode's own still, rather than posters of the series.
@@ -1688,6 +1818,7 @@ private class AppSettingsStore(context: Context) {
     rememberLastProfileAtStartup = prefs.getBoolean("remember_last_profile_at_startup", false),
     showProfilePicker = state.showProfilePicker && !prefs.getBoolean("remember_last_profile_at_startup", false),
     appAppearance = runCatching { AppAppearance.valueOf(prefs.getString("app_appearance", AppAppearance.System.name) ?: AppAppearance.System.name) }.getOrDefault(AppAppearance.System),
+    animationSpeed = AnimationSpeed.fromKey(prefs.getString(ANIMATION_SPEED_PREFERENCE, null)),
     appLanguage = normalizeAppLanguage(prefs.getString(APP_LANGUAGE_PREFERENCE, "en")),
     themePreset = runCatching { AppThemePreset.valueOf(prefs.getString("theme_preset", AppThemePreset.Monochrome.name) ?: AppThemePreset.Monochrome.name) }.getOrDefault(AppThemePreset.Monochrome),
     headerStyle = runCatching { HeaderStyle.valueOf(prefs.getString("header_style", HeaderStyle.Classic.name) ?: HeaderStyle.Classic.name) }.getOrDefault(HeaderStyle.Classic),
@@ -1719,6 +1850,7 @@ private class AppSettingsStore(context: Context) {
     debridCloudSync = prefs.getBoolean("debrid_cloud_sync", true),
     showHeroSynopsis = profilePrefs.getBoolean("show_hero_synopsis", false),
     continueWatchingStyle = runCatching { ContinueWatchingStyle.valueOf(profilePrefs.getString("continue_watching_style", ContinueWatchingStyle.Glass.name) ?: ContinueWatchingStyle.Glass.name) }.getOrDefault(ContinueWatchingStyle.Glass),
+    networkCardStyle = runCatching { NetworkCardStyle.valueOf(profilePrefs.getString("network_card_style", NetworkCardStyle.Branded.name) ?: NetworkCardStyle.Branded.name) }.getOrDefault(NetworkCardStyle.Branded),
     liveLandscapeCards = profilePrefs.getBoolean("live_landscape_cards", true),
     newEpisodesLandscape = profilePrefs.getBoolean("new_episodes_landscape", true),
     liveCategoriesEnabled = profilePrefs.getBoolean("live_categories_enabled", true),
@@ -1802,6 +1934,8 @@ private class AppSettingsStore(context: Context) {
 
   fun saveAutoUpdateChecks(value: Boolean) { prefs.edit().putBoolean("auto_update_checks", value).apply() }
   fun saveAppAppearance(value: AppAppearance) { prefs.edit().putString("app_appearance", value.name).apply() }
+  /** Device prefs, never [profilePrefs]: the choice belongs to the installation, not the profile. */
+  fun saveAnimationSpeed(value: AnimationSpeed) { prefs.edit().putString(ANIMATION_SPEED_PREFERENCE, value.key).apply() }
   fun saveRememberLastProfileAtStartup(value: Boolean) {
     prefs.edit().putBoolean("remember_last_profile_at_startup", value).apply()
   }
@@ -1834,6 +1968,7 @@ private class AppSettingsStore(context: Context) {
   fun saveDebridCloudSync(value: Boolean) { prefs.edit().putBoolean("debrid_cloud_sync", value).apply() }
   fun saveShowHeroSynopsis(value: Boolean) { profilePrefs.edit().putBoolean("show_hero_synopsis", value).apply() }
   fun saveContinueWatchingStyle(value: ContinueWatchingStyle) { profilePrefs.edit().putString("continue_watching_style", value.name).apply() }
+  fun saveNetworkCardStyle(value: NetworkCardStyle) { profilePrefs.edit().putString("network_card_style", value.name).apply() }
   fun saveLiveLandscapeCards(value: Boolean) { profilePrefs.edit().putBoolean("live_landscape_cards", value).apply() }
   fun saveNewEpisodesLandscape(value: Boolean) { profilePrefs.edit().putBoolean("new_episodes_landscape", value).apply() }
   fun saveLiveCategoriesEnabled(value: Boolean) { profilePrefs.edit().putBoolean("live_categories_enabled", value).apply() }
@@ -3969,10 +4104,20 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
             // The built-in rows go on screen the moment they land, so the add-on fan-out no
             // longer holds the whole screen behind a splash. The complete set replaces them
             // below; until then the viewer has something real to look at and scroll.
+            //
+            // Nothing to hand over early when there are no built-in rows to fetch - StreamDek
+            // Home Rows switched off, so the batched request is answered empty by construction.
+            // Publishing that empty answer cleared homeLoading and wiped the rows already on
+            // screen while the add-on fan-out, the only thing that was ever going to produce
+            // rows here, was still running: Home looked finished and empty until something
+            // unrelated happened to reload it. Skipping the hand-off leaves the loading state
+            // (or the previous rows) up until the real answer lands.
             onDefaults = { defaults ->
-              withContext(Dispatchers.Main) {
-                perf.mark("publishDefaults", "count=${defaults.size}")
-                publishHomeSections(defaults, definitions, rows)
+              if (defaults.isNotEmpty()) {
+                withContext(Dispatchers.Main) {
+                  perf.mark("publishDefaults", "count=${defaults.size}")
+                  publishHomeSections(defaults, definitions, rows)
+                }
               }
             },
           )
@@ -4369,7 +4514,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       uiState = uiState.copy(
         detailLoading = false, detail = fallback, detailIsLive = true, detailFallbackItem = fallbackItem, selectedPerson = null, personLoading = false,
         selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null,
-        detailSelectedTab = null, pendingStreamSources = 0, availableStreams = emptyList(), errorMessage = null,
+        detailSelectedTab = null, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = false, availableStreams = emptyList(), errorMessage = null,
       )
       loadStreamsForCurrentDetail(null)
       return
@@ -4387,7 +4532,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       val isLocalMetaAddon = LocalAddonManager.isLocalAddonId(metaAddon.id)
       val metaRequestType = addonMetaRequestType(type, fallbackItem.sourceCatalogType)
       launchWork(
-        onStart = { uiState = uiState.copy(detailLoading = true, detail = null, detailIsLive = false, detailFallbackItem = fallbackItem, selectedPerson = null, personLoading = false, selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null, detailSelectedTab = null, pendingStreamSources = 0, availableStreams = emptyList(), errorMessage = null) },
+        onStart = { uiState = uiState.copy(detailLoading = true, detail = null, detailIsLive = false, detailFallbackItem = fallbackItem, selectedPerson = null, personLoading = false, selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null, detailSelectedTab = null, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = false, availableStreams = emptyList(), errorMessage = null) },
         block = {
           val addon = uiState.addons.firstOrNull { it.id == metaAddon.id }
             ?: return@launchWork Result.failure(IllegalStateException("That add-on is no longer installed."))
@@ -4438,7 +4583,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
             detail = resolvedDetail,
             detailIsLive = false,
             streamLoading = false,
-            pendingStreamSources = 0,
+            pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = false,
             errorMessage = null,
             availableStreams = if (unreleasedMovie) emptyList() else uiState.availableStreams,
           )
@@ -4469,7 +4614,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       return
     }
     launchWork(
-      onStart = { uiState = uiState.copy(detailLoading = true, detail = null, detailIsLive = detailIsLive, detailFallbackItem = fallbackItem, selectedPerson = null, personLoading = false, selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null, detailSelectedTab = null, pendingStreamSources = 0, availableStreams = emptyList(), errorMessage = null) },
+      onStart = { uiState = uiState.copy(detailLoading = true, detail = null, detailIsLive = detailIsLive, detailFallbackItem = fallbackItem, selectedPerson = null, personLoading = false, selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null, detailSelectedTab = null, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = false, availableStreams = emptyList(), errorMessage = null) },
       block = { apiClient.fetchDetails(type, id, fallbackItem?.title, fallbackItem?.year) },
       onSuccess = { detail ->
         if (detailGeneration != detailRequestGeneration) return@launchWork
@@ -4480,7 +4625,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           detail = resolvedDetail,
           detailIsLive = detailIsLive,
           streamLoading = false,
-          pendingStreamSources = 0,
+          pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = false,
           availableStreams = if (unreleasedMovie) emptyList() else uiState.availableStreams,
         )
         refreshExternalRatings(resolvedDetail)
@@ -4623,17 +4768,17 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val detail = uiState.detail ?: return
     if (detail.type == "movie" && isFutureReleaseDate(detail.releaseDate)) {
       pendingStreamLoad = null
-      uiState = uiState.copy(streamLoading = false, pendingStreamSources = 0, availableStreams = emptyList(), selectedEpisode = null, errorMessage = null)
+      uiState = uiState.copy(streamLoading = false, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = true, availableStreams = emptyList(), selectedEpisode = null, errorMessage = null)
       return
     }
     if (uiState.addonsLoading) {
       pendingStreamLoad = PendingStreamLoad(detail.id, episode)
-      uiState = uiState.copy(streamLoading = true, pendingStreamSources = 0, selectedEpisode = episode, errorMessage = null, streamsUnavailableReason = null)
+      uiState = uiState.copy(streamLoading = true, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = false, selectedEpisode = episode, errorMessage = null, streamsUnavailableReason = null)
       return
     }
     pendingStreamLoad = null
     detailDirectStream?.let { stream ->
-      uiState = uiState.copy(streamLoading = false, pendingStreamSources = 0, availableStreams = listOf(stream), selectedEpisode = episode, errorMessage = null)
+      uiState = uiState.copy(streamLoading = false, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = true, availableStreams = listOf(stream), selectedEpisode = episode, errorMessage = null)
       return
     }
     val type: String
@@ -4651,7 +4796,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         }
       }
       detail.type == "tv" && !uiState.detailIsLive -> {
-        uiState = uiState.copy(streamLoading = false, pendingStreamSources = 0, errorMessage = "Choose an episode first.")
+        uiState = uiState.copy(streamLoading = false, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = true, errorMessage = "Choose an episode first.")
         return
       }
       else -> {
@@ -4668,7 +4813,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private fun beginProgressiveStreamLoad(detail: MediaDetail, type: String, ids: List<String>, episode: EpisodeItem?) {
     val candidates = ids.filter { it.isNotBlank() }.distinct()
     if (candidates.isEmpty()) {
-      uiState = uiState.copy(streamLoading = false, pendingStreamSources = 0, availableStreams = emptyList(), selectedEpisode = episode, errorMessage = "No stream identifiers were available for this title.")
+      uiState = uiState.copy(streamLoading = false, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = true, availableStreams = emptyList(), selectedEpisode = episode, errorMessage = "No stream identifiers were available for this title.")
       return
     }
 
@@ -4710,6 +4855,33 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val requestGate = Semaphore(4)
     var completedSources = 0
     var lastError: Throwable? = null
+    // What is still being waited on, by name, so the page can say which sources have not answered
+    // rather than only how many. Add-ons are named once however many ids they are asked about —
+    // "PenguPlay" twice in a status line describes nothing.
+    val pendingSourceNames = linkedMapOf<String, Int>()
+    val failedSourceNames = linkedSetOf<String>()
+    fun beginSource(label: String) {
+      pendingSourceNames[label] = (pendingSourceNames[label] ?: 0) + 1
+    }
+    fun endSource(label: String, failed: Boolean) {
+      val outstanding = (pendingSourceNames[label] ?: 0) - 1
+      if (outstanding <= 0) pendingSourceNames.remove(label) else pendingSourceNames[label] = outstanding
+      if (failed) failedSourceNames += label
+      completedSources += 1
+    }
+    if (pluginSourceCount > 0) beginSource(PLUGIN_SOURCE_LABEL)
+    if (skyStreamSourceCount > 0) beginSource(SKYSTREAM_SOURCE_LABEL)
+    if (cloudStreamSourceCount > 0) beginSource(CLOUDSTREAM_SOURCE_LABEL)
+    repeat(candidates.size) { enabledAddons.forEach { addon -> beginSource(addon.manifest.name.ifBlank { addon.id }) } }
+
+    // A re-run over results that are already on screen is a refresh, not a fresh search, so the
+    // list stays put until the new one has something to put in its place. Blanking it first threw
+    // away what the viewer was reading and made every refresh look like a failure until it wasn't.
+    val retained = if (uiState.availableStreams.isNotEmpty() && uiState.selectedEpisode?.id == episode?.id) {
+      uiState.availableStreams
+    } else {
+      emptyList()
+    }
 
     fun streamKey(stream: AddonStream): String = addonStreamPlaybackIdentity(stream)
 
@@ -4717,36 +4889,57 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       if (generation != streamRequestGeneration) return
       val ranked = rankedStreams(mediaStreamsOnly(merged.values.toList(), detail), uiState.debridAccounts.any { it.enabled }, uiState.preferredQuality, uiState.maxFileSizeGb)
       val remaining = (totalSources - completedSources).coerceAtLeast(0)
+      val holding = ranked.isEmpty() && retained.isNotEmpty() && remaining > 0
       uiState = uiState.copy(
         streamLoading = remaining > 0,
         pendingStreamSources = remaining,
-        availableStreams = ranked,
+        totalStreamSources = totalSources,
+        searchingStreamSources = pendingSourceNames.keys.toList(),
+        failedStreamSources = failedSourceNames.toList(),
+        streamRefreshing = holding,
+        availableStreams = if (holding) retained else ranked,
         selectedEpisode = episode,
       )
     }
 
-    uiState = uiState.copy(streamLoading = true, pendingStreamSources = totalSources, availableStreams = emptyList(), selectedEpisode = episode, errorMessage = null, streamsUnavailableReason = null)
+    uiState = uiState.copy(
+      streamLoading = true,
+      pendingStreamSources = totalSources,
+      totalStreamSources = totalSources,
+      searchingStreamSources = pendingSourceNames.keys.toList(),
+      failedStreamSources = emptyList(),
+      streamRefreshing = retained.isNotEmpty(),
+      streamSearchStarted = true,
+      availableStreams = retained,
+      selectedEpisode = episode,
+      errorMessage = null,
+      streamsUnavailableReason = null,
+    )
 
     viewModelScope.launch {
       if (pluginSourceCount > 0) {
         launch {
-          val pluginType = if (detail.type == "series") "tv" else detail.type
-          val pluginId = apiClient.resolvePluginMediaId(pluginType, detail.id)
-          StreamDekPlugins.manager.streams(pluginId, pluginType, episode?.seasonNumber, episode?.episodeNumber) { providerStreams ->
-            withContext(Dispatchers.Main.immediate) {
-              if (generation == streamRequestGeneration) {
-                providerStreams.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) }
-                publish()
+          // Wrapped like the other scrapers are: a plugin that throws is one source failing, and
+          // it used to take the whole fan-out down with it because nothing caught it here.
+          val outcome = runCatching {
+            val pluginType = if (detail.type == "series") "tv" else detail.type
+            val pluginId = apiClient.resolvePluginMediaId(pluginType, detail.id)
+            StreamDekPlugins.manager.streams(pluginId, pluginType, episode?.seasonNumber, episode?.episodeNumber) { providerStreams ->
+              withContext(Dispatchers.Main.immediate) {
+                if (generation == streamRequestGeneration) {
+                  providerStreams.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) }
+                  publish()
+                }
               }
-            }
-          }.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) }
-          completedSources += 1
+            }.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) }
+          }.onFailure { Log.w("StreamDekPlugins", "Plugin providers failed for ${detail.id}", it) }
+          endSource(PLUGIN_SOURCE_LABEL, outcome.isFailure)
           publish()
         }
       }
       if (skyStreamSourceCount > 0 && cloudStreamTitle != null) {
         launch {
-          runCatching {
+          val outcome = runCatching {
             SkyStreamPlugins.manager.streams(
               title = cloudStreamTitle,
               year = detail.year?.toIntOrNull(),
@@ -4763,7 +4956,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
               }
             }.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) }
           }.onFailure { Log.w("StreamDekSkyStream", "SkyStream providers failed for $skyStreamImdbId", it) }
-          completedSources += 1
+          endSource(SKYSTREAM_SOURCE_LABEL, outcome.isFailure)
           publish()
         }
       }
@@ -4776,7 +4969,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
             season = episode?.seasonNumber,
             episode = episode?.episodeNumber,
           )
-          runCatching {
+          val outcome = runCatching {
             // Each provider publishes as it finishes rather than waiting for the slowest one,
             // matching how the add-on and JS plugin sources fill the list in.
             CloudStreamProviderBridge.streams(cloudStreamProviders, request) { providerStreams ->
@@ -4788,17 +4981,17 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
               }
             }.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) }
           }.onFailure { Log.w("StreamDekCloudStream", "CloudStream providers failed for $cloudStreamTitle", it) }
-          completedSources += 1
+          endSource(CLOUDSTREAM_SOURCE_LABEL, outcome.isFailure)
           publish()
         }
       }
       for (id in candidates) {
         for (addon in enabledAddons) {
           launch {
-            requestGate.withPermit { fetchAddonStreamsWithRetry(addon, type, id) }
+            val outcome = requestGate.withPermit { fetchAddonStreamsWithRetry(addon, type, id) }
               .onSuccess { streams -> streams.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) } }
               .onFailure { lastError = it }
-            completedSources += 1
+            endSource(addon.manifest.name.ifBlank { addon.id }, outcome.isFailure)
             publish()
           }
         }
@@ -4822,6 +5015,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         uiState = uiState.copy(
           streamLoading = false,
           pendingStreamSources = 0,
+          searchingStreamSources = emptyList(),
+          failedStreamSources = failedSourceNames.toList(),
+          streamRefreshing = false,
           availableStreams = ranked,
           selectedEpisode = episode,
           errorMessage = lastError.let { error -> if (ranked.isEmpty() && error != null) error.message ?: "No playable streams were found." else uiState.errorMessage },
@@ -5263,6 +5459,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           returnToDetailAfterPlayer = true,
           playerLaunching = true,
           playerLaunchingLabel = buildSourceLabel(stream) ?: stream.addonName,
+          // Which row was chosen, so the sources list can mark that one as resolving. Read only
+          // while playerLaunching is set, so no exit path has to remember to clear it.
+          launchingStreamKey = addonStreamPlaybackIdentity(stream),
           // Only a source with no direct link of its own can end up in the torrent engine, so this
           // is what the launch screen watches the swarm for.
           playerLaunchingPeerHash = stream.infoHash?.takeIf { hash ->
@@ -5421,7 +5620,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   fun playBestStream(episode: EpisodeItem? = null) {
     val detail = uiState.detail ?: return
     if (detail.type == "movie" && isFutureReleaseDate(detail.releaseDate)) {
-      uiState = uiState.copy(streamLoading = false, pendingStreamSources = 0, availableStreams = emptyList(), errorMessage = null)
+      uiState = uiState.copy(streamLoading = false, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = true, availableStreams = emptyList(), errorMessage = null)
       return
     }
     // With no explicit episode selection on a series, resume the episode the user
@@ -7360,6 +7559,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val headerStyle = preferences.headerStyle?.let { runCatching { HeaderStyle.valueOf(it) }.getOrNull() }
     val detailPageStyle = preferences.detailPageStyle?.let { runCatching { DetailPageStyle.valueOf(it) }.getOrNull() }
     val continueWatchingStyle = preferences.continueWatchingStyle?.let { runCatching { ContinueWatchingStyle.valueOf(it) }.getOrNull() }
+    val networkCardStyle = preferences.networkCardStyle?.let { runCatching { NetworkCardStyle.valueOf(it) }.getOrNull() }
     val seasonTabStyle = preferences.seasonTabStyle?.let { runCatching { SeasonTabStyle.valueOf(it) }.getOrNull() }
     val decoderMode = preferences.decoderMode?.let(::normalizeDecoderModeSetting)
     val renderSurface = preferences.renderSurface?.let(::normalizeRenderSurfaceSetting)
@@ -7370,7 +7570,12 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val activeFusionBadgeUrl = preferences.activeFusionBadgeUrl?.takeIf { it in (fusionBadgeUrls ?: uiState.fusionBadgeUrls) }
     val homeCatalogRows = preferences.homeCatalogRowsJson?.let(::parseHomeCatalogRows)
 
-    appAppearance?.let(appSettingsStore::saveAppAppearance)
+    appAppearance?.let {
+      appSettingsStore.saveAppAppearance(it)
+      // An appearance arriving from another device has to reach the platform too, or this phone's
+      // splash keeps describing the choice the account no longer holds.
+      applyAppNightMode(getApplication())
+    }
     themePreset?.let(appSettingsStore::saveThemePreset)
     headerStyle?.let(appSettingsStore::saveHeaderStyle)
     preferences.showNavLabels?.let(appSettingsStore::saveShowNavLabels)
@@ -7379,6 +7584,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     preferences.syncOnCellular?.let(appSettingsStore::saveSyncOnCellular)
     detailPageStyle?.let(appSettingsStore::saveDetailPageStyle)
     continueWatchingStyle?.let(appSettingsStore::saveContinueWatchingStyle)
+    networkCardStyle?.let(appSettingsStore::saveNetworkCardStyle)
     preferences.liveLandscapeCards?.let(appSettingsStore::saveLiveLandscapeCards)
     preferences.liveCategoriesEnabled?.let(appSettingsStore::saveLiveCategoriesEnabled)
     preferences.primarySyncService?.let { appSettingsStore.savePrimarySyncService(normalizedPrimarySyncService(it)) }
@@ -7457,6 +7663,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       syncOnCellular = preferences.syncOnCellular ?: uiState.syncOnCellular,
       detailPageStyle = detailPageStyle ?: uiState.detailPageStyle,
       continueWatchingStyle = continueWatchingStyle ?: uiState.continueWatchingStyle,
+      networkCardStyle = networkCardStyle ?: uiState.networkCardStyle,
       liveLandscapeCards = preferences.liveLandscapeCards ?: uiState.liveLandscapeCards,
       liveCategoriesEnabled = preferences.liveCategoriesEnabled ?: uiState.liveCategoriesEnabled,
       primarySyncService = preferences.primarySyncService?.let(::normalizedPrimarySyncService) ?: uiState.primarySyncService,
@@ -8381,6 +8588,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       syncOnCellular = uiState.syncOnCellular,
       detailPageStyle = uiState.detailPageStyle.name,
       continueWatchingStyle = uiState.continueWatchingStyle.name,
+      networkCardStyle = uiState.networkCardStyle.name,
       liveLandscapeCards = uiState.liveLandscapeCards,
       liveCategoriesEnabled = uiState.liveCategoriesEnabled,
       primarySyncService = uiState.primarySyncService,
@@ -8446,7 +8654,26 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     )
     viewModelScope.launch { apiClient.patchCloudPreferences(session, preferences, uiState.activeProfileId) }
   }
-  fun setAppAppearance(value: AppAppearance) { appSettingsStore.saveAppAppearance(value); uiState = uiState.copy(appAppearance = value); syncCloudPreferences() }
+  fun setAppAppearance(value: AppAppearance) {
+    appSettingsStore.saveAppAppearance(value)
+    uiState = uiState.copy(appAppearance = value)
+    // Told to the platform as well as saved, so the splash on the next launch is the one this
+    // choice describes rather than the one the phone happens to be in.
+    applyAppNightMode(getApplication())
+    syncCloudPreferences()
+  }
+  /**
+   * Deliberately without a [syncCloudPreferences] call, unlike every other appearance setting.
+   *
+   * The selection belongs to this installation - see [AnimationSpeed] - so it is saved locally and
+   * that is the end of it. Applying it is nothing more than the state change: the theme reads the
+   * new value on the next composition and every animation in the tree is already sourcing its
+   * duration from there, so the difference is visible immediately with no restart.
+   */
+  fun setAnimationSpeed(value: AnimationSpeed) {
+    appSettingsStore.saveAnimationSpeed(value)
+    uiState = uiState.copy(animationSpeed = value)
+  }
   fun setRememberLastProfileAtStartup(value: Boolean) {
     appSettingsStore.saveRememberLastProfileAtStartup(value)
     uiState = uiState.copy(rememberLastProfileAtStartup = value)
@@ -8506,6 +8733,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setHeroTrailerMuted(value: Boolean) { appSettingsStore.saveHeroTrailerMuted(value); uiState = uiState.copy(heroTrailerMuted = value) }
   fun setShowHeroSynopsis(value: Boolean) { appSettingsStore.saveShowHeroSynopsis(value); uiState = uiState.copy(showHeroSynopsis = value); syncCloudPreferences() }
   fun setContinueWatchingStyle(style: ContinueWatchingStyle) { appSettingsStore.saveContinueWatchingStyle(style); uiState = uiState.copy(continueWatchingStyle = style); syncCloudPreferences() }
+  fun setNetworkCardStyle(style: NetworkCardStyle) { appSettingsStore.saveNetworkCardStyle(style); uiState = uiState.copy(networkCardStyle = style); syncCloudPreferences() }
   fun setLiveLandscapeCards(value: Boolean) { appSettingsStore.saveLiveLandscapeCards(value); uiState = uiState.copy(liveLandscapeCards = value); syncCloudPreferences() }
   fun setNewEpisodesLandscape(value: Boolean) { appSettingsStore.saveNewEpisodesLandscape(value); uiState = uiState.copy(newEpisodesLandscape = value) }
   fun setLiveCategoriesEnabled(value: Boolean) { appSettingsStore.saveLiveCategoriesEnabled(value); uiState = uiState.copy(liveCategoriesEnabled = value); syncCloudPreferences() }
@@ -8646,9 +8874,29 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
    * screen. A refresh the app decided on by itself should not look like a gesture.
    */
   private fun refreshHomeIfCatalogsMissing() {
-    val wanted = uiState.homeCatalogRows.filter { it.builtin && it.enabled && it.id !in streamDekFeatureRowIds }.map { it.id }
-    if (!uiState.defaultAppCatalogsEnabled || wanted.isEmpty()) return
-    if (wanted.any { id -> id !in requestedHomeCatalogIds }) loadHome(force = true, silent = true)
+    // Loud when there is nothing on screen to preserve, quiet when there is. A viewer who has just
+    // switched every StreamDek row off and an add-on's rows on is looking at an empty Home and
+    // wants to see it fill; a viewer whose rows are already up should not have the pull-to-refresh
+    // indicator appear for a refresh they did not gesture for.
+    val reload = { loadHome(force = true, silent = uiState.homeSections.isNotEmpty()) }
+    if (uiState.defaultAppCatalogsEnabled) {
+      val wanted = uiState.homeCatalogRows.filter { it.builtin && it.enabled && it.id !in streamDekFeatureRowIds }.map { it.id }
+      if (wanted.any { id -> id !in requestedHomeCatalogIds }) {
+        reload()
+        return
+      }
+    }
+    // An add-on row is never named in the batched request — the fan-out fetches whatever the
+    // enabled add-ons publish — so "was it asked for" cannot answer for one. What answers is
+    // whether its section is actually in hand. A row switched on whose add-on was enabled after
+    // the last load has nothing to lay out, and this used to return before it ever looked: the
+    // early exit on `defaultAppCatalogsEnabled` meant that switching StreamDek's own rows off
+    // disabled the refresh check for every other row on the screen too.
+    val known = uiState.allHomeSections.mapTo(mutableSetOf()) { it.id }
+    val missingAddonRow = uiState.homeCatalogRows.any { row ->
+      !row.builtin && row.enabled && row.id !in streamDekFeatureRowIds && row.id !in known
+    }
+    if (missingAddonRow) reload()
   }
 
   fun setDefaultAppCatalogsEnabled(value: Boolean) {
@@ -10010,13 +10258,14 @@ fun StreamDekNativeApp(
   MaterialTheme(
     colorScheme = colorScheme,
     shapes = Shapes(
-      extraSmall = RoundedCornerShape(10.dp),
-      small = RoundedCornerShape(14.dp),
-      medium = RoundedCornerShape(18.dp),
-      large = RoundedCornerShape(24.dp),
-      extraLarge = RoundedCornerShape(30.dp),
+      extraSmall = StreamDekRadius.controlShape,
+      small = StreamDekRadius.thumbShape,
+      medium = StreamDekRadius.cardShape,
+      large = StreamDekRadius.panelShape,
+      extraLarge = StreamDekRadius.sheetShape,
     ),
   ) {
+   ProvideStreamDekMotion(rememberMotionSettings(uiState.animationSpeed)) {
    CompositionLocalProvider(LocalWindowSize provides windowSize, LocalStreamDekSpacing provides spacing) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
       Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -10100,6 +10349,7 @@ fun StreamDekNativeApp(
       }
     }
    }
+   }
   }
 }
 
@@ -10163,7 +10413,7 @@ private fun AppNoticeBanner(notice: AppNotice) {
     }
     Surface(
       modifier = Modifier.fillMaxWidth(),
-      shape = RoundedCornerShape(18.dp),
+      shape = StreamDekRadius.cardShape,
       color = container,
       contentColor = content,
       tonalElevation = 6.dp,
@@ -10489,7 +10739,7 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
         placeholder = { InputGuideText("Email") },
         leadingIcon = { Icon(Icons.Rounded.Email, contentDescription = null) },
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        shape = StreamDekRadius.cardShape,
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
         colors = fieldColors,
@@ -10509,7 +10759,7 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
           },
           visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
           modifier = Modifier.fillMaxWidth(),
-          shape = RoundedCornerShape(18.dp),
+          shape = StreamDekRadius.cardShape,
           singleLine = true,
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
           colors = fieldColors,
@@ -10529,7 +10779,7 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
           },
           visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
           modifier = Modifier.fillMaxWidth(),
-          shape = RoundedCornerShape(18.dp),
+          shape = StreamDekRadius.cardShape,
           singleLine = true,
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
           colors = fieldColors,
@@ -10560,7 +10810,7 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
           else -> form.email.isNotBlank() && form.password.isNotBlank()
         },
         modifier = Modifier.fillMaxWidth().height(54.dp),
-        shape = RoundedCornerShape(18.dp),
+        shape = StreamDekRadius.cardShape,
         colors = ButtonDefaults.buttonColors(containerColor = white, contentColor = Color.Black, disabledContainerColor = white.copy(alpha = 0.58f), disabledContentColor = Color.Black.copy(alpha = 0.58f)),
       ) {
         if (uiState.booting) {
@@ -10601,7 +10851,7 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
         OutlinedButton(
           onClick = onContinueAsGuest,
           modifier = Modifier.fillMaxWidth().height(52.dp),
-          shape = RoundedCornerShape(18.dp),
+          shape = StreamDekRadius.cardShape,
           border = BorderStroke(1.dp, white.copy(alpha = 0.24f)),
           colors = ButtonDefaults.outlinedButtonColors(contentColor = white),
         ) { Text("Continue Without Account", fontWeight = FontWeight.Bold, fontSize = 15.sp) }
@@ -10618,19 +10868,29 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
 private fun NavigationCaretCue() {
   var tintVisible by remember { mutableStateOf(false) }
   var caretVisible by remember { mutableStateOf(false) }
-  val motion = rememberInfiniteTransition(label = "collapsed_navigation_caret")
-  val travelX by motion.animateFloat(
+  val motionSettings = LocalMotionSettings.current
+  val pulse = rememberInfiniteTransition(label = "collapsed_navigation_caret")
+  // An infinite repeat cannot simply take a scaled duration: at zero it would cycle every frame
+  // rather than stop. Motion off holds the cue at its resting values instead, which is the whole
+  // point of the setting -- the hint is still there, it just is not waving.
+  val pulseSpec = infiniteRepeatable<Float>(
+    tween(motionSettings.scaled(MotionDuration.standard).coerceAtLeast(120), easing = FastOutSlowInEasing),
+    RepeatMode.Reverse,
+  )
+  val animatedTravel by pulse.animateFloat(
     initialValue = 5f,
     targetValue = -5f,
-    animationSpec = infiniteRepeatable(tween(320, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+    animationSpec = pulseSpec,
     label = "collapsed_navigation_caret_travel",
   )
-  val caretScale by motion.animateFloat(
+  val animatedScale by pulse.animateFloat(
     initialValue = 0.90f,
     targetValue = 1.08f,
-    animationSpec = infiniteRepeatable(tween(320, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+    animationSpec = pulseSpec,
     label = "collapsed_navigation_caret_scale",
   )
+  val travelX = if (motionSettings.motionless) 0f else animatedTravel
+  val caretScale = if (motionSettings.motionless) 1f else animatedScale
 
   LaunchedEffect(Unit) {
     tintVisible = true
@@ -10641,8 +10901,8 @@ private fun NavigationCaretCue() {
   Box(modifier = Modifier.size(60.dp), contentAlignment = Alignment.Center) {
     AnimatedVisibility(
       visible = tintVisible,
-      enter = fadeIn(tween(220)),
-      exit = fadeOut(tween(160)),
+      enter = fadeIn(tween(motionSettings.scaled(MotionDuration.standard))),
+      exit = fadeOut(tween(motionSettings.scaled(MotionDuration.short))),
       modifier = Modifier.matchParentSize(),
     ) {
       Box(
@@ -10654,8 +10914,8 @@ private fun NavigationCaretCue() {
     }
     AnimatedVisibility(
       visible = caretVisible,
-      enter = fadeIn(tween(160)),
-      exit = fadeOut(tween(120)),
+      enter = fadeIn(tween(motionSettings.scaled(MotionDuration.short))),
+      exit = fadeOut(tween(motionSettings.scaled(MotionDuration.instant))),
     ) {
       Icon(
         Icons.AutoMirrored.Rounded.ArrowBack,
@@ -10683,6 +10943,10 @@ private fun MainScene(
 ) {
   val launchContext = androidx.compose.ui.platform.LocalContext.current
   val uiState = viewModel.uiState
+  // Hoisted because `transitionSpec` lambdas below are not composable and so cannot read the
+  // composition local themselves. One read, one value, every screen transition on this scene at
+  // the viewer's chosen speed.
+  val motion = LocalMotionSettings.current
   // Turning new-episode reminders on has to clear Android 13's notification permission first.
   // The setting is only switched on once that is answered, and answered "yes" -- a toggle that
   // flipped on while the system was still refusing to show anything would be a lie.
@@ -10758,6 +11022,20 @@ private fun MainScene(
 
   LaunchedEffect(Unit) {
     viewModel.loadHome()
+  }
+
+  // Arriving at Home with nothing to show is worth a load rather than a blank screen. Changing
+  // which rows Home is made of — StreamDek's own switched off, an add-on's switched on — can empty
+  // it from a screen that is not Home, and the load that would have refilled it may well have been
+  // the one that ran before the add-on existed.
+  //
+  // Deliberately unforced. That is what makes it free on a cold start, where the effect above has
+  // already started a load: an unforced call stands aside for one in flight rather than queueing a
+  // second pass behind it, and does nothing at all once there are rows. Keyed on emptiness rather
+  // than on the loading flag, so rows that legitimately come back empty settle instead of retrying
+  // forever.
+  LaunchedEffect(selectedTab, uiState.homeSections.isEmpty()) {
+    if (selectedTab == MainTab.Home) viewModel.loadHome()
   }
 
   LaunchedEffect(uiState.collapsibleNavigationEnabled) {
@@ -10999,12 +11277,12 @@ private fun MainScene(
             }
             val navigationWidth by animateDpAsState(
               targetValue = if (expanded) expandedNavigationWidth else 74.dp,
-              animationSpec = tween(durationMillis = 420, easing = FastOutSlowInEasing),
+              animationSpec = tween(durationMillis = motion.scaled(MotionDuration.long), easing = FastOutSlowInEasing),
               label = "floating_navigation_width",
             )
             val navigationCornerRadius by animateDpAsState(
               targetValue = if (expanded) 30.dp else 37.dp,
-              animationSpec = tween(durationMillis = 420, easing = FastOutSlowInEasing),
+              animationSpec = tween(durationMillis = motion.scaled(MotionDuration.long), easing = FastOutSlowInEasing),
               label = "floating_navigation_corner",
             )
 
@@ -11043,8 +11321,11 @@ private fun MainScene(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.CenterEnd,
                 transitionSpec = {
-                  fadeIn(tween(durationMillis = 150, delayMillis = if (targetState) 170 else 0)) togetherWith
-                    fadeOut(tween(durationMillis = 100))
+                  // The delay is part of the choreography -- the new content waits for the old to
+                  // clear -- so it scales with everything else rather than staying fixed and
+                  // overlapping at Fast or dragging at Cinematic.
+                  fadeIn(tween(durationMillis = motion.scaled(MotionDuration.short), delayMillis = if (targetState) motion.scaled(MotionDuration.short) else 0)) togetherWith
+                    fadeOut(tween(durationMillis = motion.scaled(MotionDuration.instant)))
                 },
                 label = "floating_navigation_content",
               ) { showExpandedContent ->
@@ -11065,7 +11346,7 @@ private fun MainScene(
                       Text("Updating StreamDek", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
                       LinearProgressIndicator(
                         progress = { uiState.updateProgress ?: 0f },
-                        modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(999.dp)),
+                        modifier = Modifier.fillMaxWidth().height(4.dp).clip(StreamDekRadius.pill),
                         color = MaterialTheme.colorScheme.onSurface,
                         trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f),
                       )
@@ -11094,7 +11375,7 @@ private fun MainScene(
                         modifier = Modifier
                           .weight(1f)
                           .height(60.dp)
-                          .clip(RoundedCornerShape(22.dp))
+                          .clip(StreamDekRadius.panelShape)
                           .background(if (selected) MaterialTheme.colorScheme.onSurface.copy(alpha = if (lightNavigation) 0.11f else 0.15f) else Color.Transparent)
                           .clickable {
                             viewModel.clearPlayerReturnTarget()
@@ -11166,8 +11447,8 @@ private fun MainScene(
                     }
                     AnimatedVisibility(
                       visible = showNavigationCaret,
-                      enter = fadeIn(tween(180)),
-                      exit = fadeOut(tween(220)),
+                      enter = fadeIn(tween(motion.scaled(MotionDuration.short))),
+                      exit = fadeOut(tween(motion.scaled(MotionDuration.standard))),
                       modifier = Modifier.align(Alignment.Center),
                     ) {
                       NavigationCaretCue()
@@ -11198,19 +11479,19 @@ private fun MainScene(
         when {
           // Opening a detail page: gentle rise from 96% scale with a fade.
           targetState != null && initialState == null ->
-            (fadeIn(tween(240, easing = FastOutSlowInEasing)) + scaleIn(initialScale = 0.96f, animationSpec = tween(320, easing = FastOutSlowInEasing))) togetherWith
-              fadeOut(tween(140))
+            (fadeIn(tween(motion.scaled(MotionDuration.standard), easing = FastOutSlowInEasing)) + scaleIn(initialScale = 0.96f, animationSpec = tween(motion.scaled(MotionDuration.long), easing = FastOutSlowInEasing))) togetherWith
+              fadeOut(tween(motion.scaled(MotionDuration.short)))
           // Closing back to browse: quick settle without bounce.
           targetState == null && initialState != null ->
-            fadeIn(tween(220, easing = FastOutSlowInEasing)) togetherWith
-              (fadeOut(tween(170)) + scaleOut(targetScale = 0.98f, animationSpec = tween(170)))
-          else -> fadeIn(tween(200)) togetherWith fadeOut(tween(120))
+            fadeIn(tween(motion.scaled(MotionDuration.standard), easing = FastOutSlowInEasing)) togetherWith
+              (fadeOut(tween(motion.scaled(MotionDuration.short))) + scaleOut(targetScale = 0.98f, animationSpec = tween(motion.scaled(MotionDuration.short))))
+          else -> fadeIn(tween(motion.scaled(MotionDuration.standard))) togetherWith fadeOut(tween(motion.scaled(MotionDuration.instant)))
         }
       },
       label = "detail_transition",
     ) { detail ->
       if (uiState.profileTransitioning) {
-        ProfileHomeTransitionOverlay(uiState)
+        ProfileHomeTransitionOverlay(uiState.profiles.firstOrNull { it.id == uiState.activeProfileId })
       } else if (showAuth) {
         AuthScene(
           viewModel = viewModel,
@@ -11225,7 +11506,10 @@ private fun MainScene(
         )
       } else if (showProfilePicker) {
         ProfilePickerScreen(
-          uiState = uiState,
+          profiles = uiState.profiles,
+          profilesLoading = uiState.profilesLoading,
+          heroSections = uiState.allHomeSections.ifEmpty { uiState.homeSections },
+          pinPromptProfileId = uiState.pinPromptProfileId,
           onProfileSelected = viewModel::selectProfile,
           onSubmitProfilePin = viewModel::submitProfilePin,
           onCancelProfilePin = viewModel::cancelProfilePinPrompt,
@@ -11249,7 +11533,7 @@ private fun MainScene(
           }
         } else if (browseRow != null) {
           browseStateHolder.SaveableStateProvider("browse_row_${browseRow.id}") {
-            BrowseSectionScreen(row = browseRow, loadedItems = uiState.browseLoadedItems, returnItemId = uiState.browseReturnItemId, headerStyle = uiState.headerStyle, lastWatchedChannel = uiState.lastWatchedLiveChannel(), liveLandscapeCards = uiState.liveLandscapeCards, categoriesEnabled = uiState.liveCategoriesEnabled, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel, onBack = { viewModel.setBrowseRow(null) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { viewModel.rememberBrowseReturnItem(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onToggleWatchlist = viewModel::toggleWatchlist, onToggleFavourite = viewModel::toggleFavouriteChannel, onClearFavourites = viewModel::clearFavouriteChannels, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, onMarkWatched = viewModel::markWatched, pageableRowIds = pageableCatalogRowIds(uiState.catalogDefinitions), onLoadMore = viewModel::loadMoreRowItems)
+            BrowseSectionScreen(row = browseRow, loadedItems = uiState.browseLoadedItems, returnItemId = uiState.browseReturnItemId, headerStyle = uiState.headerStyle, lastWatchedChannel = uiState.lastWatchedLiveChannel(), networkCardStyle = uiState.networkCardStyle, liveLandscapeCards = uiState.liveLandscapeCards, categoriesEnabled = uiState.liveCategoriesEnabled, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel, onBack = { viewModel.setBrowseRow(null) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { viewModel.rememberBrowseReturnItem(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onToggleWatchlist = viewModel::toggleWatchlist, onToggleFavourite = viewModel::toggleFavouriteChannel, onClearFavourites = viewModel::clearFavouriteChannels, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, onMarkWatched = viewModel::markWatched, pageableRowIds = pageableCatalogRowIds(uiState.catalogDefinitions), onLoadMore = viewModel::loadMoreRowItems)
           }
         } else {
           AnimatedContent(
@@ -11258,9 +11542,9 @@ private fun MainScene(
               // Fade-through: the old tab exits quickly before the new one fades in,
               // so only one heavy screen draws at a time and the incoming tab gets a
               // few frames to compose while still invisible — keeps switching smooth.
-              (fadeIn(tween(210, delayMillis = 90, easing = LinearOutSlowInEasing)) +
-                scaleIn(initialScale = 0.98f, animationSpec = tween(210, delayMillis = 90, easing = LinearOutSlowInEasing))) togetherWith
-                fadeOut(tween(90, easing = FastOutLinearInEasing))
+              (fadeIn(tween(motion.scaled(MotionDuration.standard), delayMillis = motion.scaled(MotionDuration.instant), easing = LinearOutSlowInEasing)) +
+                scaleIn(initialScale = 0.98f, animationSpec = tween(motion.scaled(MotionDuration.standard), delayMillis = motion.scaled(MotionDuration.instant), easing = LinearOutSlowInEasing))) togetherWith
+                fadeOut(tween(motion.scaled(MotionDuration.instant), easing = FastOutLinearInEasing))
             },
             label = "tab_transition",
           ) { tab ->
@@ -11306,6 +11590,7 @@ private fun MainScene(
                 onSignOut = viewModel::signOut,
                 onSignIn = { showAuth = true },
                 onAppAppearanceChange = viewModel::setAppAppearance,
+                onAnimationSpeedChange = viewModel::setAnimationSpeed,
                 onAppLanguageChange = { language ->
                   viewModel.setAppLanguage(language)
                   activity?.recreate()
@@ -11363,6 +11648,7 @@ private fun MainScene(
                 onClearTrailerCacheNow = viewModel::clearTrailerCacheNow,
                 onShowHeroSynopsisChange = viewModel::setShowHeroSynopsis,
                 onContinueWatchingStyleChange = viewModel::setContinueWatchingStyle,
+                onNetworkCardStyleChange = viewModel::setNetworkCardStyle,
                 onLiveLandscapeCardsChange = viewModel::setLiveLandscapeCards,
                 onNewEpisodesLandscapeChange = viewModel::setNewEpisodesLandscape,
                 onLiveCategoriesEnabledChange = viewModel::setLiveCategoriesEnabled,
@@ -11489,6 +11775,13 @@ private fun MainScene(
           onOpenRelated = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) },
           onDownloadStream = { stream, title -> viewModel.downloadStream(stream, title) },
           isStreamDownloadEligible = { stream -> viewModel.isDownloadEligible(stream, uiState.detailIsLive) },
+          onManageSources = {
+            openDetail = null
+            viewModel.clearPlayerReturnTarget()
+            previousTab = selectedTab
+            selectedTab = MainTab.Settings
+            setSettingsRoute(SettingsRoute.Addons)
+          },
         )
       }
     }
@@ -11504,7 +11797,7 @@ private fun UpdatePromptDialog(uiState: AppUiState, onUpdate: () -> Unit, onDism
     onDismissRequest = { if (!mandatory && !uiState.updateDownloading) onDismiss() },
     title = {
       Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Box(modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)).padding(horizontal = 12.dp, vertical = 7.dp)) {
+        Box(modifier = Modifier.clip(StreamDekRadius.pill).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)).padding(horizontal = 12.dp, vertical = 7.dp)) {
           Text(if (mandatory) "Required update" else "Update available", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Black)
         }
         Text("StreamDek ${release.versionName}", fontWeight = FontWeight.Black)
@@ -11524,7 +11817,7 @@ private fun UpdatePromptDialog(uiState: AppUiState, onUpdate: () -> Unit, onDism
             Text("${(progress.coerceIn(0f, 1f) * 100).toInt()}% downloaded", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
             LinearProgressIndicator(
               progress = { progress },
-              modifier = Modifier.fillMaxWidth().height(7.dp).clip(RoundedCornerShape(999.dp)),
+              modifier = Modifier.fillMaxWidth().height(7.dp).clip(StreamDekRadius.pill),
               color = MaterialTheme.colorScheme.primary,
               trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
             )
@@ -11546,484 +11839,6 @@ private fun UpdatePromptDialog(uiState: AppUiState, onUpdate: () -> Unit, onDism
     containerColor = MaterialTheme.colorScheme.surface,
   )
 }
-
-@Composable
-private fun ProfileHomeTransitionOverlay(uiState: AppUiState) {
-  val profile = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }
-  val pulse = rememberInfiniteTransition(label = "profile_home_transition")
-  val scale by pulse.animateFloat(
-    initialValue = 0.92f,
-    targetValue = 1.06f,
-    animationSpec = infiniteRepeatable(tween(760, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-    label = "profile_avatar_pulse",
-  )
-
-  Box(
-    modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
-    contentAlignment = Alignment.Center,
-  ) {
-
-    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)) {
-      Box(
-        modifier = Modifier
-          .size(108.dp)
-          .graphicsLayer { scaleX = scale; scaleY = scale }
-          .clip(CircleShape)
-          .background(profileAvatarColor(profile?.avatarIndex ?: 0))
-          .border(3.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.88f), CircleShape),
-      ) {
-        ProfileAvatarImage(profile?.avatarIndex ?: 0, Modifier.fillMaxSize())
-      }
-      Text("Loading " + (profile?.name ?: "your profile"), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onBackground)
-      Text("Preparing your home screen", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.64f))
-      LinearProgressIndicator(
-        modifier = Modifier.width(180.dp).clip(RoundedCornerShape(999.dp)),
-        color = MaterialTheme.colorScheme.onBackground,
-        trackColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.12f),
-      )
-    }
-  }
-}
-
-@Composable
-private fun ProfilePickerScreen(
-  uiState: AppUiState,
-  onProfileSelected: (String) -> Unit,
-  onSubmitProfilePin: (String) -> Unit,
-  onCancelProfilePin: () -> Unit,
-  onManageProfiles: () -> Unit,
-  onOpenProfileManager: () -> Unit,
-) {
-  val heroItems = remember(uiState.allHomeSections, uiState.homeSections) {
-    profileSwitcherHeroItems(uiState.allHomeSections.ifEmpty { uiState.homeSections })
-  }
-  var heroIndex by rememberSaveable(heroItems.map { it.id }.joinToString("|")) { mutableStateOf(0) }
-  val heroItem = heroItems.getOrNull(heroIndex.coerceIn(0, (heroItems.size - 1).coerceAtLeast(0)))
-  var pin by rememberSaveable(uiState.pinPromptProfileId) { mutableStateOf("") }
-
-  LaunchedEffect(heroItems.size, heroIndex) {
-    if (heroItems.size <= 1) return@LaunchedEffect
-    delay(3500)
-    heroIndex = (heroIndex + 1) % heroItems.size
-  }
-
-  val context = LocalContext.current
-  val profileHazeState = rememberHazeState()
-  val lightProfile = MaterialTheme.colorScheme.background.luminance() > 0.5f
-  val profileForeground = MaterialTheme.colorScheme.onBackground
-  val pickerMetrics = profilePickerMetrics()
-  Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-    AnimatedContent(
-      targetState = heroItem,
-      modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().height(pickerMetrics.heroHeight),
-      transitionSpec = {
-        fadeIn(animationSpec = tween(720)) togetherWith fadeOut(animationSpec = tween(720))
-      },
-      label = "profile_hero_crossfade",
-    ) { currentHero ->
-      if (currentHero == null) {
-        Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
-      } else {
-        Box(modifier = Modifier.fillMaxSize()) {
-          AsyncImage(
-            model = ImageRequest.Builder(context)
-              .data(currentHero.backdrop ?: currentHero.poster)
-              .size(1280, 720)
-              .memoryCachePolicy(CachePolicy.ENABLED)
-              .diskCachePolicy(CachePolicy.ENABLED)
-              .crossfade(false)
-              .build(),
-            contentDescription = currentHero.title,
-            modifier = Modifier.fillMaxSize().hazeSource(profileHazeState),
-            contentScale = ContentScale.Crop,
-          )
-          ProfileHeroGlassPane(
-            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(220.dp),
-            hazeState = profileHazeState,
-          ) {
-            Text("TRENDING NOW", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.ExtraBold, color = Color.White.copy(alpha = 0.76f))
-            Text(
-              currentHero.title,
-              style = MaterialTheme.typography.displaySmall,
-              fontWeight = FontWeight.Black,
-              maxLines = 2,
-              overflow = TextOverflow.Ellipsis,
-              color = Color.White,
-            )
-            Text(
-              currentHero.description.ifBlank { currentHero.year ?: "" },
-              style = MaterialTheme.typography.titleMedium,
-              color = Color.White.copy(alpha = 0.80f),
-              maxLines = 3,
-              overflow = TextOverflow.Ellipsis,
-            )
-          }
-        }
-      }
-    }
-
-    Box(
-      modifier = Modifier
-        .align(Alignment.BottomCenter)
-        .fillMaxWidth()
-        .height(pickerMetrics.scrimHeight)
-        .background(
-          Brush.verticalGradient(
-            colorStops = arrayOf(
-              0.00f to Color.Transparent,
-              0.28f to MaterialTheme.colorScheme.background.copy(alpha = 0.94f),
-              1.00f to MaterialTheme.colorScheme.background,
-            ),
-          ),
-        ),
-    )
-    Column(
-      modifier = Modifier
-        .align(Alignment.BottomCenter)
-        .fillMaxWidth()
-        .padding(horizontal = pickerMetrics.contentPadding, vertical = 58.dp),
-      horizontalAlignment = Alignment.CenterHorizontally,
-      verticalArrangement = Arrangement.spacedBy(28.dp),
-    ) {
-      Text(
-        "Who's watching?",
-        style = MaterialTheme.typography.displaySmall.let {
-          if (pickerMetrics.headlineScale == 1f) it else it.copy(fontSize = it.fontSize * pickerMetrics.headlineScale)
-        },
-        fontWeight = FontWeight.Black,
-        color = profileForeground,
-      )
-      if (uiState.profilesLoading && uiState.profiles.isEmpty()) {
-        Column(
-          modifier = Modifier.height(154.dp),
-          horizontalAlignment = Alignment.CenterHorizontally,
-          verticalArrangement = Arrangement.Center,
-        ) {
-          CircularProgressIndicator(
-            modifier = Modifier.size(34.dp),
-            strokeWidth = 3.dp,
-            color = profileForeground,
-            trackColor = profileForeground.copy(alpha = 0.16f),
-          )
-          Spacer(modifier = Modifier.height(14.dp))
-          Text("Loading profiles...", color = profileForeground.copy(alpha = 0.72f), style = MaterialTheme.typography.bodyMedium)
-        }
-      } else {
-        LazyRow(
-          // Centred within whatever width is available: a handful of profiles on a wide screen
-          // should sit in the middle of it rather than hugging the leading edge, while a long list
-          // still scrolls exactly as before.
-          horizontalArrangement = Arrangement.spacedBy(pickerMetrics.avatarSpacing, Alignment.CenterHorizontally),
-          contentPadding = PaddingValues(horizontal = 4.dp),
-          modifier = Modifier.fillMaxWidth(),
-        ) {
-          items(uiState.profiles, key = { it.id }) { profile ->
-            ProfilePickerAvatar(profile = profile, avatarSize = pickerMetrics.avatarSize, onClick = { onProfileSelected(profile.id) })
-          }
-          item {
-            AddProfileAvatar(avatarSize = pickerMetrics.avatarSize, onClick = onManageProfiles)
-          }
-        }
-        Button(
-          onClick = onOpenProfileManager,
-          colors = ButtonDefaults.buttonColors(
-            containerColor = if (lightProfile) MaterialTheme.colorScheme.surfaceVariant else Color(0xFF171717),
-            contentColor = MaterialTheme.colorScheme.onSurface,
-          ),
-          shape = RoundedCornerShape(999.dp),
-        ) {
-          Text("Manage Profiles", fontWeight = FontWeight.Bold)
-        }
-      }
-    }
-    uiState.pinPromptProfileId?.let { profileId ->
-      val profile = uiState.profiles.firstOrNull { it.id == profileId }
-      ProfilePinPadScreen(
-        profile = profile,
-        pin = pin,
-        onPinChange = { updated -> pin = updated.filter(Char::isDigit).take(4) },
-        onSubmit = {
-          if (pin.length == 4) {
-            onSubmitProfilePin(pin)
-            pin = ""
-          }
-        },
-        onBack = { pin = ""; onCancelProfilePin() },
-      )
-    }
-  }
-}
-
-@Composable
-private fun ProfileHeroGlassPane(
-  modifier: Modifier = Modifier,
-  hazeState: HazeState,
-  content: @Composable ColumnScope.() -> Unit,
-) {
-  FrostedGlassSurface(
-    modifier = modifier,
-    shape = RectangleShape,
-    hazeStateOverride = hazeState,
-    blurRadius = 68f,
-    tintAlpha = 0.06f,
-    borderAlpha = 0f,
-    baseAlpha = 0.08f,
-    fillColorOverride = Color.White,
-    showEdgeGradient = false,
-  ) {
-    Box(
-      modifier = Modifier
-        .matchParentSize()
-        .background(
-          Brush.verticalGradient(
-            colorStops = arrayOf(
-              0.00f to Color.Black.copy(alpha = 0.08f),
-              0.48f to Color.Black.copy(alpha = 0.28f),
-              0.80f to Color.Black.copy(alpha = 0.72f),
-              1.00f to Color.Black,
-            ),
-          ),
-        ),
-    )
-    Column(
-      // The synopsis is prose, and prose set across the full width of a tablet is genuinely harder
-      // to read — the eye loses the start of the next line. Capping it leaves the artwork spanning
-      // the whole pane while the text stays a comfortable column against the leading edge.
-      modifier = Modifier
-        .fillMaxWidth()
-        .widthIn(max = LocalStreamDekSpacing.current.readableContentWidth)
-        .padding(horizontal = 24.dp, vertical = 22.dp),
-      verticalArrangement = Arrangement.spacedBy(10.dp),
-      content = content,
-    )
-  }
-}
-
-private fun profileAvatarResId(index: Int): Int {
-  val avatars = listOf(
-    R.drawable.profile_avatar_1,
-    R.drawable.profile_avatar_2,
-    R.drawable.profile_avatar_3,
-    R.drawable.profile_avatar_4,
-    R.drawable.profile_avatar_5,
-    R.drawable.profile_avatar_6,
-    R.drawable.profile_avatar_7,
-    R.drawable.profile_avatar_8,
-    R.drawable.profile_avatar_9,
-    R.drawable.profile_avatar_10,
-    R.drawable.profile_avatar_11,
-    R.drawable.profile_avatar_12,
-  )
-  return avatars[index.floorMod(avatars.size)]
-}
-
-@Composable
-private fun ProfilePinPadScreen(
-  profile: StreamProfile?,
-  pin: String,
-  onPinChange: (String) -> Unit,
-  onSubmit: () -> Unit,
-  onBack: () -> Unit,
-) {
-  BackHandler(onBack = onBack)
-  LaunchedEffect(pin) {
-    if (pin.length == 4) onSubmit()
-  }
-  Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-    GlassCircleButton(
-      onClick = onBack,
-      modifier = Modifier
-        .align(Alignment.TopStart)
-        .statusBarsPadding()
-        .padding(start = 24.dp, top = 34.dp)
-        .size(54.dp),
-    ) {
-      Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onBackground, modifier = Modifier.size(34.dp))
-    }
-    Column(
-      modifier = Modifier
-        .align(Alignment.TopCenter)
-        .padding(horizontal = 34.dp)
-        .offset(y = 178.dp),
-      horizontalAlignment = Alignment.CenterHorizontally,
-      verticalArrangement = Arrangement.spacedBy(18.dp),
-    ) {
-      Box(
-        modifier = Modifier
-          .size(104.dp)
-          .clip(CircleShape)
-          .background(profileAvatarColor(profile?.avatarIndex ?: 0)),
-        contentAlignment = Alignment.Center,
-      ) {
-        if (profile != null) ProfileAvatarImage(avatarIndex = profile.avatarIndex, modifier = Modifier.fillMaxSize())
-      }
-      Text(profile?.name ?: "Profile", color = MaterialTheme.colorScheme.onBackground, fontSize = 32.sp, lineHeight = 36.sp, fontWeight = FontWeight.Bold)
-      Text("Enter your PIN", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.70f), fontSize = 20.sp, lineHeight = 24.sp)
-      Row(horizontalArrangement = Arrangement.spacedBy(22.dp), modifier = Modifier.padding(top = 14.dp)) {
-        repeat(4) { index ->
-          Box(
-            modifier = Modifier
-              .size(16.dp)
-              .clip(CircleShape)
-              .background(MaterialTheme.colorScheme.onBackground.copy(alpha = if (index < pin.length) 0.92f else 0.22f)),
-          )
-        }
-      }
-      Column(
-        modifier = Modifier.padding(top = 36.dp),
-        verticalArrangement = Arrangement.spacedBy(9.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-      ) {
-        listOf(listOf("1", "2", "3"), listOf("4", "5", "6"), listOf("7", "8", "9"), listOf("", "0", "delete")).forEach { row ->
-          Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-            row.forEach { key ->
-              PinPadButton(
-                label = key,
-                onClick = {
-                  when {
-                    key.isBlank() -> Unit
-                    key == "delete" -> onPinChange(pin.dropLast(1))
-                    pin.length < 4 -> onPinChange(pin + key)
-                  }
-                },
-              )
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-@Composable
-private fun PinPadButton(label: String, onClick: () -> Unit) {
-  Box(
-    modifier = Modifier
-      .size(width = 64.dp, height = 47.dp)
-      .clip(RoundedCornerShape(16.dp))
-      .background(if (label.isBlank()) Color.Transparent else MaterialTheme.colorScheme.surfaceVariant)
-      .clickable(enabled = label.isNotBlank(), onClick = onClick),
-    contentAlignment = Alignment.Center,
-  ) {
-    if (label == "delete") {
-      Icon(Icons.AutoMirrored.Rounded.Backspace, contentDescription = "Delete digit", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(22.dp))
-    } else {
-      Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 21.sp, lineHeight = 23.sp, fontWeight = FontWeight.Medium)
-    }
-  }
-}
-@Composable
-private fun ProfileAvatarImage(avatarIndex: Int, modifier: Modifier = Modifier) {
-  Image(
-    painter = painterResource(profileAvatarResId(avatarIndex)),
-    contentDescription = null,
-    modifier = modifier,
-    contentScale = ContentScale.Crop,
-  )
-}
-
-@Composable
-private fun ProfileAvatarPicker(selectedAvatarIndex: Int, onSelect: (Int) -> Unit) {
-  LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-    items((0 until 12).toList(), key = { "profile-avatar-$it" }) { index ->
-      Box(
-        modifier = Modifier
-          .size(58.dp)
-          .clip(CircleShape)
-          .background(profileAvatarColor(index))
-          .border(2.dp, if (selectedAvatarIndex == index) Color.White else Color.Transparent, CircleShape)
-          .clickable { onSelect(index) },
-        contentAlignment = Alignment.Center,
-      ) {
-        ProfileAvatarImage(avatarIndex = index, modifier = Modifier.fillMaxSize())
-        if (selectedAvatarIndex == index) {
-          Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = Color.White, modifier = Modifier.align(Alignment.BottomEnd).size(18.dp))
-        }
-      }
-    }
-  }
-}
-
-@Composable
-private fun ProfilePickerAvatar(profile: StreamProfile, avatarSize: Dp = 92.dp, onClick: () -> Unit) {
-  // The lock badge and its icon are sized against the avatar so the proportions hold as it grows.
-  val badgeSize = avatarSize * 0.28f
-  Column(
-    horizontalAlignment = Alignment.CenterHorizontally,
-    verticalArrangement = Arrangement.spacedBy(24.dp),
-    modifier = Modifier.width(avatarSize + 8.dp).clickable(onClick = onClick),
-  ) {
-    Box(
-      modifier = Modifier
-        .size(avatarSize + 8.dp),
-      contentAlignment = Alignment.Center,
-    ) {
-      Box(
-        modifier = Modifier
-          .size(avatarSize)
-          .clip(CircleShape)
-          .background(profileAvatarColor(profile.avatarIndex)),
-      ) {
-        ProfileAvatarImage(avatarIndex = profile.avatarIndex, modifier = Modifier.fillMaxSize())
-      }
-      if (profile.hasPinSet) {
-        Box(
-          modifier = Modifier
-            .align(Alignment.BottomEnd)
-            .size(badgeSize)
-            .clip(CircleShape)
-            .background(Color.White)
-            .border(2.dp, Color.Black, CircleShape),
-          contentAlignment = Alignment.Center,
-        ) {
-          Icon(Icons.Rounded.Lock, contentDescription = "PIN protected", tint = Color.Black, modifier = Modifier.size(badgeSize * 0.62f))
-        }
-      }
-    }
-    Text(
-      profile.name,
-      maxLines = 1,
-      overflow = TextOverflow.Ellipsis,
-      style = MaterialTheme.typography.titleMedium,
-      color = MaterialTheme.colorScheme.onBackground,
-    )
-  }
-}
-
-@Composable
-private fun AddProfileAvatar(avatarSize: Dp = 92.dp, onClick: () -> Unit) {
-  Column(
-    horizontalAlignment = Alignment.CenterHorizontally,
-    verticalArrangement = Arrangement.spacedBy(24.dp),
-    modifier = Modifier.width(avatarSize + 20.dp).clickable(onClick = onClick),
-  ) {
-    Box(
-      modifier = Modifier
-        .size(avatarSize)
-        .clip(CircleShape)
-        .background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.08f))
-        .border(2.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.28f), CircleShape),
-      contentAlignment = Alignment.Center,
-    ) {
-      Text("+", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.78f))
-    }
-    Text("Add Profile", maxLines = 1, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onBackground)
-  }
-}
-
-private fun profileAvatarColor(index: Int): Color {
-  val colors = listOf(
-    Color(0xFFE51E2A),
-    Color(0xFFF4D81E),
-    Color(0xFF1367F2),
-    Color(0xFF16A34A),
-    Color(0xFFB91C1C),
-    Color(0xFF7C3AED),
-  )
-  return colors[index.floorMod(colors.size)]
-}
-
-private fun Int.floorMod(divisor: Int): Int = ((this % divisor) + divisor) % divisor
 
 private fun TraktItem.toMediaItem(): MediaItem = MediaItem(
   id = tmdbId?.toString() ?: id,
@@ -12116,7 +11931,7 @@ internal fun progressRecordSuppressesProviderItem(record: PlaybackProgressRecord
   )
 }
 
-private fun isSeriesType(type: String): Boolean = type == "tv" || type == "series" || type == "show"
+internal fun isSeriesType(type: String): Boolean = type == "tv" || type == "series" || type == "show"
 private fun homeHeroMediaKey(item: MediaItem): String = "${if (isSeriesType(item.type)) "tv" else item.type}:${item.id}"
 
 /**
@@ -12173,19 +11988,6 @@ private fun fullSectionRow(uiState: AppUiState, row: HomeRow): HomeRow {
   val section = uiState.homeSections.firstOrNull { it.id == row.id } ?: return row
   if (section.items.size <= row.items.size) return row
   return row.copy(items = section.items.withAddonRatings(uiState))
-}
-
-private fun profileSwitcherHeroItems(sections: List<MediaSection>): List<MediaItem> {
-  // Preferred sources first, then any remaining sections as a fallback, so the
-  // hero keeps working even when the user disables or re-arranges builtin rows.
-  val preferred = listOf("trending_movies", "trending_series", "new_movies", "in_theatres", "new_series")
-    .flatMap { sectionId -> sections.firstOrNull { it.id == sectionId }?.items.orEmpty() }
-  val fallback = sections.flatMap { it.items }
-  return (preferred + fallback)
-    .filter { item -> item.type == "movie" || isSeriesType(item.type) }
-    .filter { item -> !item.backdrop.isNullOrBlank() || !item.poster.isNullOrBlank() }
-    .distinctBy { item -> "${item.type}:${item.id}" }
-    .take(12)
 }
 
 private fun mixedHeroItems(sections: List<MediaSection>, continueWatching: List<MediaItem>, watchlist: List<MediaItem>): List<MediaItem> {
@@ -12359,6 +12161,13 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
     }.map { row -> row.copy(items = row.items.distinctBy(::mediaCollectionKey)) }
   }
   val heroBackdrop = heroItems.getOrNull(pagerState.currentPage.coerceIn(0, (heroItems.size - 1).coerceAtLeast(0)))
+  // Hoisted out of the background layer below so it is remembered for as long as Home is, rather
+  // than for as long as the spotlight happens to be on screen. Scrolling down past the hero and
+  // back up again must not re-sample the palette or replay its fade.
+  val heroAmbient = rememberHomeHeroAmbientColor(
+    artworkUrl = heroBackdrop?.backdrop ?: heroBackdrop?.poster,
+    enabled = heroBackdrop != null,
+  )
 
   // Track the last handled signal so re-entering composition (e.g. returning from a
   // detail page with restored scroll state) doesn't replay an old scroll-to-top.
@@ -12374,15 +12183,30 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
     val lightMode = MaterialTheme.colorScheme.background.luminance() > 0.5f
     if (uiState.homeBackgroundMode == BackgroundMode.Cinematic && heroBackdrop != null) {
-      AsyncImage(
-        model = heroBackdrop.backdrop ?: heroBackdrop.poster,
-        contentDescription = null,
-        modifier = Modifier
-          .fillMaxSize()
-          .blur(38.dp)
-          .graphicsLayer { alpha = if (lightMode) 0.38f else 0.30f },
-        contentScale = ContentScale.Crop,
-      )
+      // Crossfaded rather than swapped. A bare AsyncImage restarts when its model changes, so
+      // turning the carousel replaced the whole page's backdrop in a single frame — the abrupt
+      // background change that made the join below the hero so obvious. Both copies are composed
+      // through the turn, and the incoming one is almost always a memory-cache hit because the
+      // spotlight above is drawing the same artwork at the same size.
+      //
+      // The duration is the one the palette and the ambient wash use, so the image, the colour and
+      // the gradient are a single transition rather than three that happen to overlap.
+      Crossfade(
+        targetState = heroBackdrop.backdrop ?: heroBackdrop.poster,
+        animationSpec = StreamDekMotion.crossfadeSpec(MotionDuration.crossfade * 3),
+        modifier = Modifier.fillMaxSize(),
+        label = "home_ambient_backdrop",
+      ) { backdropUrl ->
+        AsyncImage(
+          model = backdropUrl,
+          contentDescription = null,
+          modifier = Modifier
+            .fillMaxSize()
+            .blur(38.dp)
+            .graphicsLayer { alpha = if (lightMode) 0.38f else 0.30f },
+          contentScale = ContentScale.Crop,
+        )
+      }
       val tint = uiState.ambientTintPercent
       Box(modifier = Modifier.fillMaxSize().background(if (lightMode) MaterialTheme.colorScheme.background.copy(alpha = ambientTintAlpha(0.48f, tint)) else Color.Black.copy(alpha = ambientTintAlpha(0.36f, tint))))
       Box(
@@ -12396,6 +12220,28 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
             ),
           ),
         ),
+      )
+    }
+
+    // The join between the spotlight and the rows, in both background modes. In Cinematic it tints
+    // a blurred backdrop that already spans the whole page; in Normal it is the entire mechanism,
+    // since there is otherwise nothing but flat page colour under the rows. Either way it is drawn
+    // here — behind the list, in the page's own coordinate space — because the thing it has to
+    // cross is the edge of the list's first item.
+    if (heroItems.isNotEmpty()) {
+      HomeHeroAmbientBleed(
+        ambient = heroAmbient,
+        heroHeight = homeHeroHeight(),
+        lightMode = lightMode,
+        tintPercent = uiState.ambientTintPercent,
+        // The spotlight item's own offset, not the raw scroll position: it already accounts for
+        // content padding and for the item having left the viewport, so the wash tracks the edge it
+        // is blending exactly and needs no arithmetic of its own. Read in the draw phase, so a
+        // scroll moves it without recomposing anything.
+        heroTopOffset = {
+          listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == 0 }?.offset
+            ?: HomeHeroBleedParkedOffset
+        },
       )
     }
 
@@ -12420,12 +12266,155 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
       itemsIndexed(rows, key = { _, row -> row.id }) { index, row ->
         Column {
           if (heroItems.isNotEmpty() && index > 0) Spacer(modifier = Modifier.height(14.dp))
-          HomeStrip(rowId = row.id, title = row.title, items = row.items, continueWatchingStyle = uiState.continueWatchingStyle, liveLandscapeCards = uiState.liveLandscapeCards, newEpisodesLandscape = uiState.newEpisodesLandscape, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = handoffDevices, onRefreshHandoffDevices = onRefreshHandoffDevices, onHandoffLive = onHandoffLive, onHandoffContinueWatching = onHandoffContinueWatching, onOpen = onOpen, onViewAll = { onViewAll(row) }, onToggleWatchlist = onToggleWatchlist, onToggleFavourite = onToggleFavourite, onEnableAddon = onEnableAddon, onMarkWatched = onMarkWatched, onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched, onRestartFromBeginning = onRestartFromBeginning, onRemoveFromContinueWatching = onRemoveFromContinueWatching, onPlayContinueWatching = onPlayContinueWatching)
+          HomeStrip(rowId = row.id, title = row.title, items = row.items, continueWatchingStyle = uiState.continueWatchingStyle, networkCardStyle = uiState.networkCardStyle, liveLandscapeCards = uiState.liveLandscapeCards, newEpisodesLandscape = uiState.newEpisodesLandscape, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = handoffDevices, onRefreshHandoffDevices = onRefreshHandoffDevices, onHandoffLive = onHandoffLive, onHandoffContinueWatching = onHandoffContinueWatching, onOpen = onOpen, onViewAll = { onViewAll(row) }, onToggleWatchlist = onToggleWatchlist, onToggleFavourite = onToggleFavourite, onEnableAddon = onEnableAddon, onMarkWatched = onMarkWatched, onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched, onRestartFromBeginning = onRestartFromBeginning, onRemoveFromContinueWatching = onRemoveFromContinueWatching, onPlayContinueWatching = onPlayContinueWatching)
         }
       }
     }
   }
   }
+}
+
+/**
+ * How tall the spotlight is.
+ *
+ * A fixed 640dp is most of a phone's screen and all of a landscape tablet's, which leaves the
+ * spotlight filling the window with nothing beneath it — the rows that make Home worth opening end
+ * up entirely below the fold. Capping it against the window's own height keeps the next row
+ * showing, which is what invites a scroll.
+ *
+ * Shared with [HomeHeroAmbientBleed], which has to know exactly where the hero stops in order to
+ * carry its colour across that line.
+ */
+@Composable
+private fun homeHeroHeight(): Dp = minOf(640.dp, LocalWindowSize.current.heightDp * 0.72f)
+
+/** The strip the carousel dots sit in, below the artwork and inside the same list item. */
+private val HomeHeroDotsLaneHeight = 26.dp
+
+/**
+ * Where the ambient wash sits when the spotlight is not on screen at all.
+ *
+ * Far enough above the viewport that nothing of it is drawn. Parking it rather than removing it
+ * from composition means scrolling back to the top brings it straight back, with no re-sample and
+ * no second fade-in.
+ */
+private const val HomeHeroBleedParkedOffset = -100_000
+
+/**
+ * The hero's own colour, carried across the line where the hero stops.
+ *
+ * # The seam this exists to remove
+ *
+ * The spotlight is the first item of a `LazyColumn`, so it has a hard bottom edge at a known pixel
+ * row, and everything below it is drawn on the page background. The hero used to end by painting a
+ * gradient *to* that background - opaque by its last pixel - which meant the bottom of the hero was
+ * flat page colour while the strip immediately beneath it showed the Cinematic ambient wash. Two
+ * different colours meeting at a straight horizontal line: the page read as two stacked panels.
+ *
+ * The fix is in two halves and neither of them is a rectangle laid over the join:
+ *
+ * 1. The artwork is **alpha-masked** out over the bottom of the hero rather than covered up (see
+ *    the mask in [HomeHeroCarousel]), so whatever is behind it - page background, or the blurred
+ *    Cinematic backdrop - is the same surface above the line and below it. A boundary between two
+ *    parts of one continuous painted surface cannot be seen.
+ * 2. This layer adds the hero's own colour on top of that surface, as one gradient whose peak
+ *    straddles the boundary and which is still changing gently as it crosses. It is drawn *behind*
+ *    the list, in the page's coordinate space rather than the item's, so it does not care where the
+ *    item ends.
+ *
+ * Multi-stop on purpose: a two-colour ramp of this length puts a visible Mach band across the
+ * middle of it, which would simply move the seam rather than remove it.
+ *
+ * Decorative only - no background, no pointer input, nothing measured against it - so it cannot
+ * intercept a touch or change how the list scrolls. The translation is read in the draw phase, so
+ * scrolling moves it without recomposing anything.
+ */
+@Composable
+private fun HomeHeroAmbientBleed(
+  ambient: Color?,
+  heroHeight: Dp,
+  lightMode: Boolean,
+  tintPercent: Int,
+  /** Where the spotlight item's top edge currently is, so the wash stays glued to it. */
+  heroTopOffset: () -> Int,
+  modifier: Modifier = Modifier,
+) {
+  if (ambient == null) return
+  val laneHeight = HomeHeroDotsLaneHeight
+  // How far past the dots lane the colour keeps going before it is gone. Long enough that the top
+  // of the first row is still standing on it, which is what stops the row reading as a new panel.
+  val tailHeight = 260.dp
+  // Light themes take the wash at roughly two-thirds strength: the same alpha over a pale page is
+  // a much larger perceptual change than it is over a dark one, and it turns readable text grey.
+  val strength = if (lightMode) 0.62f else 1f
+  Box(
+    modifier = modifier
+      .fillMaxSize()
+      .graphicsLayer { translationY = heroTopOffset().toFloat() }
+      .drawBehind {
+        val hero = heroHeight.toPx()
+        val lane = laneHeight.toPx()
+        val end = hero + lane + tailHeight.toPx()
+        if (end <= 0f) return@drawBehind
+        fun at(y: Float) = (y / end).coerceIn(0f, 1f)
+        fun wash(alpha: Float) = ambient.copy(alpha = ambientTintAlpha(alpha * strength, tintPercent))
+        drawRect(
+          brush = Brush.verticalGradient(
+            colorStops = arrayOf(
+              // Nothing at all for the top half: that is artwork at full opacity, and tinting it
+              // would be colouring the image rather than blending away from it.
+              0f to Color.Transparent,
+              at(hero * 0.52f) to Color.Transparent,
+              at(hero * 0.72f) to wash(0.20f),
+              at(hero * 0.88f) to wash(0.32f),
+              // The peak sits *on* the boundary and is barely moving as it crosses it, which is
+              // the whole trick: there is no rate of change for the eye to catch.
+              at(hero) to wash(0.34f),
+              at(hero + lane) to wash(0.29f),
+              at(hero + lane + tailHeight.toPx() * 0.4f) to wash(0.16f),
+              1f to Color.Transparent,
+            ),
+            startY = 0f,
+            endY = end,
+          ),
+        )
+      },
+  )
+}
+
+/**
+ * The spotlight's palette, held across a carousel turn.
+ *
+ * Unlike [rememberDominantBackgroundColor], which forgets its answer the moment the artwork changes,
+ * this keeps the outgoing hero's colour until the incoming one has actually been sampled. On a page
+ * whose whole background is derived from that colour, dropping to the theme default for the second
+ * or two the sample takes is a flash of grey between two palettes - which is exactly what the
+ * carousel must not do. `DominantColor` caches per image, so a hero that has been shown before
+ * resolves without any work at all.
+ */
+@Composable
+private fun rememberHomeHeroAmbientColor(artworkUrl: String?, enabled: Boolean): Color? {
+  val context = LocalContext.current
+  val themeBackground = MaterialTheme.colorScheme.background
+  val lightTheme = themeBackground.luminance() > 0.5f
+  // Not keyed on the artwork: that is the point.
+  var settled by remember { mutableStateOf<Color?>(null) }
+  LaunchedEffect(artworkUrl, enabled, lightTheme) {
+    if (!enabled) {
+      settled = null
+      return@LaunchedEffect
+    }
+    DominantColor.forArtwork(context, artworkUrl, lightTheme)?.let { settled = it }
+  }
+  val motion = LocalMotionSettings.current
+  val animated by animateColorAsState(
+    targetValue = settled ?: themeBackground,
+    // The artwork, the palette and this wash all move together on one duration, so a carousel turn
+    // is one transition rather than three that happen to overlap.
+    animationSpec = tween(durationMillis = motion.crossfade(MotionDuration.crossfade * 3), easing = FastOutSlowInEasing),
+    label = "home_hero_ambient",
+  )
+  return if (settled == null) null else animated
 }
 
 private fun homeHeroPageOffset(
@@ -12548,13 +12537,8 @@ private fun HomeHeroCarousel(
   ) {
     val currentPage = pagerState.currentPage.coerceIn(items.indices)
     val currentItem = items[currentPage]
-    // A fixed 640dp is most of a phone's screen and all of a landscape tablet's, which leaves the
-    // spotlight filling the window with nothing beneath it — the rows that make Home worth opening
-    // end up entirely below the fold. Capping it against the window's own height keeps the next row
-    // showing, which is what invites a scroll.
-    val heroHeight = minOf(640.dp, LocalWindowSize.current.heightDp * 0.72f)
-    val heroDotsLaneHeight = 26.dp
-    val heroBoundaryFadeHeight = 260.dp
+    val heroHeight = homeHeroHeight()
+    val heroDotsLaneHeight = HomeHeroDotsLaneHeight
     val heroItemSpacing = if (maxWidth < 390.dp) 4.dp else if (showSynopsis) 8.dp else 6.dp
     val heroCtaSpacing = if (maxWidth < 390.dp || !showSynopsis) 4.dp else 7.dp
     // Which pages can be on screen at all.
@@ -12583,6 +12567,44 @@ private fun HomeHeroCarousel(
       ) { Box(modifier = Modifier.fillMaxSize()) }
 
       Box(modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().height(heroHeight).clip(RectangleShape)) {
+        // The artwork stack, dissolved rather than covered.
+        //
+        // What used to be here was a gradient painted *over* the bottom of the hero, ending at the
+        // page background at full opacity — which is what made the hero's last pixel row a
+        // different colour from the first row beneath it, and hid the Cinematic ambient wash that
+        // was visible on the other side of the line. Alpha-masking the stack instead means the
+        // artwork thins out into whatever is already behind it, so both sides of the boundary are
+        // literally the same surface and there is no edge to find. HomeHeroAmbientBleed then
+        // carries the hero's colour across that surface.
+        //
+        // The mask carrier is deliberately a separate, *static* box: put the mask on the parallax
+        // layer below and the feather would slide down the hero as the page scrolled, taking the
+        // artwork's edge with it.
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            // Required for DstIn: the mask has to be composited against this layer's own alpha
+            // rather than against whatever has already been drawn underneath it.
+            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+            .drawWithContent {
+              drawContent()
+              drawRect(
+                brush = Brush.verticalGradient(
+                  colorStops = arrayOf(
+                    // Six stops, not two. A straight ramp over this distance shows a Mach band
+                    // across its middle, which would only move the seam rather than remove it.
+                    0.00f to Color.Black,
+                    0.56f to Color.Black,
+                    0.74f to Color.Black.copy(alpha = 0.88f),
+                    0.86f to Color.Black.copy(alpha = 0.54f),
+                    0.95f to Color.Black.copy(alpha = 0.18f),
+                    1.00f to Color.Transparent,
+                  ),
+                ),
+                blendMode = BlendMode.DstIn,
+              )
+            },
+        ) {
         Box(modifier = Modifier.fillMaxSize().graphicsLayer { translationY = scrollOffset().toFloat() * 0.46f }) {
           heroPages.forEach { page ->
             key(page) {
@@ -12619,7 +12641,12 @@ private fun HomeHeroCarousel(
             }
           }
 
-          if (!lightMode) {
+          // What the hero's white title and metadata sit on. Inside the mask, so it thins out with
+          // the artwork it is darkening instead of surviving as a band of its own — which is what
+          // lets it be this strong without producing an edge.
+          //
+          // The light theme gets one too now, where it previously had none: white text over pale
+          // artwork was already marginal, and the dissolve below leaves less image behind it.
           Box(
             modifier = Modifier
               .align(Alignment.BottomCenter)
@@ -12627,24 +12654,16 @@ private fun HomeHeroCarousel(
               .height(240.dp)
               .background(
                 Brush.verticalGradient(
-                  colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.42f), Color.Black),
+                  colors = if (lightMode) {
+                    listOf(Color.Transparent, Color.Black.copy(alpha = 0.30f), Color.Black.copy(alpha = 0.72f))
+                  } else {
+                    listOf(Color.Transparent, Color.Black.copy(alpha = 0.42f), Color.Black)
+                  },
                 ),
               ),
           )
-          }
 
         }
-
-        if (!lightMode) {
-          Box(
-            modifier = Modifier
-              .align(Alignment.BottomCenter)
-              .fillMaxWidth()
-              .height(heroBoundaryFadeHeight / 2)
-              .background(
-                Brush.verticalGradient(listOf(Color.Transparent, MaterialTheme.colorScheme.background)),
-              ),
-          )
         }
 
         Column(
@@ -12706,7 +12725,7 @@ private fun HomeHeroCarousel(
           Button(
             onClick = { onOpen(currentItem) },
             colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black),
-            shape = RoundedCornerShape(999.dp),
+            shape = StreamDekRadius.pill,
             modifier = Modifier.fillMaxWidth(0.68f),
           ) {
             Text("View Details", fontWeight = FontWeight.ExtraBold)
@@ -12878,7 +12897,7 @@ private fun NetworkBrowseScreen(network: MediaItem, headerStyle: HeaderStyle, on
       Box(modifier = Modifier.align(Alignment.TopCenter).zIndex(2f).fillMaxWidth().statusBarsPadding().padding(start = 16.dp, end = 16.dp, top = 12.dp)) {
         FrostedGlassSurface(
           modifier = Modifier.fillMaxWidth().height(204.dp),
-          shape = RoundedCornerShape(30.dp),
+          shape = StreamDekRadius.sheetShape,
           hazeStateOverride = headerHazeState,
           blurRadius = 68f,
           contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
@@ -12964,7 +12983,7 @@ private fun NetworkCatalogHeaderContent(
       leadingIcon = { Icon(Icons.Rounded.Search, null) },
       trailingIcon = if (query.isNotBlank()) ({ IconButton(onClick = { onQueryChange("") }) { Icon(Icons.Rounded.Close, "Clear") } }) else null,
       singleLine = true,
-      shape = RoundedCornerShape(18.dp),
+      shape = StreamDekRadius.cardShape,
     )
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
       SearchDiscoverField("Type", when (type) { "movie" -> "Movies"; "tv" -> "Series"; else -> "Type" }, Modifier.weight(1f)) { onOpenFilter("type") }
@@ -12992,9 +13011,9 @@ private fun NetworkCatalogLandscapeCard(item: MediaItem, modifier: Modifier = Mo
   Box(
     modifier = modifier
       .aspectRatio(16f / 10f)
-      .clip(RoundedCornerShape(18.dp))
+      .clip(StreamDekRadius.cardShape)
       .background(MaterialTheme.colorScheme.surface)
-      .border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.10f), RoundedCornerShape(18.dp))
+      .border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.10f), StreamDekRadius.cardShape)
       .clickable(onClick = onClick),
   ) {
     AsyncImage(
@@ -13221,8 +13240,12 @@ internal fun buildBrowseCategories(items: List<MediaItem>): List<BrowseCategory>
   return grouped
     .map { (name, group) -> BrowseCategory(name, group) }
     .sortedWith(
+      // Alphabetical, not biggest-first. Size order reads as arbitrary to anyone scanning for a
+      // known category name - the position of "Sports" moves with whatever the provider happened
+      // to publish - and the category picker is used to find a named section, not to discover the
+      // largest one. The catch-all groups stay pinned to the end, where they are a fallback rather
+      // than a destination.
       compareBy<BrowseCategory> { it.name in trailingCategoryNames }
-        .thenByDescending { it.items.size }
         .thenBy { it.name.lowercase() },
     )
 }
@@ -13417,98 +13440,110 @@ private fun LiveChannelsBrowseScreen(
       // The page draws edge to edge, so the list has to be told where the status bar ends. Without
       // this the header scrolls up underneath the clock instead of starting below it.
       modifier = Modifier.fillMaxSize().statusBarsPadding(),
-      contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 126.dp),
+      // No horizontal padding here: the pinned block needs to paint edge to edge, so the 20dp
+      // margin is applied per item instead.
+      contentPadding = PaddingValues(top = 20.dp, bottom = 126.dp),
       verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-      item(key = "header") {
-        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-          GlassCircleButton(onClick = onBack) {
-            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onBackground)
+      // Everything above the channel list is pinned: back/title/count, the search box, the
+      // scope chips and the section count. An IPTV list runs to tens of thousands of rows, so
+      // with these scrolling away the only way back to search or the category picker was to
+      // fling all the way to the top. The list scrolls underneath instead.
+      stickyHeader(key = "controls") {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            // Opaque, and drawn outside the list padding, so channels passing underneath do
+            // not show through at the margins.
+            .background(MaterialTheme.colorScheme.background)
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 12.dp),
+          verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+          Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            GlassCircleButton(onClick = onBack) {
+              Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onBackground)
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+              AdaptivePageTitle(title = title, maxLines = 2)
+              Text(
+                "${items.size.formattedItemCount()} channel${if (items.size == 1) "" else "s"}",
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.60f),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+              )
+            }
+            if (onClearFavourites != null && favouriteItems.isNotEmpty()) {
+              GlassCircleButton(onClick = { showClearConfirm = true }) {
+                Icon(Icons.Rounded.DeleteSweep, contentDescription = "Clear favourites", tint = MaterialTheme.colorScheme.onBackground)
+              }
+            }
           }
-          Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            AdaptivePageTitle(title = title, maxLines = 2)
+          OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { InputGuideText("Search channels") },
+            leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+            trailingIcon = if (query.isNotBlank()) ({ IconButton(onClick = { query = "" }) { Icon(Icons.Rounded.Close, "Clear") } }) else null,
+            singleLine = true,
+            shape = StreamDekRadius.cardShape,
+          )
+          Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+          ) {
+            FilterChip(
+              selected = scope == LiveChannelScope.All,
+              onClick = { scope = LiveChannelScope.All; selectedCategory = null },
+              label = { Text("All channels") },
+            )
+            if (!isFavouritesRow) {
+              FilterChip(
+                selected = scope == LiveChannelScope.Favourites,
+                onClick = { scope = LiveChannelScope.Favourites; selectedCategory = null },
+                label = { Text("Favourites") },
+              )
+            }
+            if (categories.size >= 2) {
+              FilterChip(
+                selected = scope == LiveChannelScope.Category,
+                onClick = { showCategorySheet = true },
+                label = { Text(selectedCategory?.takeIf { scope == LiveChannelScope.Category } ?: "Choose category") },
+                trailingIcon = { Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(18.dp)) },
+              )
+            }
+          }
+          Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
-              "${items.size.formattedItemCount()} channel${if (items.size == 1) "" else "s"}",
-              color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.60f),
-              style = MaterialTheme.typography.bodyMedium,
+              when {
+                scope == LiveChannelScope.Favourites -> "Favourites"
+                scope == LiveChannelScope.Category -> selectedCategory.orEmpty()
+                else -> "Channels"
+              },
+              modifier = Modifier.weight(1f),
+              color = MaterialTheme.colorScheme.onBackground,
+              style = MaterialTheme.typography.titleSmall,
+              fontWeight = FontWeight.Black,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+              "${visible.size.formattedItemCount()} channel${if (visible.size == 1) "" else "s"}",
+              color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
+              style = MaterialTheme.typography.labelLarge,
               fontWeight = FontWeight.Bold,
             )
           }
-          if (onClearFavourites != null && favouriteItems.isNotEmpty()) {
-            GlassCircleButton(onClick = { showClearConfirm = true }) {
-              Icon(Icons.Rounded.DeleteSweep, contentDescription = "Clear favourites", tint = MaterialTheme.colorScheme.onBackground)
-            }
-          }
         }
       }
 
-      // The channel the viewer left, offered before the list they would have to find it in.
+      // Content rather than a control, so it scrolls with the channels it sits above.
       lastWatched?.takeIf { candidate -> items.any { it.id == candidate.id } }?.let { channel ->
-        item(key = "resume") { LiveResumeCard(channel = channel, lightPage = lightPage, onPlay = { onOpen(channel) }) }
-      }
-
-      item(key = "search") {
-        OutlinedTextField(
-          value = query,
-          onValueChange = { query = it },
-          modifier = Modifier.fillMaxWidth(),
-          placeholder = { InputGuideText("Search channels") },
-          leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
-          trailingIcon = if (query.isNotBlank()) ({ IconButton(onClick = { query = "" }) { Icon(Icons.Rounded.Close, "Clear") } }) else null,
-          singleLine = true,
-          shape = RoundedCornerShape(18.dp),
-        )
-      }
-
-      item(key = "scopes") {
-        Row(
-          modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-          horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-          FilterChip(
-            selected = scope == LiveChannelScope.All,
-            onClick = { scope = LiveChannelScope.All; selectedCategory = null },
-            label = { Text("All channels") },
-          )
-          if (!isFavouritesRow) {
-            FilterChip(
-              selected = scope == LiveChannelScope.Favourites,
-              onClick = { scope = LiveChannelScope.Favourites; selectedCategory = null },
-              label = { Text("Favourites") },
-            )
+        item(key = "resume") {
+          Box(modifier = Modifier.padding(horizontal = 20.dp)) {
+            LiveResumeCard(channel = channel, lightPage = lightPage, onPlay = { onOpen(channel) })
           }
-          if (categories.size >= 2) {
-            FilterChip(
-              selected = scope == LiveChannelScope.Category,
-              onClick = { showCategorySheet = true },
-              label = { Text(selectedCategory?.takeIf { scope == LiveChannelScope.Category } ?: "Choose category") },
-              trailingIcon = { Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(18.dp)) },
-            )
-          }
-        }
-      }
-
-      item(key = "count") {
-        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-          Text(
-            when {
-              scope == LiveChannelScope.Favourites -> "Favourites"
-              scope == LiveChannelScope.Category -> selectedCategory.orEmpty()
-              else -> "Channels"
-            },
-            modifier = Modifier.weight(1f),
-            color = MaterialTheme.colorScheme.onBackground,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Black,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-          )
-          Text(
-            "${visible.size.formattedItemCount()} channel${if (visible.size == 1) "" else "s"}",
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.Bold,
-          )
         }
       }
 
@@ -13522,19 +13557,21 @@ private fun LiveChannelsBrowseScreen(
             },
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f),
             style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(vertical = 24.dp),
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 24.dp),
           )
         }
       }
 
       items(visible, key = { "${it.type}-${it.id}" }) { channel ->
-        LiveChannelRow(
-          channel = channel,
-          favourite = channel.id in favouriteIds,
-          lightPage = lightPage,
-          onPlay = { onOpen(channel) },
-          onToggleFavourite = { onToggleFavourite(channel) },
-        )
+        Box(modifier = Modifier.padding(horizontal = 20.dp)) {
+          LiveChannelRow(
+            channel = channel,
+            favourite = channel.id in favouriteIds,
+            lightPage = lightPage,
+            onPlay = { onOpen(channel) },
+            onToggleFavourite = { onToggleFavourite(channel) },
+          )
+        }
       }
     }
   }
@@ -13553,7 +13590,7 @@ private fun LiveResumeCard(channel: MediaItem, lightPage: Boolean, onPlay: () ->
     colors = CardDefaults.cardColors(
       containerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = if (lightPage) 0.08f else 0.06f),
     ),
-    shape = RoundedCornerShape(22.dp),
+    shape = StreamDekRadius.panelShape,
   ) {
     Row(
       modifier = Modifier.fillMaxWidth().padding(14.dp),
@@ -13588,7 +13625,7 @@ private fun LiveResumeCard(channel: MediaItem, lightPage: Boolean, onPlay: () ->
       }
       Row(
         modifier = Modifier
-          .clip(RoundedCornerShape(999.dp))
+          .clip(StreamDekRadius.pill)
           .background(MaterialTheme.colorScheme.primary)
           .clickable(onClick = onPlay)
           .padding(horizontal = 16.dp, vertical = 10.dp),
@@ -13616,7 +13653,7 @@ private fun LiveChannelRow(
     colors = CardDefaults.cardColors(
       containerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = if (lightPage) 0.07f else 0.05f),
     ),
-    shape = RoundedCornerShape(20.dp),
+    shape = StreamDekRadius.cardShape,
   ) {
     Row(
       modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 11.dp),
@@ -13653,7 +13690,7 @@ private fun LiveChannelRow(
       Box(
         modifier = Modifier
           .size(44.dp)
-          .clip(RoundedCornerShape(999.dp))
+          .clip(StreamDekRadius.pill)
           .background(MaterialTheme.colorScheme.onSurface.copy(alpha = if (lightPage) 0.10f else 0.12f))
           .clickable(onClick = onPlay),
         contentAlignment = Alignment.Center,
@@ -13675,7 +13712,7 @@ private fun LiveChannelArtwork(channel: MediaItem, size: Dp, lightPage: Boolean)
   Box(
     modifier = Modifier
       .size(size)
-      .clip(RoundedCornerShape(14.dp))
+      .clip(StreamDekRadius.thumbShape)
       .background(MaterialTheme.colorScheme.onSurface.copy(alpha = if (lightPage) 0.08f else 0.10f)),
     contentAlignment = Alignment.Center,
   ) {
@@ -13725,7 +13762,7 @@ private fun LiveCategorySheet(
               .align(Alignment.CenterHorizontally)
               .width(44.dp)
               .height(4.dp)
-              .clip(RoundedCornerShape(999.dp))
+              .clip(StreamDekRadius.pill)
               .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.22f)),
           )
           Text(
@@ -13817,7 +13854,7 @@ private fun LiveCategorySheetRow(
 }
 
 @Composable
-private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, returnItemId: String?, headerStyle: HeaderStyle, lastWatchedChannel: MediaItem? = null, liveLandscapeCards: Boolean, categoriesEnabled: Boolean = true, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onBack: () -> Unit, onOpen: (MediaItem) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onClearFavourites: () -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, pageableRowIds: Set<String> = emptySet(), onLoadMore: (suspend (String, MediaItem?, Int) -> List<MediaItem>)? = null) {
+private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, returnItemId: String?, headerStyle: HeaderStyle, lastWatchedChannel: MediaItem? = null, networkCardStyle: NetworkCardStyle = NetworkCardStyle.Branded, liveLandscapeCards: Boolean, categoriesEnabled: Boolean = true, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onBack: () -> Unit, onOpen: (MediaItem) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onClearFavourites: () -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, pageableRowIds: Set<String> = emptySet(), onLoadMore: (suspend (String, MediaItem?, Int) -> List<MediaItem>)? = null) {
   fun isFavourite(item: MediaItem): Boolean = favouriteItems.hasFavouriteChannel(item)
   var filter by rememberSaveable(row.id) { mutableStateOf(MediaFilter.All) }
   var layout by rememberSaveable(row.id) { mutableStateOf(BrowseLayout.Cards3) }
@@ -14165,9 +14202,9 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
           // refreshed for every layout — not just the landscape-card one.
           val openActions: () -> Unit = { actionItem = item; if (isLiveRow) onRefreshHandoffDevices() }
           when {
-            showsList -> BrowseListRow(item = item, favourite = isFavourite(item), dimmed = disabled, onClick = { handleOpen(item) }, onLongPress = openActions)
+            showsList -> BrowseListRow(item = item, favourite = isFavourite(item), dimmed = disabled, onClick = { handleOpen(item) }, onLongPress = openActions, networkStyle = if (isNetworkRow) networkCardStyle else null)
             isLiveRow && liveLandscapeCards -> NetworkHomeCard(item = item, sports = true, modifier = Modifier.fillMaxWidth(), dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) }, onLongPress = openActions)
-            isNetworkRow -> NetworkHomeCard(item = item, sports = false, modifier = Modifier.fillMaxWidth(), dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) })
+            isNetworkRow -> NetworkHomeCard(item = item, sports = false, branded = networkCardStyle == NetworkCardStyle.Branded, modifier = Modifier.fillMaxWidth(), dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) })
             else -> LibraryPosterTile(item = item, modifier = Modifier.alpha(if (disabled) 0.4f else 1f), showMeta = row.id == "new-episodes", favourite = isLiveRow && isFavourite(item), onClick = { handleOpen(item) }, onLongPress = openActions)
           }
         }
@@ -14195,7 +14232,7 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
           // As a side column it takes the height its own content needs, rather than the fixed band
           // height that only makes sense across the top.
           modifier = Modifier.fillMaxWidth().then(if (sideHeader) Modifier else Modifier.height(modernHeaderHeight)),
-          shape = RoundedCornerShape(30.dp),
+          shape = StreamDekRadius.sheetShape,
           hazeStateOverride = browseHazeState,
           blurRadius = 68f,
           contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
@@ -14379,7 +14416,7 @@ private fun BrowseSectionHeaderContent(
         leadingIcon = { Icon(Icons.Rounded.Search, null) },
         trailingIcon = if (query.isNotBlank()) ({ IconButton(onClick = { onQueryChange("") }) { Icon(Icons.Rounded.Close, "Clear") } }) else null,
         singleLine = true,
-        shape = RoundedCornerShape(18.dp),
+        shape = StreamDekRadius.cardShape,
       )
     }
     if (showFilters) {
@@ -14415,7 +14452,7 @@ private fun BrowseCategorizingNotice(itemCount: Int, itemNoun: String) {
   Column(
     modifier = Modifier
       .fillMaxWidth()
-      .clip(RoundedCornerShape(20.dp))
+      .clip(StreamDekRadius.cardShape)
       .background(accent.copy(alpha = 0.05f))
       .padding(horizontal = 18.dp, vertical = 20.dp),
     verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -14438,7 +14475,7 @@ private fun BrowseCategorizingNotice(itemCount: Int, itemNoun: String) {
     }
     // Indeterminate sweep: the grouping pass reports no percentage, so a bar that travels is
     // honest about "still working" without inventing progress it does not know.
-    Box(modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(999.dp)).background(accent.copy(alpha = 0.10f))) {
+    Box(modifier = Modifier.fillMaxWidth().height(4.dp).clip(StreamDekRadius.pill).background(accent.copy(alpha = 0.10f))) {
       BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val trackWidth = maxWidth
         val barWidth = trackWidth * 0.34f
@@ -14447,7 +14484,7 @@ private fun BrowseCategorizingNotice(itemCount: Int, itemNoun: String) {
             .offset(x = (trackWidth + barWidth) * sweep - barWidth)
             .width(barWidth)
             .fillMaxHeight()
-            .clip(RoundedCornerShape(999.dp))
+            .clip(StreamDekRadius.pill)
             .background(accent.copy(alpha = 0.55f)),
         )
       }
@@ -14466,14 +14503,14 @@ private fun BrowseCategoryTile(category: BrowseCategory, itemNoun: String, onCli
     modifier = Modifier
       .fillMaxWidth()
       .height(132.dp)
-      .clip(RoundedCornerShape(20.dp))
+      .clip(StreamDekRadius.cardShape)
       .background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.05f))
       .clickable(onClick = onClick)
       .padding(14.dp),
     verticalArrangement = Arrangement.SpaceBetween,
   ) {
     Box(
-      modifier = Modifier.size(40.dp).clip(RoundedCornerShape(13.dp)).background(accent.copy(alpha = 0.18f)),
+      modifier = Modifier.size(40.dp).clip(StreamDekRadius.controlShape).background(accent.copy(alpha = 0.18f)),
       contentAlignment = Alignment.Center,
     ) {
       Icon(browseCategoryIcon(category.name), contentDescription = null, tint = accent, modifier = Modifier.size(21.dp))
@@ -14517,7 +14554,19 @@ private fun BrowseSourceChips(sources: List<String>, selected: String?, onSelect
 }
 
 @Composable
-private fun NetworkHomeCard(item: MediaItem, sports: Boolean = false, modifier: Modifier = Modifier.width(176.dp), dimmed: Boolean = false, favourite: Boolean = false, onClick: () -> Unit, onLongPress: () -> Unit = {}) {
+private fun NetworkHomeCard(item: MediaItem, sports: Boolean = false, branded: Boolean = false, modifier: Modifier = Modifier.width(176.dp), dimmed: Boolean = false, favourite: Boolean = false, onClick: () -> Unit, onLongPress: () -> Unit = {}) {
+  // Live channels borrow this card for their landscape artwork and are not services, so the
+  // branded treatment is a networks-row decision only.
+  val brandedNetwork = branded && !sports
+  val tile = if (brandedNetwork) networkTileArt(item) else null
+  // The bundled logo beats the one the row supplied: that one is a provider-list thumbnail from
+  // TMDB, and its softness shows at card size. Null for a service none ships for, which is when
+  // the fetched logo is still the best picture available.
+  val logo = if (sports) null else networkLogoArt(item)
+  // Artwork fills the tile; a bare logo is fitted inside it with room to breathe. A branded row
+  // with no bundled tile for one service keeps that service on the white logo card rather than
+  // dropping a logo drawn for white -- dark ink on transparency -- onto a dark surface.
+  val fullBleed = tile != null || sports
   Column(
     modifier = modifier.alpha(if (dimmed) 0.4f else 1f),
     horizontalAlignment = Alignment.CenterHorizontally,
@@ -14527,36 +14576,41 @@ private fun NetworkHomeCard(item: MediaItem, sports: Boolean = false, modifier: 
       modifier = Modifier
         .fillMaxWidth()
         .height(104.dp)
-        .clip(RoundedCornerShape(22.dp))
-        .background(if (sports) Color(0xFF171717) else Color.White)
-        .border(1.dp, Color.Black.copy(alpha = 0.08f), RoundedCornerShape(22.dp))
-        .pointerInput(item.id, item.type) { detectTapGestures(onTap = { onClick() }, onLongPress = { onLongPress() }) }
-        .padding(horizontal = if (sports) 0.dp else 22.dp, vertical = if (sports) 0.dp else 18.dp),
+        .clip(StreamDekRadius.panelShape)
+        .background(if (tile != null) Color(0xFF0E0E0E) else if (sports) Color(0xFF171717) else Color.White)
+        .border(1.dp, if (tile != null) Color.White.copy(alpha = 0.10f) else Color.Black.copy(alpha = 0.08f), StreamDekRadius.panelShape)
+        .pressable(item.id, item.type, onClick = onClick, onLongPress = onLongPress)
+        .padding(horizontal = if (fullBleed) 0.dp else 22.dp, vertical = if (fullBleed) 0.dp else 12.dp),
       contentAlignment = Alignment.Center,
     ) {
       AsyncImage(
-        model = if (sports) item.backdrop ?: item.poster else item.poster,
+        model = tile ?: logo ?: if (sports) item.backdrop ?: item.poster else item.poster,
         contentDescription = item.title,
         modifier = Modifier.fillMaxSize(),
-        contentScale = if (sports) ContentScale.Crop else ContentScale.Fit,
+        contentScale = if (fullBleed) ContentScale.Crop else ContentScale.Fit,
       )
       if (favourite) FavouriteChannelBadge(modifier = Modifier.align(Alignment.TopEnd))
     }
-    Text(
-      item.title,
-      color = MaterialTheme.colorScheme.onBackground,
-      style = MaterialTheme.typography.bodyMedium,
-      fontWeight = FontWeight.SemiBold,
-      maxLines = 1,
-      overflow = TextOverflow.Ellipsis,
-      textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-      modifier = Modifier.fillMaxWidth(),
-    )
+    // The tile artwork is the service's own wordmark, so a caption under it only repeats it. The
+    // caption is dropped for every card in a branded row, not only the ones that found a tile,
+    // because a row of cards at two different heights reads as a mistake.
+    if (!brandedNetwork) {
+      Text(
+        item.title,
+        color = MaterialTheme.colorScheme.onBackground,
+        style = MaterialTheme.typography.bodyMedium,
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        modifier = Modifier.fillMaxWidth(),
+      )
+    }
   }
 }
 
 @Composable
-private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, continueWatchingStyle: ContinueWatchingStyle, liveLandscapeCards: Boolean, newEpisodesLandscape: Boolean = true, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onHandoffContinueWatching: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onOpen: (MediaItem) -> Unit, onViewAll: () -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, onMarkEarlierEpisodesWatched: (MediaItem) -> Unit, onRestartFromBeginning: (MediaItem) -> Unit, onRemoveFromContinueWatching: (MediaItem) -> Unit = {}, onPlayContinueWatching: (MediaItem) -> Unit) {
+private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, continueWatchingStyle: ContinueWatchingStyle, networkCardStyle: NetworkCardStyle = NetworkCardStyle.Branded, liveLandscapeCards: Boolean, newEpisodesLandscape: Boolean = true, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onHandoffContinueWatching: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onOpen: (MediaItem) -> Unit, onViewAll: () -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, onMarkEarlierEpisodesWatched: (MediaItem) -> Unit, onRestartFromBeginning: (MediaItem) -> Unit, onRemoveFromContinueWatching: (MediaItem) -> Unit = {}, onPlayContinueWatching: (MediaItem) -> Unit) {
   fun isFavourite(item: MediaItem): Boolean = favouriteItems.hasFavouriteChannel(item)
   val isAddonRow = rowId.startsWith("addon:")
   val isFavouritesRow = rowId == "favourites"
@@ -14585,7 +14639,7 @@ private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, cont
         modifier = Modifier
           .width(if (rowId == "continue") 102.dp else if (isAddonRow) 56.dp else 68.dp)
           .height(7.dp)
-          .clip(RoundedCornerShape(999.dp))
+          .clip(StreamDekRadius.pill)
           .background(MaterialTheme.colorScheme.onBackground.copy(alpha = if (rowId == "continue") 0.96f else if (isAddonRow) 0.24f else 0.32f)),
       )
     }
@@ -14598,7 +14652,7 @@ private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, cont
         if (rowId == "continue") {
           ContinueWatchingCard(item = item, style = continueWatchingStyle, onClick = { onPlayContinueWatching(item) }, onLongPress = { actionItem = item; onRefreshHandoffDevices() })
         } else if (rowId == "streaming_networks" || (isSportsRow && liveLandscapeCards)) {
-          NetworkHomeCard(item = item, sports = isSportsRow, dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) }, onLongPress = { if (isSportsRow) { actionItem = item; onRefreshHandoffDevices() } })
+          NetworkHomeCard(item = item, sports = isSportsRow, branded = networkCardStyle == NetworkCardStyle.Branded, dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) }, onLongPress = { if (isSportsRow) { actionItem = item; onRefreshHandoffDevices() } })
         } else {
           PosterCard(item = item, dimmed = disabled, landscape = rowId == "new-episodes" && newEpisodesLandscape, onClick = { handleOpen(item) }, onLongPress = { actionItem = item; if (isSportsRow) onRefreshHandoffDevices() })
         }
@@ -14673,7 +14727,7 @@ private fun LibraryHeaderPanel(
 ) {
   FrostedGlassSurface(
     modifier = modifier.fillMaxWidth(),
-    shape = RoundedCornerShape(32.dp),
+    shape = StreamDekRadius.sheetShape,
     blurRadius = 48f,
     contentPadding = PaddingValues(18.dp),
     tintAlpha = 0.17f,
@@ -14697,7 +14751,7 @@ private fun LibraryHeaderPanel(
         placeholder = { InputGuideText("Search movies & TV series...") },
         leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
         singleLine = true,
-        shape = RoundedCornerShape(22.dp),
+        shape = StreamDekRadius.panelShape,
         colors = androidx.compose.material3.TextFieldDefaults.colors(
           focusedContainerColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.08f),
           unfocusedContainerColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.06f),
@@ -15123,7 +15177,7 @@ private fun CardActionsAmbientScaffold(
           .width(196.dp)
           .aspectRatio(2f / 3f)
           .clickable(enabled = false, onClick = {}),
-        shape = RoundedCornerShape(20.dp),
+        shape = StreamDekRadius.cardShape,
         shadowElevation = 24.dp,
         color = MaterialTheme.colorScheme.surface,
       ) {
@@ -15162,7 +15216,7 @@ private fun AmbientActionRow(label: String, icon: ImageVector, onClick: () -> Un
   Row(
     modifier = Modifier
       .fillMaxWidth()
-      .clip(RoundedCornerShape(14.dp))
+      .clip(StreamDekRadius.thumbShape)
       .clickable(onClick = onClick)
       .padding(vertical = 14.dp, horizontal = 12.dp),
     horizontalArrangement = Arrangement.SpaceBetween,
@@ -15257,7 +15311,7 @@ private fun SearchGridSkeleton(columns: Int, rows: Int = 3) {
 @Composable
 private fun LibraryPosterTile(item: MediaItem, modifier: Modifier = Modifier, showMeta: Boolean = true, favourite: Boolean = false, onClick: () -> Unit, onLongPress: () -> Unit = {}) {
   Column(
-    modifier = modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surface).border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.10f), RoundedCornerShape(16.dp)).pointerInput(item.id, item.type) { detectTapGestures(onTap = { onClick() }, onLongPress = { onLongPress() }) },
+    modifier = modifier.fillMaxWidth().clip(StreamDekRadius.thumbShape).background(MaterialTheme.colorScheme.surface).border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.10f), StreamDekRadius.thumbShape).pressable(item.id, item.type, onClick = onClick, onLongPress = onLongPress),
   ) {
     Box(modifier = Modifier.fillMaxWidth().aspectRatio(0.68f)) {
       AsyncImage(model = item.poster ?: item.backdrop, contentDescription = item.title, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
@@ -15309,6 +15363,16 @@ private fun BrowseListRow(
   dimmed: Boolean,
   onClick: () -> Unit,
   onLongPress: () -> Unit,
+  /**
+   * Set for a streaming-networks row, and null everywhere else.
+   *
+   * A network is recognised by its wordmark, not by its name, and the square 44dp thumbnail below
+   * was cropping a landscape card down to a centre square - which for most services cuts the
+   * wordmark in half. When this is set the row leads with a miniature of the same card the grid
+   * draws, in whichever style is currently selected, so switching Classic/Branded changes the list
+   * and the grid together instead of only the grid.
+   */
+  networkStyle: NetworkCardStyle? = null,
 ) {
   val subtitle = listOfNotNull(
     item.cardSubtitle?.takeIf { it.isNotBlank() },
@@ -15320,22 +15384,49 @@ private fun BrowseListRow(
     modifier = Modifier
       .fillMaxWidth()
       .alpha(if (dimmed) 0.4f else 1f)
-      .clip(RoundedCornerShape(14.dp))
+      .clip(StreamDekRadius.thumbShape)
       .background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.045f))
-      .pointerInput(item.id, item.type) { detectTapGestures(onTap = { onClick() }, onLongPress = { onLongPress() }) }
+      .pressable(item.id, item.type, onClick = onClick, onLongPress = onLongPress)
       .padding(horizontal = 12.dp, vertical = 10.dp),
     horizontalArrangement = Arrangement.spacedBy(12.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
-    Box(
-      modifier = Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.08f)),
-      contentAlignment = Alignment.Center,
-    ) {
-      val artwork = item.poster ?: item.backdrop
-      if (artwork != null) {
-        AsyncImage(model = artwork, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-      } else {
-        Icon(Icons.Rounded.LiveTv, contentDescription = null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f), modifier = Modifier.size(20.dp))
+    if (networkStyle != null) {
+      // Same decisions as NetworkHomeCard, at list scale: the bundled tile is a full-bleed
+      // wordmark on its own dark ground, while a bare logo is drawn for white and has to be fitted
+      // with padding rather than cropped. Branded falls back to the logo card for any service that
+      // ships no tile, exactly as the grid does.
+      val tile = if (networkStyle == NetworkCardStyle.Branded) networkTileArt(item) else null
+      val logo = networkLogoArt(item)
+      val fullBleed = tile != null
+      Box(
+        modifier = Modifier
+          .width(76.dp)
+          .height(44.dp)
+          .clip(StreamDekRadius.controlShape)
+          .background(if (fullBleed) Color(0xFF0E0E0E) else Color.White)
+          .border(1.dp, if (fullBleed) Color.White.copy(alpha = 0.10f) else Color.Black.copy(alpha = 0.08f), StreamDekRadius.controlShape)
+          .padding(horizontal = if (fullBleed) 0.dp else 8.dp, vertical = if (fullBleed) 0.dp else 6.dp),
+        contentAlignment = Alignment.Center,
+      ) {
+        AsyncImage(
+          model = tile ?: logo ?: item.poster,
+          contentDescription = item.title,
+          modifier = Modifier.fillMaxSize(),
+          contentScale = if (fullBleed) ContentScale.Crop else ContentScale.Fit,
+        )
+      }
+    } else {
+      Box(
+        modifier = Modifier.size(44.dp).clip(StreamDekRadius.controlShape).background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.08f)),
+        contentAlignment = Alignment.Center,
+      ) {
+        val artwork = item.poster ?: item.backdrop
+        if (artwork != null) {
+          AsyncImage(model = artwork, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        } else {
+          Icon(Icons.Rounded.LiveTv, contentDescription = null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f), modifier = Modifier.size(20.dp))
+        }
       }
     }
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -15379,7 +15470,7 @@ private fun LibraryStreamDekHeader(
           if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.64f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-          Box(modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)).padding(horizontal = 12.dp, vertical = 7.dp)) {
+          Box(modifier = Modifier.clip(StreamDekRadius.pill).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)).padding(horizontal = 12.dp, vertical = 7.dp)) {
             Text("$count titles", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.82f), fontSize = 12.sp, fontWeight = FontWeight.Bold)
           }
           trailingAction?.invoke()
@@ -15400,7 +15491,7 @@ private fun LibraryStreamDekHeader(
     Box(modifier = modifier.fillMaxWidth().statusBarsPadding().padding(start = 8.dp, end = 8.dp, top = 12.dp, bottom = 6.dp)) {
       FrostedGlassSurface(
         modifier = Modifier.fillMaxWidth().height(152.dp),
-        shape = RoundedCornerShape(30.dp),
+        shape = StreamDekRadius.sheetShape,
         hazeStateOverride = hazeState,
         blurRadius = 68f,
         contentPadding = PaddingValues(horizontal = 18.dp, vertical = 16.dp),
@@ -15678,11 +15769,16 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
   val catalogGenreOptions = selectedCatalog?.catalog?.genreOptions.orEmpty()
 
   fun selectedSourceLabel(): String = selectedCatalog?.shortLabel ?: "StreamDek"
+  // With nothing chosen these read as the name of the filter rather than as a value. "All Genres"
+  // and "Any Year" describe the unfiltered result, which is what the option inside the sheet still
+  // says - but on the collapsed control it looks like a selection has been made. The sheet keeps
+  // the longer wording, because there it genuinely is one of the choices.
   fun selectedGenreLabel(): String = when {
-    selectedCatalog != null -> selectedCatalogGenre ?: if (selectedCatalog.catalog.requiresGenre) "Choose" else "All Genres"
-    else -> discoverGenres.firstOrNull { it.id == selectedGenreId }?.name ?: "All Genres"
+    selectedCatalog != null -> selectedCatalogGenre ?: if (selectedCatalog.catalog.requiresGenre) "Choose" else "Genre"
+    else -> discoverGenres.firstOrNull { it.id == selectedGenreId }?.name ?: "Genre"
   }
-  fun selectedYearLabel(): String = yearOptions.firstOrNull { it.value == selectedYear }?.label ?: "Any Year"
+  fun selectedYearLabel(): String =
+    if (selectedYear == null) "Year" else yearOptions.firstOrNull { it.value == selectedYear }?.label ?: "Year"
 
   fun loadDiscover(page: Int, append: Boolean) {
     if (discoverRequestedPage == page) return
@@ -16039,11 +16135,11 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
             horizontalArrangement = Arrangement.spacedBy(18.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
           ) {
-            SearchDiscoverField(
-              label = "Type",
-              value = discoverTypeLabel(discoverType),
-              onClick = { discoverSheet = "type" },
-            )
+            // Ordered the way the choices actually depend on each other: Source decides which
+            // catalogue is being asked, and both Genre and Year are dropped or replaced depending
+            // on what that source supports - so it belongs first, before the controls it governs.
+            // Type narrows what Source returns, then Genre and Year narrow that, ending on the
+            // two that disappear most often so the row does not reshuffle around a stable control.
             if (addonSources.isNotEmpty()) {
               SearchDiscoverField(
                 label = "Source",
@@ -16051,6 +16147,11 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
                 onClick = { discoverSheet = "source" },
               )
             }
+            SearchDiscoverField(
+              label = "Type",
+              value = discoverTypeLabel(discoverType),
+              onClick = { discoverSheet = "type" },
+            )
             // With an add-on catalog selected the control offers that catalog's own options, so
             // it is dropped entirely when that catalog declares none - a permanently greyed-out
             // "All Genres" only looks broken.
@@ -16211,7 +16312,7 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
     Box(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f).fillMaxWidth().statusBarsPadding().padding(start = 8.dp, end = 8.dp, top = 12.dp, bottom = 6.dp)) {
       FrostedGlassSurface(
         modifier = Modifier.fillMaxWidth().height(166.dp),
-        shape = RoundedCornerShape(30.dp),
+        shape = StreamDekRadius.sheetShape,
         hazeStateOverride = headerHazeState,
         blurRadius = 68f,
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
@@ -16260,7 +16361,7 @@ private fun SearchDiscoverField(
   Row(
     modifier = modifier
       .heightIn(min = 28.dp)
-      .clip(RoundedCornerShape(12.dp))
+      .clip(StreamDekRadius.controlShape)
       .clickable(enabled = enabled, onClick = onClick)
       .padding(vertical = 2.dp),
     horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -16302,7 +16403,7 @@ private fun SearchSelectionDialog(
           .fillMaxWidth()
           .padding(horizontal = 16.dp, vertical = 18.dp)
           .clickable(enabled = false, onClick = {}),
-        shape = RoundedCornerShape(28.dp),
+        shape = StreamDekRadius.sheetShape,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
       ) {
         Column(
@@ -16323,7 +16424,7 @@ private fun SearchSelectionDialog(
               OutlinedButton(
                 onClick = option.onSelect,
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
+                shape = StreamDekRadius.cardShape,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = if (option.selected) 0.26f else 0.10f)),
                 colors = ButtonDefaults.outlinedButtonColors(
                   containerColor = if (option.selected) MaterialTheme.colorScheme.onBackground.copy(alpha = 0.12f) else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.04f),
@@ -16376,7 +16477,7 @@ private fun SearchHeader(
       placeholder = { InputGuideText("Search movies, TV and catalogs") },
       leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
       trailingIcon = if (query.isNotBlank()) ({ IconButton(onClick = onClear) { Icon(Icons.Rounded.Close, contentDescription = "Clear") } }) else null,
-      shape = RoundedCornerShape(20.dp),
+      shape = StreamDekRadius.cardShape,
       colors = androidx.compose.material3.TextFieldDefaults.colors(
         focusedContainerColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.07f),
         unfocusedContainerColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.05f),
@@ -16431,15 +16532,15 @@ private fun SearchRecentRow(query: String, onSearchPress: () -> Unit, onRemovePr
   Row(
     modifier = Modifier
       .fillMaxWidth()
-      .clip(RoundedCornerShape(20.dp))
+      .clip(StreamDekRadius.cardShape)
       .background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.035f))
-      .border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.06f), RoundedCornerShape(20.dp))
+      .border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.06f), StreamDekRadius.cardShape)
       .clickable(onClick = onSearchPress)
       .padding(horizontal = 14.dp, vertical = 12.dp),
     horizontalArrangement = Arrangement.spacedBy(12.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
-    Box(modifier = Modifier.background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.06f), RoundedCornerShape(999.dp)).padding(9.dp), contentAlignment = Alignment.Center) {
+    Box(modifier = Modifier.background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.06f), StreamDekRadius.pill).padding(9.dp), contentAlignment = Alignment.Center) {
       Icon(Icons.Rounded.History, contentDescription = null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f), modifier = Modifier.size(18.dp))
     }
     Text(query, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onBackground, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -16478,12 +16579,12 @@ private fun LibraryTabScreen(viewModel: NativeAppViewModel) {
     when (selected) {
       LibraryTab.Continue -> {
         items(combinedContinueWatching(uiState), key = { "continue-${it.type}-${it.id}" }) { item ->
-          LibraryMediaCard(item = item)
+          Box(modifier = animatedItem()) { LibraryMediaCard(item = item) }
         }
       }
       LibraryTab.Watchlist -> {
         items(uiState.mergedWatchlist, key = { "watchlist-${it.type}-${it.id}" }) { item ->
-          SearchResultRow(item = item, onClick = { viewModel.toggleWatchlist(item) })
+          Box(modifier = animatedItem()) { SearchResultRow(item = item, onClick = { viewModel.toggleWatchlist(item) }) }
         }
       }
       LibraryTab.Profiles -> {
@@ -16626,7 +16727,7 @@ private fun LibraryTabScreen(viewModel: NativeAppViewModel) {
           }
         }
         items(uiState.addons, key = { "addon-${it.id}" }) { addon ->
-          GlassCard {
+          GlassCard(modifier = animatedItem()) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
               Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(addon.manifest.name, fontWeight = FontWeight.Bold)
@@ -16667,7 +16768,7 @@ private fun LibraryTabScreen(viewModel: NativeAppViewModel) {
           }
         }
         items(uiState.debridAccounts, key = { "debrid-${it.provider}" }) { account ->
-          GlassCard {
+          GlassCard(modifier = animatedItem()) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
               Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(debridProviderLabel(account.provider), fontWeight = FontWeight.Bold)
@@ -16736,7 +16837,7 @@ private fun SettingsSection(title: String, content: @Composable ColumnScope.() -
     Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
     Card(
       colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-      shape = RoundedCornerShape(24.dp),
+      shape = StreamDekRadius.panelShape,
     ) {
       Column(modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp), content = content)
     }
@@ -16746,7 +16847,7 @@ private fun SettingsSection(title: String, content: @Composable ColumnScope.() -
 @Composable
 private fun SettingsRow(icon: String, iconColor: Color, title: String, subtitle: String, trailing: @Composable (() -> Unit)? = null) {
   Row(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
-    Box(modifier = Modifier.size(46.dp).clip(RoundedCornerShape(12.dp)).background(iconColor.copy(alpha = 0.16f)), contentAlignment = Alignment.Center) {
+    Box(modifier = Modifier.size(46.dp).clip(StreamDekRadius.controlShape).background(iconColor.copy(alpha = 0.16f)), contentAlignment = Alignment.Center) {
       Text(icon, color = iconColor, fontWeight = FontWeight.Black)
     }
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -16883,7 +16984,7 @@ private fun RoundedInput(
     label = label,
     placeholder = placeholder,
     singleLine = singleLine,
-    shape = RoundedCornerShape(18.dp),
+    shape = StreamDekRadius.cardShape,
   )
 }
 
@@ -16925,7 +17026,7 @@ private fun FusionBadgeUrlsDialog(
           onClick = { onImport(newUrl); newUrl = "" },
           enabled = newUrl.isNotBlank(),
           modifier = Modifier.fillMaxWidth().height(56.dp),
-          shape = RoundedCornerShape(18.dp),
+          shape = StreamDekRadius.cardShape,
           colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.surface),
         ) { Text("Add Collection", fontWeight = FontWeight.Black) }
 
@@ -16934,7 +17035,7 @@ private fun FusionBadgeUrlsDialog(
           val source = state?.source
           Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-            shape = RoundedCornerShape(20.dp),
+            shape = StreamDekRadius.cardShape,
                 ) {
             Column(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
               Text(url, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Black, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -16951,7 +17052,7 @@ private fun FusionBadgeUrlsDialog(
                 style = MaterialTheme.typography.bodyMedium,
               )
               Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = { onSetActive(url) }, shape = RoundedCornerShape(14.dp)) {
+                OutlinedButton(onClick = { onSetActive(url) }, shape = StreamDekRadius.thumbShape) {
                   Text(if (uiState.activeFusionBadgeUrl == url || (uiState.activeFusionBadgeUrl == null && uiState.fusionBadgeUrls.firstOrNull() == url)) "In use" else "Use this")
                 }
                 IconButton(onClick = { source?.let(onPreview) }, enabled = source != null) { Icon(Icons.Rounded.Visibility, contentDescription = "Preview", tint = MaterialTheme.colorScheme.onSurface) }
@@ -16973,7 +17074,7 @@ private fun FusionBadgePreviewDialog(source: FusionBadgeSource, onDismiss: () ->
     Surface(
       modifier = adaptiveDialogWidth(0.92f).heightIn(max = 760.dp),
       color = MaterialTheme.colorScheme.surface,
-      shape = RoundedCornerShape(24.dp),
+      shape = StreamDekRadius.panelShape,
       border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.16f)),
     ) {
       Column(modifier = Modifier.padding(18.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -17087,6 +17188,7 @@ private fun SettingsTab(
   onSignOut: () -> Unit,
   onSignIn: () -> Unit,
   onAppAppearanceChange: (AppAppearance) -> Unit,
+  onAnimationSpeedChange: (AnimationSpeed) -> Unit,
   onAppLanguageChange: (String) -> Unit,
   onThemePresetChange: (AppThemePreset) -> Unit,
   onHeaderStyleChange: (HeaderStyle) -> Unit,
@@ -17141,6 +17243,7 @@ private fun SettingsTab(
   onClearTrailerCacheNow: () -> Unit,
   onShowHeroSynopsisChange: (Boolean) -> Unit,
   onContinueWatchingStyleChange: (ContinueWatchingStyle) -> Unit,
+  onNetworkCardStyleChange: (NetworkCardStyle) -> Unit,
   onLiveLandscapeCardsChange: (Boolean) -> Unit,
   onNewEpisodesLandscapeChange: (Boolean) -> Unit,
   onLiveCategoriesEnabledChange: (Boolean) -> Unit,
@@ -17344,8 +17447,8 @@ private fun SettingsTab(
           AdaptivePageTitle(title = "Settings", maxLines = 1, color = MaterialTheme.colorScheme.onSurface)
           AnimatedVisibility(
             visible = settingsSearchVisible,
-            enter = expandVertically(expandFrom = Alignment.Top, animationSpec = tween(280)) + fadeIn(tween(180)),
-            exit = shrinkVertically(shrinkTowards = Alignment.Top, animationSpec = tween(220)) + fadeOut(tween(140)),
+            enter = expandVertically(expandFrom = Alignment.Top, animationSpec = StreamDekMotion.enterSpec()) + fadeIn(StreamDekMotion.enterSpec(MotionDuration.short)),
+            exit = shrinkVertically(shrinkTowards = Alignment.Top, animationSpec = StreamDekMotion.exitSpec(MotionDuration.standard)) + fadeOut(StreamDekMotion.exitSpec()),
           ) {
             Column(modifier = Modifier.padding(top = 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
               OutlinedTextField(
@@ -17359,7 +17462,7 @@ private fun SettingsTab(
                   }
                 },
                 singleLine = true,
-                shape = RoundedCornerShape(20.dp),
+                shape = StreamDekRadius.cardShape,
                 colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                   focusedContainerColor = MaterialTheme.colorScheme.surface,
                   unfocusedContainerColor = MaterialTheme.colorScheme.surface,
@@ -17410,7 +17513,7 @@ private fun SettingsTab(
       }
       item {
         SettingsSection("Appearance") {
-          SettingsNavRow("GE", Color(0xFF94A3B8), "Appearance and Language", "Colours, theme, text language, and navigation.", onClick = { onRouteChange(SettingsRoute.Appearance) })
+          SettingsNavRow("GE", Color(0xFF94A3B8), "Appearance and Language", "Colours, theme, motion, text language, and navigation.", onClick = { onRouteChange(SettingsRoute.Appearance) })
           SettingsDivider()
           SettingsNavRow("HM", Color(0xFFF59E0B), "Home Screen", "Choose your Home rows and how the spotlight looks.", onClick = { onRouteChange(SettingsRoute.HomeScreen) })
           SettingsDivider()
@@ -17466,6 +17569,11 @@ private fun SettingsTab(
               }
               SettingsDivider()
               SettingsChoiceRow("XA", Color(0xFFA78BFA), "Language", "Choose the language used for the app interface.", supportedAppLanguages.keys.toList(), uiState.appLanguage, onSelected = onAppLanguageChange)
+            }
+          }
+          item {
+            SettingsSection("Motion") {
+              AnimationSpeedRow(selected = uiState.animationSpeed, onSelected = onAnimationSpeedChange)
             }
           }
           item {
@@ -17638,6 +17746,10 @@ private fun SettingsTab(
               SettingsDivider()
               SettingsChoiceRow("PLAY", Color(0xFF22C55E), "Continue Watching Style", "Choose how continue watching cards appear on Home.", ContinueWatchingStyle.values().map { it.name }, uiState.continueWatchingStyle.name) { selected ->
                 onContinueWatchingStyleChange(ContinueWatchingStyle.valueOf(selected))
+              }
+              SettingsDivider()
+              SettingsChoiceRow("NET", Color(0xFFF43F5E), "Streaming Network Cards", "Choose how the Streaming Networks row draws its service cards.", NetworkCardStyle.values().map { it.name }, uiState.networkCardStyle.name) { selected ->
+                onNetworkCardStyleChange(NetworkCardStyle.valueOf(selected))
               }
               SettingsDivider()
               SettingsSwitchRow("DOC", Color(0xFF94A3B8), "Show Hero Synopsis", "Show the story summary in the Home spotlight.", uiState.showHeroSynopsis, onShowHeroSynopsisChange)
@@ -18111,7 +18223,7 @@ private fun ProfilesSettingsSummary(
     activeProfile?.let { profile ->
       Surface(
         color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
-        shape = RoundedCornerShape(28.dp),
+        shape = StreamDekRadius.sheetShape,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.24f)),
       ) {
         Column(modifier = Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -18131,7 +18243,7 @@ private fun ProfilesSettingsSummary(
             }
           }
           if (uiState.session != null) {
-            OutlinedButton(onClick = onOpenSwitcher, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
+            OutlinedButton(onClick = onOpenSwitcher, modifier = Modifier.fillMaxWidth(), shape = StreamDekRadius.thumbShape) {
               Icon(Icons.Rounded.ManageAccounts, contentDescription = null, modifier = Modifier.size(19.dp))
               Spacer(Modifier.width(8.dp))
               Text("Open profile switcher", fontWeight = FontWeight.SemiBold)
@@ -18149,7 +18261,7 @@ private fun ProfilesSettingsSummary(
       Button(
         onClick = { createExpanded = !createExpanded },
         enabled = uiState.profiles.size < 3,
-        shape = RoundedCornerShape(16.dp),
+        shape = StreamDekRadius.thumbShape,
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
       ) {
         Icon(if (createExpanded) Icons.Rounded.Close else Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -18160,10 +18272,10 @@ private fun ProfilesSettingsSummary(
 
     AnimatedVisibility(
       visible = createExpanded,
-      enter = expandVertically(expandFrom = Alignment.Top, animationSpec = tween(240)) + fadeIn(tween(180)),
-      exit = shrinkVertically(shrinkTowards = Alignment.Top, animationSpec = tween(200)) + fadeOut(tween(140)),
+      enter = expandVertically(expandFrom = Alignment.Top, animationSpec = StreamDekMotion.enterSpec()) + fadeIn(StreamDekMotion.enterSpec(MotionDuration.short)),
+      exit = shrinkVertically(shrinkTowards = Alignment.Top, animationSpec = StreamDekMotion.exitSpec(MotionDuration.standard)) + fadeOut(StreamDekMotion.exitSpec()),
     ) {
-      Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(24.dp)) {
+      Surface(color = MaterialTheme.colorScheme.surface, shape = StreamDekRadius.panelShape) {
         Column(modifier = Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
           Text("Create a profile", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
           OutlinedTextField(
@@ -18172,7 +18284,7 @@ private fun ProfilesSettingsSummary(
             modifier = Modifier.fillMaxWidth(),
             placeholder = { InputGuideText("Profile name") },
             singleLine = true,
-            shape = RoundedCornerShape(16.dp),
+            shape = StreamDekRadius.thumbShape,
           )
           ProfileAvatarPicker(selectedAvatarIndex = selectedAvatarIndex, onSelect = { selectedAvatarIndex = it })
           Button(
@@ -18187,7 +18299,7 @@ private fun ProfilesSettingsSummary(
             },
             enabled = profileName.trim().isNotBlank() && uiState.profiles.size < 3,
             modifier = Modifier.fillMaxWidth().height(50.dp),
-            shape = RoundedCornerShape(16.dp),
+            shape = StreamDekRadius.thumbShape,
           ) { Text("Create profile", fontWeight = FontWeight.Bold) }
         }
       }
@@ -18198,7 +18310,7 @@ private fun ProfilesSettingsSummary(
       val active = profile.id == uiState.activeProfileId
       Surface(
         color = if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.065f) else MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(24.dp),
+        shape = StreamDekRadius.panelShape,
         border = BorderStroke(1.dp, if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.26f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f)),
         modifier = Modifier.fillMaxWidth().animateContentSize(),
       ) {
@@ -18231,8 +18343,8 @@ private fun ProfilesSettingsSummary(
 
           AnimatedVisibility(
             visible = expanded,
-            enter = expandVertically(expandFrom = Alignment.Top, animationSpec = tween(230)) + fadeIn(tween(170)),
-            exit = shrinkVertically(shrinkTowards = Alignment.Top, animationSpec = tween(190)) + fadeOut(tween(130)),
+            enter = expandVertically(expandFrom = Alignment.Top, animationSpec = StreamDekMotion.enterSpec()) + fadeIn(StreamDekMotion.enterSpec(MotionDuration.short)),
+            exit = shrinkVertically(shrinkTowards = Alignment.Top, animationSpec = StreamDekMotion.exitSpec(MotionDuration.standard)) + fadeOut(StreamDekMotion.exitSpec()),
           ) {
             Column(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
               SettingsDivider()
@@ -18245,7 +18357,7 @@ private fun ProfilesSettingsSummary(
                     modifier = Modifier.fillMaxWidth(),
                     placeholder = { InputGuideText("Profile name") },
                     singleLine = true,
-                    shape = RoundedCornerShape(16.dp),
+                    shape = StreamDekRadius.thumbShape,
                   )
                   ProfileAvatarPicker(selectedAvatarIndex = editingAvatarIndex, onSelect = { editingAvatarIndex = it })
                   Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
@@ -18259,9 +18371,9 @@ private fun ProfilesSettingsSummary(
                       },
                       enabled = editingName.trim().isNotBlank(),
                       modifier = Modifier.weight(1f),
-                      shape = RoundedCornerShape(14.dp),
+                      shape = StreamDekRadius.thumbShape,
                     ) { Text("Save") }
-                    OutlinedButton(onClick = { editingProfileId = null }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(14.dp)) { Text("Cancel") }
+                    OutlinedButton(onClick = { editingProfileId = null }, modifier = Modifier.weight(1f), shape = StreamDekRadius.thumbShape) { Text("Cancel") }
                   }
                 }
                 editingPinProfileId == profile.id -> {
@@ -18272,7 +18384,7 @@ private fun ProfilesSettingsSummary(
                     modifier = Modifier.fillMaxWidth(),
                     placeholder = { InputGuideText("New 4-digit PIN") },
                     singleLine = true,
-                    shape = RoundedCornerShape(16.dp),
+                    shape = StreamDekRadius.thumbShape,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                     visualTransformation = PasswordVisualTransformation(),
                   )
@@ -18282,7 +18394,7 @@ private fun ProfilesSettingsSummary(
                     modifier = Modifier.fillMaxWidth(),
                     placeholder = { InputGuideText("Confirm PIN") },
                     singleLine = true,
-                    shape = RoundedCornerShape(16.dp),
+                    shape = StreamDekRadius.thumbShape,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                     visualTransformation = PasswordVisualTransformation(),
                   )
@@ -18296,12 +18408,12 @@ private fun ProfilesSettingsSummary(
                       },
                       enabled = newPin.length == 4 && newPin == confirmPin,
                       modifier = Modifier.weight(1f),
-                      shape = RoundedCornerShape(14.dp),
+                      shape = StreamDekRadius.thumbShape,
                     ) { Text(if (profile.hasPinSet) "Change PIN" else "Set PIN") }
                     OutlinedButton(
                       onClick = { editingPinProfileId = null; newPin = ""; confirmPin = "" },
                       modifier = Modifier.weight(1f),
-                      shape = RoundedCornerShape(14.dp),
+                      shape = StreamDekRadius.thumbShape,
                     ) { Text("Cancel") }
                   }
                   if (profile.hasPinSet) {
@@ -18317,7 +18429,7 @@ private fun ProfilesSettingsSummary(
                       onClick = { onSelectProfile(profile.id) },
                       enabled = !active,
                       modifier = Modifier.weight(1f),
-                      shape = RoundedCornerShape(14.dp),
+                      shape = StreamDekRadius.thumbShape,
                     ) {
                       Icon(Icons.Rounded.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
                       Spacer(Modifier.width(6.dp))
@@ -18327,7 +18439,7 @@ private fun ProfilesSettingsSummary(
                       onClick = { onMakeDefaultProfile(profile.id) },
                       enabled = !profile.isDefault,
                       modifier = Modifier.weight(1f),
-                      shape = RoundedCornerShape(14.dp),
+                      shape = StreamDekRadius.thumbShape,
                     ) {
                       Icon(Icons.Rounded.Star, contentDescription = null, modifier = Modifier.size(18.dp))
                       Spacer(Modifier.width(6.dp))
@@ -18343,12 +18455,12 @@ private fun ProfilesSettingsSummary(
                         editingAvatarIndex = profile.avatarIndex
                       },
                       modifier = Modifier.weight(1f),
-                      shape = RoundedCornerShape(14.dp),
+                      shape = StreamDekRadius.thumbShape,
                     ) { Text("Edit") }
                     OutlinedButton(
                       onClick = { editingPinProfileId = profile.id; editingProfileId = null },
                       modifier = Modifier.weight(1f),
-                      shape = RoundedCornerShape(14.dp),
+                      shape = StreamDekRadius.thumbShape,
                     ) {
                       Icon(Icons.Rounded.Lock, contentDescription = null, modifier = Modifier.size(17.dp))
                       Spacer(Modifier.width(6.dp))
@@ -18667,7 +18779,7 @@ private fun NextEpisodeThresholdSettings(
         OutlinedButton(
           onClick = { onModeChange(mode) },
           modifier = Modifier.weight(1f).height(48.dp),
-          shape = RoundedCornerShape(16.dp),
+          shape = StreamDekRadius.thumbShape,
           colors = ButtonDefaults.outlinedButtonColors(
             containerColor = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
             contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
@@ -18679,7 +18791,7 @@ private fun NextEpisodeThresholdSettings(
     Spacer(modifier = Modifier.height(14.dp))
     val percentMode = uiState.nextEpisodeThresholdMode == "percent"
     val value = if (percentMode) uiState.nextEpisodeThresholdPercent else uiState.nextEpisodeThresholdMinutes
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), shape = RoundedCornerShape(20.dp)) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), shape = StreamDekRadius.cardShape) {
       Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
           Text(if (percentMode) "$value% watched" else "$value min left", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Black)
@@ -18724,7 +18836,7 @@ private fun IntrodbApiKeySettings(savedKey: String, onIntrodbApiKeyChange: (Stri
       enabled = draft.trim() != savedKey,
       modifier = Modifier.fillMaxWidth().height(54.dp),
       colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.surface),
-      shape = RoundedCornerShape(999.dp),
+      shape = StreamDekRadius.pill,
     ) { Text("Save", fontWeight = FontWeight.Black) }
   }
 }
@@ -18798,8 +18910,8 @@ internal fun settingsRouteKeywords(route: SettingsRoute): String = when (route) 
   SettingsRoute.Streams -> "streams stream results source quality resolution 4k 1080p size limit filter badges labels " +
     "formatting remember last source list"
   SettingsRoute.Downloads -> "download downloads offline saved save storage remove delete watch offline"
-  SettingsRoute.Appearance -> "appearance language theme colour color dark light mode header navigation labels collapse font"
-  SettingsRoute.HomeScreen -> "home screen rows spotlight hero synopsis continue watching ambient glow background"
+  SettingsRoute.Appearance -> "appearance language theme colour color dark light mode header navigation labels collapse font motion animation animations speed transitions reduce reduced cinematic"
+  SettingsRoute.HomeScreen -> "home screen rows spotlight hero synopsis continue watching streaming networks network cards branded logo ambient glow background"
   SettingsRoute.HomeLayout -> "layout rows reorder drag order arrange home catalog sections which rows"
   SettingsRoute.TitlePages -> "title detail page style layout trailer autoplay season tabs episode artwork blur spoiler ratings trailer cache clear schedule stale"
   SettingsRoute.Ratings -> "rating ratings imdb tmdb rotten tomatoes metacritic mdblist badge score"
@@ -18858,7 +18970,7 @@ internal fun settingsRouteSubtitle(route: SettingsRoute): String = when (route) 
   SettingsRoute.Subtitles -> "Choose automatic subtitles and manage the sources StreamDek searches."
   SettingsRoute.Streams -> "Choose the quality StreamDek prefers and how stream results are labelled."
   SettingsRoute.Downloads -> "Save titles for offline playback, and manage what is already saved."
-  SettingsRoute.Appearance -> "Choose the colours, theme, text language, and navigation style."
+  SettingsRoute.Appearance -> "Choose the colours, theme, animation speed, text language, and navigation style."
   SettingsRoute.HomeScreen -> "Choose which rows appear on Home and how the spotlight looks."
   SettingsRoute.HomeLayout -> "Choose which rows appear on Home and drag to reorder them. Changes apply in the background."
   SettingsRoute.TitlePages -> "Choose how trailers, seasons, episode artwork, and ratings appear."
@@ -18956,7 +19068,7 @@ private fun SettingsProfileRow(uiState: AppUiState, onClick: () -> Unit) {
   Row(
     modifier = Modifier
       .fillMaxWidth()
-      .clip(RoundedCornerShape(18.dp))
+      .clip(StreamDekRadius.cardShape)
       .clickable(onClick = onClick)
       .padding(vertical = 10.dp),
     horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -19018,7 +19130,7 @@ private fun SettingsSubtitle(text: String, collapsedMaxLines: Int = 3) {
         fontWeight = FontWeight.Black,
         color = MaterialTheme.colorScheme.primary,
         modifier = Modifier
-          .clip(RoundedCornerShape(6.dp))
+          .clip(StreamDekRadius.badgeShape)
           .clickable { expanded = !expanded }
           .padding(horizontal = 3.dp, vertical = 2.dp),
       )
@@ -19028,7 +19140,7 @@ private fun SettingsSubtitle(text: String, collapsedMaxLines: Int = 3) {
 
 @Composable
 private fun SettingsNavRow(icon: String, iconColor: Color, title: String, subtitle: String, value: String? = null, onClick: () -> Unit) {
-  Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).clickable(onClick = onClick).padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+  Row(modifier = Modifier.fillMaxWidth().clip(StreamDekRadius.cardShape).clickable(onClick = onClick).padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
     SettingsIcon(icon, iconColor)
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
       Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
@@ -19105,6 +19217,41 @@ private fun PeerStreamStatusRow(status: PeerStreamStatus) {
   }
 }
 
+/**
+ * The animation-speed control.
+ *
+ * Its own composable rather than a bare [SettingsChoiceRow] because of the second line: when the
+ * device's own reduce-motion setting is on it overrules whatever is selected here, and a row that
+ * kept reporting "Cinematic" while the app animated nothing would be lying. The selection is left
+ * alone and editable - turning the system setting off should restore the choice that was already
+ * made - and the override is stated instead.
+ */
+@Composable
+private fun AnimationSpeedRow(selected: AnimationSpeed, onSelected: (AnimationSpeed) -> Unit) {
+  val motion = LocalMotionSettings.current
+  Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    SettingsChoiceRow(
+      icon = "AN",
+      iconColor = Color(0xFF34D399),
+      title = "Animation Speed",
+      subtitle = "How long transitions take across the app. Saved on this device only.",
+      options = AnimationSpeed.entries.map { it.name },
+      selected = selected.name,
+      optionDescriptions = AnimationSpeed.entries.associate { it.name to it.description },
+      onSelected = { name -> onSelected(AnimationSpeed.valueOf(name)) },
+    )
+    if (motion.overriddenBySystem) {
+      Text(
+        "This device's Reduce Motion setting is on, so animations are currently off regardless of "
+          + "this choice. Your selection is kept and returns when you turn Reduce Motion off.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
+        modifier = Modifier.padding(start = 46.dp, end = 4.dp, bottom = 8.dp),
+      )
+    }
+  }
+}
+
 @Composable
 private fun ThemePresetPicker(selected: AppThemePreset, onSelected: (AppThemePreset) -> Unit) {
   Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(vertical = 10.dp)) {
@@ -19121,16 +19268,16 @@ private fun ThemePresetPicker(selected: AppThemePreset, onSelected: (AppThemePre
         Column(
           modifier = Modifier
             .width(104.dp)
-            .clip(RoundedCornerShape(18.dp))
+            .clip(StreamDekRadius.cardShape)
             .background(if (selected == preset) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f))
-            .border(1.dp, if (selected == preset) MaterialTheme.colorScheme.primary.copy(alpha = 0.64f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f), RoundedCornerShape(18.dp))
+            .border(1.dp, if (selected == preset) MaterialTheme.colorScheme.primary.copy(alpha = 0.64f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f), StreamDekRadius.cardShape)
             .clickable { onSelected(preset) }
             .padding(12.dp),
           verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
           Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(modifier = Modifier.weight(1f).height(28.dp).clip(RoundedCornerShape(10.dp)).background(palette.accent))
-            Box(modifier = Modifier.weight(1f).height(28.dp).clip(RoundedCornerShape(10.dp)).background(palette.tertiary))
+            Box(modifier = Modifier.weight(1f).height(28.dp).clip(StreamDekRadius.controlShape).background(palette.accent))
+            Box(modifier = Modifier.weight(1f).height(28.dp).clip(StreamDekRadius.controlShape).background(palette.tertiary))
           }
           Text(preset.name, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, maxLines = 1)
         }
@@ -19281,7 +19428,7 @@ private fun LanguageChoiceSheet(
             singleLine = true,
             placeholder = { Text("Search languages") },
             leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
-            shape = RoundedCornerShape(16.dp),
+            shape = StreamDekRadius.thumbShape,
           )
           if (matches.isEmpty()) {
             Text(
@@ -19296,9 +19443,9 @@ private fun LanguageChoiceSheet(
               Row(
                 modifier = Modifier
                   .fillMaxWidth()
-                  .clip(RoundedCornerShape(18.dp))
+                  .clip(StreamDekRadius.cardShape)
                   .background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f))
-                  .border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.86f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f), RoundedCornerShape(18.dp))
+                  .border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.86f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f), StreamDekRadius.cardShape)
                   .clickable { onSelected(option) }
                   .padding(horizontal = 18.dp, vertical = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -19354,7 +19501,7 @@ private fun SettingsChoiceSheet(
       ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
           Text(title, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-          if (title == "Continue Watching Style" || title == "Title Page Style") {
+          if (title == "Continue Watching Style" || title == "Title Page Style" || title == "Streaming Network Cards") {
             options.chunked(2).forEach { rowOptions ->
               Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 rowOptions.forEach { option ->
@@ -19362,9 +19509,9 @@ private fun SettingsChoiceSheet(
                   Column(
                     modifier = Modifier
                       .weight(1f)
-                      .clip(RoundedCornerShape(20.dp))
+                      .clip(StreamDekRadius.cardShape)
                       .background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f))
-                      .border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.86f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f), RoundedCornerShape(20.dp))
+                      .border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.86f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f), StreamDekRadius.cardShape)
                       .clickable { onSelected(option) }
                       .padding(horizontal = 14.dp, vertical = 14.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -19372,6 +19519,11 @@ private fun SettingsChoiceSheet(
                     if (title == "Continue Watching Style") {
                       ContinueWatchingStyleSkeletonPreview(
                         style = runCatching { ContinueWatchingStyle.valueOf(option) }.getOrDefault(ContinueWatchingStyle.Glass),
+                        selected = isSelected,
+                      )
+                    } else if (title == "Streaming Network Cards") {
+                      NetworkCardStyleSkeletonPreview(
+                        style = runCatching { NetworkCardStyle.valueOf(option) }.getOrDefault(NetworkCardStyle.Branded),
                         selected = isSelected,
                       )
                     } else {
@@ -19391,7 +19543,7 @@ private fun SettingsChoiceSheet(
             options.forEach { option ->
               val isSelected = selected == option
               Row(
-                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f)).border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.86f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f), RoundedCornerShape(18.dp)).clickable { onSelected(option) }.padding(horizontal = 18.dp, vertical = 16.dp),
+                modifier = Modifier.fillMaxWidth().clip(StreamDekRadius.cardShape).background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f)).border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.86f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f), StreamDekRadius.cardShape).clickable { onSelected(option) }.padding(horizontal = 18.dp, vertical = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
               ) {
@@ -19409,6 +19561,53 @@ private fun SettingsChoiceSheet(
   }
 }
 
+/**
+ * The Streaming Networks row in miniature, so the choice is made by looking rather than by reading.
+ *
+ * Both options paint real artwork — the same two services either way, so what changes between the
+ * previews is only the treatment, which is the thing being chosen.
+ */
+@Composable
+private fun NetworkCardStyleSkeletonPreview(style: NetworkCardStyle, selected: Boolean) {
+  val border = if (selected) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.24f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+  val branded = style == NetworkCardStyle.Branded
+  Row(
+    // Fixed so both options are the same height in the sheet, even though only one has captions.
+    modifier = Modifier.fillMaxWidth().height(60.dp),
+    horizontalArrangement = Arrangement.spacedBy(8.dp),
+  ) {
+    val previews = listOf(
+      R.drawable.network_tile_netflix to R.drawable.network_logo_netflix,
+      R.drawable.network_tile_prime_video to R.drawable.network_logo_prime_video,
+    )
+    previews.forEach { (tile, logo) ->
+      Column(
+        modifier = Modifier.weight(1f),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+      ) {
+        Box(
+          modifier = Modifier
+            .fillMaxWidth()
+            .height(42.dp)
+            .clip(StreamDekRadius.controlShape)
+            .background(if (branded) Color(0xFF0E0E0E) else Color.White)
+            .border(1.dp, border, StreamDekRadius.controlShape),
+          contentAlignment = Alignment.Center,
+        ) {
+          AsyncImage(
+            model = if (branded) tile else logo,
+            contentDescription = null,
+            modifier = if (branded) Modifier.fillMaxSize() else Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 5.dp),
+            contentScale = if (branded) ContentScale.Crop else ContentScale.Fit,
+          )
+        }
+        if (!branded) SkeletonBlock(modifier = Modifier.fillMaxWidth(0.72f).height(6.dp), radius = 999.dp)
+      }
+    }
+  }
+}
+
 @Composable
 private fun ContinueWatchingStyleSkeletonPreview(style: ContinueWatchingStyle, selected: Boolean) {
   val border = if (selected) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.24f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
@@ -19419,9 +19618,9 @@ private fun ContinueWatchingStyleSkeletonPreview(style: ContinueWatchingStyle, s
         modifier = Modifier
           .fillMaxWidth()
           .height(88.dp)
-          .clip(RoundedCornerShape(16.dp))
+          .clip(StreamDekRadius.thumbShape)
           .background(fill)
-          .border(1.dp, border, RoundedCornerShape(16.dp)),
+          .border(1.dp, border, StreamDekRadius.thumbShape),
       ) {
         Column(modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
           SkeletonBlock(modifier = Modifier.fillMaxWidth(0.58f).height(12.dp), radius = 8.dp)
@@ -19435,9 +19634,9 @@ private fun ContinueWatchingStyleSkeletonPreview(style: ContinueWatchingStyle, s
         modifier = Modifier
           .fillMaxWidth()
           .height(88.dp)
-          .clip(RoundedCornerShape(16.dp))
+          .clip(StreamDekRadius.thumbShape)
           .background(fill)
-          .border(1.dp, border, RoundedCornerShape(16.dp)),
+          .border(1.dp, border, StreamDekRadius.thumbShape),
       ) {
         SkeletonBlock(modifier = Modifier.fillMaxSize(), radius = 16.dp)
         Box(
@@ -19467,9 +19666,9 @@ private fun ContinueWatchingStyleSkeletonPreview(style: ContinueWatchingStyle, s
         modifier = Modifier
           .fillMaxWidth()
           .height(64.dp)
-          .clip(RoundedCornerShape(16.dp))
+          .clip(StreamDekRadius.thumbShape)
           .background(fill)
-          .border(1.dp, border, RoundedCornerShape(16.dp))
+          .border(1.dp, border, StreamDekRadius.thumbShape)
           .padding(10.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -19483,9 +19682,9 @@ private fun ContinueWatchingStyleSkeletonPreview(style: ContinueWatchingStyle, s
         modifier = Modifier
           .fillMaxWidth()
           .height(58.dp)
-          .clip(RoundedCornerShape(14.dp))
+          .clip(StreamDekRadius.thumbShape)
           .background(fill)
-          .border(1.dp, border, RoundedCornerShape(14.dp))
+          .border(1.dp, border, StreamDekRadius.thumbShape)
           .padding(8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
       ) {
@@ -19501,9 +19700,9 @@ private fun ContinueWatchingStyleSkeletonPreview(style: ContinueWatchingStyle, s
       Column(
         modifier = Modifier
           .fillMaxWidth()
-          .clip(RoundedCornerShape(14.dp))
+          .clip(StreamDekRadius.thumbShape)
           .background(fill)
-          .border(1.dp, border, RoundedCornerShape(14.dp))
+          .border(1.dp, border, StreamDekRadius.thumbShape)
           .padding(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
       ) {
@@ -19523,9 +19722,9 @@ private fun PageStyleSkeletonPreview(style: DetailPageStyle, selected: Boolean) 
     modifier = Modifier
       .fillMaxWidth()
       .height(128.dp)
-      .clip(RoundedCornerShape(16.dp))
+      .clip(StreamDekRadius.thumbShape)
       .background(fill)
-      .border(1.dp, border, RoundedCornerShape(16.dp))
+      .border(1.dp, border, StreamDekRadius.thumbShape)
       .padding(10.dp),
   ) {
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -19581,6 +19780,7 @@ private fun settingsOptionLabel(title: String, option: String): String = when {
     "ultra_fast" -> "Fastest"
     else -> option
   }
+  title == "Animation Speed" -> runCatching { AnimationSpeed.valueOf(option).label }.getOrDefault(option)
   title == "Appearance" -> when (option) {
     AppAppearance.System.name -> "Follow system"
     AppAppearance.Dark.name -> "Dark"
@@ -19609,6 +19809,11 @@ private fun settingsOptionLabel(title: String, option: String): String = when {
   title == "Title Page Style" -> when (option) {
     DetailPageStyle.Classic.name -> "Classic"
     DetailPageStyle.Centered.name -> "Centered"
+    else -> option
+  }
+  title == "Streaming Network Cards" -> when (option) {
+    NetworkCardStyle.Classic.name -> "Logo tile"
+    NetworkCardStyle.Branded.name -> "Branded"
     else -> option
   }
   else -> option
@@ -19656,6 +19861,11 @@ private fun settingsOptionDescription(title: String, option: String): String? = 
     ContinueWatchingStyle.Stacked.name -> "Artwork-first poster card."
     else -> null
   }
+  "Streaming Network Cards" -> when (option) {
+    NetworkCardStyle.Classic.name -> "Each service's logo on a white tile and named"
+    NetworkCardStyle.Branded.name -> "The service's own artwork, edge to edge."
+    else -> null
+  }
   "Title Page Style" -> "Use the $option layout on media pages."
   "Season Tabs" -> if (option == SeasonTabStyle.Posters.name) "Show image tabs for seasons." else "Use compact regular season tabs."
   else -> null
@@ -19663,7 +19873,7 @@ private fun settingsOptionDescription(title: String, option: String): String? = 
 
 @Composable
 private fun SettingsIcon(icon: String, iconColor: Color) {
-  Box(modifier = Modifier.size(42.dp).clip(RoundedCornerShape(12.dp)).background(iconColor.copy(alpha = 0.16f)), contentAlignment = Alignment.Center) {
+  Box(modifier = Modifier.size(42.dp).clip(StreamDekRadius.controlShape).background(iconColor.copy(alpha = 0.16f)), contentAlignment = Alignment.Center) {
     Icon(settingsGlyph(icon), contentDescription = null, tint = iconColor)
   }
 }
@@ -19873,7 +20083,7 @@ private fun HomeRowGroupHeader(
   Row(
     modifier = Modifier
       .fillMaxWidth()
-      .clip(RoundedCornerShape(14.dp))
+      .clip(StreamDekRadius.thumbShape)
       .then(if (gatedOff) Modifier else Modifier.clickable(onClick = onToggle))
       .padding(vertical = 12.dp),
     verticalAlignment = Alignment.CenterVertically,
@@ -19960,7 +20170,7 @@ private fun HomeCatalogRowItem(
         scaleY = if (dragging) 1.02f else 1f
         shadowElevation = if (dragging) 18f else 0f
       }
-      .clip(RoundedCornerShape(18.dp))
+      .clip(StreamDekRadius.cardShape)
       .background(if (dragging) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.96f) else Color.Transparent)
       .padding(horizontal = 8.dp, vertical = 10.dp),
     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -19969,7 +20179,7 @@ private fun HomeCatalogRowItem(
     Box(
       modifier = Modifier
         .size(44.dp)
-        .clip(RoundedCornerShape(14.dp))
+        .clip(StreamDekRadius.thumbShape)
         .background(MaterialTheme.colorScheme.onSurface.copy(alpha = if (dragging) 0.14f else 0.06f))
         .pointerInput(row.id) {
           detectDragGestures(
@@ -20017,9 +20227,9 @@ private fun SettingsSegment(text: String, selected: Boolean, modifier: Modifier 
   Box(
     modifier = modifier
       .height(42.dp)
-      .clip(RoundedCornerShape(999.dp))
+      .clip(StreamDekRadius.pill)
       .background(if (selected) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.22f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f))
-      .border(1.dp, if (selected) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.86f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f), RoundedCornerShape(999.dp)),
+      .border(1.dp, if (selected) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.86f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f), StreamDekRadius.pill),
     contentAlignment = Alignment.Center,
   ) {
     Text(text, color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -20053,7 +20263,7 @@ private fun AddonMetric(value: String, label: String, modifier: Modifier = Modif
 private fun AddonTag(text: String, active: Boolean = false) {
   Box(
     modifier = Modifier
-      .clip(RoundedCornerShape(999.dp))
+      .clip(StreamDekRadius.pill)
       .background(MaterialTheme.colorScheme.onSurface.copy(alpha = if (active) 0.13f else 0.07f))
       .padding(horizontal = 10.dp, vertical = 6.dp),
   ) {
@@ -20064,7 +20274,7 @@ private fun AddonTag(text: String, active: Boolean = false) {
 @Composable
 private fun AddonLogo(addon: InstalledAddon) {
   Box(
-    modifier = Modifier.size(58.dp).clip(RoundedCornerShape(18.dp)).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f)),
+    modifier = Modifier.size(58.dp).clip(StreamDekRadius.cardShape).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f)),
     contentAlignment = Alignment.Center,
   ) {
     if (!addon.manifest.logo.isNullOrBlank()) {
@@ -20174,7 +20384,7 @@ private fun AddonServiceCard(
         shadowElevation = if (dragging) 18f else 0f
       },
     color = MaterialTheme.colorScheme.surface,
-    shape = RoundedCornerShape(20.dp),
+    shape = StreamDekRadius.cardShape,
     border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f)),
   ) {
     Column(modifier = Modifier.fillMaxWidth().animateContentSize()) {
@@ -20292,11 +20502,11 @@ private fun DetailUrlRow(label: String, url: String) {
           clipboard.setText(AnnotatedString(url))
           android.widget.Toast.makeText(context, "Address copied", android.widget.Toast.LENGTH_SHORT).show()
         },
-        shape = RoundedCornerShape(999.dp),
+        shape = StreamDekRadius.pill,
       ) { Text("Copy") }
       OutlinedButton(
         onClick = { openExternalUrl(context, url) },
-        shape = RoundedCornerShape(999.dp),
+        shape = StreamDekRadius.pill,
       ) { Text("Open") }
     }
   }
@@ -20306,7 +20516,7 @@ private fun DetailUrlRow(label: String, url: String) {
 private fun AddonDetailsDialog(addon: InstalledAddon, displayName: String, onRenamed: () -> Unit, onDismiss: () -> Unit) {
   var nameField by remember(addon.id) { mutableStateOf(displayName) }
   Dialog(onDismissRequest = onDismiss) {
-    Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f))) {
+    Surface(shape = StreamDekRadius.panelShape, color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f))) {
       Column(modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
           AddonLogo(addon)
@@ -20395,7 +20605,7 @@ private fun SubtitleAppearanceSettings(
     SubtitlePreviewCard(uiState)
     Card(
       colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-      shape = RoundedCornerShape(24.dp),
+      shape = StreamDekRadius.panelShape,
     ) {
       Column(modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
         SettingsSliderRow(
@@ -20456,7 +20666,7 @@ private fun SubtitlePreviewCard(uiState: AppUiState) {
     modifier = Modifier
       .fillMaxWidth()
       .height(frameHeight)
-      .clip(RoundedCornerShape(24.dp))
+      .clip(StreamDekRadius.panelShape)
       .background(
         Brush.verticalGradient(
           listOf(Color(0xFF1E2536), Color(0xFF0B0F1A)),
@@ -20477,7 +20687,7 @@ private fun SubtitlePreviewCard(uiState: AppUiState) {
         .offset(y = lineTop)
         .padding(horizontal = 18.dp)
         .onSizeChanged { lineHeight = with(density) { it.height.toDp() } }
-        .clip(RoundedCornerShape(8.dp))
+        .clip(StreamDekRadius.badgeShape)
         .background(backgroundColor)
         .padding(horizontal = 10.dp, vertical = 4.dp),
     ) {
@@ -20524,7 +20734,7 @@ private fun SubtitleColorRow(
 ) {
   var showSheet by rememberSaveable(title) { mutableStateOf(false) }
   Row(
-    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).clickable { showSheet = true }.padding(vertical = 10.dp),
+    modifier = Modifier.fillMaxWidth().clip(StreamDekRadius.cardShape).clickable { showSheet = true }.padding(vertical = 10.dp),
     horizontalArrangement = Arrangement.spacedBy(14.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
@@ -20556,10 +20766,10 @@ private fun SubtitleColorSwatch(value: String) {
   Box(
     modifier = Modifier
       .size(22.dp)
-      .clip(RoundedCornerShape(7.dp))
+      .clip(StreamDekRadius.badgeShape)
       .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f))
       .padding(2.dp)
-      .clip(RoundedCornerShape(5.dp))
+      .clip(StreamDekRadius.badgeShape)
       .background(Color(parseSubtitleColor(value))),
   )
 }
@@ -20691,7 +20901,7 @@ private fun PluginSourceTestDialog(state: PluginSourceTestState, onDismiss: () -
           else -> {
             Text("${state.streams.size} sample ${if (state.streams.size == 1) "result" else "results"}", fontWeight = FontWeight.Bold)
             state.streams.forEach { stream ->
-              Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.055f)) {
+              Surface(shape = StreamDekRadius.controlShape, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.055f)) {
                 Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                   Text(streamSingleLine(stream.title) ?: stream.name ?: state.providerName, maxLines = 2, overflow = TextOverflow.Ellipsis)
                   // Some sources pack a whole formatted card — title, size, codec, source — into
@@ -20772,7 +20982,7 @@ private fun ProviderSettingsDialog(
   }
 
   Dialog(onDismissRequest = { if (!saving) onDismiss() }) {
-    Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f))) {
+    Surface(shape = StreamDekRadius.panelShape, color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f))) {
       Column(Modifier.fillMaxWidth().heightIn(max = 620.dp).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("Source settings", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f))
         Text(providerName, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
@@ -20945,18 +21155,18 @@ private fun CollectionCard(
   Column(
     modifier = Modifier
       .fillMaxWidth()
-      .clip(RoundedCornerShape(18.dp))
+      .clip(StreamDekRadius.cardShape)
       // 4% of near-black on a white card is not a card, it is a smudge — the collections on the
       // Plugins page had no edge at all in light mode. A light surface needs both a deeper fill
       // and a drawn border to separate from the white section behind it; a dark one does not.
       .background(MaterialTheme.colorScheme.onSurface.copy(alpha = if (lightSurface) 0.055f else 0.04f))
-      .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = if (lightSurface) 0.10f else 0.06f), RoundedCornerShape(18.dp))
+      .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = if (lightSurface) 0.10f else 0.06f), StreamDekRadius.cardShape)
       .padding(14.dp),
     verticalArrangement = Arrangement.spacedBy(6.dp),
   ) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
       Column(
-        modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).clickable(onClick = onToggleExpanded).padding(vertical = 4.dp),
+        modifier = Modifier.weight(1f).clip(StreamDekRadius.controlShape).clickable(onClick = onToggleExpanded).padding(vertical = 4.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
       ) {
         Text(title, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
@@ -21536,7 +21746,7 @@ private fun PluginRepoDetailsDialog(repository: PluginRepo, providers: List<Plug
   val overrideKey = "plugin:" + repository.url
   var nameField by remember(repository.url) { mutableStateOf(DisplayNameOverrides.resolve(overrideKey, repository.name)) }
   Dialog(onDismissRequest = onDismiss) {
-    Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f))) {
+    Surface(shape = StreamDekRadius.panelShape, color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f))) {
       Column(modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("Plugin collection details", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f))
         Text(repository.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
@@ -21614,11 +21824,11 @@ private fun M3uPlaylistsSettingsSummary(
   Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
     Surface(
       color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
-      shape = RoundedCornerShape(22.dp),
+      shape = StreamDekRadius.panelShape,
       border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
     ) {
       Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Box(modifier = Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
+        Box(modifier = Modifier.size(42.dp).clip(StreamDekRadius.controlShape).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
           Text("+", color = MaterialTheme.colorScheme.primary, fontSize = 24.sp, fontWeight = FontWeight.Light)
         }
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -21632,7 +21842,7 @@ private fun M3uPlaylistsSettingsSummary(
     if (uiState.m3uLoading || uiState.m3uStatusMessage != null || uiState.m3uErrorMessage != null) {
       Surface(
         color = MaterialTheme.colorScheme.primary.copy(alpha = 0.07f),
-        shape = RoundedCornerShape(18.dp),
+        shape = StreamDekRadius.cardShape,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
       ) {
         Column(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -21648,7 +21858,7 @@ private fun M3uPlaylistsSettingsSummary(
           uiState.m3uProgress?.let { progress ->
             LinearProgressIndicator(
               progress = { progress.coerceIn(0f, 1f) },
-              modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(999.dp)),
+              modifier = Modifier.fillMaxWidth().height(6.dp).clip(StreamDekRadius.pill),
               color = MaterialTheme.colorScheme.primary,
               trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
             )
@@ -21660,22 +21870,22 @@ private fun M3uPlaylistsSettingsSummary(
     }
 
     AnimatedVisibility(visible = showAddField) {
-      Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))) {
+      Surface(color = MaterialTheme.colorScheme.surface, shape = StreamDekRadius.cardShape, border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))) {
         Column(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
           OutlinedTextField(
             value = playlistName, onValueChange = { playlistName = it }, modifier = Modifier.fillMaxWidth(),
-            placeholder = { InputGuideText("Playlist name (optional)") }, singleLine = true, shape = RoundedCornerShape(16.dp),
+            placeholder = { InputGuideText("Playlist name (optional)") }, singleLine = true, shape = StreamDekRadius.thumbShape,
           )
           OutlinedTextField(
             value = playlistUrl, onValueChange = { playlistUrl = it }, modifier = Modifier.fillMaxWidth(),
             placeholder = { InputGuideText("Paste an M3U or M3U8 playlist link") }, leadingIcon = { Icon(Icons.Rounded.Link, null) },
-            singleLine = true, shape = RoundedCornerShape(16.dp),
+            singleLine = true, shape = StreamDekRadius.thumbShape,
           )
           Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             TextButton(onClick = { showAddField = false; playlistUrl = ""; playlistName = ""; addingFromSourceCount = -1 }) { Text("Cancel") }
             Button(onClick = {
               playlistUrl.trim().takeIf { it.isNotEmpty() }?.let { addingFromSourceCount = sources.size; onAddM3uPlaylist(it, playlistName) }
-            }, enabled = playlistUrl.isNotBlank() && !uiState.m3uLoading, shape = RoundedCornerShape(14.dp)) {
+            }, enabled = playlistUrl.isNotBlank() && !uiState.m3uLoading, shape = StreamDekRadius.thumbShape) {
               Text(if (uiState.m3uLoading) "Adding…" else "Add")
             }
           }
@@ -21683,7 +21893,7 @@ private fun M3uPlaylistsSettingsSummary(
       }
     }
     if (!showAddField) {
-      OutlinedButton(onClick = { showAddField = true }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(16.dp)) {
+      OutlinedButton(onClick = { showAddField = true }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = StreamDekRadius.thumbShape) {
         Icon(Icons.Rounded.Add, contentDescription = null)
         Spacer(Modifier.width(8.dp))
         Text("Add a playlist", fontWeight = FontWeight.SemiBold)
@@ -21695,13 +21905,13 @@ private fun M3uPlaylistsSettingsSummary(
       Text("${sources.size}", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.48f), style = MaterialTheme.typography.labelLarge)
     }
     if (sources.isEmpty()) {
-      Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+      Surface(color = MaterialTheme.colorScheme.surface, shape = StreamDekRadius.cardShape) {
         Text("No M3U playlists added yet.", modifier = Modifier.fillMaxWidth().padding(18.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), textAlign = TextAlign.Center)
       }
     } else {
       sources.forEachIndexed { index, source ->
         key(source.id) {
-          Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f))) {
+          Surface(color = MaterialTheme.colorScheme.surface, shape = StreamDekRadius.cardShape, border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f))) {
             Column(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
               Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -21827,12 +22037,12 @@ private fun DownloadsSettingsSummary(
   }
   Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
     if (downloads.isEmpty()) {
-      Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+      Surface(color = MaterialTheme.colorScheme.surface, shape = StreamDekRadius.cardShape) {
         Text("No downloads yet. Downloads started from the player's Sources list appear here.", modifier = Modifier.fillMaxWidth().padding(18.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), textAlign = TextAlign.Center)
       }
     } else {
       AnimatedVisibility(visible = showLongPressHint) {
-        Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), shape = RoundedCornerShape(16.dp)) {
+        Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), shape = StreamDekRadius.thumbShape) {
           Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Icon(Icons.Rounded.TouchApp, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
             Text(
@@ -21853,7 +22063,7 @@ private fun DownloadsSettingsSummary(
       }
       downloads.forEach { download ->
         key(download.id) {
-          Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f))) {
+          Surface(color = MaterialTheme.colorScheme.surface, shape = StreamDekRadius.cardShape, border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f))) {
             Column(
               modifier = Modifier
                 .fillMaxWidth()
@@ -21891,7 +22101,7 @@ private fun DownloadsSettingsSummary(
               if (download.state == DownloadState.DOWNLOADING) {
                 LinearProgressIndicator(
                   progress = { (download.percentDownloaded / 100f).coerceIn(0f, 1f) },
-                  modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(999.dp)),
+                  modifier = Modifier.fillMaxWidth().height(4.dp).clip(StreamDekRadius.pill),
                 )
               }
             }
@@ -21915,11 +22125,11 @@ private fun AddonsSettingsSummary(uiState: AppUiState, onRefreshAddons: () -> Un
   Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
     Surface(
       color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
-      shape = RoundedCornerShape(22.dp),
+      shape = StreamDekRadius.panelShape,
       border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
     ) {
       Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Box(modifier = Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
+        Box(modifier = Modifier.size(42.dp).clip(StreamDekRadius.controlShape).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
           Text("+", color = MaterialTheme.colorScheme.primary, fontSize = 24.sp, fontWeight = FontWeight.Light)
         }
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -21931,18 +22141,18 @@ private fun AddonsSettingsSummary(uiState: AppUiState, onRefreshAddons: () -> Un
     }
 
     AnimatedVisibility(visible = showAddField) {
-      Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))) {
+      Surface(color = MaterialTheme.colorScheme.surface, shape = StreamDekRadius.cardShape, border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))) {
         Column(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
           OutlinedTextField(
             value = addonUrl, onValueChange = { addonUrl = it }, modifier = Modifier.fillMaxWidth(),
             placeholder = { InputGuideText("Paste add-on manifest link") }, leadingIcon = { Icon(Icons.Rounded.Link, null) },
-            singleLine = true, shape = RoundedCornerShape(16.dp),
+            singleLine = true, shape = StreamDekRadius.thumbShape,
           )
           Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             TextButton(onClick = { showAddField = false; addonUrl = "" }) { Text("Cancel") }
             Button(onClick = {
               addonUrl.trim().takeIf { it.isNotEmpty() }?.let { onInstallAddon(it); addonUrl = ""; showAddField = false }
-            }, enabled = addonUrl.isNotBlank() && !uiState.addonsLoading, shape = RoundedCornerShape(14.dp)) {
+            }, enabled = addonUrl.isNotBlank() && !uiState.addonsLoading, shape = StreamDekRadius.thumbShape) {
               Text(if (uiState.addonsLoading) "Adding…" else "Add")
             }
           }
@@ -21950,7 +22160,7 @@ private fun AddonsSettingsSummary(uiState: AppUiState, onRefreshAddons: () -> Un
       }
     }
     if (!showAddField) {
-      OutlinedButton(onClick = { showAddField = true }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(16.dp)) {
+      OutlinedButton(onClick = { showAddField = true }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = StreamDekRadius.thumbShape) {
         Icon(Icons.Rounded.Add, contentDescription = null)
         Spacer(Modifier.width(8.dp))
         Text("Add an add-on", fontWeight = FontWeight.SemiBold)
@@ -21962,12 +22172,12 @@ private fun AddonsSettingsSummary(uiState: AppUiState, onRefreshAddons: () -> Un
       Text("${addons.size}", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.48f), style = MaterialTheme.typography.labelLarge)
     }
     if (addons.isEmpty()) {
-      Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+      Surface(color = MaterialTheme.colorScheme.surface, shape = StreamDekRadius.cardShape) {
         Text("No add-ons installed yet.", modifier = Modifier.fillMaxWidth().padding(18.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), textAlign = TextAlign.Center)
       }
     } else {
       AnimatedVisibility(visible = showReorderHint) {
-        Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), shape = RoundedCornerShape(16.dp)) {
+        Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), shape = StreamDekRadius.thumbShape) {
           Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Icon(Icons.Rounded.DragHandle, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
             Text(
@@ -21997,7 +22207,7 @@ private fun AddonsSettingsSummary(uiState: AppUiState, onRefreshAddons: () -> Un
 
 @Composable
 private fun DebridServiceCard(providerLabel: String, account: DebridAccount, index: Int, total: Int, isActive: Boolean, onRemoveDebrid: (String) -> Unit, onSetDebridEnabled: (String, Boolean) -> Unit, onMoveDebrid: (String, Int) -> Unit) {
-  Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(22.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.13f))) {
+  Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = StreamDekRadius.panelShape, border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.13f))) {
     Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
       Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(modifier = Modifier.size(12.dp).clip(CircleShape).background(if (account.enabled) Color(0xFF00E676) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.28f)))
@@ -22017,8 +22227,8 @@ private fun DebridServiceCard(providerLabel: String, account: DebridAccount, ind
         )
       }
       Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-        OutlinedButton(onClick = { onMoveDebrid(account.provider, -1) }, enabled = index > 0, shape = RoundedCornerShape(999.dp)) { Text("Up") }
-        OutlinedButton(onClick = { onMoveDebrid(account.provider, 1) }, enabled = index < total - 1, shape = RoundedCornerShape(999.dp)) { Text("Down") }
+        OutlinedButton(onClick = { onMoveDebrid(account.provider, -1) }, enabled = index > 0, shape = StreamDekRadius.pill) { Text("Up") }
+        OutlinedButton(onClick = { onMoveDebrid(account.provider, 1) }, enabled = index < total - 1, shape = StreamDekRadius.pill) { Text("Down") }
         TextButton(onClick = { onRemoveDebrid(account.provider) }) { Text("Disconnect", color = Color(0xFFEF4444), fontWeight = FontWeight.SemiBold) }
       }
     }
@@ -22063,7 +22273,7 @@ private fun DebridSignInCard(prompt: DebridSignInPrompt, onDismiss: () -> Unit) 
   Surface(
     modifier = Modifier.fillMaxWidth(),
     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-    shape = RoundedCornerShape(18.dp),
+    shape = StreamDekRadius.cardShape,
     border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
   ) {
     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -22086,7 +22296,7 @@ private fun DebridSignInCard(prompt: DebridSignInPrompt, onDismiss: () -> Unit) 
               }
             },
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(999.dp),
+            shape = StreamDekRadius.pill,
           ) {
             Text(prompt.verificationUrl.removePrefix("https://").removePrefix("http://"), fontWeight = FontWeight.SemiBold)
           }
@@ -22097,7 +22307,7 @@ private fun DebridSignInCard(prompt: DebridSignInPrompt, onDismiss: () -> Unit) 
           Surface(
             modifier = Modifier.fillMaxWidth(),
             color = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(14.dp),
+            shape = StreamDekRadius.thumbShape,
           ) {
             Row(
               modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
@@ -22162,7 +22372,7 @@ private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Un
       Surface(
         modifier = Modifier.fillMaxWidth(),
         color = noticeColor.copy(alpha = 0.10f),
-        shape = RoundedCornerShape(18.dp),
+        shape = StreamDekRadius.cardShape,
         border = BorderStroke(1.dp, noticeColor.copy(alpha = 0.28f)),
       ) {
         Row(
@@ -22196,7 +22406,7 @@ private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Un
           color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
           style = MaterialTheme.typography.bodySmall,
         )
-        Button(onClick = onRealDebridSignIn, enabled = !uiState.debridLoading, shape = RoundedCornerShape(999.dp)) {
+        Button(onClick = onRealDebridSignIn, enabled = !uiState.debridLoading, shape = StreamDekRadius.pill) {
           Text("Sign in with Real-Debrid", fontWeight = FontWeight.SemiBold)
         }
       }
@@ -22213,7 +22423,7 @@ private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Un
           color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
           style = MaterialTheme.typography.bodySmall,
         )
-        Button(onClick = onPremiumizeSignIn, enabled = !uiState.debridLoading, shape = RoundedCornerShape(999.dp)) {
+        Button(onClick = onPremiumizeSignIn, enabled = !uiState.debridLoading, shape = StreamDekRadius.pill) {
           Text("Sign in with Premiumize", fontWeight = FontWeight.SemiBold)
         }
       }
@@ -22225,9 +22435,9 @@ private fun DebridSettingsSummary(uiState: AppUiState, onRefreshDebrid: () -> Un
       }
       Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         if (!signsInWithoutKey) {
-          Button(onClick = { val trimmed = apiKey.trim(); if (trimmed.isNotEmpty()) { onAddDebrid(selectedProvider, trimmed); apiKey = "" } }, enabled = apiKey.isNotBlank() && !uiState.debridLoading, shape = RoundedCornerShape(999.dp)) { Text("Connect") }
+          Button(onClick = { val trimmed = apiKey.trim(); if (trimmed.isNotEmpty()) { onAddDebrid(selectedProvider, trimmed); apiKey = "" } }, enabled = apiKey.isNotBlank() && !uiState.debridLoading, shape = StreamDekRadius.pill) { Text("Connect") }
         }
-        OutlinedButton(onClick = onRefreshDebrid, shape = RoundedCornerShape(999.dp)) { Text("Refresh") }
+        OutlinedButton(onClick = onRefreshDebrid, shape = StreamDekRadius.pill) { Text("Refresh") }
       }
     }
     SettingsSection("Where Your Keys Are Kept") {
@@ -22340,7 +22550,7 @@ private fun CopyCodeButton(code: String) {
       clipboard.setText(AnnotatedString(code))
       android.widget.Toast.makeText(context, "Code copied", android.widget.Toast.LENGTH_SHORT).show()
     },
-    shape = RoundedCornerShape(999.dp),
+    shape = StreamDekRadius.pill,
   ) {
     Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(17.dp))
     Spacer(modifier = Modifier.width(7.dp))
@@ -22453,7 +22663,7 @@ private fun SyncSourceCard(
 
   Surface(
     modifier = Modifier.fillMaxWidth(),
-    shape = RoundedCornerShape(20.dp),
+    shape = StreamDekRadius.cardShape,
     color = if (selected) option.accent.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
     border = BorderStroke(if (selected) 1.5.dp else 1.dp, if (selected) option.accent else MaterialTheme.colorScheme.outlineVariant),
   ) {
@@ -22527,7 +22737,7 @@ private fun SyncServicesSettingsSummary(
     // did not mention it.
     Surface(
       modifier = Modifier.fillMaxWidth(),
-      shape = RoundedCornerShape(24.dp),
+      shape = StreamDekRadius.panelShape,
       color = active.accent.copy(alpha = 0.14f),
       border = BorderStroke(1.dp, active.accent.copy(alpha = 0.45f)),
     ) {
@@ -22559,7 +22769,7 @@ private fun SyncServicesSettingsSummary(
           Button(
             onClick = onRefreshSyncServices,
             enabled = !uiState.syncSourcesRefreshing,
-            shape = RoundedCornerShape(999.dp),
+            shape = StreamDekRadius.pill,
           ) { Text(if (uiState.syncSourcesRefreshing) "Syncing…" else "Sync now") }
           Text(
             if (uiState.syncSourcesRefreshing) "Checking your connections…" else lastCheckedLabel(uiState.syncSourcesCheckedAt),
@@ -22645,14 +22855,14 @@ private fun DeviceCodeSyncServiceSummary(
         )
       }
       SyncServiceActionRow {
-        OutlinedButton(onClick = onRefreshSyncServices, shape = RoundedCornerShape(999.dp)) { Text("Refresh") }
+        OutlinedButton(onClick = onRefreshSyncServices, shape = StreamDekRadius.pill) { Text("Refresh") }
         if (status.connected) {
           TextButton(onClick = { onDisconnectSyncService(service.id) }) { Text("Disconnect", color = Color(0xFFEF4444), fontWeight = FontWeight.SemiBold) }
         } else {
           Button(
             onClick = { onRequestSyncServiceDeviceCode(service.id) },
             enabled = !busy && status.available,
-            shape = RoundedCornerShape(999.dp),
+            shape = StreamDekRadius.pill,
           ) { Text(if (busy) "Starting…" else "Connect ${service.label}") }
         }
       }
@@ -22663,9 +22873,9 @@ private fun DeviceCodeSyncServiceSummary(
         Text("Open the ${service.label} verification page, enter the code above, then come back here and confirm.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.70f), style = MaterialTheme.typography.bodySmall)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
           CopyCodeButton(code.userCode)
-          OutlinedButton(onClick = { openExternalUrl(context, code.verificationUrl.ifBlank { service.siteUrl }) }, shape = RoundedCornerShape(999.dp)) { Text("Open ${service.label}") }
+          OutlinedButton(onClick = { openExternalUrl(context, code.verificationUrl.ifBlank { service.siteUrl }) }, shape = StreamDekRadius.pill) { Text("Open ${service.label}") }
         }
-        Button(onClick = { onPollSyncServiceAuthorization(service.id) }, enabled = !busy, shape = RoundedCornerShape(999.dp)) { Text("I Connected It") }
+        Button(onClick = { onPollSyncServiceAuthorization(service.id) }, enabled = !busy, shape = StreamDekRadius.pill) { Text("I Connected It") }
       }
     }
     SettingsSection("What Stays Up to Date") {
@@ -22701,7 +22911,7 @@ private fun ApiKeySyncServiceSummary(
         )
       }
       SyncServiceActionRow {
-        OutlinedButton(onClick = onRefreshSyncServices, shape = RoundedCornerShape(999.dp)) { Text("Refresh") }
+        OutlinedButton(onClick = onRefreshSyncServices, shape = StreamDekRadius.pill) { Text("Refresh") }
         if (status.connected) {
           TextButton(onClick = { onDisconnectSyncService(service.id) }) { Text("Disconnect", color = Color(0xFFEF4444), fontWeight = FontWeight.SemiBold) }
         }
@@ -22717,7 +22927,7 @@ private fun ApiKeySyncServiceSummary(
         enabled = !busy && key.isNotBlank() && status.available,
         modifier = Modifier.fillMaxWidth().height(54.dp),
         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.surface),
-        shape = RoundedCornerShape(999.dp),
+        shape = StreamDekRadius.pill,
       ) {
         Text(if (status.connected) "Update key" else "Connect ${service.label}", fontWeight = FontWeight.Black)
       }
@@ -22734,8 +22944,8 @@ private fun TraktSettingsSummary(uiState: AppUiState, onRequestTraktDeviceCode: 
     SettingsSection("Status") {
       SyncServiceIdentityRow(SyncService.Trakt, SyncServiceStatus(uiState.traktStatus.connected, uiState.traktStatus.username))
       SyncServiceActionRow {
-        OutlinedButton(onClick = onRefreshTrakt, shape = RoundedCornerShape(999.dp)) { Text("Refresh") }
-        if (uiState.traktStatus.connected) TextButton(onClick = onDisconnectTrakt) { Text("Disconnect", color = Color(0xFFEF4444), fontWeight = FontWeight.SemiBold) } else Button(onClick = onRequestTraktDeviceCode, enabled = !uiState.traktLoading, shape = RoundedCornerShape(999.dp)) { Text("Connect Trakt") }
+        OutlinedButton(onClick = onRefreshTrakt, shape = StreamDekRadius.pill) { Text("Refresh") }
+        if (uiState.traktStatus.connected) TextButton(onClick = onDisconnectTrakt) { Text("Disconnect", color = Color(0xFFEF4444), fontWeight = FontWeight.SemiBold) } else Button(onClick = onRequestTraktDeviceCode, enabled = !uiState.traktLoading, shape = StreamDekRadius.pill) { Text("Connect Trakt") }
       }
     }
     uiState.pendingDeviceCode?.let { code ->
@@ -22744,9 +22954,9 @@ private fun TraktSettingsSummary(uiState: AppUiState, onRequestTraktDeviceCode: 
         Text("Open the Trakt verification page, enter the code above, then come back here and confirm.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.70f), style = MaterialTheme.typography.bodySmall)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
           CopyCodeButton(code.userCode)
-          OutlinedButton(onClick = { openExternalUrl(context, code.verificationUrl) }, shape = RoundedCornerShape(999.dp)) { Text("Open Trakt") }
+          OutlinedButton(onClick = { openExternalUrl(context, code.verificationUrl) }, shape = StreamDekRadius.pill) { Text("Open Trakt") }
         }
-        Button(onClick = onPollTraktAuthorization, enabled = !uiState.traktLoading, shape = RoundedCornerShape(999.dp)) { Text("I Connected It") }
+        Button(onClick = onPollTraktAuthorization, enabled = !uiState.traktLoading, shape = StreamDekRadius.pill) { Text("I Connected It") }
       }
     }
     SettingsSection("What Stays Up to Date") {
@@ -22829,11 +23039,11 @@ val accountEmail = uiState.session?.user?.email
       }
     }
     if (uiState.session == null) {
-      Button(onClick = onSignIn, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary), shape = RoundedCornerShape(999.dp)) {
+      Button(onClick = onSignIn, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary), shape = StreamDekRadius.pill) {
         Text("Sign in or create account", fontWeight = FontWeight.SemiBold)
       }
     } else {
-      Button(onClick = onSignOut, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC9352D), contentColor = Color.White), shape = RoundedCornerShape(999.dp)) {
+      Button(onClick = onSignOut, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC9352D), contentColor = Color.White), shape = StreamDekRadius.pill) {
         Text("Sign Out", fontWeight = FontWeight.SemiBold)
       }
     }
@@ -22843,7 +23053,7 @@ val accountEmail = uiState.session?.user?.email
 @Composable
 private fun RefreshSyncRow(refreshing: Boolean, onClick: () -> Unit) {
   Row(
-    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).clickable(enabled = !refreshing, onClick = onClick).padding(vertical = 10.dp),
+    modifier = Modifier.fillMaxWidth().clip(StreamDekRadius.cardShape).clickable(enabled = !refreshing, onClick = onClick).padding(vertical = 10.dp),
     horizontalArrangement = Arrangement.spacedBy(14.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
@@ -22881,9 +23091,9 @@ private fun AppUpdatesSettingsSummary(uiState: AppUiState, onAutoCheckChange: (B
       SettingsStaticRow("APP", Color(0xFF94A3B8), "Current Version", BuildConfig.VERSION_NAME)
     }
     if (release != null) {
-      Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(28.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))) {
+      Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = StreamDekRadius.sheetShape, border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))) {
         Column(modifier = Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-          Box(modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)).border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.38f), RoundedCornerShape(999.dp)).padding(horizontal = 14.dp, vertical = 8.dp)) {
+          Box(modifier = Modifier.clip(StreamDekRadius.pill).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)).border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.38f), StreamDekRadius.pill).padding(horizontal = 14.dp, vertical = 8.dp)) {
             Text(if (release.required) "Required update" else "Update available", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Black)
           }
           Text("StreamDek ${release.versionName}", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
@@ -22897,7 +23107,7 @@ private fun AppUpdatesSettingsSummary(uiState: AppUiState, onAutoCheckChange: (B
               Text("${(progress.coerceIn(0f, 1f) * 100).toInt()}% downloaded", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
               LinearProgressIndicator(
                 progress = { progress },
-                modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(999.dp)),
+                modifier = Modifier.fillMaxWidth().height(8.dp).clip(StreamDekRadius.pill),
                 color = MaterialTheme.colorScheme.primary,
                 trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
               )
@@ -22905,7 +23115,7 @@ private fun AppUpdatesSettingsSummary(uiState: AppUiState, onAutoCheckChange: (B
           }
           uiState.updateStatusMessage?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
           uiState.updateErrorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-          Button(onClick = onStartUpdate, enabled = !uiState.updateDownloading, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary), shape = RoundedCornerShape(999.dp)) {
+          Button(onClick = onStartUpdate, enabled = !uiState.updateDownloading, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary), shape = StreamDekRadius.pill) {
             if (uiState.updateDownloading) CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
             else Text("Update Now", fontWeight = FontWeight.Black)
           }
@@ -22938,6 +23148,13 @@ private fun DetailScreen(
   onDownloadStream: (AddonStream, String) -> Unit = { _, _ -> },
   isStreamDownloadEligible: (AddonStream) -> Boolean = { false },
   onTrailerMutedChange: (Boolean) -> Unit = {},
+  /**
+   * Sends the viewer to the add-on and plugin settings.
+   *
+   * Only the sources page uses it, and only when it has nothing to show: an empty results list is
+   * a dead end without a way to go and fix what caused it.
+   */
+  onManageSources: (() -> Unit)? = null,
   /** Autoplay is on but its start delay has not elapsed yet. */
   trailerAutoplayPending: Boolean = false,
 ) {
@@ -23095,6 +23312,32 @@ private fun DetailScreen(
     enabled = uiState.detailBackgroundMode == BackgroundMode.Dominant,
   )
   val pageBackground = dominant ?: MaterialTheme.colorScheme.background
+  // The Streams tab's palette, worked out exactly as the episode sources page works out its own,
+  // from this page's own ambient colour. Shared components take these rather than reading the
+  // theme directly, which is what lets one set of controls sit correctly on either page.
+  val streamsThemeForeground = MaterialTheme.colorScheme.onSurface
+  val streamsForeground = when {
+    contrastRatio(streamsThemeForeground, pageBackground) >= 4.5f -> streamsThemeForeground
+    pageBackground.luminance() > 0.5f -> Color(0xFF101114)
+    else -> Color(0xFFF5F6F8)
+  }
+  val streamsAccent = ambientAccentColor(pageBackground, MaterialTheme.colorScheme.primary)
+  val onStreamsAccent = readableOn(streamsAccent)
+  // Hoisted out of the tab's list item: the item is removed from composition the moment another
+  // tab is chosen, and a filter that reset itself every time somebody glanced at Episodes is not a
+  // filter. Keyed on the title so a different one starts clean.
+  var streamProviderFilter by rememberSaveable(detail.id) { mutableStateOf("All") }
+  // Likewise the chips' own scroll offset, so results arriving mid-search cannot pull the row back
+  // to the start under the viewer's finger.
+  val streamsFilterRowState = rememberLazyListState()
+  // Holds everything else the tab remembers - which provider groups are open, which quality bands
+  // have been expanded in full - across a trip to another tab and back.
+  val streamsStateHolder = rememberSaveableStateHolder()
+  val streamProviderCounts = remember(uiState.availableStreams) { streamProviderCounts(uiState.availableStreams) }
+  val streamProviders = remember(streamProviderCounts) { streamProviderCounts.keys.toList() }
+  LaunchedEffect(streamProviders, streamProviderFilter) {
+    if (streamProviderFilter != "All" && streamProviderFilter !in streamProviders) streamProviderFilter = "All"
+  }
   Box(modifier = Modifier.fillMaxSize().background(pageBackground)) {
     if (uiState.detailBackgroundMode == BackgroundMode.Cinematic) {
       AsyncImage(
@@ -23209,7 +23452,7 @@ private fun DetailScreen(
                       onSetSeasonWatched(detail, uiState.selectedSeasonEpisodes, !fullSeasonWatched)
                     },
                     enabled = selectedSeasonIds.isNotEmpty(),
-                    shape = RoundedCornerShape(999.dp),
+                    shape = StreamDekRadius.pill,
                     border = BorderStroke(1.dp, if (fullSeasonWatched) Color(0xFF22C55E) else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.34f)),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                   ) {
@@ -23218,41 +23461,39 @@ private fun DetailScreen(
                     Text(if (fullSeasonWatched) "Mark Season as Unwatched" else "Mark Season as Watched", fontWeight = FontWeight.Bold)
                   }
                 }
-                Box(modifier = Modifier.padding(horizontal = 24.dp)) {
-                  SeasonSelector(
-                    seasons = detail.seasons,
-                    selectedSeasonNumber = uiState.selectedSeasonNumber,
-                    style = uiState.seasonTabStyle,
-                    fallbackPoster = detail.poster ?: detail.backdrop,
-                    onSelect = { season -> onLoadSeason(detail.id, season.seasonNumber) },
-                  )
-                }
+                SeasonSelector(
+                  seasons = detail.seasons,
+                  selectedSeasonNumber = uiState.selectedSeasonNumber,
+                  style = uiState.seasonTabStyle,
+                  fallbackPoster = detail.poster ?: detail.backdrop,
+                  onSelect = { season -> onLoadSeason(detail.id, season.seasonNumber) },
+                )
                 if (uiState.seasonLoading) {
-                  Box(modifier = Modifier.padding(horizontal = 24.dp)) {
-                    SeasonSelectorSkeleton(style = uiState.seasonTabStyle)
-                  }
+                  SeasonSelectorSkeleton(style = uiState.seasonTabStyle)
                 } else {
-                  LazyRow(contentPadding = PaddingValues(horizontal = 24.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    items(uiState.selectedSeasonEpisodes, key = { "episode-${it.id}" }) { episode ->
-                      val watchedKey = watchedEpisodeKey(detail.id, episode.seasonNumber, episode.episodeNumber)
-                      EpisodeViewportCard(
-                        episode = episode,
-                        watched = watchedKey in watchedEpisodeIds,
-                        blurUnwatched = uiState.blurUnwatchedEpisodes,
-                        onToggleWatched = {
-                          onToggleEpisodeWatched(detail, episode, watchedKey in watchedEpisodeIds)
-                        },
-                        onOpen = {
-                          if (uiState.showStreamsList) {
-                            episodePageId = episode.id
-                            onLoadStreams(episode)
-                          } else {
-                            onPlayBestStream(episode)
-                          }
-                        },
-                      )
-                    }
-                  }
+                  SeasonEpisodeStrip(
+                    detailId = detail.id,
+                    seasonNumber = uiState.selectedSeasonNumber,
+                    episodes = uiState.selectedSeasonEpisodes,
+                    watchedEpisodeIds = watchedEpisodeIds,
+                    progressRecords = uiState.playbackProgressRecords,
+                    selectedEpisodeId = selectedEpisode?.id,
+                    blurUnwatched = uiState.blurUnwatchedEpisodes,
+                    foreground = streamsForeground,
+                    accent = streamsAccent,
+                    onAccent = onStreamsAccent,
+                    onToggleWatched = { episode ->
+                      onToggleEpisodeWatched(detail, episode, watchedEpisodeKey(detail.id, episode.seasonNumber, episode.episodeNumber) in watchedEpisodeIds)
+                    },
+                    onOpen = { episode ->
+                      if (uiState.showStreamsList) {
+                        episodePageId = episode.id
+                        onLoadStreams(episode)
+                      } else {
+                        onPlayBestStream(episode)
+                      }
+                    },
+                  )
                 }
               }
             }
@@ -23262,26 +23503,82 @@ private fun DetailScreen(
           if (uiState.showStreamsList) {
             item(key = "sources-anchor") { Spacer(modifier = Modifier.height(1.dp)) }
             item(key = "sources-content") {
-            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-              Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-              ) {
-                Text("Sources", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.weight(1f))
-                OutlinedButton(onClick = { onLoadStreams(selectedEpisode) }, shape = RoundedCornerShape(999.dp)) {
-                  Text(if (uiState.streamLoading) "Loading" else "Reload")
+              // Everything the tab remembers survives a trip to another tab and back. Without this
+              // the item is discarded on every tab change and the viewer returns to a list whose
+              // groups have all snapped shut again.
+              streamsStateHolder.SaveableStateProvider("streams-tab-${detail.id}") {
+                val searching = uiState.streamLoading
+                val failedSources = uiState.failedStreamSources
+                Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                  Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                  ) {
+                    Text("Sources", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black, color = streamsForeground, modifier = Modifier.weight(1f))
+                    StreamsRefreshControl(
+                      loading = searching,
+                      foreground = streamsForeground,
+                      accent = streamsAccent,
+                      onClick = { onLoadStreams(selectedEpisode) },
+                    )
+                  }
+                  // The same chips as the episode sources page, inline rather than in a pinned
+                  // band: this tab lives inside the title page's own scroll, and pinning a bar
+                  // over it would change how that page scrolls.
+                  if (streamProviders.isNotEmpty()) {
+                    StreamSourceFilterRow(
+                      providers = streamProviders,
+                      providerCounts = streamProviderCounts,
+                      totalCount = uiState.availableStreams.size,
+                      selectedProvider = streamProviderFilter,
+                      onProviderSelected = { streamProviderFilter = it },
+                      filterRowState = streamsFilterRowState,
+                      foreground = streamsForeground,
+                      accent = streamsAccent,
+                      onAccent = onStreamsAccent,
+                      horizontalPadding = 24.dp,
+                    )
+                  }
+                  if (searching || failedSources.isNotEmpty()) {
+                    StreamSearchStatusRow(
+                      modifier = Modifier.fillMaxWidth().height(SourceToolbarStatusHeight),
+                      searching = searching,
+                      refreshing = searching && uiState.streamRefreshing,
+                      searchedSources = (uiState.totalStreamSources - uiState.pendingStreamSources).coerceAtLeast(0),
+                      totalSources = uiState.totalStreamSources,
+                      pendingSources = uiState.searchingStreamSources,
+                      failedSources = failedSources,
+                      foreground = streamsForeground,
+                      accent = streamsAccent,
+                      reducedMotion = LocalReducedMotion.current,
+                      onRetry = { onLoadStreams(selectedEpisode) },
+                      horizontalPadding = 24.dp,
+                    )
+                  }
+                  StreamsSectionBody(
+                    uiState = uiState,
+                    selectedEpisode = selectedEpisode,
+                    subjectLabel = selectedEpisode
+                      ?.let { "S${it.seasonNumber}E${it.episodeNumber} of ${detail.title}" }
+                      ?: detail.title,
+                    downloadTitle = detail.title,
+                    providerFilter = streamProviderFilter,
+                    onProviderFilterChange = { streamProviderFilter = it },
+                    providerCounts = streamProviderCounts,
+                    searching = searching,
+                    foreground = streamsForeground,
+                    accent = streamsAccent,
+                    onAccent = onStreamsAccent,
+                    horizontalPadding = 24.dp,
+                    onReload = { onLoadStreams(selectedEpisode) },
+                    onManageSources = onManageSources,
+                    onPlayStream = { stream -> if (!uiState.playerLaunching) onPlayStream(stream, selectedEpisode) },
+                    onDownloadStream = onDownloadStream,
+                    isStreamDownloadEligible = isStreamDownloadEligible,
+                  )
                 }
               }
-              StreamListContent(
-                uiState = uiState,
-                selectedEpisode = selectedEpisode,
-                onPlayStream = onPlayStream,
-                onDownloadStream = { stream -> onDownloadStream(stream, detail.title) },
-                isStreamDownloadEligible = isStreamDownloadEligible,
-                horizontalPadding = 24.dp,
-              )
-            }
             }
           }
         }
@@ -23375,6 +23672,7 @@ private fun DetailScreen(
         onPlayStream = onPlayEpisodeStream,
         onDownloadStream = onDownloadStream,
         isStreamDownloadEligible = isStreamDownloadEligible,
+        onManageSources = onManageSources,
       )
     }
   }
@@ -23544,7 +23842,7 @@ private fun TrailerDialog(title: String, url: String, backdropUrl: String?, maxH
     Surface(
       modifier = Modifier.fillMaxWidth(0.94f),
       color = Color(0xFF050505),
-      shape = RoundedCornerShape(22.dp),
+      shape = StreamDekRadius.panelShape,
       border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
     ) {
       Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(14.dp)) {
@@ -23585,7 +23883,7 @@ private fun TrailerDialog(title: String, url: String, backdropUrl: String?, maxH
               verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
               Text("Trailer could not be loaded.", color = Color.White, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-              OutlinedButton(onClick = onOpenExternal, shape = RoundedCornerShape(999.dp)) { Text("Open Externally") }
+              OutlinedButton(onClick = onOpenExternal, shape = StreamDekRadius.pill) { Text("Open Externally") }
             }
           }
         }
@@ -24391,7 +24689,7 @@ private fun ClassicDetailHero(
             AsyncImage(
               model = detail.poster,
               contentDescription = "${detail.title} poster",
-              modifier = Modifier.width(112.dp).height(168.dp).clip(RoundedCornerShape(18.dp)).border(1.dp, Color.White.copy(alpha = 0.24f), RoundedCornerShape(18.dp)),
+              modifier = Modifier.width(112.dp).height(168.dp).clip(StreamDekRadius.cardShape).border(1.dp, Color.White.copy(alpha = 0.24f), StreamDekRadius.cardShape),
               contentScale = ContentScale.Crop,
             )
           }
@@ -24586,8 +24884,10 @@ private fun DetailHero(
           modifier = Modifier
             .fillMaxSize()
             .offset { IntOffset(0, (scrollOffset() * 0.5f).roundToInt()) },
-          enter = fadeIn(animationSpec = tween(420)),
-          exit = fadeOut(animationSpec = tween(520)),
+          // Two crossfades in, and longer still on the way out: the still image underneath has to
+          // be fully there before the video surface goes, or the handover flashes the background.
+          enter = fadeIn(animationSpec = StreamDekMotion.crossfadeSpec(MotionDuration.crossfade * 2)),
+          exit = fadeOut(animationSpec = StreamDekMotion.crossfadeSpec((MotionDuration.crossfade * 2.4f).toInt())),
         ) {
           key(trailerPlaybackKey) {
             TrailerPlaybackView(
@@ -24871,7 +25171,7 @@ private fun StreamDekDetailActions(
         onClick = onPlay,
         enabled = primaryPlayLabel != "Unreleased",
         modifier = Modifier.weight(1f).height(50.dp),
-        shape = RoundedCornerShape(999.dp),
+        shape = StreamDekRadius.pill,
         colors = ButtonDefaults.buttonColors(containerColor = primaryContainer, contentColor = primaryContent),
         elevation = ButtonDefaults.buttonElevation(defaultElevation = if (lightMode) 3.dp else 0.dp),
         contentPadding = PaddingValues(horizontal = 20.dp),
@@ -24889,7 +25189,7 @@ private fun StreamDekDetailActions(
             onClick = onTrailer,
             enabled = hasTrailer,
             modifier = Modifier.size(50.dp),
-            shape = RoundedCornerShape(999.dp),
+            shape = StreamDekRadius.pill,
             colors = ButtonDefaults.buttonColors(containerColor = primaryContainer, contentColor = primaryContent),
             elevation = ButtonDefaults.buttonElevation(defaultElevation = 3.dp),
             contentPadding = PaddingValues(0.dp),
@@ -24901,7 +25201,7 @@ private fun StreamDekDetailActions(
             onClick = onTrailer,
             enabled = hasTrailer,
             modifier = Modifier.size(50.dp),
-            shape = RoundedCornerShape(999.dp),
+            shape = StreamDekRadius.pill,
             border = BorderStroke(1.dp, foreground.copy(alpha = if (hasTrailer) 0.26f else 0.10f)),
             colors = ButtonDefaults.outlinedButtonColors(
               containerColor = foreground.copy(alpha = 0.08f),
@@ -24973,7 +25273,7 @@ private fun DetailPillTab(
   OutlinedButton(
     modifier = modifier,
     onClick = onClick,
-    shape = RoundedCornerShape(999.dp),
+    shape = StreamDekRadius.pill,
     border = BorderStroke(1.dp, foreground.copy(alpha = if (selected) 0.82f else 0.18f)),
     colors = ButtonDefaults.outlinedButtonColors(
       containerColor = foreground.copy(alpha = if (selected) 0.10f else 0.04f),
@@ -25022,7 +25322,7 @@ private fun DetailIconOnlyPill(label: String, selected: Boolean, onClick: () -> 
   val foreground = MaterialTheme.colorScheme.onBackground
   OutlinedButton(
     onClick = onClick,
-    shape = RoundedCornerShape(999.dp),
+    shape = StreamDekRadius.pill,
     border = BorderStroke(1.dp, if (selected) selectedColor.copy(alpha = 0.92f) else foreground.copy(alpha = 0.16f)),
     colors = ButtonDefaults.outlinedButtonColors(
       containerColor = if (selected) selectedColor.copy(alpha = 0.18f) else foreground.copy(alpha = 0.04f),
@@ -25038,7 +25338,7 @@ private fun DetailIconOnlyPill(label: String, selected: Boolean, onClick: () -> 
 private fun DetailIconTab(label: String, selected: Boolean, onClick: () -> Unit) {
   OutlinedButton(
     onClick = onClick,
-    shape = RoundedCornerShape(999.dp),
+    shape = StreamDekRadius.pill,
     border = BorderStroke(1.dp, Color.White.copy(alpha = if (selected) 0.70f else 0.16f)),
     colors = ButtonDefaults.outlinedButtonColors(
       containerColor = if (selected) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.12f),
@@ -25054,7 +25354,7 @@ private fun DetailIconTab(label: String, selected: Boolean, onClick: () -> Unit)
 private fun DetailActionIconPill(icon: ImageVector, label: String, selected: Boolean, onClick: () -> Unit) {
   OutlinedButton(
     onClick = onClick,
-    shape = RoundedCornerShape(999.dp),
+    shape = StreamDekRadius.pill,
     border = BorderStroke(1.dp, Color.White.copy(alpha = if (selected) 0.70f else 0.16f)),
     colors = ButtonDefaults.outlinedButtonColors(
       containerColor = if (selected) Color.White.copy(alpha = 0.10f) else Color.Black.copy(alpha = 0.12f),
@@ -25112,9 +25412,9 @@ private fun DetailFactsSection(detail: MediaDetail) {
 private fun DetailFactCard(label: String, value: String, modifier: Modifier = Modifier) {
   Column(
     modifier = modifier
-      .clip(RoundedCornerShape(18.dp))
+      .clip(StreamDekRadius.cardShape)
       .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.72f))
-      .border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f), RoundedCornerShape(18.dp))
+      .border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f), StreamDekRadius.cardShape)
       .padding(horizontal = 14.dp, vertical = 10.dp),
     verticalArrangement = Arrangement.spacedBy(2.dp),
   ) {
@@ -25183,7 +25483,7 @@ private fun PersonDetailDialog(person: PersonDetail, onDismiss: () -> Unit, onOp
     Surface(
       modifier = adaptiveDialogWidth(0.94f),
       color = MaterialTheme.colorScheme.surface,
-      shape = RoundedCornerShape(28.dp),
+      shape = StreamDekRadius.sheetShape,
       border = BorderStroke(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.12f)),
     ) {
       Column(
@@ -25239,7 +25539,7 @@ private fun PersonDetailDialog(person: PersonDetail, onDismiss: () -> Unit, onOp
                 modifier = Modifier.width(82.dp).clickable { onOpenWork(item) },
                 verticalArrangement = Arrangement.spacedBy(6.dp),
               ) {
-                AsyncImage(model = item.poster ?: item.backdrop, contentDescription = item.title, modifier = Modifier.height(122.dp).fillMaxWidth().clip(RoundedCornerShape(12.dp)), contentScale = ContentScale.Crop)
+                AsyncImage(model = item.poster ?: item.backdrop, contentDescription = item.title, modifier = Modifier.height(122.dp).fillMaxWidth().clip(StreamDekRadius.controlShape), contentScale = ContentScale.Crop)
                 Text(item.title, color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.labelSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
               }
             }
@@ -25305,16 +25605,16 @@ private fun TraktCommentCard(comment: TraktCommentPreview) {
     modifier = Modifier
       .width(310.dp)
       .height(206.dp)
-      .clip(RoundedCornerShape(24.dp))
+      .clip(StreamDekRadius.panelShape)
       .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.72f))
-      .border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.07f), RoundedCornerShape(24.dp))
+      .border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.07f), StreamDekRadius.panelShape)
       .padding(18.dp),
     verticalArrangement = Arrangement.SpaceBetween,
   ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
       Text(comment.author, color = MaterialTheme.colorScheme.onBackground, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
       comment.rating?.let {
-        Box(modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(MaterialTheme.colorScheme.background.copy(alpha = 0.72f)).border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.10f), RoundedCornerShape(999.dp)).padding(horizontal = 12.dp, vertical = 6.dp)) {
+        Box(modifier = Modifier.clip(StreamDekRadius.pill).background(MaterialTheme.colorScheme.background.copy(alpha = 0.72f)).border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.10f), StreamDekRadius.pill).padding(horizontal = 12.dp, vertical = 6.dp)) {
           Text(it, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.74f), fontSize = 12.sp, fontWeight = FontWeight.Bold)
         }
       }
@@ -25329,9 +25629,9 @@ private fun ServiceProviderPill(provider: WatchProvider, onClick: () -> Unit) {
   val initials = provider.name.split(" ").filter { it.isNotBlank() }.take(2).joinToString("") { it.take(1) }.uppercase().ifBlank { "TV" }
   Row(
     modifier = Modifier
-      .clip(RoundedCornerShape(999.dp))
+      .clip(StreamDekRadius.pill)
       .background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.08f))
-      .border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.12f), RoundedCornerShape(999.dp))
+      .border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.12f), StreamDekRadius.pill)
       .clickable(onClick = onClick)
       .padding(horizontal = 14.dp, vertical = 10.dp),
     verticalAlignment = Alignment.CenterVertically,
@@ -25372,37 +25672,6 @@ private fun streamProviderNames(streams: List<AddonStream>): List<String> =
   streams.mapNotNull { it.addonName.takeIf(String::isNotBlank) ?: it.name?.takeIf(String::isNotBlank) }.distinct()
 
 @Composable
-private fun StreamProviderFilterRow(
-  providers: List<String>,
-  selectedProvider: String,
-  onProviderSelected: (String) -> Unit,
-  horizontalPadding: Dp = 24.dp,
-) {
-  if (providers.size <= 1) return
-  val filterForeground = MaterialTheme.colorScheme.onSurface
-  val filterBackground = MaterialTheme.colorScheme.surface
-  LazyRow(
-    modifier = Modifier.fillMaxWidth(),
-    contentPadding = PaddingValues(horizontal = horizontalPadding),
-    horizontalArrangement = Arrangement.spacedBy(8.dp),
-  ) {
-    items(listOf("All") + providers, key = { it }) { provider ->
-      val selected = selectedProvider == provider
-      Box(
-        modifier = Modifier
-          .clip(RoundedCornerShape(999.dp))
-          .background(if (selected) filterForeground else filterForeground.copy(alpha = 0.10f))
-          .border(1.dp, filterForeground.copy(alpha = if (selected) 0f else 0.12f), RoundedCornerShape(999.dp))
-          .clickable { onProviderSelected(provider) }
-          .padding(horizontal = 14.dp, vertical = 8.dp),
-      ) {
-        Text(provider, color = if (selected) filterBackground else filterForeground, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
-      }
-    }
-  }
-}
-
-@Composable
 private fun StreamListContent(
   uiState: AppUiState,
   selectedEpisode: EpisodeItem?,
@@ -25412,7 +25681,6 @@ private fun StreamListContent(
   compact: Boolean = false,
   selectedProviderOverride: String? = null,
   onProviderSelectedOverride: ((String) -> Unit)? = null,
-  showProviderFilters: Boolean = true,
   horizontalPadding: Dp = 24.dp,
 ) {
   val streamLightMode = MaterialTheme.colorScheme.background.luminance() > 0.5f
@@ -25424,7 +25692,7 @@ private fun StreamListContent(
       title = { Text(stream.title?.takeIf { it.isNotBlank() } ?: stream.name?.takeIf { it.isNotBlank() } ?: "Stream options") },
       text = {
         Row(
-          modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable {
+          modifier = Modifier.fillMaxWidth().clip(StreamDekRadius.thumbShape).clickable {
             onDownloadStream(stream)
             longPressedStream = null
           }.padding(vertical = 12.dp, horizontal = 4.dp),
@@ -25477,33 +25745,6 @@ private fun StreamListContent(
     ).joinToString(" · ").ifBlank { "Stream source" }
   }
   Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-    if (uiState.pendingStreamSources > 0) {
-      Row(
-        modifier = Modifier
-          .padding(horizontal = horizontalPadding)
-          .fillMaxWidth()
-          .clip(RoundedCornerShape(18.dp))
-          .background(streamForeground.copy(alpha = if (streamLightMode) 0.08f else 0.06f))
-          .padding(horizontal = 14.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        CircularProgressIndicator(color = streamForeground, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-        Text(
-          "Searching ${uiState.pendingStreamSources} more source${if (uiState.pendingStreamSources == 1) "" else "s"}...",
-          color = streamForeground.copy(alpha = 0.76f),
-          style = MaterialTheme.typography.bodyMedium,
-        )
-      }
-    }
-    if (showProviderFilters) {
-      StreamProviderFilterRow(
-        providers = providers,
-        selectedProvider = providerFilter,
-        onProviderSelected = onProviderSelected,
-        horizontalPadding = horizontalPadding,
-      )
-    }
     if (compact) {
       // The short preview that sits under a poster. No headers: there is not enough of a list here
       // for a grouping to describe anything.
@@ -25618,13 +25859,18 @@ private fun StreamSourceSection(
   onLongPressStream: (AddonStream) -> Unit,
 ) {
   val foreground = MaterialTheme.colorScheme.onSurface
-  var expanded by rememberSaveable(section.source) { mutableStateOf(initiallyExpanded) }
+  // Keyed on where the section sits as well as on its name. Filtering to one source used to leave
+  // that source collapsed - it had been remembered as "not the first section" from the unfiltered
+  // list - so choosing a provider produced a page with one closed header and nothing under it.
+  // Re-keying on the lead position means a section that becomes the first one opens, and a manual
+  // collapse still survives everything short of the list re-ordering around it.
+  var expanded by rememberSaveable(section.source, initiallyExpanded) { mutableStateOf(initiallyExpanded) }
   Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
     Row(
       modifier = Modifier
         .padding(horizontal = horizontalPadding)
         .fillMaxWidth()
-        .clip(RoundedCornerShape(16.dp))
+        .clip(StreamDekRadius.thumbShape)
         .clickable { expanded = !expanded }
         .padding(vertical = 6.dp),
       horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -25632,7 +25878,7 @@ private fun StreamSourceSection(
     ) {
       // A short accent stroke rather than a filled header bar: it marks where a source begins
       // without turning every group into a slab the results then have to sit inside.
-      Box(modifier = Modifier.width(3.dp).height(26.dp).clip(RoundedCornerShape(999.dp)).background(MaterialTheme.colorScheme.primary))
+      Box(modifier = Modifier.width(3.dp).height(26.dp).clip(StreamDekRadius.pill).background(MaterialTheme.colorScheme.primary))
       Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
         Text(
           section.source,
@@ -25647,7 +25893,7 @@ private fun StreamSourceSection(
         }
       }
       Box(
-        modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(foreground.copy(alpha = 0.10f)).padding(horizontal = 9.dp, vertical = 3.dp),
+        modifier = Modifier.clip(StreamDekRadius.pill).background(foreground.copy(alpha = 0.10f)).padding(horizontal = 9.dp, vertical = 3.dp),
       ) {
         Text("${section.total}", color = foreground.copy(alpha = 0.72f), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black)
       }
@@ -25700,7 +25946,7 @@ private fun StreamQualityBandContent(
       verticalAlignment = Alignment.CenterVertically,
     ) {
       Box(
-        modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(accent.copy(alpha = 0.16f)).padding(horizontal = 8.dp, vertical = 3.dp),
+        modifier = Modifier.clip(StreamDekRadius.badgeShape).background(accent.copy(alpha = 0.16f)).padding(horizontal = 8.dp, vertical = 3.dp),
       ) {
         Text(band.tier.label, color = accent, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black, maxLines = 1)
       }
@@ -25733,7 +25979,7 @@ private fun StreamQualityBandContent(
         fontWeight = FontWeight.Black,
         modifier = Modifier
           .padding(horizontal = horizontalPadding)
-          .clip(RoundedCornerShape(10.dp))
+          .clip(StreamDekRadius.controlShape)
           .clickable { showAll = !showAll }
           .padding(horizontal = 8.dp, vertical = 6.dp),
       )
@@ -25778,15 +26024,27 @@ private fun StreamResultCard(
   val readyProvider = stream.cachedBy.firstOrNull()
   val secondaryText = listOf(stream.title, stream.description, stream.filename)
     .firstNotNullOfOrNull { candidate -> streamSingleLine(candidate)?.takeIf { it != primaryText } }
+  // Whether this is the row the app is currently turning into a playback URL. Marked with a ring
+  // around the card and nothing else: the inside of the card belongs to whoever sent the result,
+  // and an overlay on top of it would hide the very text somebody chose the row by.
+  val resolving = uiState.playerLaunching && uiState.launchingStreamKey == addonStreamPlaybackIdentity(stream)
+  val resolvingRing = MaterialTheme.colorScheme.primary
   Card(
-    modifier = Modifier.padding(horizontal = horizontalPadding).fillMaxWidth().pointerInput(stream) {
-      detectTapGestures(
-        onTap = { onPlay() },
-        onLongPress = { if (downloadable) onLongPress() },
+    modifier = Modifier
+      .padding(horizontal = horizontalPadding)
+      .fillMaxWidth()
+      // Was a bare gesture detector, which drew nothing at all while the finger was down - so on a
+      // slow resolve the row gave no sign it had been hit and got tapped again.
+      .pressable(
+        stream,
+        onClick = onPlay,
+        onLongPress = if (downloadable) onLongPress else null,
       )
-    },
+      .then(
+        if (resolving) Modifier.border(1.5.dp, resolvingRing.copy(alpha = 0.72f), StreamDekRadius.panelShape) else Modifier,
+      ),
     colors = CardDefaults.cardColors(containerColor = streamCardColor),
-    shape = RoundedCornerShape(22.dp),
+    shape = StreamDekRadius.panelShape,
   ) {
     Box(modifier = Modifier.fillMaxWidth()) {
     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 13.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -25894,7 +26152,7 @@ private fun StreamResultCard(
         if (uiState.showSizeBadges) {
           streamSizeLabel(stream)?.let { size ->
             Box(
-              modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(oxbloodRed).padding(horizontal = 9.dp, vertical = 4.dp),
+              modifier = Modifier.clip(StreamDekRadius.badgeShape).background(oxbloodRed).padding(horizontal = 9.dp, vertical = 4.dp),
               contentAlignment = Alignment.Center,
             ) {
               Text(
@@ -25948,7 +26206,7 @@ private fun StreamResultCard(
           modifier = Modifier
             .align(Alignment.TopEnd)
             .padding(top = 13.dp, end = 14.dp)
-            .clip(RoundedCornerShape(999.dp))
+            .clip(StreamDekRadius.pill)
             .background(streamForeground)
             .padding(horizontal = 9.dp, vertical = 4.dp),
         ) {
@@ -26016,15 +26274,15 @@ private fun ImdbInlineRating(rating: Double, scale: Float = 1f, modifier: Modifi
   Row(
     modifier = modifier
       .graphicsLayer { scaleX = scale; scaleY = scale }
-      .clip(RoundedCornerShape(999.dp))
+      .clip(StreamDekRadius.pill)
       .background(Color.Black.copy(alpha = 0.58f))
-      .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(999.dp))
+      .border(1.dp, Color.White.copy(alpha = 0.12f), StreamDekRadius.pill)
       .padding(horizontal = 6.dp, vertical = 4.dp),
     horizontalArrangement = Arrangement.spacedBy(5.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
     Box(
-      modifier = Modifier.height(20.dp).clip(RoundedCornerShape(5.dp)).background(Color(0xFFF5C518)).padding(horizontal = 6.dp, vertical = 2.dp),
+      modifier = Modifier.height(20.dp).clip(StreamDekRadius.badgeShape).background(Color(0xFFF5C518)).padding(horizontal = 6.dp, vertical = 2.dp),
       contentAlignment = Alignment.Center,
     ) {
       Text("IMDb", color = Color.Black, fontWeight = FontWeight.Black, style = MaterialTheme.typography.labelSmall)
@@ -26092,9 +26350,9 @@ private fun LiveProxyStatusBadge(proxied: Boolean, modifier: Modifier = Modifier
   val tint = if (proxied) Color(0xFF22C55E) else Color(0xFF94A3B8)
   Row(
     modifier = modifier
-      .clip(RoundedCornerShape(999.dp))
+      .clip(StreamDekRadius.pill)
       .background(tint.copy(alpha = 0.16f))
-      .border(1.dp, tint.copy(alpha = 0.38f), RoundedCornerShape(999.dp))
+      .border(1.dp, tint.copy(alpha = 0.38f), StreamDekRadius.pill)
       .padding(horizontal = 10.dp, vertical = 5.dp),
     horizontalArrangement = Arrangement.spacedBy(5.dp),
     verticalAlignment = Alignment.CenterVertically,
@@ -26134,8 +26392,8 @@ private fun DetailRatingBadges(
   }
   AnimatedVisibility(
     visible = ratings.isNotEmpty(),
-    enter = fadeIn(animationSpec = androidx.compose.animation.core.tween(320)) + slideInVertically(initialOffsetY = { it / 3 }, animationSpec = androidx.compose.animation.core.tween(360)),
-    exit = fadeOut(animationSpec = androidx.compose.animation.core.tween(180)),
+    enter = fadeIn(animationSpec = StreamDekMotion.enterSpec()) + slideInVertically(initialOffsetY = { it / 3 }, animationSpec = StreamDekMotion.enterSpec(MotionDuration.long)),
+    exit = fadeOut(animationSpec = StreamDekMotion.exitSpec()),
   ) {
     Row(
       modifier = modifier.horizontalScroll(rememberScrollState()),
@@ -26159,7 +26417,7 @@ private fun FusionBadgeRow(stream: AddonStream, uiState: AppUiState, modifier: M
   val badges = remember(stream, configKey) { cachedFusionBadges(stream, sources, configKey).take(10) }
   if (badges.isEmpty()) return
   val context = LocalContext.current
-  val badgeShape = RoundedCornerShape(6.dp)
+  val badgeShape = StreamDekRadius.badgeShape
   Row(
     modifier = modifier,
     horizontalArrangement = Arrangement.spacedBy(7.dp),
@@ -26213,14 +26471,14 @@ private fun PosterCard(
       // only slightly — just enough that a poster is not a postage stamp on a 13-inch screen.
       .width(if (landscape) homeRowPosterWidth() * 1.62f else homeRowPosterWidth())
       .alpha(if (dimmed) 0.4f else 1f)
-      .pointerInput(item.id, item.type) { detectTapGestures(onTap = { onClick() }, onLongPress = { onLongPress() }) },
+      .pressable(item.id, item.type, onClick = onClick, onLongPress = onLongPress),
     verticalArrangement = Arrangement.spacedBy(8.dp),
   ) {
     Box(
       modifier = Modifier
         .fillMaxWidth()
         .height(if (landscape) 118.dp else 204.dp)
-        .clip(RoundedCornerShape(18.dp))
+        .clip(StreamDekRadius.cardShape)
         .background(Color(0xFF171717)),
     ) {
       AsyncImage(
@@ -26276,14 +26534,14 @@ private fun ContinueWatchingCard(item: MediaItem, style: ContinueWatchingStyle, 
       modifier = Modifier
         .fillMaxWidth()
         .height(5.dp)
-        .clip(RoundedCornerShape(999.dp))
+        .clip(StreamDekRadius.pill)
         .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.16f)),
     ) {
       Box(
         modifier = Modifier
           .fillMaxWidth(progressFraction)
           .height(5.dp)
-          .clip(RoundedCornerShape(999.dp))
+          .clip(StreamDekRadius.pill)
           .background(MaterialTheme.colorScheme.primary),
       )
     }
@@ -26297,10 +26555,10 @@ private fun ContinueWatchingCard(item: MediaItem, style: ContinueWatchingStyle, 
         modifier = Modifier
           .width(288.dp)
           .aspectRatio(16f / 9f)
-          .clip(RoundedCornerShape(14.dp))
+          .clip(StreamDekRadius.thumbShape)
           .background(Color(0xFF141414))
-          .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
-          .pointerInput(item.id, item.type, style) { detectTapGestures(onTap = { onClick() }, onLongPress = { onLongPress() }) },
+          .border(1.dp, Color.White.copy(alpha = 0.12f), StreamDekRadius.thumbShape)
+          .pressable(item.id, item.type, style, onClick = onClick, onLongPress = onLongPress),
       ) {
         AsyncImage(
           model = imageModel,
@@ -26344,10 +26602,10 @@ private fun ContinueWatchingCard(item: MediaItem, style: ContinueWatchingStyle, 
         modifier = Modifier
           .width(316.dp)
           .height(88.dp)
-          .clip(RoundedCornerShape(14.dp))
+          .clip(StreamDekRadius.thumbShape)
           .background(Color(0xFF121212))
-          .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(14.dp))
-          .pointerInput(item.id, item.type, style) { detectTapGestures(onTap = { onClick() }, onLongPress = { onLongPress() }) },
+          .border(1.dp, Color.White.copy(alpha = 0.10f), StreamDekRadius.thumbShape)
+          .pressable(item.id, item.type, style, onClick = onClick, onLongPress = onLongPress),
       ) {
         AsyncImage(model = imageModel, contentDescription = item.title, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.72f)))
@@ -26366,10 +26624,10 @@ private fun ContinueWatchingCard(item: MediaItem, style: ContinueWatchingStyle, 
         modifier = Modifier
           .width(292.dp)
           .height(78.dp)
-          .clip(RoundedCornerShape(12.dp))
+          .clip(StreamDekRadius.controlShape)
           .background(Color(0xFF121218))
-          .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
-          .pointerInput(item.id, item.type, style) { detectTapGestures(onTap = { onClick() }, onLongPress = { onLongPress() }) },
+          .border(1.dp, Color.White.copy(alpha = 0.12f), StreamDekRadius.controlShape)
+          .pressable(item.id, item.type, style, onClick = onClick, onLongPress = onLongPress),
       ) {
         AsyncImage(model = imageModel, contentDescription = item.title, modifier = Modifier.width(120.dp).fillMaxSize(), contentScale = ContentScale.Crop)
         Column(modifier = Modifier.weight(1f).padding(horizontal = 10.dp, vertical = 9.dp), verticalArrangement = Arrangement.SpaceBetween) {
@@ -26383,10 +26641,10 @@ private fun ContinueWatchingCard(item: MediaItem, style: ContinueWatchingStyle, 
       Column(
         modifier = Modifier
           .width(155.dp)
-          .clip(RoundedCornerShape(12.dp))
+          .clip(StreamDekRadius.controlShape)
           .background(Color(0xFF121218))
-          .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
-          .pointerInput(item.id, item.type, style) { detectTapGestures(onTap = { onClick() }, onLongPress = { onLongPress() }) },
+          .border(1.dp, Color.White.copy(alpha = 0.12f), StreamDekRadius.controlShape)
+          .pressable(item.id, item.type, style, onClick = onClick, onLongPress = onLongPress),
       ) {
         Box(modifier = Modifier.fillMaxWidth().height(88.dp)) {
           AsyncImage(model = imageModel, contentDescription = item.title, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
@@ -26409,7 +26667,7 @@ private fun ContinueWatchingCard(item: MediaItem, style: ContinueWatchingStyle, 
 private fun SearchResultRow(item: MediaItem, onClick: () -> Unit) {
   GlassCard(modifier = Modifier.clickable(onClick = onClick)) {
     Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-      Box(modifier = Modifier.size(width = 96.dp, height = 132.dp).clip(RoundedCornerShape(18.dp))) {
+      Box(modifier = Modifier.size(width = 96.dp, height = 132.dp).clip(StreamDekRadius.cardShape)) {
         AsyncImage(model = item.poster ?: item.backdrop, contentDescription = item.title, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         CardImdbRatingBadge(rating = item.rating)
       }
@@ -26474,7 +26732,14 @@ private fun SeasonSelector(
   onSelect: (SeasonSummary) -> Unit,
 ) {
   val effectiveStyle = if (style == SeasonTabStyle.Posters && seasons.none { !it.poster.isNullOrBlank() }) SeasonTabStyle.Regular else style
-  LazyRow(horizontalArrangement = Arrangement.spacedBy(if (effectiveStyle == SeasonTabStyle.Posters) 10.dp else 8.dp)) {
+  LazyRow(
+    // Full width, with the inset carried as content padding rather than as padding on the row: a
+    // padded row scrolls inside a narrower box and clips its chips short of the screen edge, which
+    // is the one thing that made this read as a boxed-off strip rather than as part of the page.
+    modifier = Modifier.fillMaxWidth(),
+    contentPadding = PaddingValues(horizontal = 24.dp),
+    horizontalArrangement = Arrangement.spacedBy(if (effectiveStyle == SeasonTabStyle.Posters) 10.dp else 8.dp),
+  ) {
     items(seasons, key = { "season-${it.seasonNumber}" }) { season ->
       val selected = selectedSeasonNumber == season.seasonNumber
       if (effectiveStyle == SeasonTabStyle.Posters) {
@@ -26492,8 +26757,8 @@ private fun SeasonSelector(
             modifier = Modifier
               .fillMaxWidth()
               .height(106.dp)
-              .clip(RoundedCornerShape(14.dp))
-              .border(2.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.16f), RoundedCornerShape(14.dp)),
+              .clip(StreamDekRadius.thumbShape)
+              .border(2.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.16f), StreamDekRadius.thumbShape),
             contentScale = ContentScale.Crop,
           )
           Text(
@@ -26519,7 +26784,11 @@ private fun SeasonSelector(
 @Composable
 private fun SeasonSelectorSkeleton(style: SeasonTabStyle) {
   val posterStyle = style == SeasonTabStyle.Posters
-  LazyRow(horizontalArrangement = Arrangement.spacedBy(if (posterStyle) 10.dp else 8.dp)) {
+  LazyRow(
+    modifier = Modifier.fillMaxWidth(),
+    contentPadding = PaddingValues(horizontal = 24.dp),
+    horizontalArrangement = Arrangement.spacedBy(if (posterStyle) 10.dp else 8.dp),
+  ) {
     items(4) { _ ->
       if (posterStyle) {
         Column(
@@ -26564,7 +26833,7 @@ private fun LockedEpisodeOverlay(label: String) {
     Box(
       modifier = Modifier
         .padding(12.dp)
-        .clip(RoundedCornerShape(999.dp))
+        .clip(StreamDekRadius.pill)
         .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.92f))
         .padding(horizontal = 11.dp, vertical = 6.dp),
     ) {
@@ -26580,6 +26849,13 @@ private fun EpisodeViewportCard(
   episode: EpisodeItem,
   watched: Boolean,
   blurUnwatched: Boolean,
+  /** The episode whose sources are open, or were last opened. */
+  selected: Boolean = false,
+  /** The first episode not yet watched. Only marked in a season long enough to lose your place in. */
+  nextUp: Boolean = false,
+  /** How far in the viewer got, when they got part way and stopped. Null otherwise. */
+  progress: Double? = null,
+  accent: Color = Color.White,
   onToggleWatched: () -> Unit,
   onOpen: () -> Unit,
 ) {
@@ -26589,8 +26865,20 @@ private fun EpisodeViewportCard(
     modifier = Modifier
       .width(314.dp)
       .height(202.dp)
-      .clip(RoundedCornerShape(24.dp))
-      .clickable(onClick = onOpen),
+      .clip(StreamDekRadius.panelShape)
+      // A ring rather than a tint, so which card is selected survives being read by somebody who
+      // cannot pick the accent out from the artwork behind it.
+      .then(if (selected) Modifier.border(2.dp, accent, StreamDekRadius.panelShape) else Modifier)
+      .clickable(onClick = onOpen)
+      .semantics {
+        this.selected = selected
+        stateDescription = when {
+          watched -> "Watched"
+          progress != null -> "Part watched"
+          nextUp -> "Next up"
+          else -> "Not watched"
+        }
+      },
   ) {
     AsyncImage(model = episode.still, contentDescription = episode.name, modifier = Modifier.fillMaxSize().then(EpisodeContentBlurModifier(locked)), contentScale = ContentScale.Crop)
     Box(
@@ -26605,8 +26893,15 @@ private fun EpisodeViewportCard(
       modifier = Modifier.align(Alignment.BottomStart).padding(start = 14.dp, end = 14.dp, top = 14.dp, bottom = 10.dp),
       verticalArrangement = Arrangement.spacedBy(7.dp),
     ) {
-      Box(modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(Color.Black.copy(alpha = 0.58f)).padding(horizontal = 8.dp, vertical = 4.dp)) {
-        Text("S${episode.seasonNumber}E${episode.episodeNumber}", color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black)
+      Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(modifier = Modifier.clip(StreamDekRadius.badgeShape).background(Color.Black.copy(alpha = 0.58f)).padding(horizontal = 8.dp, vertical = 4.dp)) {
+          Text("S${episode.seasonNumber}E${episode.episodeNumber}", color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black)
+        }
+        if (nextUp) {
+          Box(modifier = Modifier.clip(StreamDekRadius.badgeShape).background(accent).padding(horizontal = 8.dp, vertical = 4.dp)) {
+            Text("Next Up", color = readableOn(accent), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black, maxLines = 1)
+          }
+        }
       }
       Text(episode.name, color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
       episode.airDate?.let { airDate ->
@@ -26622,7 +26917,380 @@ private fun EpisodeViewportCard(
         }
       }
     }
+    progress?.let { fraction ->
+      // Along the very bottom of the card rather than inside the text block: it is a property of
+      // the episode as a whole, and putting it in the column would push the synopsis around
+      // depending on whether somebody had started watching.
+      Box(
+        modifier = Modifier
+          .align(Alignment.BottomStart)
+          .fillMaxWidth()
+          .height(3.dp)
+          .background(Color.Black.copy(alpha = 0.42f)),
+      ) {
+        Box(
+          modifier = Modifier
+            .fillMaxHeight()
+            .fillMaxWidth(fraction.coerceIn(0.02, 1.0).toFloat())
+            .background(accent),
+        )
+      }
+    }
   }
+}
+
+/**
+ * Height of the compact episode hero.
+ *
+ * Cinematic enough to place the episode - the still, the number and the two titles - and short
+ * enough that the sources list, which is what this page is for, gets the rest of the screen.
+ */
+private val EpisodeHeroHeight = 226.dp
+
+/**
+ * What the floating navigation covers at the foot of a page.
+ *
+ * The bar is 74dp tall with an 8dp margin under it and it floats over the scene rather than taking
+ * a row of the layout, so a list that does not reserve this much loses its last result behind it.
+ * Whatever the system reserves for gestures or navigation buttons is added on top of this rather
+ * than folded into it, because that varies by device and by how the viewer has set it up.
+ */
+private val FloatingNavigationClearance = 98.dp
+
+/** Height of the pinned source toolbar's chip row. */
+private val SourceToolbarChipRowHeight = 62.dp
+
+/** Extra height the toolbar takes while it has a search or failure status to report. */
+private val SourceToolbarStatusHeight = 40.dp
+
+/** How many results each source returned, keyed in the order the ranked list already puts them. */
+internal fun streamProviderCounts(streams: List<AddonStream>): Map<String, Int> {
+  val counts = linkedMapOf<String, Int>()
+  streams.forEach { stream ->
+    val name = stream.addonName.takeIf(String::isNotBlank) ?: stream.name?.takeIf(String::isNotBlank) ?: return@forEach
+    counts[name] = (counts[name] ?: 0) + 1
+  }
+  return counts
+}
+
+/**
+ * The sources page for one episode.
+ *
+ * Four bands, top to bottom: the episode it is about, what can be done to that episode, which
+ * sources to show, and the results themselves. The results keep the grouping, the ordering and -
+ * unless StreamDek Formatting is switched on - the exact presentation each provider sent;
+ * everything this page does is arrange them, say how the search is going, and stay out of the way.
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+/**
+ * A season's episodes, and - past twenty of them - a way to get about in it.
+ *
+ * Under the threshold this is the horizontal strip the app has always drawn, with nothing added.
+ * Over it, the season is cut into blocks of twenty and the strip shows one block at a time: the
+ * furthest any episode ever sits from the start of the strip is then nineteen cards, whichever
+ * episode it is. The block row and the jump sheet between them mean episode 176 of 200 is two taps
+ * away instead of a hundred and seventy-six cards of swiping.
+ *
+ * The block on show is chosen for the viewer the first time - whatever they had selected, else
+ * whatever they are part-way through, else the first thing they have not watched - and then left
+ * alone, so a choice made here survives opening an episode and coming back.
+ */
+@Composable
+private fun SeasonEpisodeStrip(
+  detailId: String,
+  seasonNumber: Int?,
+  episodes: List<EpisodeItem>,
+  watchedEpisodeIds: List<String>,
+  progressRecords: List<PlaybackProgressRecord>,
+  selectedEpisodeId: String?,
+  blurUnwatched: Boolean,
+  foreground: Color,
+  accent: Color,
+  onAccent: Color,
+  onToggleWatched: (EpisodeItem) -> Unit,
+  onOpen: (EpisodeItem) -> Unit,
+) {
+  val episodeNumbers = remember(episodes) { episodes.map { it.episodeNumber } }
+  val ranges = remember(episodeNumbers) { buildEpisodeRanges(episodeNumbers) }
+  val watchedNumbers = remember(episodes, watchedEpisodeIds, detailId) {
+    episodes.filter { watchedEpisodeKey(detailId, it.seasonNumber, it.episodeNumber) in watchedEpisodeIds }
+      .mapTo(mutableSetOf()) { it.episodeNumber }
+  }
+  // How far through each episode the viewer got, for the sliver of progress under a card. Keyed by
+  // episode number within this season only - a record for another season says nothing here.
+  val progressByEpisode = remember(progressRecords, detailId, seasonNumber) {
+    progressRecords
+      .filter { it.entityType.equals("tv", ignoreCase = true) && it.entityId == detailId && it.seasonNumber == seasonNumber && it.episodeNumber != null }
+      .groupBy { it.episodeNumber!! }
+      .mapValues { (_, records) -> records.maxByOrNull { it.updatedAt }!! }
+  }
+  // The one to come back to: part-watched, not finished, most recently touched.
+  val inProgressEpisode = remember(progressByEpisode) {
+    progressByEpisode.values
+      .filter { !it.completed && !it.unwatched && it.progress > 0.0 && it.progress < 0.95 }
+      .maxByOrNull { it.updatedAt }
+      ?.episodeNumber
+  }
+  val selectedNumber = remember(episodes, selectedEpisodeId) {
+    episodes.firstOrNull { it.id == selectedEpisodeId }?.episodeNumber
+  }
+  val nextUnwatched = remember(episodeNumbers, watchedNumbers) {
+    nextUnwatchedEpisodeNumber(episodeNumbers, watchedNumbers)
+  }
+  val focusEpisode = remember(episodeNumbers, selectedNumber, inProgressEpisode, watchedNumbers) {
+    focusEpisodeNumber(episodeNumbers, selectedNumber, inProgressEpisode, watchedNumbers)
+  }
+
+  // -1 until a block has been chosen, so the effect below can tell "not decided yet" from "the
+  // viewer picked the first block". Keyed on the season, so changing season starts again.
+  var rangeIndex by rememberSaveable(detailId, seasonNumber) { mutableIntStateOf(-1) }
+  LaunchedEffect(ranges, focusEpisode) {
+    // Only when nothing valid has been chosen. Re-deciding on every recomposition would drag the
+    // viewer back to the resume point every time a progress record arrived.
+    if (rangeIndex !in ranges.indices) rangeIndex = episodeRangeIndexFor(ranges, focusEpisode)
+  }
+  val activeRange = ranges.getOrNull(rangeIndex)
+  val visibleEpisodes = remember(episodes, activeRange) {
+    if (activeRange == null) episodes else episodes.subList(activeRange.fromIndex, activeRange.toIndex + 1)
+  }
+
+  val stripState = rememberLazyListState()
+  val rangeRowState = rememberLazyListState()
+  var showJumpSheet by rememberSaveable(detailId, seasonNumber) { mutableStateOf(false) }
+  // The episode a jump named, and a token that says a jump has been asked for. The target is
+  // deliberately not one of the effect's keys: clearing it on completion would otherwise restart
+  // the effect, which would then find nothing to jump to and scroll back to the start of the
+  // block - which is precisely what "go to episode 80" used to do.
+  var pendingScrollTo by remember(detailId, seasonNumber) { mutableStateOf<Int?>(null) }
+  var jumpToken by remember(detailId, seasonNumber) { mutableIntStateOf(0) }
+  LaunchedEffect(seasonNumber, rangeIndex, jumpToken, visibleEpisodes) {
+    val target = pendingScrollTo
+    if (target == null) {
+      // A different block, or a different season, means a different set of cards - and a strip
+      // still holding the offset it had for the last set opens six cards into the new one, which
+      // looks like the app losing its place rather than the viewer changing subject.
+      if (stripState.firstVisibleItemIndex != 0 || stripState.firstVisibleItemScrollOffset != 0) {
+        stripState.scrollToItem(0)
+      }
+      return@LaunchedEffect
+    }
+    val index = visibleEpisodes.indexOfFirst { it.episodeNumber == target }
+    if (index >= 0) {
+      stripState.animateScrollToItem(index)
+      pendingScrollTo = null
+    }
+  }
+  fun jumpTo(episodeNumber: Int?) {
+    val target = resolveJumpTarget(episodeNumbers, episodeNumber) ?: return
+    pendingScrollTo = target
+    rangeIndex = episodeRangeIndexFor(ranges, target)
+    jumpToken += 1
+    showJumpSheet = false
+  }
+
+  Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    if (ranges.isNotEmpty()) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        LazyRow(
+          state = rangeRowState,
+          modifier = Modifier
+            .weight(1f)
+            .semantics { contentDescription = "Jump to a block of episodes" },
+          contentPadding = PaddingValues(start = 24.dp, end = 4.dp),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          itemsIndexed(ranges, key = { _, range -> "range-${range.fromIndex}" }) { index, range ->
+            val selected = index == rangeIndex
+            Row(
+              modifier = Modifier
+                .heightIn(min = 44.dp)
+                .clip(StreamDekRadius.pill)
+                .background(if (selected) accent else foreground.copy(alpha = 0.08f))
+                .border(1.dp, if (selected) Color.Transparent else foreground.copy(alpha = 0.16f), StreamDekRadius.pill)
+                .clickable { rangeIndex = index }
+                .padding(horizontal = 14.dp, vertical = 8.dp)
+                .semantics { this.selected = selected },
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Text(
+                range.label,
+                color = if (selected) onAccent else foreground.copy(alpha = 0.88f),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Black,
+                maxLines = 1,
+              )
+            }
+          }
+        }
+        // Outside the scrolling row so it is always in the same place, however far along the
+        // season the viewer has scrolled the blocks.
+        Row(
+          modifier = Modifier
+            .padding(end = 24.dp)
+            .heightIn(min = 44.dp)
+            .clip(StreamDekRadius.pill)
+            .background(foreground.copy(alpha = 0.08f))
+            .border(1.dp, foreground.copy(alpha = 0.16f), StreamDekRadius.pill)
+            .clickable { showJumpSheet = true }
+            .padding(horizontal = 13.dp, vertical = 8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+          Icon(Icons.Rounded.Search, contentDescription = null, tint = foreground, modifier = Modifier.size(15.dp))
+          Text("Jump", color = foreground, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Black, maxLines = 1)
+        }
+      }
+    }
+    LazyRow(
+      state = stripState,
+      contentPadding = PaddingValues(horizontal = 24.dp),
+      horizontalArrangement = Arrangement.spacedBy(12.dp),
+      modifier = Modifier.fillMaxWidth(),
+    ) {
+      items(visibleEpisodes, key = { "episode-${it.id}" }) { episode ->
+        val watchedKey = watchedEpisodeKey(detailId, episode.seasonNumber, episode.episodeNumber)
+        val record = progressByEpisode[episode.episodeNumber]
+        EpisodeViewportCard(
+          episode = episode,
+          watched = watchedKey in watchedEpisodeIds,
+          blurUnwatched = blurUnwatched,
+          selected = episode.id == selectedEpisodeId,
+          nextUp = ranges.isNotEmpty() && episode.episodeNumber == nextUnwatched,
+          progress = record?.progress?.takeIf { !record.completed && it > 0.0 && it < 0.95 },
+          accent = accent,
+          onToggleWatched = { onToggleWatched(episode) },
+          onOpen = { onOpen(episode) },
+        )
+      }
+    }
+  }
+
+  if (showJumpSheet) {
+    EpisodeJumpSheet(
+      episodes = episodes,
+      watchedNumbers = watchedNumbers,
+      nextUnwatched = nextUnwatched,
+      inProgress = inProgressEpisode,
+      selectedNumber = selectedNumber,
+      accent = accent,
+      onAccent = onAccent,
+      onJump = ::jumpTo,
+      onDismiss = { showJumpSheet = false },
+    )
+  }
+}
+
+/**
+ * Choosing an episode by number instead of by scrolling to it.
+ *
+ * Two ways in, because two different things get asked of it. The shortcuts along the top answer
+ * "where was I" and "what is next" in one tap without the viewer having to know a number at all;
+ * the grid answers "I want episode 176" and is a lazy grid, so a two-hundred-episode season costs
+ * the same to open as a twelve-episode one. Typing is deliberately not the primary route - it is
+ * there in the grid's own scroll, and the shortcuts cover the cases people actually have.
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun EpisodeJumpSheet(
+  episodes: List<EpisodeItem>,
+  watchedNumbers: Set<Int>,
+  nextUnwatched: Int?,
+  inProgress: Int?,
+  selectedNumber: Int?,
+  accent: Color,
+  onAccent: Color,
+  onJump: (Int?) -> Unit,
+  onDismiss: () -> Unit,
+) {
+  val foreground = MaterialTheme.colorScheme.onSurface
+  val first = episodes.firstOrNull()?.episodeNumber
+  val last = episodes.lastOrNull()?.episodeNumber
+  val shortcuts = remember(first, last, nextUnwatched, inProgress, selectedNumber) {
+    buildList {
+      first?.let { add("First" to it) }
+      inProgress?.let { add("Continue · E$it" to it) }
+      nextUnwatched?.takeIf { it != inProgress }?.let { add("Next Up · E$it" to it) }
+      selectedNumber?.takeIf { it != inProgress && it != nextUnwatched }?.let { add("Selected · E$it" to it) }
+      last?.takeIf { it != first }?.let { add("Last · E$it" to it) }
+    }
+  }
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text("Go to episode", fontWeight = FontWeight.Black) },
+    text = {
+      Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        if (shortcuts.isNotEmpty()) {
+          androidx.compose.foundation.layout.FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            shortcuts.forEach { (label, number) ->
+              Box(
+                modifier = Modifier
+                  .heightIn(min = 44.dp)
+                  .clip(StreamDekRadius.pill)
+                  .background(accent.copy(alpha = 0.16f))
+                  .border(1.dp, accent.copy(alpha = 0.38f), StreamDekRadius.pill)
+                  .clickable { onJump(number) }
+                  .padding(horizontal = 13.dp, vertical = 10.dp),
+                contentAlignment = Alignment.Center,
+              ) {
+                Text(label, color = foreground, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Black, maxLines = 1)
+              }
+            }
+          }
+        }
+        LazyVerticalGrid(
+          columns = GridCells.Adaptive(minSize = 56.dp),
+          modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          gridItems(episodes, key = { "jump-${it.id}" }) { episode ->
+            val watched = episode.episodeNumber in watchedNumbers
+            val isSelected = episode.episodeNumber == selectedNumber
+            Box(
+              modifier = Modifier
+                .heightIn(min = 48.dp)
+                .clip(StreamDekRadius.controlShape)
+                .background(if (isSelected) accent else foreground.copy(alpha = if (watched) 0.05f else 0.10f))
+                .border(
+                  1.dp,
+                  if (isSelected) Color.Transparent else foreground.copy(alpha = if (watched) 0.08f else 0.18f),
+                  StreamDekRadius.controlShape,
+                )
+                .clickable { onJump(episode.episodeNumber) }
+                .semantics {
+                  this.selected = isSelected
+                  // Watched is a fade, which is not something a screen reader can see.
+                  stateDescription = if (watched) "Watched" else "Not watched"
+                },
+              contentAlignment = Alignment.Center,
+            ) {
+              Text(
+                "${episode.episodeNumber}",
+                color = when {
+                  isSelected -> onAccent
+                  watched -> foreground.copy(alpha = 0.42f)
+                  else -> foreground
+                },
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Black,
+                maxLines = 1,
+              )
+            }
+          }
+        }
+      }
+    },
+    confirmButton = {},
+    dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+  )
 }
 
 @Composable
@@ -26638,186 +27306,1093 @@ private fun EpisodeStreamsPage(
   onPlayStream: (AddonStream, EpisodeItem?) -> Unit,
   onDownloadStream: (AddonStream, String) -> Unit = { _, _ -> },
   isStreamDownloadEligible: (AddonStream) -> Boolean = { false },
+  /** Opens the add-on and plugin settings. Null when the caller has nowhere to send the viewer. */
+  onManageSources: (() -> Unit)? = null,
 ) {
   val heroImage = episode.still ?: detail.backdrop ?: detail.poster
-  val providers = remember(uiState.availableStreams) { streamProviderNames(uiState.availableStreams) }
+  val reducedMotion = LocalReducedMotion.current
+  // Counted off the same list the filter reads, so a chip's number is exactly what tapping it
+  // shows, and the order is the ranked order the results are already listed in.
+  val providerCounts = remember(uiState.availableStreams) { streamProviderCounts(uiState.availableStreams) }
+  val providers = remember(providerCounts) { providerCounts.keys.toList() }
   var providerFilter by rememberSaveable(detail.id, episode.id) { mutableStateOf("All") }
   val episodeHazeState = rememberHazeState()
   // Sampled from the picture this page actually shows -- the episode still, falling back to the
   // title's artwork only when there is no still -- rather than from the title's backdrop.
   //
   // It used to take the title's colour so every episode of a series matched, which is defensible
-  // but wrong here: the hero filling the top third of this page is the still, and a page painted a
+  // but wrong here: the hero filling the top of this page is the still, and a page painted a
   // colour taken from a different image reads as the wrong colour rather than as a consistent one.
   // Dominant Colour is a mode about the artwork in front of you, so it follows the artwork in front
   // of you. Sampling is cached per image URL and runs off the composition, so a season of stills
-  // costs one small fetch each, once.
+  // costs one small fetch each, once. It returns null while that is in flight and if it fails, so
+  // the page settles from the theme background rather than flashing a colour in partway through.
   val episodePageBackground = rememberDominantBackgroundColor(
     artworkUrl = heroImage,
     enabled = uiState.detailBackgroundMode == BackgroundMode.Dominant,
   )
   val episodeBackground = episodePageBackground ?: MaterialTheme.colorScheme.background
   val lightStreamsPage = episodeBackground.luminance() > 0.5f
-  val streamsPageForeground = MaterialTheme.colorScheme.onSurface
-  val filterPanelHeight = if (providers.size > 1) 102.dp else 58.dp
+  // The dominant colour is settled to the theme's own polarity, so the theme's ink reads on it by
+  // construction. This is the backstop for the cases that construction does not cover - a tinted
+  // Cinematic page, artwork that settles unusually light or dark - and it only fires below 4.5:1,
+  // where the page drops to plain black or white rather than leaving text somebody has to work at.
+  val themeForeground = MaterialTheme.colorScheme.onSurface
+  val streamsPageForeground = when {
+    contrastRatio(themeForeground, episodeBackground) >= 4.5f -> themeForeground
+    lightStreamsPage -> Color(0xFF101114)
+    else -> Color(0xFFF5F6F8)
+  }
+  // Derived from the already-animating page colour rather than sampled separately, so every accent
+  // on the page crossfades with the artwork instead of snapping to the new hue a frame later.
+  val ambientAccent = ambientAccentColor(episodeBackground, MaterialTheme.colorScheme.primary)
+  val onAmbientAccent = readableOn(ambientAccent)
+  // The hero's own ink. The scrim over the still follows the page's polarity, so a light page gets
+  // a pale scrim with dark type and a dark page a dark scrim with white type; either way the text
+  // at the foot of the artwork sits on a ground it can be read against.
+  val heroScrim = if (lightStreamsPage) Color.White else Color.Black
+  val heroInk = if (lightStreamsPage) Color(0xFF14161A) else Color.White
+  // The hero is the one fixed-height thing on the page, so it is the one thing that has to give.
+  // It grows with the text size, because at 200% the episode title alone is taller than the design
+  // height, and it is capped against the window so it does not eat a landscape screen or a small
+  // phone. Beyond that cap the title ellipsises, which is the right trade: the list is the page.
+  val heroHeight = (EpisodeHeroHeight * LocalDensity.current.fontScale.coerceIn(1f, 1.6f))
+    .coerceAtMost(LocalConfiguration.current.screenHeightDp.dp * 0.42f)
+
   LaunchedEffect(providers, providerFilter) {
     if (providerFilter != "All" && providerFilter !in providers) providerFilter = "All"
   }
   BackHandler(onBack = onBack)
+
+  val listState = rememberLazyListState()
+  // Hoisted out of the toolbar so a provider answering mid-search cannot scroll the chip row back
+  // to the start under the viewer's finger.
+  val filterRowState = rememberLazyListState()
+  val systemBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+  val streams = uiState.availableStreams
+  // The whole of the loading flag, not only the window where a source count is known: a search
+  // waiting on the add-on list has streamLoading set and nothing pending yet, and calling that
+  // "not searching" is what let the empty states fire over the top of a search in progress.
+  val searching = uiState.streamLoading
+  val refreshing = searching && uiState.streamRefreshing
+  val failedSources = uiState.failedStreamSources
+  val statusVisible = searching || failedSources.isNotEmpty()
+  // Nothing to filter until something has answered, and an "All" chip on its own describes nothing.
+  val chipsVisible = providers.isNotEmpty()
+  val toolbarHeight by animateDpAsState(
+    targetValue = (if (chipsVisible) SourceToolbarChipRowHeight else 0.dp) +
+      (if (statusVisible) SourceToolbarStatusHeight else 0.dp),
+    animationSpec = StreamDekMotion.standardSpec(),
+    label = "sources_toolbar_height",
+  )
+
+  // One tap starts one playback. The launch screen takes the whole window a moment later, but the
+  // moment before it does is long enough to hit a second row.
+  val launching = uiState.playerLaunching
+  val startPlayback: (AddonStream) -> Unit = { stream -> if (!launching) onPlayStream(stream, episode) }
+
+  // Marking earlier episodes is a batch of network calls with no completion callback of its own,
+  // so the button watches for the two things that mean it is over: the watched revision moving, or
+  // a notice explaining why nothing moved. The delay is only the backstop for neither arriving.
+  var previousRequest by remember(episode.id) { mutableStateOf<Pair<Int, String?>?>(null) }
+  val markingPrevious = previousRequest != null
+  LaunchedEffect(previousRequest, uiState.watchedEpisodeRevision, uiState.infoMessage) {
+    val started = previousRequest ?: return@LaunchedEffect
+    if (uiState.watchedEpisodeRevision != started.first || uiState.infoMessage != started.second) {
+      previousRequest = null
+      return@LaunchedEffect
+    }
+    delay(12_000)
+    previousRequest = null
+  }
+  // Specials have no "earlier" to speak of - the batch only walks seasons 1..n - and neither does
+  // the very first episode, so the action is offered exactly when it has something to do.
+  val hasEarlierEpisodes = episode.seasonNumber >= 1 && (episode.seasonNumber > 1 || episode.episodeNumber > 1)
+
   Surface(modifier = Modifier.fillMaxSize(), color = episodeBackground) {
     Box(modifier = Modifier.fillMaxSize().background(episodeBackground)) {
       if (uiState.detailBackgroundMode == BackgroundMode.Cinematic) {
+        // The same three-layer stack the title page builds, driven by the same slider, so a viewer
+        // who has dialled the ambience down does not walk from a barely-tinted title page onto an
+        // episode page still painted at full strength. Backdrop alpha, flat tint and gradient are
+        // the title page's numbers; only the image differs, because this page's subject is the
+        // still rather than the series backdrop.
         AsyncImage(
           model = heroImage,
           contentDescription = null,
-          modifier = Modifier.fillMaxSize().blur(34.dp),
+          modifier = Modifier
+            .fillMaxSize()
+            .blur(34.dp)
+            .graphicsLayer { alpha = if (lightStreamsPage) 0.42f else 0.32f },
           contentScale = ContentScale.Crop,
         )
-        Box(modifier = Modifier.fillMaxSize().background(episodeBackground.copy(alpha = ambientTintAlpha(if (lightStreamsPage) 0.58f else 0.46f, uiState.detailAmbientTintPercent))))
+        val ambientTint = uiState.detailAmbientTintPercent
+        Box(
+          modifier = Modifier.fillMaxSize().background(
+            episodeBackground.copy(alpha = ambientTintAlpha(if (lightStreamsPage) 0.46f else 0.36f, ambientTint)),
+          ),
+        )
+        Box(
+          modifier = Modifier.fillMaxSize().background(
+            Brush.verticalGradient(
+              colorStops = arrayOf(
+                0.00f to episodeBackground.copy(alpha = ambientTintAlpha(if (lightStreamsPage) 0.10f else 0.11f, ambientTint)),
+                0.34f to episodeBackground.copy(alpha = ambientTintAlpha(if (lightStreamsPage) 0.28f else 0.44f, ambientTint)),
+                0.68f to episodeBackground.copy(alpha = ambientTintAlpha(if (lightStreamsPage) 0.58f else 0.552f, ambientTint)),
+                1.00f to episodeBackground.copy(alpha = ambientTintAlpha(1f, ambientTint).coerceAtLeast(0.62f)),
+              ),
+            ),
+          ),
+        )
       }
       Column(modifier = Modifier.fillMaxSize()) {
-        Box(modifier = Modifier.fillMaxWidth().height(330.dp).hazeSource(episodeHazeState)) {
-          AsyncImage(model = heroImage, contentDescription = episode.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-          Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(episodeBackground.copy(alpha = 0.10f), episodeBackground.copy(alpha = 0.42f), episodeBackground))))
-          Column(
-            modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(horizontal = 24.dp, vertical = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp),
-          ) {
-            Text(
-              "S${episode.seasonNumber} E${episode.episodeNumber}",
-              color = Color.White.copy(alpha = 0.82f),
-              style = MaterialTheme.typography.labelLarge,
-              fontWeight = FontWeight.Black,
-            )
-            Text(
-              episode.name,
-              color = Color.White,
-              style = MaterialTheme.typography.titleLarge,
-              fontWeight = FontWeight.Black,
-              maxLines = 2,
-              overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-              detail.title,
-              color = Color.White.copy(alpha = 0.74f),
-              style = MaterialTheme.typography.titleMedium,
-              fontWeight = FontWeight.SemiBold,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-            )
-            Row(
-              modifier = Modifier.fillMaxWidth(),
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-              Row(
-                modifier = Modifier
-                  .clip(RoundedCornerShape(999.dp))
-                  .background(if (watched) Color(0xFF22C55E).copy(alpha = 0.18f) else Color.White.copy(alpha = 0.10f))
-                  .border(1.dp, if (watched) Color(0xFF22C55E).copy(alpha = 0.38f) else Color.White.copy(alpha = 0.16f), RoundedCornerShape(999.dp))
-                  .clickable(onClick = onToggleWatched)
-                  .padding(horizontal = 10.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-              ) {
-                Icon(
-                  Icons.Rounded.CheckCircle,
-                  contentDescription = null,
-                  tint = if (watched) Color(0xFF22C55E) else Color(0xFFF2F2EE),
-                  modifier = Modifier.size(15.dp),
-                )
-                Text(
-                  if (watched) "Mark as Unwatched" else "Mark as Watched",
-                  color = if (watched) Color(0xFF22C55E) else Color(0xFFF2F2EE),
-                  style = MaterialTheme.typography.labelSmall,
-                  fontWeight = FontWeight.Bold,
-                )
-              }
-              if (episode.seasonNumber > 1 || episode.episodeNumber > 1) {
-                Row(
-                  modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(Color.White.copy(alpha = 0.10f))
-                    .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(999.dp))
-                    .clickable(onClick = onMarkPreviousWatched)
-                    .padding(horizontal = 10.dp, vertical = 7.dp),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                  Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
-                  Text("Mark Previous Episodes Watched", color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                }
-              }
+        EpisodeStreamsHeader(
+          detail = detail,
+          episode = episode,
+          heroImage = heroImage,
+          height = heroHeight,
+          watched = watched,
+          pageColor = episodeBackground,
+          scrimColor = heroScrim,
+          ink = heroInk,
+          hazeState = episodeHazeState,
+        )
+        // Everything below the artwork reads against a settled wash of the page's own colour rather
+        // than against the artwork itself. In Normal and Dominant modes this is the page colour
+        // painted over the page colour and changes nothing; in Cinematic it is what makes the
+        // difference between provider text on a known ground and provider text on whatever happens
+        // to be blurred behind it, which for a dark still under a light theme was dark ink on a
+        // dark brown wall. The ambient colour is still the page's, and a whisper of the backdrop
+        // still shows through the top of it - it just stops competing with the results.
+        //
+        // How much of a whisper is the viewer's call: the wash rides the same ambient slider as
+        // everything else on the page, because a wash pinned near-opaque was what made the slider
+        // look like it did nothing here. The floors are the readability backstop - even at the
+        // lowest setting the results still sit on a ground rather than on the artwork.
+        val washTint = uiState.detailAmbientTintPercent
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .weight(1f)
+            .background(
+              Brush.verticalGradient(
+                listOf(
+                  episodeBackground.copy(alpha = ambientTintAlpha(0.86f, washTint).coerceAtLeast(0.42f)),
+                  episodeBackground.copy(alpha = ambientTintAlpha(0.94f, washTint).coerceAtLeast(0.52f)),
+                  episodeBackground.copy(alpha = ambientTintAlpha(0.97f, washTint).coerceAtLeast(0.58f)),
+                ),
+              ),
+            ),
+        ) {
+        EpisodeActionRow(
+          watched = watched,
+          showPreviousAction = hasEarlierEpisodes,
+          markingPrevious = markingPrevious,
+          foreground = streamsPageForeground,
+          accent = ambientAccent,
+          onToggleWatched = onToggleWatched,
+          onMarkPreviousWatched = {
+            if (!markingPrevious) {
+              previousRequest = uiState.watchedEpisodeRevision to uiState.infoMessage
+              onMarkPreviousWatched()
             }
-          }
-        }
+          },
+        )
         Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
           LazyColumn(
-            modifier = Modifier.fillMaxSize().hazeSource(episodeHazeState),
-            contentPadding = PaddingValues(top = filterPanelHeight + 10.dp, bottom = 120.dp),
+            state = listState,
+            // No longer a haze source: the toolbar above it is a flat bar rather than glass, and
+            // the only frosted things left on this page - the two circular controls - sample the
+            // hero. Capturing the whole list every frame for nothing is not free.
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+              top = toolbarHeight + 10.dp,
+              // The floating navigation is drawn over this page rather than beside it, so the list
+              // has to hand back its own height plus whatever the system reserves underneath -
+              // otherwise the last result of the last source never scrolls clear of the bar.
+              bottom = FloatingNavigationClearance + systemBottomInset,
+            ),
           ) {
-            item {
-              StreamListContent(
+            item(key = "stream-results") {
+              StreamsSectionBody(
                 uiState = uiState,
                 selectedEpisode = episode,
-                onPlayStream = onPlayStream,
-                onDownloadStream = { stream -> onDownloadStream(stream, detail.title) },
+                subjectLabel = "S${episode.seasonNumber}E${episode.episodeNumber} of ${detail.title}",
+                downloadTitle = detail.title,
+                providerFilter = providerFilter,
+                onProviderFilterChange = { providerFilter = it },
+                providerCounts = providerCounts,
+                searching = searching,
+                foreground = streamsPageForeground,
+                accent = ambientAccent,
+                onAccent = onAmbientAccent,
+                horizontalPadding = 20.dp,
+                onReload = onReload,
+                onManageSources = onManageSources,
+                onLeave = "Back to episode" to onBack,
+                onPlayStream = startPlayback,
+                onDownloadStream = onDownloadStream,
                 isStreamDownloadEligible = isStreamDownloadEligible,
-                selectedProviderOverride = providerFilter,
-                onProviderSelectedOverride = { providerFilter = it },
-                showProviderFilters = false,
-                horizontalPadding = 24.dp,
               )
             }
           }
-          FrostedGlassSurface(
-            modifier = Modifier.align(Alignment.TopCenter).zIndex(3f).fillMaxWidth().height(filterPanelHeight),
-            shape = RectangleShape,
-            hazeStateOverride = episodeHazeState,
-            blurRadius = 68f,
-            contentPadding = PaddingValues(top = 10.dp, bottom = 8.dp),
-            // Tinted with the page's own colour. The glass otherwise falls back to a near-black
-            // haze tint whenever the theme is dark, which on a coloured page reads as a grey slab
-            // dropped on top of it rather than as part of the page.
-            tintAlpha = 0.30f,
-            borderAlpha = if (lightStreamsPage) 0.10f else 0.14f,
-            baseAlpha = 0.34f,
-            fillColorOverride = sectionSurfaceColor(episodeBackground),
-            // Lets the band dissolve into the list below instead of ending on a hard edge.
-            showEdgeGradient = true,
-          ) {
-            Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-              Text("Sources", modifier = Modifier.padding(horizontal = 24.dp), color = streamsPageForeground, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
-              StreamProviderFilterRow(providers = providers, selectedProvider = providerFilter, onProviderSelected = { providerFilter = it }, horizontalPadding = 24.dp)
-            }
-          }
+          StreamSourceToolbar(
+            modifier = Modifier.align(Alignment.TopCenter).zIndex(3f).fillMaxWidth().height(toolbarHeight),
+            providers = providers,
+            providerCounts = providerCounts,
+            totalCount = streams.size,
+            selectedProvider = providerFilter,
+            onProviderSelected = { providerFilter = it },
+            filterRowState = filterRowState,
+            pageColor = episodeBackground,
+            foreground = streamsPageForeground,
+            accent = ambientAccent,
+            onAccent = onAmbientAccent,
+            chipsVisible = chipsVisible,
+            statusVisible = statusVisible,
+            searching = searching,
+            refreshing = refreshing,
+            searchedSources = (uiState.totalStreamSources - uiState.pendingStreamSources).coerceAtLeast(0),
+            totalSources = uiState.totalStreamSources,
+            pendingSources = uiState.searchingStreamSources,
+            failedSources = failedSources,
+            reducedMotion = reducedMotion,
+            onRetry = onReload,
+          )
+        }
         }
       }
-      GlassCircleButton(
-        modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 24.dp, top = 24.dp).zIndex(5f),
+      AmbientCircleButton(
+        modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 14.dp, top = 12.dp).zIndex(5f),
         hazeState = episodeHazeState,
-        navigationHazeStyle = true,
+        scrim = heroScrim,
+        label = "Back",
         onClick = onBack,
       ) {
-        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = Color.White)
+        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = null, tint = heroInk, modifier = Modifier.size(20.dp))
       }
-      GlassCircleButton(
-        modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(end = 24.dp, top = 24.dp).zIndex(5f),
+      AmbientCircleButton(
+        modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(end = 14.dp, top = 12.dp).zIndex(5f),
         hazeState = episodeHazeState,
-        navigationHazeStyle = true,
+        scrim = heroScrim,
+        // One refresh at a time: the button is the only way to start a second search, so holding it
+        // while one is already running is all the duplicate protection this needs.
+        enabled = !uiState.streamLoading,
+        label = if (uiState.streamLoading) "Searching sources" else "Refresh sources",
         onClick = onReload,
       ) {
-        Icon(Icons.Rounded.Refresh, contentDescription = "Refresh", tint = Color.White)
+        if (uiState.streamLoading) {
+          CircularProgressIndicator(color = heroInk, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+        } else {
+          Icon(Icons.Rounded.Refresh, contentDescription = null, tint = heroInk, modifier = Modifier.size(20.dp))
+        }
       }
     }
   }
 }
+
+/**
+ * The episode this page is about: the still, which episode it is, and what it is called.
+ *
+ * Deliberately unequal. The episode title is the headline because it is what the page is about; the
+ * number is a tag beside it because it places the episode rather than naming it; and the series
+ * title is the smallest of the three because whoever got here already knows what they are watching.
+ * Giving the episode and the series the same weight, as this page used to, made every screen read
+ * as two competing titles.
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun EpisodeStreamsHeader(
+  detail: MediaDetail,
+  episode: EpisodeItem,
+  heroImage: String?,
+  height: Dp,
+  watched: Boolean,
+  pageColor: Color,
+  scrimColor: Color,
+  ink: Color,
+  hazeState: HazeState,
+) {
+  Box(modifier = Modifier.fillMaxWidth().height(height).clip(RectangleShape).hazeSource(hazeState)) {
+    AsyncImage(
+      model = heroImage,
+      contentDescription = null,
+      modifier = Modifier.fillMaxSize(),
+      contentScale = ContentScale.Crop,
+    )
+    // Four stops rather than three, so a large flat still ramps smoothly instead of banding, and
+    // ending on the page colour so the artwork dissolves into the page rather than stopping at an
+    // edge. The scrim follows the page's polarity, which is what keeps the type readable whether
+    // the still is a night exterior or a white office wall.
+    Box(
+      modifier = Modifier.fillMaxSize().background(
+        Brush.verticalGradient(
+          0.00f to scrimColor.copy(alpha = 0.00f),
+          0.38f to scrimColor.copy(alpha = 0.34f),
+          0.72f to scrimColor.copy(alpha = 0.78f),
+          1.00f to pageColor,
+        ),
+      ),
+    )
+    Column(
+      modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 12.dp),
+      verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+      androidx.compose.foundation.layout.FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+      ) {
+        Box(
+          modifier = Modifier
+            .clip(StreamDekRadius.badgeShape)
+            .background(ink.copy(alpha = 0.16f))
+            .border(1.dp, ink.copy(alpha = 0.22f), StreamDekRadius.badgeShape)
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+        ) {
+          Text(
+            "S${episode.seasonNumber} E${episode.episodeNumber}",
+            color = ink,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Black,
+            maxLines = 1,
+          )
+        }
+        if (watched) {
+          // A tick as well as a colour: the watched state has to survive being read by somebody who
+          // cannot tell the green from the grey.
+          Row(
+            modifier = Modifier
+              .clip(StreamDekRadius.badgeShape)
+              .background(Color(0xFF22C55E).copy(alpha = 0.20f))
+              .padding(horizontal = 8.dp, vertical = 3.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = Color(0xFF22C55E), modifier = Modifier.size(12.dp))
+            Text("Watched", color = ink, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black, maxLines = 1)
+          }
+        }
+        episode.runtime?.takeIf { it > 0 }?.let {
+          Text(
+            "${it}m",
+            color = ink.copy(alpha = 0.72f),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            modifier = Modifier.padding(vertical = 4.dp),
+          )
+        }
+      }
+      Text(
+        episode.name,
+        color = ink,
+        style = MaterialTheme.typography.headlineSmall,
+        fontWeight = FontWeight.Black,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+      )
+      Text(
+        detail.title,
+        color = ink.copy(alpha = 0.68f),
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+      )
+    }
+  }
+}
+
+/**
+ * The watched-state actions for the selected episode.
+ *
+ * Below the artwork rather than on it: the labels are long, and text reflowing over a photograph is
+ * where a header stops looking deliberate.
+ *
+ * One row, always - the two actions belong to the same decision and reading one above the other
+ * made the second look like a separate section. They share the width evenly and a label too long
+ * for its half wraps inside its own button rather than being cut off or pushed onto a second row,
+ * which is what keeps "Mark All Prior Watched" readable at a large accessibility text size.
+ * The row takes its height from the taller of the two so they stay a matched pair.
+ */
+@Composable
+private fun EpisodeActionRow(
+  watched: Boolean,
+  showPreviousAction: Boolean,
+  markingPrevious: Boolean,
+  foreground: Color,
+  accent: Color,
+  onToggleWatched: () -> Unit,
+  onMarkPreviousWatched: () -> Unit,
+) {
+  val watchedGreen = Color(0xFF22C55E)
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .padding(horizontal = 20.dp, vertical = 8.dp)
+      .height(androidx.compose.foundation.layout.IntrinsicSize.Min),
+    horizontalArrangement = Arrangement.spacedBy(8.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    EpisodeActionButton(
+      modifier = Modifier.weight(1f).fillMaxHeight(),
+      label = if (watched) "Mark as Unwatched" else "Mark as Watched",
+      icon = Icons.Rounded.CheckCircle,
+      tint = if (watched) watchedGreen else foreground,
+      foreground = foreground,
+      filled = watched,
+      onClick = onToggleWatched,
+    )
+    if (showPreviousAction) {
+      EpisodeActionButton(
+        modifier = Modifier.weight(1f).fillMaxHeight(),
+        label = "Mark All Prior Watched",
+        icon = Icons.Rounded.History,
+        tint = foreground,
+        foreground = foreground,
+        filled = false,
+        busy = markingPrevious,
+        busyTint = accent,
+        onClick = onMarkPreviousWatched,
+      )
+    }
+  }
+}
+
+/** One action button: a 48dp touch target whatever its label measures, and a label that wraps rather than truncates. */
+@Composable
+private fun EpisodeActionButton(
+  modifier: Modifier = Modifier,
+  label: String,
+  icon: ImageVector,
+  tint: Color,
+  foreground: Color,
+  filled: Boolean,
+  busy: Boolean = false,
+  busyTint: Color = tint,
+  onClick: () -> Unit,
+) {
+  Row(
+    modifier = modifier
+      .heightIn(min = 48.dp)
+      .clip(StreamDekRadius.pill)
+      .background(if (filled) tint.copy(alpha = 0.18f) else foreground.copy(alpha = 0.08f))
+      .border(1.dp, if (filled) tint.copy(alpha = 0.42f) else foreground.copy(alpha = 0.16f), StreamDekRadius.pill)
+      .clickable(enabled = !busy, onClick = onClick)
+      .semantics { stateDescription = if (busy) "Working" else "Ready" }
+      .padding(horizontal = 12.dp, vertical = 8.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(6.dp),
+  ) {
+    if (busy) {
+      CircularProgressIndicator(color = busyTint, modifier = Modifier.size(15.dp), strokeWidth = 2.dp)
+    } else {
+      Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(15.dp))
+    }
+    Text(
+      label,
+      color = if (busy) foreground.copy(alpha = 0.62f) else tint,
+      style = MaterialTheme.typography.labelMedium,
+      fontWeight = FontWeight.Bold,
+      modifier = Modifier.weight(1f, fill = false),
+    )
+  }
+}
+
+/**
+ * The pinned source toolbar: which sources to show, and how the search for them is going.
+ *
+ * Pinned rather than scrolled away, because filtering is the one control somebody reaches for
+ * halfway down a hundred results. It is a band of the page's own colour rather than a titled panel
+ * - the chips say "sources" perfectly well on their own, and the heading, the border and the fixed
+ * two-row height were most of what made the old one read as a slab dropped on the list.
+ */
+@Composable
+private fun StreamSourceToolbar(
+  modifier: Modifier = Modifier,
+  providers: List<String>,
+  providerCounts: Map<String, Int>,
+  totalCount: Int,
+  selectedProvider: String,
+  onProviderSelected: (String) -> Unit,
+  filterRowState: androidx.compose.foundation.lazy.LazyListState,
+  /**
+   * Painted flat behind the controls. Opaque, and nothing more: the band is not a surface of its
+   * own, it is the page with the filters pinned to it, and it needs a fill only so that results
+   * scrolling underneath do not show through them.
+   */
+  pageColor: Color,
+  foreground: Color,
+  accent: Color,
+  onAccent: Color,
+  chipsVisible: Boolean,
+  statusVisible: Boolean,
+  searching: Boolean,
+  refreshing: Boolean,
+  searchedSources: Int,
+  totalSources: Int,
+  pendingSources: List<String>,
+  failedSources: List<String>,
+  reducedMotion: Boolean,
+  onRetry: () -> Unit,
+) {
+  Box(modifier = modifier.background(pageColor)) {
+    Column(modifier = Modifier.fillMaxSize()) {
+      if (chipsVisible) {
+        Box(modifier = Modifier.fillMaxWidth().height(SourceToolbarChipRowHeight), contentAlignment = Alignment.CenterStart) {
+          StreamSourceFilterRow(
+            providers = providers,
+            providerCounts = providerCounts,
+            totalCount = totalCount,
+            selectedProvider = selectedProvider,
+            onProviderSelected = onProviderSelected,
+            filterRowState = filterRowState,
+            foreground = foreground,
+            accent = accent,
+            onAccent = onAccent,
+            horizontalPadding = 20.dp,
+          )
+        }
+      }
+      if (statusVisible) {
+        StreamSearchStatusRow(
+          modifier = Modifier.fillMaxWidth().height(SourceToolbarStatusHeight),
+          searching = searching,
+          refreshing = refreshing,
+          searchedSources = searchedSources,
+          totalSources = totalSources,
+          pendingSources = pendingSources,
+          failedSources = failedSources,
+          foreground = foreground,
+          accent = accent,
+          reducedMotion = reducedMotion,
+          onRetry = onRetry,
+        )
+      }
+    }
+  }
+}
+
+/**
+ * The source filter chips, in the order the ranked list puts the sources.
+ *
+ * Shared by the episode sources page - where it sits inside a pinned glass band - and the title
+ * page's Streams tab, where it sits inline in the page's own scroll. Only the surrounding chrome
+ * differs; the chips, their counts and their states are one implementation so the two pages cannot
+ * drift apart.
+ */
+@Composable
+private fun StreamSourceFilterRow(
+  providers: List<String>,
+  providerCounts: Map<String, Int>,
+  totalCount: Int,
+  selectedProvider: String,
+  onProviderSelected: (String) -> Unit,
+  filterRowState: androidx.compose.foundation.lazy.LazyListState,
+  foreground: Color,
+  accent: Color,
+  onAccent: Color,
+  horizontalPadding: Dp,
+) {
+  LazyRow(
+    state = filterRowState,
+    modifier = Modifier
+      .fillMaxWidth()
+      .semantics { contentDescription = "Filter results by source" },
+    contentPadding = PaddingValues(horizontal = horizontalPadding),
+    horizontalArrangement = Arrangement.spacedBy(8.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    item(key = "__all__") {
+      StreamProviderChip(
+        label = "All",
+        count = totalCount.takeIf { it > 0 },
+        selected = selectedProvider == "All",
+        foreground = foreground,
+        accent = accent,
+        onAccent = onAccent,
+        onClick = { onProviderSelected("All") },
+      )
+    }
+    items(providers, key = { it }) { provider ->
+      StreamProviderChip(
+        label = provider,
+        count = providerCounts[provider],
+        selected = selectedProvider == provider,
+        foreground = foreground,
+        accent = accent,
+        onAccent = onAccent,
+        onClick = { onProviderSelected(provider) },
+      )
+    }
+  }
+}
+
+/**
+ * One source filter.
+ *
+ * Selected is a filled chip and unselected an outlined one, so the difference survives being read
+ * without colour; the accessibility `selected` flag carries the same thing to a screen reader. The
+ * width cap is what stops a source called "All-in-One-Nuvio (Community Mirror)" from pushing every
+ * other chip off the row.
+ */
+@Composable
+private fun StreamProviderChip(
+  label: String,
+  count: Int?,
+  selected: Boolean,
+  foreground: Color,
+  accent: Color,
+  onAccent: Color,
+  onClick: () -> Unit,
+) {
+  val contentColor = if (selected) onAccent else foreground.copy(alpha = 0.88f)
+  Row(
+    modifier = Modifier
+      .heightIn(min = 44.dp)
+      .widthIn(max = 210.dp)
+      .clip(StreamDekRadius.pill)
+      .background(if (selected) accent else foreground.copy(alpha = 0.08f))
+      .border(1.dp, if (selected) Color.Transparent else foreground.copy(alpha = 0.16f), StreamDekRadius.pill)
+      .clickable(onClick = onClick)
+      .padding(horizontal = 14.dp, vertical = 8.dp)
+      .semantics { this.selected = selected },
+    horizontalArrangement = Arrangement.spacedBy(7.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Text(
+      label,
+      color = contentColor,
+      style = MaterialTheme.typography.labelMedium,
+      fontWeight = FontWeight.Black,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis,
+      modifier = Modifier.weight(1f, fill = false),
+    )
+    count?.let {
+      Box(
+        modifier = Modifier
+          .clip(StreamDekRadius.pill)
+          .background(contentColor.copy(alpha = 0.16f))
+          .padding(horizontal = 6.dp, vertical = 1.dp),
+      ) {
+        Text("$it", color = contentColor, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black, maxLines = 1)
+      }
+    }
+  }
+}
+
+/**
+ * How the search is going, in one line under the chips.
+ *
+ * Non-blocking by construction: it says what is still outstanding and then gets out of the way,
+ * while everything that has already answered stays on screen and stays tappable. A source that
+ * failed is reported as that one source failing, with a retry beside it, rather than as the whole
+ * search having failed.
+ *
+ * The bar is determinate wherever the totals are known, which also means it animates nothing on a
+ * device that has asked for less movement; where the totals are not known yet, reduced motion gets
+ * the words without the spinner.
+ */
+@Composable
+private fun StreamSearchStatusRow(
+  modifier: Modifier = Modifier,
+  searching: Boolean,
+  refreshing: Boolean,
+  searchedSources: Int,
+  totalSources: Int,
+  pendingSources: List<String>,
+  failedSources: List<String>,
+  foreground: Color,
+  accent: Color,
+  reducedMotion: Boolean,
+  onRetry: () -> Unit,
+  horizontalPadding: Dp = 20.dp,
+) {
+  val progress = if (totalSources > 0) (searchedSources.toFloat() / totalSources).coerceIn(0f, 1f) else 0f
+  val message = when {
+    searching && totalSources > 0 && refreshing -> "Refreshing · $searchedSources of $totalSources sources"
+    searching && totalSources > 0 -> "$searchedSources of $totalSources sources searched"
+    searching -> "Searching sources…"
+    failedSources.isNotEmpty() -> "${describeSourceList(failedSources)} did not answer"
+    else -> ""
+  }
+  val detail = when {
+    searching && pendingSources.isNotEmpty() -> "waiting on ${describeSourceList(pendingSources)}"
+    searching && failedSources.isNotEmpty() -> "${failedSources.size} did not answer"
+    else -> null
+  }
+  Column(modifier = modifier.padding(horizontal = horizontalPadding), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Row(
+      modifier = Modifier.fillMaxWidth().weight(1f),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      if (searching && totalSources <= 0 && !reducedMotion) {
+        CircularProgressIndicator(color = accent, modifier = Modifier.size(13.dp), strokeWidth = 2.dp)
+      } else if (!searching && failedSources.isNotEmpty()) {
+        // An icon as well as the wording, so a failure is never carried by colour alone.
+        Icon(Icons.Rounded.Warning, contentDescription = null, tint = foreground.copy(alpha = 0.66f), modifier = Modifier.size(14.dp))
+      }
+      Text(
+        listOfNotNull(message.takeIf { it.isNotBlank() }, detail).joinToString(" · "),
+        color = foreground.copy(alpha = 0.74f),
+        style = MaterialTheme.typography.labelMedium,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.weight(1f),
+      )
+      if (!searching && failedSources.isNotEmpty()) {
+        // The only retry the search supports is a fresh one, so that is what this offers rather
+        // than pretending a single source can be re-asked on its own.
+        Text(
+          "Retry",
+          color = accent,
+          style = MaterialTheme.typography.labelMedium,
+          fontWeight = FontWeight.Black,
+          modifier = Modifier
+            .clip(StreamDekRadius.controlShape)
+            .clickable(onClick = onRetry)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        )
+      }
+    }
+    if (searching && totalSources > 0) {
+      LinearProgressIndicator(
+        progress = { progress },
+        modifier = Modifier.fillMaxWidth().height(2.dp).clip(StreamDekRadius.pill),
+        color = accent,
+        trackColor = foreground.copy(alpha = 0.12f),
+        gapSize = 0.dp,
+        drawStopIndicator = {},
+      )
+    }
+  }
+}
+
+/** "PenguPlay", "PenguPlay and AIOStreams", "PenguPlay and 3 others" - never a wall of names. */
+internal fun describeSourceList(names: List<String>): String = when {
+  names.isEmpty() -> "some sources"
+  names.size == 1 -> names[0]
+  names.size == 2 -> "${names[0]} and ${names[1]}"
+  else -> "${names[0]} and ${names.size - 1} others"
+}
+
+/**
+ * Placeholder rows for the moment before the first source answers.
+ *
+ * Static, so it costs nothing on a device that has asked for less movement, and it says what is
+ * about to happen - results arrive one source at a time and any of them can be played immediately.
+ */
+@Composable
+private fun StreamResultsSkeleton(foreground: Color, horizontalPadding: Dp = 20.dp) {
+  Column(modifier = Modifier.fillMaxWidth().padding(horizontal = horizontalPadding), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    repeat(4) { index ->
+      Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        if (index == 0) SkeletonBlock(modifier = Modifier.width(122.dp).height(14.dp), radius = 7.dp)
+        SkeletonBlock(modifier = Modifier.fillMaxWidth().height(if (index == 0) 88.dp else 76.dp), radius = 20.dp)
+      }
+    }
+    Text(
+      "Results appear as each source answers — you can start watching one without waiting for the rest.",
+      color = foreground.copy(alpha = 0.56f),
+      style = MaterialTheme.typography.bodySmall,
+      modifier = Modifier.padding(top = 2.dp),
+    )
+  }
+}
+
+/**
+ * The results half of a stream search, whichever page is asking.
+ *
+ * Everything between "the search has not produced anything yet" and "here is the list" lives here
+ * once: which of the empty, searching, failed and filtered-empty states applies, in what order they
+ * are tested, what each one says, and what it offers to do about it. The episode sources page and
+ * the title page's Streams tab both call it, so the two cannot answer the same situation
+ * differently - which is exactly what they used to do, one showing a spinner and a sentence and the
+ * other a full-width progress card.
+ *
+ * What each page keeps for itself is the surrounding layout: its own heading, its own toolbar
+ * chrome, its own padding, and its own idea of where "leave this" goes. Those arrive as parameters
+ * rather than being decided here, so re-laying-out one page cannot disturb the other.
+ *
+ * The results themselves are handed straight to [StreamListContent], which owns the grouping, the
+ * quality bands, the ordering and the provider-native rendering. None of that is duplicated here.
+ */
+@Composable
+private fun StreamsSectionBody(
+  uiState: AppUiState,
+  selectedEpisode: EpisodeItem?,
+  /** What the search is for, in a sentence: "S1E4 of Furious", or just the title. */
+  subjectLabel: String,
+  /** The title a saved file is filed under. */
+  downloadTitle: String,
+  providerFilter: String,
+  onProviderFilterChange: (String) -> Unit,
+  providerCounts: Map<String, Int>,
+  searching: Boolean,
+  foreground: Color,
+  accent: Color,
+  onAccent: Color,
+  horizontalPadding: Dp,
+  onReload: () -> Unit,
+  onManageSources: (() -> Unit)?,
+  /** Where "there is nothing here" can send the viewer instead, if anywhere. */
+  onLeave: Pair<String, () -> Unit>? = null,
+  onPlayStream: (AddonStream) -> Unit,
+  onDownloadStream: (AddonStream, String) -> Unit,
+  isStreamDownloadEligible: (AddonStream) -> Boolean,
+) {
+  val streams = uiState.availableStreams
+  val failedSources = uiState.failedStreamSources
+  val filteredCount = if (providerFilter == "All") streams.size else providerCounts[providerFilter] ?: 0
+  when {
+    // A known, permanent reason, so there is nothing to retry - offering a refresh here would send
+    // somebody off reloading a list that cannot fill.
+    streams.isEmpty() && !searching && uiState.streamsUnavailableReason != null -> StreamsStatePanel(
+      icon = Icons.Rounded.Info,
+      title = "No sources for this title",
+      message = uiState.streamsUnavailableReason.orEmpty(),
+      foreground = foreground,
+      accent = accent,
+      onAccent = onAccent,
+      horizontalPadding = horizontalPadding,
+      primaryAction = onManageSources?.let { action -> "Manage sources" to action },
+      secondaryAction = onLeave,
+    )
+    streams.isEmpty() && (searching || !uiState.streamSearchStarted) -> StreamResultsSkeleton(
+      foreground = foreground,
+      horizontalPadding = horizontalPadding,
+    )
+    streams.isEmpty() && uiState.totalStreamSources == 0 -> StreamsStatePanel(
+      icon = Icons.Rounded.Extension,
+      title = "No sources are set up",
+      message = "Install an add-on or turn on a plugin collection and StreamDek will search it for this title.",
+      foreground = foreground,
+      accent = accent,
+      onAccent = onAccent,
+      horizontalPadding = horizontalPadding,
+      primaryAction = onManageSources?.let { action -> "Manage sources" to action },
+      secondaryAction = "Search again" to onReload,
+    )
+    streams.isEmpty() && failedSources.isNotEmpty() && failedSources.size >= uiState.totalStreamSources -> StreamsStatePanel(
+      icon = Icons.Rounded.Warning,
+      title = "No source answered",
+      message = "Nothing came back from ${describeSourceList(failedSources)}. That is usually a source being down or the connection dropping, rather than $subjectLabel being unavailable.",
+      foreground = foreground,
+      accent = accent,
+      onAccent = onAccent,
+      horizontalPadding = horizontalPadding,
+      primaryAction = "Try again" to onReload,
+      secondaryAction = onManageSources?.let { action -> "Manage sources" to action },
+    )
+    streams.isEmpty() -> StreamsStatePanel(
+      icon = Icons.Rounded.Search,
+      title = "No streams found",
+      message = buildString {
+        append("Every source searched and none of them has $subjectLabel.")
+        if (failedSources.isNotEmpty()) append(" ${describeSourceList(failedSources)} did not answer, so there may be more to find.")
+      },
+      foreground = foreground,
+      accent = accent,
+      onAccent = onAccent,
+      horizontalPadding = horizontalPadding,
+      primaryAction = "Search again" to onReload,
+      secondaryAction = onManageSources?.let { action -> "Manage sources" to action },
+    )
+    filteredCount == 0 -> StreamsStatePanel(
+      icon = Icons.Rounded.Tune,
+      title = "Nothing from $providerFilter",
+      message = "Other sources returned ${streams.size} result${if (streams.size == 1) "" else "s"} for this title.",
+      foreground = foreground,
+      accent = accent,
+      onAccent = onAccent,
+      horizontalPadding = horizontalPadding,
+      primaryAction = "Show all sources" to { onProviderFilterChange("All") },
+    )
+    else -> StreamListContent(
+      uiState = uiState,
+      selectedEpisode = selectedEpisode,
+      onPlayStream = { stream, _ -> onPlayStream(stream) },
+      onDownloadStream = { stream -> onDownloadStream(stream, downloadTitle) },
+      isStreamDownloadEligible = isStreamDownloadEligible,
+      selectedProviderOverride = providerFilter,
+      onProviderSelectedOverride = onProviderFilterChange,
+      horizontalPadding = horizontalPadding,
+    )
+  }
+}
+
+/**
+ * An empty, partial or failed page state.
+ *
+ * Always says what happened and always offers something to do about it: a dead end that only
+ * reports the problem leaves somebody stuck on a page whose entire purpose has just failed.
+ */
+@Composable
+private fun StreamsStatePanel(
+  icon: ImageVector,
+  title: String,
+  message: String,
+  foreground: Color,
+  accent: Color,
+  onAccent: Color,
+  horizontalPadding: Dp = 20.dp,
+  primaryAction: Pair<String, () -> Unit>? = null,
+  secondaryAction: Pair<String, () -> Unit>? = null,
+) {
+  Column(
+    modifier = Modifier
+      .fillMaxWidth()
+      .padding(horizontal = horizontalPadding)
+      .clip(StreamDekRadius.panelShape)
+      .background(foreground.copy(alpha = 0.06f))
+      .border(1.dp, foreground.copy(alpha = 0.10f), StreamDekRadius.panelShape)
+      .padding(20.dp),
+    verticalArrangement = Arrangement.spacedBy(10.dp),
+  ) {
+    Box(
+      modifier = Modifier.size(38.dp).clip(StreamDekRadius.controlShape).background(accent.copy(alpha = 0.16f)),
+      contentAlignment = Alignment.Center,
+    ) {
+      Icon(icon, contentDescription = null, tint = accent, modifier = Modifier.size(20.dp))
+    }
+    Text(title, color = foreground, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
+    Text(message, color = foreground.copy(alpha = 0.72f), style = MaterialTheme.typography.bodyMedium)
+    if (primaryAction != null || secondaryAction != null) {
+      androidx.compose.foundation.layout.FlowRow(
+        modifier = Modifier.padding(top = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        primaryAction?.let { (label, action) ->
+          Box(
+            modifier = Modifier
+              .heightIn(min = 44.dp)
+              .clip(StreamDekRadius.pill)
+              .background(accent)
+              .clickable(onClick = action)
+              .padding(horizontal = 16.dp, vertical = 11.dp),
+            contentAlignment = Alignment.Center,
+          ) {
+            Text(label, color = onAccent, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Black, maxLines = 1)
+          }
+        }
+        secondaryAction?.let { (label, action) ->
+          Box(
+            modifier = Modifier
+              .heightIn(min = 44.dp)
+              .clip(StreamDekRadius.pill)
+              .border(1.dp, foreground.copy(alpha = 0.20f), StreamDekRadius.pill)
+              .clickable(onClick = action)
+              .padding(horizontal = 16.dp, vertical = 11.dp),
+            contentAlignment = Alignment.Center,
+          ) {
+            Text(label, color = foreground.copy(alpha = 0.86f), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Black, maxLines = 1)
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Refresh, for a page with room to say the word.
+ *
+ * The episode sources page uses a circular glass button because it has a corner and no header; the
+ * title page's Streams tab has a heading row and uses this. Same behaviour either way: it reports
+ * progress in place and refuses a second press while a search is running, which is all the
+ * duplicate-request protection a single entry point needs.
+ */
+@Composable
+private fun StreamsRefreshControl(
+  loading: Boolean,
+  foreground: Color,
+  accent: Color,
+  onClick: () -> Unit,
+) {
+  Row(
+    modifier = Modifier
+      .heightIn(min = 44.dp)
+      .clip(StreamDekRadius.pill)
+      .background(foreground.copy(alpha = 0.08f))
+      .border(1.dp, foreground.copy(alpha = 0.16f), StreamDekRadius.pill)
+      .clickable(enabled = !loading, onClick = onClick)
+      .semantics { stateDescription = if (loading) "Refreshing" else "Ready" }
+      .padding(horizontal = 14.dp, vertical = 9.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(7.dp),
+  ) {
+    if (loading) {
+      CircularProgressIndicator(color = accent, modifier = Modifier.size(15.dp), strokeWidth = 2.dp)
+    } else {
+      Icon(Icons.Rounded.Refresh, contentDescription = null, tint = foreground, modifier = Modifier.size(15.dp))
+    }
+    Text(
+      if (loading) "Refreshing" else "Refresh",
+      color = if (loading) foreground.copy(alpha = 0.66f) else foreground,
+      style = MaterialTheme.typography.labelMedium,
+      fontWeight = FontWeight.Bold,
+      maxLines = 1,
+    )
+  }
+}
+
+/**
+ * A translucent control that floats over artwork.
+ *
+ * Smaller than the 52dp circles this page used to carry - they were the loudest thing on the
+ * screen, which is the wrong order of importance for Back and Refresh - but the tap target is still
+ * 48dp, with the visible disc drawn inside it. The scrim follows the page's polarity so the icon
+ * stays legible over whatever the still happens to show behind it.
+ */
+@Composable
+private fun AmbientCircleButton(
+  modifier: Modifier = Modifier,
+  hazeState: HazeState,
+  scrim: Color,
+  enabled: Boolean = true,
+  label: String,
+  onClick: () -> Unit,
+  content: @Composable BoxScope.() -> Unit,
+) {
+  val interactionSource = remember { MutableInteractionSource() }
+  Box(
+    modifier = modifier
+      .size(48.dp)
+      .clip(CircleShape)
+      .clickable(
+        interactionSource = interactionSource,
+        indication = null,
+        enabled = enabled,
+        onClick = onClick,
+      )
+      .semantics { contentDescription = label },
+    contentAlignment = Alignment.Center,
+  ) {
+    FrostedGlassSurface(
+      modifier = Modifier.size(40.dp),
+      shape = CircleShape,
+      hazeStateOverride = hazeState,
+      blurRadius = 68f,
+      tintAlpha = 0.10f,
+      borderAlpha = 0.22f,
+      baseAlpha = 0.34f,
+      fillColorOverride = scrim,
+      showEdgeGradient = false,
+    ) {
+      Box(modifier = Modifier.fillMaxSize().alpha(if (enabled) 1f else 0.62f), contentAlignment = Alignment.Center, content = content)
+    }
+  }
+}
+
 @Composable
 private fun GlassEpisodeRow(episode: EpisodeItem, selected: Boolean, onLoadStreams: () -> Unit) {
   GlassScrim(
     modifier = Modifier
       .fillMaxWidth()
-      .border(1.dp, if (selected) Color.White.copy(alpha = 0.42f) else Color.Transparent, RoundedCornerShape(28.dp))
+      .border(1.dp, if (selected) Color.White.copy(alpha = 0.42f) else Color.Transparent, StreamDekRadius.sheetShape)
       .clickable(onClick = onLoadStreams),
   ) {
     Row(
@@ -26828,7 +28403,7 @@ private fun GlassEpisodeRow(episode: EpisodeItem, selected: Boolean, onLoadStrea
       AsyncImage(
         model = episode.still,
         contentDescription = episode.name,
-        modifier = Modifier.width(116.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(18.dp)),
+        modifier = Modifier.width(116.dp).aspectRatio(16f / 9f).clip(StreamDekRadius.cardShape),
         contentScale = ContentScale.Crop,
       )
       Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -26868,9 +28443,9 @@ private fun Modifier.frostedBlur(blurRadius: Float, shape: Shape): Modifier =
   }
 
 @Composable
-private fun FrostedGlassSurface(
+internal fun FrostedGlassSurface(
   modifier: Modifier = Modifier,
-  shape: Shape = RoundedCornerShape(28.dp),
+  shape: Shape = StreamDekRadius.sheetShape,
   hazeStateOverride: HazeState? = null,
   blurRadius: Float = 42f,
   contentPadding: PaddingValues = PaddingValues(0.dp),
@@ -26879,6 +28454,16 @@ private fun FrostedGlassSurface(
   baseAlpha: Float = 0.08f,
   fillColorOverride: Color? = null,
   showEdgeGradient: Boolean = true,
+  /**
+   * How strongly the blur itself is tinted toward the surface colour.
+   *
+   * The default is deliberately heavy: most glass in the app floats over arbitrary scrolling
+   * content, and without a strong tint the text on it would sit on whatever happened to scroll
+   * underneath. A pane that covers one known image - the profile picker's hero - wants the
+   * opposite, so it can pass a low value and read as glass over that image rather than as a
+   * frosted slab.
+   */
+  hazeTintAlphaOverride: Float? = null,
   content: @Composable BoxScope.() -> Unit,
 ) {
   val lightSurface = MaterialTheme.colorScheme.background.luminance() > 0.5f
@@ -26898,7 +28483,7 @@ private fun FrostedGlassSurface(
       blurEffect {
         style = hazeStyle
         this.blurRadius = (blurRadius / 2.4f).dp
-        colorEffects = listOf(HazeColorEffect.tint(hazeTintColor.copy(alpha = if (lightSurface) 0.28f else 0.18f)))
+        colorEffects = listOf(HazeColorEffect.tint(hazeTintColor.copy(alpha = hazeTintAlphaOverride ?: if (lightSurface) 0.28f else 0.18f)))
         noiseFactor = 0.035f
       }
     }
@@ -26960,7 +28545,7 @@ private fun GlassPill(text: String) {
 }
 
 @Composable
-private fun GlassCircleButton(
+internal fun GlassCircleButton(
   modifier: Modifier = Modifier,
   hazeState: HazeState? = null,
   navigationHazeStyle: Boolean = false,
@@ -27005,7 +28590,7 @@ private fun GlassCircleButton(
 private fun GlassScrim(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
   FrostedGlassSurface(
     modifier = modifier,
-    shape = RoundedCornerShape(28.dp),
+    shape = StreamDekRadius.sheetShape,
     blurRadius = 42f,
     contentPadding = PaddingValues(18.dp),
     tintAlpha = 0.15f,
@@ -27020,7 +28605,7 @@ private fun GlassCard(modifier: Modifier = Modifier, containerAlpha: Float = 0.8
   val tint = (0.10f + ((containerAlpha - 0.58f).coerceIn(0f, 0.30f) / 0.30f) * 0.08f).coerceIn(0.10f, 0.18f)
   FrostedGlassSurface(
     modifier = modifier,
-    shape = RoundedCornerShape(28.dp),
+    shape = StreamDekRadius.sheetShape,
     blurRadius = 42f,
     contentPadding = PaddingValues(18.dp),
     tintAlpha = tint,

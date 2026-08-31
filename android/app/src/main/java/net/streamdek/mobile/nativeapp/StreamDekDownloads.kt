@@ -275,7 +275,7 @@ class StreamDekDownloadService : DownloadService(
   override fun getScheduler(): Scheduler? = null
 
   override fun getForegroundNotification(downloads: MutableList<Download>, notMetRequirements: Int): Notification =
-    notificationHelper.buildProgressNotification(this, R.mipmap.ic_launcher, null, null, downloads, notMetRequirements)
+    notificationHelper.buildProgressNotification(this, R.drawable.ic_stat_streamdek, null, null, downloads, notMetRequirements)
 
   companion object {
     private const val NOTIFICATION_ID = 21001

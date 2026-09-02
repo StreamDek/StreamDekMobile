@@ -44,8 +44,10 @@ internal class TheIntroDbClient(private val http: OkHttpClient) {
       val root = JsonParser.parseString(body).asJsonObject
       fun segments(name: String) = root.getAsJsonArray(name)?.mapNotNull { raw ->
         val entry = raw.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
-        val startNode = entry.get("start_ms")?.takeUnless { it.isJsonNull } ?: return@mapNotNull null
-        val start = runCatching { startNode.asLong }.getOrNull()?.takeIf { it >= 0L } ?: return@mapNotNull null
+        val startNode = entry.get("start_ms") ?: return@mapNotNull null
+        val start = if (startNode.isJsonNull) 0L else {
+          runCatching { startNode.asLong }.getOrNull()?.takeIf { it >= 0L } ?: return@mapNotNull null
+        }
         val end = entry.get("end_ms")?.takeUnless { it.isJsonNull }?.let { runCatching { it.asLong }.getOrNull() }
         if (end != null && end < start) return@mapNotNull null
         TheIntroDbTimestamp(start, end)

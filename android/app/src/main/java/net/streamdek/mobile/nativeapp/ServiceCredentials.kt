@@ -192,7 +192,9 @@ data class ContentServicesState(
 
   /** True when neither service has anything configured — what the setup prompt keys off. */
   val anyConfigured: Boolean get() = tmdb.configured || mdblist.configured || theIntroDb.configured
-  val allConfigured: Boolean get() = tmdb.configured && mdblist.configured && theIntroDb.configured
+  // TheIntroDB reads remain available through its public API, so its optional user key must not
+  // keep the general content-service setup reminder alive.
+  val allConfigured: Boolean get() = tmdb.configured && mdblist.configured
   val needsAttention: List<ContentServiceState>
     get() = listOf(tmdb, mdblist, theIntroDb).filter { it.status == CredentialStatus.NeedsAttention }
 }

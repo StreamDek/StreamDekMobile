@@ -24,4 +24,12 @@ class TheIntroDbClientTest {
 
     assertEquals(listOf(TheIntroDbTimestamp(10_000L, 12_000L)), media.credits)
   }
+
+  @Test fun `normalizes a null intro start to the beginning of media`() {
+    val media = TheIntroDbClient.parseMedia(
+      """{"tmdb_id":7,"type":"movie","intro":[{"start_ms":null,"end_ms":23000}]}""",
+    )!!
+
+    assertEquals(listOf(TheIntroDbTimestamp(0L, 23_000L)), media.intro)
+  }
 }

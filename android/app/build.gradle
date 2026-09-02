@@ -188,9 +188,20 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.8.0")
     implementation files("libs/lib-decoder-ffmpeg-release.aar")
     implementation files("libs/libmpv-release.aar")
-    implementation("com.frostwire:jlibtorrent:1.2.0.18")
-    implementation("com.frostwire:jlibtorrent-android-arm:1.2.0.18")
-    implementation("com.frostwire:jlibtorrent-android-arm64:1.2.0.18")
+    // libtorrent4j, not FrostWire's jlibtorrent, which this replaced.
+    //
+    // jlibtorrent's last release is from September 2018 and wraps libtorrent 1.2.0, which finds
+    // the machine's network interfaces by binding a NETLINK_ROUTE socket. SELinux has denied that
+    // to untrusted apps since Android 11 (b/155595000), so on any current phone the session
+    // enumerated no interfaces, opened no listen socket, and reported `bind: Permission denied` -
+    // no DHT, no tracker announce and no peer, for every source. It is not configurable around.
+    //
+    // libtorrent4j is the maintained continuation of the same SWIG bindings by the same author,
+    // so the API here is nearly unchanged. Its native library falls back to getifaddrs(), which is
+    // what makes a listen socket possible at all, and it is built 16 KB-page aligned for Android 16.
+    implementation("org.libtorrent4j:libtorrent4j:2.1.0-39")
+    implementation("org.libtorrent4j:libtorrent4j-android-arm:2.1.0-39")
+    implementation("org.libtorrent4j:libtorrent4j-android-arm64:2.1.0-39")
 
     // --- CloudStream (.cs3) plugin support ---
     // A .cs3 extension is compiled Kotlin/JVM bytecode written against the real

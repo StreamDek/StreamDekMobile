@@ -8,3 +8,6 @@
 /node_modules
 android/device-logcat.txt
 *.log
+/.codex/
+/.claude/
+/.agents/

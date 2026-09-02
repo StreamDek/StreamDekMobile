@@ -90,7 +90,7 @@ internal fun collectRepoPluginListUrls(
   return listUrls.toList()
 }
 
-data class CsRepo(val url: String, val name: String, val description: String?, val iconUrl: String?, val enabled: Boolean = true)
+data class CsRepo(val url: String, val name: String, val description: String?, val iconUrl: String?, val enabled: Boolean = true, val favourite: Boolean = false)
 data class CsProviderEntry(
   val repoUrl: String,
   val internalName: String,
@@ -203,7 +203,7 @@ class CloudStreamRepoManager(private val context: Context) {
       }
       val existingRepo = state.repos.firstOrNull { it.url == url }
       state = state.copy(
-        repos = state.repos.map { if (it.url == url) repo.copy(enabled = existingRepo?.enabled ?: true) else it },
+        repos = state.repos.map { if (it.url == url) repo.copy(enabled = existingRepo?.enabled ?: true, favourite = existingRepo?.favourite ?: false) else it },
         providers = state.providers.filterNot { it.repoUrl == url } + merged,
       )
       save()
@@ -221,6 +221,11 @@ class CloudStreamRepoManager(private val context: Context) {
     if (!enabled) {
       state.providers.filter { it.repoUrl == url && it.installedFilePath != null }.forEach { it.installedFilePath?.let(CloudStreamPluginLoader::unload) }
     }
+    save()
+  }
+
+  fun toggleRepoFavourite(url: String) {
+    state = state.copy(repos = state.repos.map { if (it.url == url) it.copy(favourite = !it.favourite) else it })
     save()
   }
 
@@ -328,9 +333,10 @@ class CloudStreamRepoManager(private val context: Context) {
 
   /** The providers usable right now — loaded, and belonging to an enabled source in an enabled repo. */
   fun activeProviders(): List<com.lagradost.cloudstream3.MainAPI> {
-    val enabledRepos = state.repos.filter { it.enabled }.mapTo(mutableSetOf()) { it.url }
+    val enabledRepos = state.repos.filter { it.enabled }.associateBy { it.url }
     return state.providers
       .filter { it.enabled && it.repoUrl in enabledRepos }
+      .sortedWith(compareByDescending<CsProviderEntry> { enabledRepos[it.repoUrl]?.favourite == true }.thenBy { it.name.lowercase() })
       .mapNotNull { it.installedFilePath }
       .flatMap(CloudStreamPluginLoader::providersFor)
   }
@@ -434,7 +440,7 @@ class CloudStreamRepoManager(private val context: Context) {
     state = state.copy(updatedAt = System.currentTimeMillis())
     val root = JSONObject().put("updatedAt", state.updatedAt)
     root.put("repos", JSONArray().apply {
-      state.repos.forEach { put(JSONObject().put("url", it.url).put("name", it.name).put("description", it.description).put("iconUrl", it.iconUrl).put("enabled", it.enabled)) }
+      state.repos.forEach { put(JSONObject().put("url", it.url).put("name", it.name).put("description", it.description).put("iconUrl", it.iconUrl).put("enabled", it.enabled).put("favourite", it.favourite)) }
     })
     root.put("providers", JSONArray().apply {
       state.providers.forEach {
@@ -467,7 +473,7 @@ class CloudStreamRepoManager(private val context: Context) {
   fun snapshotJson(): String {
     val root = JSONObject().put("updatedAt", state.updatedAt)
     root.put("repos", JSONArray().apply {
-      state.repos.forEach { put(JSONObject().put("url", it.url).put("name", it.name).put("description", it.description).put("iconUrl", it.iconUrl).put("enabled", it.enabled)) }
+      state.repos.forEach { put(JSONObject().put("url", it.url).put("name", it.name).put("description", it.description).put("iconUrl", it.iconUrl).put("enabled", it.enabled).put("favourite", it.favourite)) }
     })
     root.put("providers", JSONArray().apply {
       state.providers.forEach {
@@ -544,7 +550,7 @@ class CloudStreamRepoManager(private val context: Context) {
     val providers = root.optJSONArray("providers") ?: JSONArray()
     return CsPluginState(
       repos = List(repos.length()) {
-        repos.getJSONObject(it).run { CsRepo(getString("url"), getString("name"), optString("description").ifBlank { null }, optString("iconUrl").ifBlank { null }, optBoolean("enabled", true)) }
+        repos.getJSONObject(it).run { CsRepo(getString("url"), getString("name"), optString("description").ifBlank { null }, optString("iconUrl").ifBlank { null }, optBoolean("enabled", true), optBoolean("favourite", false)) }
       },
       providers = List(providers.length()) { index ->
         providers.getJSONObject(index).run {
@@ -574,7 +580,7 @@ class CloudStreamRepoManager(private val context: Context) {
     val providers = root.optJSONArray("providers") ?: JSONArray()
     CsPluginState(
       repos = List(repos.length()) {
-        repos.getJSONObject(it).run { CsRepo(getString("url"), getString("name"), optString("description").ifBlank { null }, optString("iconUrl").ifBlank { null }, optBoolean("enabled", true)) }
+        repos.getJSONObject(it).run { CsRepo(getString("url"), getString("name"), optString("description").ifBlank { null }, optString("iconUrl").ifBlank { null }, optBoolean("enabled", true), optBoolean("favourite", false)) }
       },
       providers = List(providers.length()) { index ->
         providers.getJSONObject(index).run {

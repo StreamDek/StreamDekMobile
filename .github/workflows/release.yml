@@ -28,6 +28,7 @@ jobs:
           distribution: temurin
           java-version: "17"
           cache: gradle
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
@@ -205,6 +206,7 @@ jobs:
           files: ${{ steps.apk.outputs.apk_path }}
           generate_release_notes: true
           fail_on_unmatched_files: true
+
       - name: Read published release metadata
         id: release_meta
         shell: bash

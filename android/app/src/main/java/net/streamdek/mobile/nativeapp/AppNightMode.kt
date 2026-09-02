@@ -1,9 +1,19 @@
 package net.streamdek.mobile.nativeapp
 
 import android.app.UiModeManager
+import android.content.ComponentCallbacks
 import android.content.Context
 import android.content.res.Configuration
 import android.os.Build
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 
 internal const val APP_APPEARANCE_PREFERENCE = "app_appearance"
 
@@ -69,4 +79,53 @@ fun themedAppContext(context: Context): Context {
     (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or
       (if (dark) Configuration.UI_MODE_NIGHT_YES else Configuration.UI_MODE_NIGHT_NO)
   return context.createConfigurationContext(configuration)
+}
+
+private val Configuration.nightModeActive: Boolean
+  get() = (uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+
+/**
+ * Whether the *device* is in dark mode, kept current while the app runs.
+ *
+ * This exists because `isSystemInDarkTheme()` cannot answer the question here. It reads the
+ * activity's configuration, and the activity's configuration is not the device's: [themedAppContext]
+ * pins the night bits of the base context in `attachBaseContext` to whatever Appearance was saved
+ * when the process started, and an override installed there cannot be lifted without recreating the
+ * activity.
+ *
+ * That is what broke Follow System. Somebody on Dark who switched to Follow System kept being told
+ * the pinned answer — dark — for the rest of the session, so the app stayed dark on a light phone
+ * until it was force-stopped, and the setting looked like it did nothing. Light to Follow System
+ * failed the same way in the other direction.
+ *
+ * The application context is never wrapped like that, so its configuration is the app's real one.
+ * And when Appearance is Follow System — the only case this value is used in — [applyAppNightMode]
+ * has already cleared the per-application night mode override with the platform, which leaves the
+ * app's configuration equal to the device's. Component callbacks keep it current, so turning the
+ * phone's dark theme on and off while StreamDek is open moves the app with it.
+ */
+@Composable
+fun deviceInDarkTheme(): Boolean {
+  val appContext = LocalContext.current.applicationContext
+  var dark by remember(appContext) { mutableStateOf(appContext.resources.configuration.nightModeActive) }
+  DisposableEffect(appContext) {
+    val callbacks = object : ComponentCallbacks {
+      override fun onConfigurationChanged(newConfig: Configuration) {
+        dark = newConfig.nightModeActive
+      }
+
+      override fun onLowMemory() = Unit
+    }
+    appContext.registerComponentCallbacks(callbacks)
+    // The mode can have moved between the initial read above and this registration.
+    dark = appContext.resources.configuration.nightModeActive
+    onDispose { appContext.unregisterComponentCallbacks(callbacks) }
+  }
+  // Belt and braces: any configuration change the composition itself sees is also a moment to
+  // re-read, so the value cannot be left stale by a callback that never arrives.
+  val activityConfiguration = LocalConfiguration.current
+  LaunchedEffect(activityConfiguration) {
+    dark = appContext.resources.configuration.nightModeActive
+  }
+  return dark
 }

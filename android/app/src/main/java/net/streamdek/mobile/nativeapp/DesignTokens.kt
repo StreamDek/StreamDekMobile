@@ -83,6 +83,24 @@ object StreamDekRadius {
 val LocalReducedMotion: ProvidableCompositionLocal<Boolean> = staticCompositionLocalOf { false }
 
 /**
+ * The app's dark colour scheme, in the viewer's chosen theme, whatever Appearance is set to.
+ *
+ * For the surfaces that are dark in every appearance because they are not pages: the video player
+ * sits on the picture itself, so its controls are white on black in Light Mode exactly as they are
+ * in Dark. A Material control dropped onto one of those takes its colours from
+ * `MaterialTheme.colorScheme`, which in Light Mode is a light scheme — that is how the player's
+ * progress bar came out as a bright white track laid over the video.
+ *
+ * Providing the dark scheme here means such a control can be wrapped in
+ * `MaterialTheme(colorScheme = LocalDarkColorScheme.current)` and get precisely the treatment Dark
+ * Mode already gives it, rather than a second set of hand-picked colours that has to be kept in
+ * step with the first. Null only outside the app's theme (a preview, a dialog in its own window),
+ * where the caller should fall back to the ambient scheme.
+ */
+val LocalDarkColorScheme: ProvidableCompositionLocal<androidx.compose.material3.ColorScheme?> =
+  staticCompositionLocalOf { null }
+
+/**
  * The device's own reduce-motion request.
  *
  * Android has no single "reduce motion" switch the way iOS does. What it has is the developer-

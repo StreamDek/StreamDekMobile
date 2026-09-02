@@ -402,9 +402,15 @@ internal fun ProfilePickerScreen(
   // grace period from the moment the profiles land - the moment the page could otherwise have
   // opened - bounded by an absolute deadline so the two waits cannot stack.
   val enteredAt = remember { SystemClock.uptimeMillis() }
-  LaunchedEffect(profilesLoading, heroArtworkSettled) {
+  LaunchedEffect(profilesLoading, heroArtworkSettled, heroItem != null) {
     if (reveal.started || profilesLoading) return@LaunchedEffect
-    if (!heroArtworkSettled) {
+    // `heroItem != null` matters as much as `heroArtworkSettled`. The grace below waits on the
+    // AsyncImage callbacks, and those only exist while there is a hero to draw — with no catalog
+    // yet there is no image request in flight, so nothing could ever settle and the page sat out
+    // the whole deadline waiting for something it had not asked for. On a cold launch that is
+    // always the case: the hero is drawn from Home's sections, which land a second or two after
+    // the profiles do. Wait only when there is genuinely an image on its way.
+    if (!heroArtworkSettled && heroItem != null) {
       // Evaluated on the pass where `profilesLoading` first went false, so this is the time the
       // profiles became ready rather than the time of some later recomposition.
       val profilesReadyAt = SystemClock.uptimeMillis()
@@ -414,6 +420,9 @@ internal fun ProfilePickerScreen(
       val remaining = deadline - profilesReadyAt
       if (remaining > 0L) delay(remaining)
     }
+    // The end of the dark screen a viewer sees at launch, so the two waits behind it — the profile
+    // fetch and the artwork grace — can be told apart in a trace rather than guessed at.
+    Perf.startupMark("picker.revealed", "heroArtwork=$heroArtworkSettled")
     reveal.start(cached = SystemClock.uptimeMillis() - enteredAt <= ProfilePickerCachedEntryMs)
   }
 

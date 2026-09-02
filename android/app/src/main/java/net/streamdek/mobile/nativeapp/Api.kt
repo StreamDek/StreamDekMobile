@@ -341,17 +341,22 @@ private val FALLBACK_TRACKERS = listOf(
   // Not redundant with the list above. A network that blocks peer-to-peer traffic — a VPN on a
   // server that does not carry it, a router dropping unsolicited UDP — takes every tracker above
   // and the DHT with it, and these are then the only way left to find a peer at all.
-  "https://tracker.gbitt.info:443/announce",
-  "https://tracker.tamersunion.org:443/announce",
+  //
+  // Plain HTTP on purpose. The OpenSSL compiled into the peer engine has its certificate directory
+  // baked in as the path it was built at in 2018 — a path that exists on no Android device — so it
+  // can verify nobody, and every https:// announce fails the handshake before it is sent. Two such
+  // trackers used to sit here doing nothing but adding a timeout to the wait.
   "http://tracker.openbittorrent.com:80/announce",
   "http://tracker.files.fm:6969/announce",
+  "http://open.acgnxtracker.com:80/announce",
 )
 
 /**
  * Announce URLs for a stream, from the add-on's `sources` list.
  *
  * Stremio add-ons publish these as `tracker:<url>` and `dht:<hash>`; only the trackers are of use
- * here, since DHT is already on. Falls back to the public list when an add-on sends nothing.
+ * here, since DHT is already on. The public list is always appended, so a source arrives with the
+ * add-on's trackers and a floor under them rather than with one or the other.
  */
 internal fun streamTrackers(sources: List<String>): List<String> {
   val declared = sources.asSequence()
@@ -361,7 +366,11 @@ internal fun streamTrackers(sources: List<String>): List<String> {
     .filter { it.isNotBlank() }
     .distinct()
     .toList()
-  return declared.ifEmpty { FALLBACK_TRACKERS }
+  // Merged, not chosen between. An add-on that declares a single stale announce URL used to
+  // replace the whole fallback list with it, which is the case this function exists to protect
+  // against — the add-on's own trackers still come first, because they are the ones that know
+  // about this particular swarm.
+  return (declared + FALLBACK_TRACKERS).distinct()
 }
 
 /**
@@ -1393,6 +1402,19 @@ class StreamDekApiClient(context: Context? = null) {
       }
     }
 
+  suspend fun setAddonFavourite(session: AuthSession?, addonId: String, favourite: Boolean, profileId: String? = null): Result<Unit> =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        val response = executeJson(
+          "/addons/favourite",
+          JSONObject().put("id", addonId).put("favourite", favourite),
+          session = session,
+          profileId = profileId,
+        )
+        ensureOk(response, "Failed to update favourite add-on")
+      }
+    }
+
   suspend fun uninstallAddon(session: AuthSession?, addonId: String, profileId: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
     runCatching {
       val request = Request.Builder()
@@ -2272,11 +2294,11 @@ class StreamDekApiClient(context: Context? = null) {
       val streams = JSONObject()
         .put("showStreamsList", preferences.showStreamsList)
         .put("rememberLastSource", preferences.rememberLastSource)
+        .put("favoriteSourceKeys", preferences.favoriteSourceKeys?.let(::JSONArray))
         .put("blurUnwatchedEpisodes", preferences.blurUnwatchedEpisodes)
         .put("fusionBadgesEnabled", preferences.fusionBadgesEnabled)
         .put("streamDekFormattingEnabled", preferences.streamDekFormattingEnabled)
         .put("showSizeBadges", preferences.showSizeBadges)
-        .put("showAddonTmdbRatings", preferences.showAddonTmdbRatings)
         .put("badgePosition", preferences.badgePosition)
         .put("fusionBadgeUrls", preferences.fusionBadgeUrls?.let(::JSONArray))
         .put("activeFusionBadgeUrl", preferences.activeFusionBadgeUrl)
@@ -2449,11 +2471,11 @@ class StreamDekApiClient(context: Context? = null) {
         nextEpisodeThresholdMinutes = optionalInt(playback, "nextEpisodeThresholdMinutes"),
         showStreamsList = optionalBoolean(streams, "showStreamsList"),
         rememberLastSource = optionalBoolean(streams, "rememberLastSource"),
+        favoriteSourceKeys = optionalStringList(streams, "favoriteSourceKeys"),
         blurUnwatchedEpisodes = optionalBoolean(detail, "blurUnwatchedEpisodes") ?: optionalBoolean(streams, "blurUnwatchedEpisodes"),
         fusionBadgesEnabled = optionalBoolean(streams, "fusionBadgesEnabled"),
         streamDekFormattingEnabled = optionalBoolean(streams, "streamDekFormattingEnabled"),
         showSizeBadges = optionalBoolean(streams, "showSizeBadges"),
-        showAddonTmdbRatings = optionalBoolean(streams, "showAddonTmdbRatings"),
         preferredQuality = optionalString(playback, "preferredQuality") ?: optionalString(streams, "preferredQuality"),
         maxFileSizeGb = optionalInt(playback, "maxFileSizeGB") ?: optionalInt(streams, "maxFileSizeGB"),
         badgePosition = optionalString(streams, "badgePosition"),
@@ -4640,6 +4662,7 @@ private fun parseAddon(json: JSONObject): InstalledAddon {
     id = json.optString("id"),
     enabled = json.optBoolean("enabled"),
     position = json.optInt("position"),
+    favourite = json.optBoolean("favourite", false),
     url = json.optString("url").ifBlank { null },
     baseUrl = json.optString("baseUrl").ifBlank { null },
     manifestUrl = json.optString("manifestUrl").ifBlank { null },

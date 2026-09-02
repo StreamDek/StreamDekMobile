@@ -38,7 +38,7 @@ import java.util.concurrent.TimeUnit
  */
 private const val MAX_CONCURRENT_PLUGIN_PROVIDERS = 5
 
-data class PluginRepo(val url: String, val name: String, val version: String, val description: String?, val enabled: Boolean = true)
+data class PluginRepo(val url: String, val name: String, val version: String, val description: String?, val enabled: Boolean = true, val favourite: Boolean = false)
 data class PluginProvider(
   val id: String,
   val repoUrl: String,
@@ -303,7 +303,7 @@ class StreamDekPluginManager(context: Context) {
       if (existingRepo?.enabled == false) provider.copy(enabled = false) else provider
     }
     state = state.copy(
-      repos = state.repos.map { if (it.url == url) loaded.first.copy(enabled = existingRepo?.enabled ?: true) else it },
+      repos = state.repos.map { if (it.url == url) loaded.first.copy(enabled = existingRepo?.enabled ?: true, favourite = existingRepo?.favourite ?: false) else it },
       providers = state.providers.filterNot { it.repoUrl == url } + refreshedProviders,
     )
     save()
@@ -321,6 +321,10 @@ class StreamDekPluginManager(context: Context) {
     save()
   }
   fun enableProvider(id: String, value: Boolean) { state = state.copy(enabled = state.enabled || value, providers = state.providers.map { if (it.id == id) it.copy(enabled = value) else it }); save() }
+  fun toggleRepoFavourite(url: String) {
+    state = state.copy(repos = state.repos.map { if (it.url == url) it.copy(favourite = !it.favourite) else it })
+    save()
+  }
 
   /**
    * The pool the scrapers run on.
@@ -338,8 +342,10 @@ class StreamDekPluginManager(context: Context) {
   suspend fun streams(id: String, type: String, season: Int?, episode: Int?, onProviderResults: suspend (List<AddonStream>) -> Unit = {}): List<AddonStream> {
     if (!state.enabled) return emptyList()
     val normalized = normalizeType(type)
-    val enabledRepos = state.repos.filter { it.enabled }.mapTo(mutableSetOf()) { it.url }
-    val providers = state.providers.filter { it.enabled && it.repoUrl in enabledRepos && it.types.any { candidate -> normalizeType(candidate) == normalized } }
+    val enabledRepos = state.repos.filter { it.enabled }.associateBy { it.url }
+    val providers = state.providers
+      .filter { it.enabled && it.repoUrl in enabledRepos && it.types.any { candidate -> normalizeType(candidate) == normalized } }
+      .sortedWith(compareByDescending<PluginProvider> { enabledRepos[it.repoUrl]?.favourite == true }.thenBy { it.name.lowercase() })
     Log.i("StreamDekPlugin", "Loading streams type=" + normalized + " id=" + id + " providers=" + providers.size)
     val perf = Perf.span("pluginStreams", "providers=" + providers.size)
     return supervisorScope {
@@ -714,7 +720,8 @@ class StreamDekPluginManager(context: Context) {
         if (types != null) for (typeIndex in 0 until types.length()) types.optString(typeIndex).takeIf { it.isNotBlank() }?.let(::add)
         if (isEmpty()) addAll(listOf("movie", "tv"))
       }, item.optBoolean("enabled", true) && (previous[providerId]?.enabled ?: true), code,
-        item.optBoolean("hasSettings", false) || pluginDeclaresSettings(code) || declaredSettings != null)
+        item.optBoolean("hasSettings", false) || pluginDeclaresSettings(code) || declaredSettings != null,
+      )
     }
     require(providers.isNotEmpty()) { "No compatible providers in repository." }
     if (skipped.isNotEmpty()) {
@@ -788,7 +795,7 @@ class StreamDekPluginManager(context: Context) {
 
   private fun serialize(value: PluginState, includeCode: Boolean = true): String {
     val root = JSONObject().put("enabled", value.enabled).put("updatedAt", value.updatedAt)
-    root.put("repos", JSONArray().apply { value.repos.forEach { put(JSONObject().put("url", it.url).put("name", it.name).put("version", it.version).put("description", it.description).put("enabled", it.enabled)) } })
+    root.put("repos", JSONArray().apply { value.repos.forEach { put(JSONObject().put("url", it.url).put("name", it.name).put("version", it.version).put("description", it.description).put("enabled", it.enabled).put("favourite", it.favourite)) } })
     root.put("providers", JSONArray().apply {
       value.providers.forEach {
         put(
@@ -818,7 +825,7 @@ class StreamDekPluginManager(context: Context) {
     val root = JSONObject(raw)
     val repos = root.optJSONArray("repos") ?: JSONArray()
     val providers = root.optJSONArray("providers") ?: JSONArray()
-    PluginState(root.optBoolean("enabled", true), List(repos.length()) { repos.getJSONObject(it).run { PluginRepo(getString("url"), getString("name"), getString("version"), optString("description").ifBlank { null }, optBoolean("enabled", true)) } }, List(providers.length()) {
+    PluginState(root.optBoolean("enabled", true), List(repos.length()) { repos.getJSONObject(it).run { PluginRepo(getString("url"), getString("name"), getString("version"), optString("description").ifBlank { null }, optBoolean("enabled", true), optBoolean("favourite", false)) } }, List(providers.length()) {
       providers.getJSONObject(it).run {
         val types = optJSONArray("types") ?: JSONArray()
         PluginProvider(getString("id"), getString("repo"), getString("name"), List(types.length()) { typeIndex -> types.getString(typeIndex) }, optBoolean("enabled", true), optString("code"), optBoolean("hasSettings", false))

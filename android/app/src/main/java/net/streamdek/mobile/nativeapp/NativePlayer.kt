@@ -18,6 +18,7 @@ import android.os.Looper
 import android.provider.Settings
 import android.view.View
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -34,8 +35,11 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.rememberScrollState
@@ -56,10 +60,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -79,7 +85,6 @@ import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Pause
-import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.Sensors
 import androidx.compose.material.icons.rounded.SettingsOverscan
@@ -101,8 +106,10 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -127,16 +134,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import java.util.Locale
@@ -148,7 +162,10 @@ import net.streamdek.mobile.BuildConfig
 import net.streamdek.mobile.MainActivity
 import net.streamdek.mobile.mpv.MPVView
 import net.streamdek.mobile.mpv.MpvTrackInfo
+import net.streamdek.mobile.peer.PeerStreamService
+import net.streamdek.mobile.peer.SwarmStats
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -167,9 +184,31 @@ import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.FastRewind
 import kotlin.math.roundToInt
+import android.widget.Toast
 
 private enum class PlayerPanel { None, Sources, Audio, Subtitles, Speed, Engine, Info }
 private enum class PlayerAdjustmentKind { Brightness, Volume }
+
+/** A slightly softened play mark; the stock triangle has visibly sharp corners at player scale. */
+private val RoundedPlayerPlayIcon: ImageVector by lazy {
+  ImageVector.Builder(
+    name = "RoundedPlayerPlay",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+  ).apply {
+    path(fill = SolidColor(Color.Black), pathFillType = PathFillType.NonZero) {
+      moveTo(7.3f, 5.25f)
+      curveTo(7.3f, 4.16f, 8.51f, 3.49f, 9.43f, 4.07f)
+      lineTo(19.17f, 10.33f)
+      curveTo(20.4f, 11.12f, 20.4f, 12.88f, 19.17f, 13.67f)
+      lineTo(9.43f, 19.93f)
+      curveTo(8.51f, 20.51f, 7.3f, 19.84f, 7.3f, 18.75f)
+      close()
+    }
+  }.build()
+}
 
 internal fun adjustedPlayerLevel(initial: Float, totalDragY: Float, playerHeight: Float): Float =
   (initial - (totalDragY / playerHeight.coerceAtLeast(1f)) * 1.5f).coerceIn(0f, 1f)
@@ -238,6 +277,11 @@ private fun episodeContext(session: PlayerSession): String? = if (session.season
 @Composable
 fun NativePlayerScreen(
   session: PlayerSession,
+  /** Metadata-only phase before a playable URL exists; no decoder or media session is created. */
+  resolving: Boolean = false,
+  resolvingSourceLabel: String? = null,
+  resolvingPeerHash: String? = null,
+  onCancelResolving: () -> Unit = {},
   availableStreams: List<AddonStream>,
   handoffDevices: List<LinkedTvDevice> = emptyList(),
   onHandoff: suspend (LinkedTvDevice, Double) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) },
@@ -272,7 +316,29 @@ fun NativePlayerScreen(
   onSubtitleTextSizeChange: (Int) -> Unit = {},
   onSubtitleVerticalOffsetChange: (Int) -> Unit = {},
   onSubtitleSourceChange: (String) -> Unit = {},
+  onToggleSourceFavourite: (String) -> Unit = {},
 ) {
+  // Hoisted above the provisional/real-session split so the last swarm reading survives the URL
+  // handoff instead of disappearing for one polling interval. Polling stops at the first frame.
+  var peerSwarm by remember(resolvingPeerHash) { mutableStateOf<SwarmStats?>(null) }
+  var pollPeerSwarm by remember(resolvingPeerHash) { mutableStateOf(!resolvingPeerHash.isNullOrBlank()) }
+  LaunchedEffect(resolvingPeerHash, pollPeerSwarm) {
+    if (resolvingPeerHash.isNullOrBlank() || !pollPeerSwarm) return@LaunchedEffect
+    while (true) {
+      peerSwarm = withContext(Dispatchers.IO) { runCatching { PeerStreamService.latestSwarmStats(resolvingPeerHash) }.getOrNull() }
+      delay(700)
+    }
+  }
+  if (resolving) {
+    PlayerResolvingScreen(
+      session = session,
+      sourceLabel = resolvingSourceLabel,
+      peerHash = resolvingPeerHash,
+      swarm = peerSwarm,
+      onBack = onCancelResolving,
+    )
+    return
+  }
   val playerContext = LocalContext.current
   val playerScope = rememberCoroutineScope()
   val activity = playerContext as? Activity
@@ -309,8 +375,12 @@ fun NativePlayerScreen(
   var activeEngine by remember(liveEngineKey, session.playerEngine) { mutableStateOf(initialPlaybackEngine(session.playerEngine)) }
   var autoFallbackUsed by remember(liveEngineKey, session.playerEngine) { mutableStateOf(false) }
   var pendingEngineResumeSeconds by source.pendingEngineResumeSeconds
+  // Start every source in the edge-to-edge Full screen scale. The viewer can still cycle to
+  // Stretch or Normal afterwards, but a new video must never begin letterboxed or distorted.
   val resizeModeState = rememberSaveable(session.url) { mutableStateOf("cover") }
   var resizeMode by resizeModeState
+  val customZoomState = rememberSaveable(session.url) { mutableFloatStateOf(1f) }
+  var customZoom by customZoomState
   val playbackSpeedState = rememberSaveable(session.url) { mutableFloatStateOf(1f) }
   var playbackSpeed by playbackSpeedState
   fun activeAddSubtitle(path: String, language: String?) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.addSubtitleFile(path, language) else playerView?.addSubtitleFile(path, language) }
@@ -332,11 +402,14 @@ fun NativePlayerScreen(
     AudioManager.OnAudioFocusChangeListener { change ->
       when (change) {
         AudioManager.AUDIOFOCUS_LOSS,
-        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
-        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
           if (!isPaused) pausedForAudioFocus = true
           isPaused = true
         }
+        // Notification sounds normally request ducking rather than exclusive audio focus. Keep
+        // the video running for that brief sound; Android may lower its audio without turning an
+        // ordinary notification into a visible pause/resume cycle.
+        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> Unit
         AudioManager.AUDIOFOCUS_GAIN -> if (pausedForAudioFocus) {
           pausedForAudioFocus = false
           isPaused = false
@@ -354,7 +427,7 @@ fun NativePlayerScreen(
             .build(),
         )
         .setOnAudioFocusChangeListener(audioFocusListener, Handler(Looper.getMainLooper()))
-        .setWillPauseWhenDucked(true)
+        .setWillPauseWhenDucked(false)
         .build()
     } else null
   }
@@ -613,6 +686,9 @@ fun NativePlayerScreen(
     if (duration > 0.0) ((currentTime / duration) * 100.0).coerceIn(0.0, 100.0) else 0.0
 
   val isLoading = nextEpisodeLoading || (!hasLoaded && error.isNullOrBlank())
+  LaunchedEffect(isLoading) {
+    if (!isLoading) pollPeerSwarm = false
+  }
   val currentProgressPercent = progressPercent()
   val activeSkipSegment = skipSegments.firstOrNull { currentTime >= it.startSeconds && currentTime < it.endSeconds }
   val nextEpisodeActionAvailable = activeSkipSegment?.type == "outro" && session.mediaType == "tv" && session.autoPlayNextEpisode && duration > 0.0 && run {
@@ -985,6 +1061,7 @@ fun NativePlayerScreen(
       activeEngine = activeEngine,
       isPaused = isPaused,
       resizeMode = resizeMode,
+      customZoom = customZoom,
       playbackSpeed = playbackSpeed,
       subtitleDelay = subtitleDelay,
       subtitleSize = subtitleSize,
@@ -1019,6 +1096,8 @@ fun NativePlayerScreen(
       source = source,
       playback = playback,
       isLoading = isLoading,
+      peerSwarm = peerSwarm,
+      peerSourceLabel = session.sourceLabel,
       channelSwitchLoading = channelSwitchLoading,
       channelSwitchLoadingLabel = channelSwitchLoadingLabel,
       nextEpisodeLoadingLabel = nextEpisodeLoadingLabel,
@@ -1032,6 +1111,8 @@ fun NativePlayerScreen(
       controlsLockedState = controlsLockedState,
       adjustmentKindState = adjustmentKindState,
       adjustmentLevelState = adjustmentLevelState,
+      resizeModeState = resizeModeState,
+      customZoomState = customZoomState,
       activeSeekTo = ::activeSeekTo,
       applyBrightness = ::applyBrightness,
       applyMediaVolume = ::applyMediaVolume,
@@ -1041,6 +1122,19 @@ fun NativePlayerScreen(
       progressPercent = ::progressPercent,
       onSelectStream = onSelectStream,
       onNextEpisodeAtEnding = onNextEpisodeAtEnding,
+      onTogglePause = {
+        val nextPaused = !isPaused
+        if (nextPaused) {
+          pausedForAudioFocus = false
+          abandonPlayerAudioFocus()
+          onScrobble("pause", currentProgressPercent)
+          isPaused = true
+        } else if (requestPlayerAudioFocus()) {
+          showPausedInfo = false
+          onScrobble("start", currentProgressPercent)
+          isPaused = false
+        }
+      },
     )
 
     PlayerOverlays(
@@ -1054,6 +1148,7 @@ fun NativePlayerScreen(
       playbackSpeedState = playbackSpeedState,
       controlsLockedState = controlsLockedState,
       resizeModeState = resizeModeState,
+      customZoomState = customZoomState,
       showLiveProgressState = showLiveProgressState,
       adjustmentKindState = adjustmentKindState,
       adjustmentLevelState = adjustmentLevelState,
@@ -1115,6 +1210,7 @@ fun NativePlayerScreen(
       onSelectStream = onSelectStream,
       onReloadStreams = onReloadStreams,
       onDownloadStream = onDownloadStream,
+      onToggleSourceFavourite = onToggleSourceFavourite,
     )
     PlayerLiveOverlays(
       session = session,
@@ -1161,6 +1257,7 @@ private fun PlayerSurface(
   activeEngine: ActivePlaybackEngine,
   isPaused: Boolean,
   resizeMode: String,
+  customZoom: Float,
   playbackSpeed: Float,
   subtitleDelay: Float,
   subtitleSize: Int,
@@ -1179,7 +1276,7 @@ private fun PlayerSurface(
   key(engineKey, activeEngine) {
     if (activeEngine == ActivePlaybackEngine.Media3) {
       AndroidView(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().graphicsLayer { scaleX = customZoom; scaleY = customZoom },
         factory = { context ->
           ExoPlaybackView(context).apply {
             onExoViewCreated(this)
@@ -1190,7 +1287,7 @@ private fun PlayerSurface(
             onEndCallback = onEnd
             onStallChangedCallback = onStallChanged
             onTracksChangedCallback = onTracksChanged
-            setResizeMode(resizeMode)
+            setResizeMode(if (resizeMode == "custom") "contain" else resizeMode)
             setSpeed(playbackSpeed.toDouble())
             setSubtitleDelay(subtitleDelay.toDouble())
             setSubtitleFontSize(subtitleSize)
@@ -1229,7 +1326,7 @@ private fun PlayerSurface(
           view.setSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage, session.useForcedSubtitles)
           view.setSource(session.url)
           view.setPaused(isPaused)
-          view.setResizeMode(resizeMode)
+          view.setResizeMode(if (resizeMode == "custom") "contain" else resizeMode)
           view.setSpeed(playbackSpeed.toDouble())
           view.setSubtitleDelay(subtitleDelay.toDouble())
           view.setSubtitleFontSize(subtitleSize)
@@ -1242,7 +1339,7 @@ private fun PlayerSurface(
       )
     } else {
       AndroidView(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().graphicsLayer { scaleX = customZoom; scaleY = customZoom },
         factory = { context ->
           MPVView(context).apply {
             onMpvViewCreated(this)
@@ -1252,7 +1349,7 @@ private fun PlayerSurface(
             onEndCallback = onEnd
             onStallChangedCallback = onStallChanged
             onTracksChangedCallback = onTracksChanged
-            setResizeMode(resizeMode)
+            setResizeMode(if (resizeMode == "custom") "contain" else resizeMode)
             setDecoderMode(session.decoderMode)
             setRenderSurface(session.renderSurface)
             setSpeed(playbackSpeed.toDouble())
@@ -1285,7 +1382,7 @@ private fun PlayerSurface(
           view.setSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage)
           view.setSource(session.url)
           view.setPaused(isPaused)
-          view.setResizeMode(resizeMode)
+          view.setResizeMode(if (resizeMode == "custom") "contain" else resizeMode)
           view.setDecoderMode(session.decoderMode)
           view.setRenderSurface(session.renderSurface)
           view.setSpeed(playbackSpeed.toDouble())
@@ -1509,8 +1606,62 @@ private fun LiveFavouriteDrawer(
   }
 }
 
+@OptIn(androidx.activity.ExperimentalActivityApi::class)
 @Composable
-private fun PlayerLoadingBackdrop(session: PlayerSession, message: String) {
+private fun PlayerResolvingScreen(
+  session: PlayerSession,
+  sourceLabel: String?,
+  peerHash: String?,
+  swarm: SwarmStats?,
+  onBack: () -> Unit,
+) {
+  // A gesture-back callback owns the whole gesture. Mutating the route from a plain BackHandler
+  // while the edge swipe was still completing exposed MainScene/Activity to the tail of that same
+  // gesture and could close the app. Wait for the progress flow to finish, then cancel playback;
+  // a cancelled gesture throws and deliberately changes nothing.
+  PredictiveBackHandler { progress ->
+    try {
+      progress.collect { }
+      onBack()
+    } catch (_: CancellationException) {
+      // The viewer reversed the gesture before committing it.
+    }
+  }
+  Box(modifier = Modifier.fillMaxSize()) {
+    PlayerLoadingBackdrop(
+      session = session,
+      message = when {
+        swarm == null -> if (peerHash.isNullOrBlank()) "Preparing stream..." else "Preparing peer stream..."
+        !swarm.hasMetadata -> "Finding peers..."
+        else -> "Buffering from peers..."
+      },
+      swarm = swarm,
+      sourceLabel = sourceLabel,
+    )
+    val minimal = session.playerControlLayout == "Minimal"
+    Box(
+      modifier = Modifier
+        .statusBarsPadding()
+        .padding(20.dp)
+        .align(Alignment.TopStart)
+        .size(if (minimal) 48.dp else 44.dp)
+        .clip(CircleShape)
+        .then(if (minimal) Modifier else Modifier.background(Color.White.copy(alpha = 0.10f)).border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape))
+        .clickable(onClick = onBack),
+      contentAlignment = Alignment.Center,
+    ) {
+      Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = Color.White, modifier = Modifier.size(if (minimal) 30.dp else 24.dp))
+    }
+  }
+}
+
+@Composable
+private fun PlayerLoadingBackdrop(
+  session: PlayerSession,
+  message: String,
+  swarm: SwarmStats? = null,
+  sourceLabel: String? = null,
+) {
   val pulse by rememberInfiniteTransition(label = "player_loading_logo").animateFloat(
     initialValue = 0.42f,
     targetValue = 1f,
@@ -1551,7 +1702,62 @@ private fun PlayerLoadingBackdrop(session: PlayerSession, message: String) {
         Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.86f)))
         Text(message, color = Color.White.copy(alpha = 0.84f), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
       }
+      swarm?.let { stats ->
+        val fraction = stats
+          .takeIf { it.hasMetadata && it.fileLengthBytes > 0L }
+          ?.let { (it.downloadedBytes.toFloat() / it.fileLengthBytes.toFloat()).coerceIn(0f, 1f) }
+        if (fraction != null) {
+          LinearProgressIndicator(
+            progress = { fraction },
+            modifier = Modifier.fillMaxWidth(0.72f).height(4.dp).clip(CircleShape),
+            color = Color.White,
+            trackColor = Color.White.copy(alpha = 0.16f),
+          )
+        } else {
+          LinearProgressIndicator(
+            modifier = Modifier.fillMaxWidth(0.72f).height(4.dp).clip(CircleShape),
+            color = Color.White,
+            trackColor = Color.White.copy(alpha = 0.16f),
+          )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+          PlayerSwarmStat("SEEDS", stats.seeds.toString())
+          PlayerSwarmStat("PEERS", stats.peers.toString())
+          PlayerSwarmStat("SPEED", playerRateLabel(stats.downloadRateBytesPerSecond.toLong()))
+        }
+      }
+      sourceLabel?.takeIf { it.isNotBlank() }?.let {
+        Text(
+          it,
+          color = Color.White.copy(alpha = 0.50f),
+          style = MaterialTheme.typography.bodySmall,
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis,
+          textAlign = TextAlign.Center,
+          modifier = Modifier.fillMaxWidth(0.72f),
+        )
+      }
     }
+  }
+}
+
+@Composable
+private fun PlayerSwarmStat(label: String, value: String) {
+  Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(1.dp)) {
+    Text(label, color = Color.White.copy(alpha = 0.42f), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+    Text(value, color = Color.White, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+  }
+}
+
+private fun playerRateLabel(bytesPerSecond: Long): String {
+  val rate = bytesPerSecond.coerceAtLeast(0L)
+  val kib = 1024.0
+  val mib = kib * 1024.0
+  return when {
+    rate <= 0L -> "—"
+    rate >= mib -> String.format(Locale.US, "%.1f MB/s", rate / mib)
+    rate >= kib -> String.format(Locale.US, "%.0f KB/s", rate / kib)
+    else -> "$rate B/s"
   }
 }
 
@@ -1598,7 +1804,7 @@ private fun PlayerPausedContent(session: PlayerSession) {
   }
 }
 @Composable
-private fun PlayerCenterControls(isPaused: Boolean, onPauseToggle: () -> Unit, onSeek: (Double) -> Unit, showEpisodeNavigation: Boolean, onPreviousEpisode: () -> Unit, onNextEpisode: () -> Unit, showSeeking: Boolean = true) {
+private fun PlayerCenterControls(isPaused: Boolean, onPauseToggle: () -> Unit, onSeek: (Double) -> Unit, showEpisodeNavigation: Boolean, onPreviousEpisode: () -> Unit, onNextEpisode: () -> Unit, showSeeking: Boolean = true, layout: String = "Normal") {
   // Fixed button sizes and a fixed gap between them, centered in whatever space is
   // available - a width-based padding/arrangement here (as this used to have) shrinks
   // the available room on narrower screens and squashes the buttons together instead of
@@ -1612,36 +1818,80 @@ private fun PlayerCenterControls(isPaused: Boolean, onPauseToggle: () -> Unit, o
       horizontalArrangement = Arrangement.spacedBy(48.dp),
       verticalAlignment = Alignment.CenterVertically,
     ) {
-      if (showSeeking) PlayerRoundAction(icon = Icons.Rounded.Replay10, onClick = { onSeek(-10.0) }) else Spacer(modifier = Modifier.size(74.dp))
+      val minimal = layout == "Minimal"
+      if (showSeeking) PlayerRoundAction(icon = Icons.Rounded.Replay10, label = "Rewind 10 seconds", minimal = minimal, onClick = { onSeek(-10.0) }) else Spacer(modifier = Modifier.size(74.dp))
       Box(
         modifier = Modifier
           .size(90.dp)
           .clip(CircleShape)
-          .background(Color.White.copy(alpha = 0.14f))
-          .border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape)
           .clickable(onClick = onPauseToggle),
         contentAlignment = Alignment.Center,
       ) {
-        Icon(if (isPaused) Icons.Rounded.PlayArrow else Icons.Rounded.Pause, contentDescription = null, tint = Color.White, modifier = Modifier.size(54.dp))
+        Box(
+          modifier = Modifier.size(if (minimal) 90.dp else 81.dp).clip(CircleShape)
+            .then(if (minimal) Modifier else Modifier.background(Color.White.copy(alpha = 0.14f)).border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape)),
+          contentAlignment = Alignment.Center,
+        ) {
+          Icon(if (isPaused) RoundedPlayerPlayIcon else Icons.Rounded.Pause, contentDescription = if (isPaused) "Play" else "Pause", tint = Color.White, modifier = Modifier.size(if (isPaused) 51.dp else 54.dp))
+        }
       }
-      if (showSeeking) PlayerRoundAction(icon = Icons.Rounded.Forward10, onClick = { onSeek(10.0) }) else Spacer(modifier = Modifier.size(74.dp))
+      if (showSeeking) PlayerRoundAction(icon = Icons.Rounded.Forward10, label = "Forward 10 seconds", minimal = minimal, onClick = { onSeek(10.0) }) else Spacer(modifier = Modifier.size(74.dp))
     }
   }
 }
 
 @Composable
-private fun PlayerRoundAction(icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+private fun PlayerRoundAction(icon: ImageVector, label: String, minimal: Boolean, onClick: () -> Unit) {
   Box(
-    modifier = Modifier
-      .size(74.dp)
-      .clip(CircleShape)
-      .background(Color.White.copy(alpha = 0.08f))
-      .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
-      .clickable(onClick = onClick),
+    modifier = Modifier.size(74.dp).clip(CircleShape).clickable(onClick = onClick),
     contentAlignment = Alignment.Center,
   ) {
-    Icon(icon, contentDescription = null, tint = Color.White.copy(alpha = 0.88f), modifier = Modifier.size(34.dp))
+    Box(
+      modifier = Modifier.size(if (minimal) 74.dp else 67.dp).clip(CircleShape)
+        .then(if (minimal) Modifier else Modifier.background(Color.White.copy(alpha = 0.08f)).border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)),
+      contentAlignment = Alignment.Center,
+    ) {
+      Icon(icon, contentDescription = label, tint = Color.White.copy(alpha = 0.90f), modifier = Modifier.size(34.dp))
+    }
   }
+}
+
+@Composable
+private fun RefinedPlayerSlider(
+  progress: Float,
+  onProgressChange: (Float) -> Unit,
+  onProgressFinished: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val activeColor = MaterialTheme.colorScheme.primary
+  val trackColor = Color.White.copy(alpha = 0.26f)
+  val safeProgress = progress.coerceIn(0f, 1f)
+  Slider(
+    value = safeProgress,
+    onValueChange = onProgressChange,
+    onValueChangeFinished = onProgressFinished,
+    colors = SliderDefaults.colors(
+      thumbColor = Color.Transparent,
+      activeTrackColor = Color.Transparent,
+      inactiveTrackColor = Color.Transparent,
+      disabledThumbColor = Color.Transparent,
+      disabledActiveTrackColor = Color.Transparent,
+      disabledInactiveTrackColor = Color.Transparent,
+    ),
+    modifier = modifier
+      .height(48.dp)
+      .drawBehind {
+        val centerY = size.height / 2f
+        // Material Slider reserves roughly half a thumb at both ends when mapping touch position
+        // to value. Draw to that same inset so the visible thumb stays exactly under the finger.
+        val inset = 10.dp.toPx().coerceAtMost(size.width / 2f)
+        val trackWidth = (size.width - inset * 2f).coerceAtLeast(0f)
+        val thumbX = inset + trackWidth * safeProgress
+        drawLine(trackColor, Offset(inset, centerY), Offset(inset + trackWidth, centerY), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
+        drawLine(activeColor, Offset(inset, centerY), Offset(thumbX, centerY), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
+        drawCircle(activeColor, radius = 4.5.dp.toPx(), center = Offset(thumbX, centerY))
+      },
+  )
 }
 
 @Composable
@@ -1665,6 +1915,8 @@ private fun PlayerBottomControls(
   onSources: () -> Unit,
   onEngine: () -> Unit,
   onInfo: () -> Unit,
+  showLabels: Boolean,
+  layout: String,
 ) {
   // A live channel with no seekable window reports no duration, so there is no bar to draw and
   // nothing to drag. The elapsed time and a LIVE marker still answer what the toggle was asked
@@ -1689,25 +1941,57 @@ private fun PlayerBottomControls(
           modifier = Modifier.width(78.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.44f)).padding(vertical = 8.dp),
           contentAlignment = Alignment.Center,
         ) { Text(formatClock(currentTime), color = Color.White.copy(alpha = 0.92f)) }
+        Spacer(Modifier.weight(0.075f))
         if (liveWithoutWindow) {
-          Box(modifier = Modifier.weight(1f).padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
-            Box(modifier = Modifier.fillMaxWidth().height(3.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.22f)))
+          Box(modifier = Modifier.weight(0.85f).height(48.dp), contentAlignment = Alignment.Center) {
+            Box(modifier = Modifier.fillMaxWidth().height(2.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.22f)))
           }
         } else {
-          Slider(value = progress, onValueChange = onProgressChange, onValueChangeFinished = onProgressFinished, modifier = Modifier.weight(1f).padding(horizontal = 14.dp))
+          // The progress bar takes the dark scheme's colours in every appearance, because the
+          // surface it is drawn on is the video rather than a page. Left to the ambient scheme it
+          // picked up Light Mode's `surfaceVariant` for the unplayed track, which is very nearly
+          // white: a bright bar laid across the picture, disconnected from the white-on-black
+          // controls either side of it.
+          //
+          // Done by handing this one control the dark scheme rather than by naming colours here, so
+          // played, unplayed and thumb keep exactly the relationship Dark Mode already gives them —
+          // including the accent from the viewer's chosen theme — with nothing to keep in step.
+          MaterialTheme(colorScheme = LocalDarkColorScheme.current ?: MaterialTheme.colorScheme) {
+            if (layout == "Minimal") {
+              RefinedPlayerSlider(
+                progress = progress,
+                onProgressChange = onProgressChange,
+                onProgressFinished = onProgressFinished,
+                modifier = Modifier.weight(0.85f),
+              )
+            } else {
+              // Normal and Compact retain the original Material player progress bar. The
+              // surrounding 7.5% spacers shorten it by 15% while keeping it exactly centred.
+              Slider(
+                value = progress,
+                onValueChange = onProgressChange,
+                onValueChangeFinished = onProgressFinished,
+                modifier = Modifier.weight(0.85f).graphicsLayer { scaleY = if (layout == "Compact") 0.92f else 1f },
+              )
+            }
+          }
         }
+        Spacer(Modifier.weight(0.075f))
         Box(
           modifier = Modifier.width(96.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.44f)).padding(vertical = 8.dp),
           contentAlignment = Alignment.Center,
         ) {
           if (liveWithoutWindow) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            // Scaled by 0.6 to match the badge over the picture. The pill around it keeps its size:
+            // it is shared with the duration clock this replaces, and shrinking it here would move
+            // the controls row about depending on whether the source happens to be live.
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.6.dp)) {
               if (isVod) {
-                Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = Color(0xFF60A5FA), modifier = Modifier.size(12.dp))
+                Icon(RoundedPlayerPlayIcon, contentDescription = null, tint = Color(0xFF60A5FA), modifier = Modifier.size(7.2.dp))
               } else {
-                Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(Color(0xFFE11D48)))
+                Box(modifier = Modifier.size(3.6.dp).clip(CircleShape).background(Color(0xFFE11D48)))
               }
-              Text(if (isVod) "VOD" else "LIVE", color = Color.White.copy(alpha = 0.92f), fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp)
+              Text(if (isVod) "VOD" else "LIVE", color = Color.White.copy(alpha = 0.92f), fontSize = 6.6.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.36.sp)
             }
           } else {
             Text(formatClock(duration), color = Color.White.copy(alpha = 0.92f))
@@ -1716,33 +2000,41 @@ private fun PlayerBottomControls(
       }
     }
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+      val minimal = layout == "Minimal"
       Row(
         modifier = Modifier
-          .clip(StreamDekRadius.sheetShape)
-          .background(Color(0xD9161A23))
-          .border(1.dp, Color.White.copy(alpha = 0.10f), StreamDekRadius.sheetShape)
-          .padding(horizontal = 18.dp, vertical = 9.dp),
-        horizontalArrangement = Arrangement.spacedBy(15.5.dp),
+          .then(if (minimal) Modifier.widthIn(max = 620.dp).horizontalScroll(rememberScrollState()) else Modifier)
+          .clip(if (minimal) RoundedCornerShape(14.dp) else StreamDekRadius.sheetShape)
+          .background(if (minimal) Color.Black.copy(alpha = 0.30f) else Color(0xD9161A23))
+          .then(if (minimal) Modifier else Modifier.border(1.dp, Color.White.copy(alpha = 0.10f), StreamDekRadius.sheetShape))
+          .padding(
+            horizontal = when (layout) { "Compact" -> 12.dp; "Minimal" -> 7.dp; else -> 18.dp },
+            // Normal drops from 66dp to roughly 58dp overall (about 12%) while the controls keep
+            // their full 48dp touch targets. Minimal retains its own low-profile treatment.
+            vertical = when (layout) { "Compact" -> 5.dp; "Minimal" -> 2.dp; else -> 5.dp },
+          ),
+        horizontalArrangement = Arrangement.spacedBy(when (layout) { "Compact" -> 32.dp; "Minimal" -> 6.dp; else -> 15.5.dp }),
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        PlayerDockButton("Zoom", Icons.Rounded.SettingsOverscan, onZoom)
+        PlayerDockButton("Zoom", Icons.Rounded.SettingsOverscan, onZoom, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
         if (isLive) {
           PlayerDockButton(
             "Progress",
             if (showLiveProgress) Icons.Rounded.Timeline else Icons.Rounded.HideSource,
             onToggleLiveProgress,
             active = showLiveProgress,
+            showLabel = showLabels && !minimal,
+            compact = layout == "Compact",
+            minimal = minimal,
           )
         } else {
-          PlayerDockButton("Speed", Icons.Rounded.SlowMotionVideo, onSpeed)
-          PlayerDockButton("Subs", Icons.Rounded.Subtitles, onSubtitles)
-          PlayerDockButton("Audio", Icons.Rounded.VolumeUp, onAudio)
+          PlayerDockButton("Speed", Icons.Rounded.SlowMotionVideo, onSpeed, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+          PlayerDockButton("Subs", Icons.Rounded.Subtitles, onSubtitles, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+          PlayerDockButton("Audio", Icons.Rounded.VolumeUp, onAudio, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
         }
-        PlayerDockButton("Sources", Icons.Rounded.GridView, onSources)
-        PlayerDockButton("Engine", Icons.Rounded.Tune, onEngine)
-        // Lock moved up beside the handoff control in the header, so the dock has room for this
-        // without growing wide enough to wrap on a phone.
-        PlayerDockButton("Info", Icons.Rounded.Info, onInfo)
+        PlayerDockButton("Sources", Icons.Rounded.GridView, onSources, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+        PlayerDockButton("Engine", Icons.Rounded.Tune, onEngine, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+        PlayerDockButton("Info", Icons.Rounded.Info, onInfo, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
       }
     }
   }
@@ -1754,14 +2046,21 @@ private fun PlayerDockButton(
   icon: androidx.compose.ui.graphics.vector.ImageVector,
   onClick: () -> Unit,
   active: Boolean = false,
+  showLabel: Boolean = true,
+  compact: Boolean = false,
+  minimal: Boolean = false,
 ) {
+  val context = LocalContext.current
   Row(
     verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(6.dp),
-    modifier = Modifier.clickable(onClick = onClick),
+    horizontalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp),
+    modifier = Modifier
+      .heightIn(min = 48.dp)
+      .then(if (minimal) Modifier.widthIn(min = 42.dp) else Modifier)
+      .combinedClickable(onClick = onClick, onLongClick = { Toast.makeText(context, label, Toast.LENGTH_SHORT).show() }),
   ) {
-    Icon(icon, contentDescription = label, tint = if (active) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.92f), modifier = Modifier.size(21.dp))
-    Text(label, color = if (active) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.78f), fontSize = 11.sp, maxLines = 1)
+    Icon(icon, contentDescription = label, tint = if (active) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.92f), modifier = Modifier.size(if (minimal) 18.dp else if (compact) 19.dp else 21.dp))
+    if (showLabel) Text(label, color = if (active) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.78f), fontSize = if (compact) 10.sp else 11.sp, maxLines = 1)
   }
 }
 
@@ -1775,6 +2074,16 @@ private fun androidx.compose.foundation.layout.BoxScope.PlayerTopHeader(
   onHandoff: () -> Unit = {},
   onLock: () -> Unit = {},
 ) {
+  var fullTitleVisible by remember(session.title) { mutableStateOf(false) }
+  val reducedMotion = LocalReducedMotion.current
+  if (fullTitleVisible) {
+    AlertDialog(
+      onDismissRequest = { fullTitleVisible = false },
+      title = { Text("Full title") },
+      text = { Text(listOfNotNull(session.title, episodeContext(session), session.year?.toString()).joinToString(" | ")) },
+      confirmButton = { TextButton(onClick = { fullTitleVisible = false }) { Text("Close") } },
+    )
+  }
   Row(
     modifier = modifier
       .fillMaxWidth()
@@ -1783,21 +2092,30 @@ private fun androidx.compose.foundation.layout.BoxScope.PlayerTopHeader(
     horizontalArrangement = Arrangement.spacedBy(14.dp),
     verticalAlignment = Alignment.Top,
   ) {
+    val minimal = session.playerControlLayout == "Minimal"
     Box(
-      modifier = Modifier
-        .size(44.dp)
-        .clip(CircleShape)
-        .background(Color.White.copy(alpha = 0.10f))
-        .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+      modifier = Modifier.size(if (minimal) 48.dp else 44.dp).clip(CircleShape)
+        .then(if (minimal) Modifier else Modifier.background(Color.White.copy(alpha = 0.10f)).border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape))
         .clickable(onClick = onBack),
       contentAlignment = Alignment.Center,
     ) {
-      Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = Color.White)
+      Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = Color.White, modifier = Modifier.size(if (minimal) 30.dp else 24.dp))
     }
     Column(modifier = Modifier.weight(1f).padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
       val yearLabel = session.year?.toString().orEmpty()
       val titleLine = listOfNotNull(session.title, episodeContext(session), yearLabel.takeIf { it.isNotBlank() }).joinToString(" | ")
-      Text(text = titleLine, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+      if (session.playerTitleDisplay != "Hidden") Text(
+        text = titleLine,
+        color = Color.White,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 16.sp,
+        maxLines = 1,
+        overflow = if (session.playerTitleDisplay == "Scrolling" && !reducedMotion) TextOverflow.Clip else TextOverflow.Ellipsis,
+        modifier = Modifier
+          .fillMaxWidth()
+          .then(if (session.playerTitleDisplay == "Scrolling" && !reducedMotion) Modifier.basicMarquee() else Modifier)
+          .clickable { fullTitleVisible = true },
+      )
       if (session.isLive) {
         Text(
           text = if (session.isProxied) "Proxied stream" else "Direct stream",
@@ -1886,58 +2204,61 @@ private fun PlayerSourceCard(
     stream.cachedBy.takeIf { it.isNotEmpty() }?.joinToString(", "),
   ).joinToString(" | ")
   val shape: Shape = StreamDekRadius.panelShape
-  Column(
+  Box(
     modifier = Modifier
       .fillMaxWidth()
       .clip(shape)
       .background(if (active) Color.White.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.08f))
       .border(1.dp, if (active) Color.White.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.08f), shape)
-      .clickable(onClick = onClick)
-      .padding(horizontal = 18.dp, vertical = 16.dp),
-    verticalArrangement = Arrangement.spacedBy(8.dp),
+      .clickable(onClick = onClick),
   ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-      Text(header, color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f, fill = false))
-      // Beside the name, as on the television. Switching source mid-film is usually a choice
-      // between things that have already disappointed you once, and "which of these is even the
-      // same kind of source" was not answerable from a list of names.
-      streamOriginLabel(stream)?.let {
-        Text(
-          it,
-          color = Color.White.copy(alpha = 0.52f),
-          style = MaterialTheme.typography.labelSmall,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-        )
+    Column(
+      modifier = Modifier.padding(start = 18.dp, top = 16.dp, end = if (showDownload) 58.dp else 18.dp, bottom = 16.dp),
+      verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(header, color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f, fill = false))
+        // Beside the name, as on the television. Switching source mid-film is usually a choice
+        // between things that have already disappointed you once, and "which of these is even the
+        // same kind of source" was not answerable from a list of names.
+        streamOriginLabel(stream)?.let {
+          Text(
+            it,
+            color = Color.White.copy(alpha = 0.52f),
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+        }
+        Spacer(Modifier.weight(1f))
       }
-      Spacer(Modifier.weight(1f))
-      if (showDownload) {
-        IconButton(onClick = onDownload, modifier = Modifier.size(28.dp)) {
-          Icon(Icons.Rounded.Download, contentDescription = "Download for offline playback", tint = Color.White.copy(alpha = 0.78f), modifier = Modifier.size(18.dp))
+      if (metaLine.isNotBlank()) {
+        Text(metaLine, color = Color.White.copy(alpha = 0.74f), style = MaterialTheme.typography.bodyMedium)
+      }
+      if (supportingLine.isNotBlank()) {
+        Text(supportingLine, color = Color.White.copy(alpha = 0.58f), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+      }
+      Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        StreamInfoPill(icon = Icons.Rounded.HighQuality, label = stream.quality ?: "Stream")
+        // Read out of the add-on's whole text rather than the size field alone: most sources put it
+        // in the release name, and asking only for the field left this pill off nearly every row
+        // while the loading screen a second later showed the size it had scraped from the same text.
+        streamSizeLabel(stream)?.let {
+          StreamInfoPill(icon = Icons.Rounded.Sensors, label = "[$it]", containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f), contentColor = MaterialTheme.colorScheme.primary)
+        }
+        if (active) {
+          StreamInfoPill(
+            icon = Icons.Rounded.Tune,
+            label = "Playing",
+            containerColor = Color(0xFF22C55E).copy(alpha = 0.20f),
+            contentColor = Color(0xFF22C55E),
+          )
         }
       }
     }
-    if (metaLine.isNotBlank()) {
-      Text(metaLine, color = Color.White.copy(alpha = 0.74f), style = MaterialTheme.typography.bodyMedium)
-    }
-    if (supportingLine.isNotBlank()) {
-      Text(supportingLine, color = Color.White.copy(alpha = 0.58f), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-    }
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-      StreamInfoPill(icon = Icons.Rounded.HighQuality, label = stream.quality ?: "Stream")
-      // Read out of the add-on's whole text rather than the size field alone: most sources put it
-      // in the release name, and asking only for the field left this pill off nearly every row
-      // while the loading screen a second later showed the size it had scraped from the same text.
-      streamSizeLabel(stream)?.let {
-        StreamInfoPill(icon = Icons.Rounded.Sensors, label = "[$it]", containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f), contentColor = MaterialTheme.colorScheme.primary)
-      }
-      if (active) {
-        StreamInfoPill(
-          icon = Icons.Rounded.Tune,
-          label = "Playing",
-          containerColor = Color(0xFF22C55E).copy(alpha = 0.20f),
-          contentColor = Color(0xFF22C55E),
-        )
+    if (showDownload) {
+      IconButton(onClick = onDownload, modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp).size(36.dp)) {
+        Icon(Icons.Rounded.Download, contentDescription = "Download for offline playback", tint = Color.White.copy(alpha = 0.78f), modifier = Modifier.size(18.dp))
       }
     }
   }
@@ -2156,6 +2477,33 @@ private fun formatClock(seconds: Double): String {
 }
 internal fun playerStreamIdentity(stream: AddonStream?): String =
   stream?.let(::addonStreamPlaybackIdentity).orEmpty()
+
+/** A source favourite deliberately excludes URL, headers, tokens and debrid links: those expire. */
+internal fun stableSourceFavouriteKey(stream: AddonStream): String = listOf(
+  stream.addonId.ifBlank { stream.addonName },
+  stream.source.orEmpty(),
+  stream.name.orEmpty(),
+  stream.title.orEmpty(),
+  stream.quality.orEmpty(),
+).joinToString("|") { it.trim().lowercase(Locale.US).replace(Regex("\\s+"), " ") }.take(512)
+
+internal fun playerDoubleTapSeekDelta(
+  horizontalFraction: Float,
+  enabled: Boolean,
+  stepSeconds: Int,
+  seekable: Boolean,
+): Int? = when {
+  !enabled || !seekable -> null
+  horizontalFraction < 0.35f -> -stepSeconds.coerceIn(5, 15)
+  horizontalFraction > 0.65f -> stepSeconds.coerceIn(5, 15)
+  else -> null
+}
+
+internal fun isPlayerCenterDoubleTap(horizontalFraction: Float, enabled: Boolean): Boolean =
+  enabled && horizontalFraction in 0.35f..0.65f
+
+internal fun clampedPlayerSeekPosition(positionSeconds: Double, deltaSeconds: Int, durationSeconds: Double): Double =
+  (positionSeconds + deltaSeconds).coerceIn(0.0, durationSeconds.coerceAtLeast(0.0))
 
 private val playerHttpClient = OkHttpClient()
 
@@ -2627,6 +2975,7 @@ private fun PlayerPanels(
   onSelectStream: (AddonStream, Double) -> Unit,
   onReloadStreams: () -> Unit,
   onDownloadStream: (AddonStream) -> Unit,
+  onToggleSourceFavourite: (String) -> Unit,
 ) {
   // Re-bound so the panel bodies below read and write exactly as they did in the screen.
   var activePanel by activePanelState
@@ -2963,6 +3312,7 @@ private fun BoxScope.PlayerOverlays(
   playbackSpeedState: MutableFloatState,
   controlsLockedState: MutableState<Boolean>,
   resizeModeState: MutableState<String>,
+  customZoomState: MutableFloatState,
   showLiveProgressState: MutableState<Boolean>,
   adjustmentKindState: MutableState<PlayerAdjustmentKind?>,
   adjustmentLevelState: MutableFloatState,
@@ -2983,6 +3333,7 @@ private fun BoxScope.PlayerOverlays(
   var playbackSpeed by playbackSpeedState
   var controlsLocked by controlsLockedState
   var resizeMode by resizeModeState
+  var customZoom by customZoomState
   var showLiveProgress by showLiveProgressState
   var isPaused by playback.isPaused
   var pausedForAudioFocus by playback.pausedForAudioFocus
@@ -3068,14 +3419,14 @@ private fun BoxScope.PlayerOverlays(
     exit = fadeOut(animationSpec = tween(180)),
   ) {
     Surface(
-      color = Color(0xD9161A23),
-      shape = StreamDekRadius.panelShape,
+      color = Color.Black.copy(alpha = 0.46f),
+      shape = StreamDekRadius.pill,
       border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
     ) {
-      Column(
-        modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(7.dp),
+      Row(
+        modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
       ) {
         Icon(
           when (adjustmentKind) {
@@ -3085,12 +3436,13 @@ private fun BoxScope.PlayerOverlays(
           },
           contentDescription = null,
           tint = Color.White,
-          modifier = Modifier.size(28.dp),
+          modifier = Modifier.size(19.dp),
         )
         Text(
           "${if (adjustmentKind == PlayerAdjustmentKind.Brightness) "Brightness" else "Volume"} ${(adjustmentLevel * 100f).toInt()}%",
           color = Color.White,
-          fontWeight = FontWeight.Bold,
+          fontWeight = FontWeight.SemiBold,
+          fontSize = 12.sp,
         )
       }
     }
@@ -3181,6 +3533,7 @@ private fun BoxScope.PlayerOverlays(
       // A live source showing a seekable bar is one the double-tap gestures can move too;
       // without a bar (or without a seekable window) there is nothing for them to act on.
       showSeeking = !session.isLive || (showLiveProgress && duration > 0.0),
+      layout = session.playerControlLayout,
     )
   }
 
@@ -3206,10 +3559,11 @@ private fun BoxScope.PlayerOverlays(
       onZoom = {
         keepControlsVisible()
         resizeMode = when (resizeMode) {
-          "cover" -> "contain"
-          "contain" -> "stretch"
-          else -> "cover"
+          "contain" -> "cover"
+          "cover" -> "stretch"
+          else -> "contain"
         }
+        customZoom = 1f
       },
       onSpeed = { keepControlsVisible(); activePanel = PlayerPanel.Speed },
       onSubtitles = { keepControlsVisible(); activePanel = PlayerPanel.Subtitles },
@@ -3217,6 +3571,8 @@ private fun BoxScope.PlayerOverlays(
       onSources = { keepControlsVisible(); activePanel = PlayerPanel.Sources },
       onEngine = { keepControlsVisible(); activePanel = PlayerPanel.Engine },
       onInfo = { keepControlsVisible(); activePanel = PlayerPanel.Info },
+      showLabels = session.showPlayerControlLabels,
+      layout = session.playerControlLayout,
     )
   }
 }
@@ -3313,6 +3669,18 @@ LaunchedEffect(adjustmentFeedbackVersion) {
   }
 }
 
+fun applyPlayerSystemUi() {
+  val showStatus = session.fullscreenStatusBar == "Always show" ||
+    (session.fullscreenStatusBar == "Automatic" && (showControls || activePanel != PlayerPanel.None))
+  activity?.window?.decorView?.systemUiVisibility =
+    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+      View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+      View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+      View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+      (if (showStatus) 0 else View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN)
+}
+LaunchedEffect(session.fullscreenStatusBar, showControls, activePanel) { applyPlayerSystemUi() }
+
 DisposableEffect(activity) {
   val previous = activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
   val previousBrightness = activity?.window?.attributes?.screenBrightness ?: -1f
@@ -3323,14 +3691,7 @@ DisposableEffect(activity) {
   // on configuration changes, and the rotation asked for here arrives as one of those.
   MainActivity.playerOwnsOrientation = true
   activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-  decorView?.systemUiVisibility = (
-    View.SYSTEM_UI_FLAG_FULLSCREEN or
-      View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-      View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
-      View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-      View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
-      View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-    )
+  applyPlayerSystemUi()
   onDispose {
     MainActivity.pipShouldEnter = false
     MainActivity.playerOwnsOrientation = false
@@ -3505,6 +3866,8 @@ private fun BoxScope.PlayerSurfaceOverlays(
   source: PlayerSourceState,
   playback: PlayerPlaybackState,
   isLoading: Boolean,
+  peerSwarm: SwarmStats?,
+  peerSourceLabel: String?,
   channelSwitchLoading: Boolean,
   channelSwitchLoadingLabel: String?,
   nextEpisodeLoadingLabel: String?,
@@ -3518,6 +3881,8 @@ private fun BoxScope.PlayerSurfaceOverlays(
   controlsLockedState: MutableState<Boolean>,
   adjustmentKindState: MutableState<PlayerAdjustmentKind?>,
   adjustmentLevelState: MutableFloatState,
+  resizeModeState: MutableState<String>,
+  customZoomState: MutableFloatState,
   activeSeekTo: (Double) -> Unit,
   applyBrightness: (Float) -> Unit,
   applyMediaVolume: (Float) -> Unit,
@@ -3527,12 +3892,14 @@ private fun BoxScope.PlayerSurfaceOverlays(
   progressPercent: () -> Double,
   onSelectStream: (AddonStream, Double) -> Unit,
   onNextEpisodeAtEnding: () -> Unit,
+  onTogglePause: () -> Unit,
 ) {
   // Re-bound so the bodies below read and write exactly as they did in the screen.
   var activePanel by activePanelState
   var controlsLocked by controlsLockedState
   var adjustmentKind by adjustmentKindState
   var adjustmentLevel by adjustmentLevelState
+  var customZoom by customZoomState
   var isPaused by playback.isPaused
   var currentTime by playback.currentTime
   var duration by playback.duration
@@ -3552,6 +3919,47 @@ private fun BoxScope.PlayerSurfaceOverlays(
   var slowLoadHintVisible by source.slowLoadHintVisible
   var skipSegments by source.skipSegments
   var smartSwitchCooldownUntil by smartSwitchCooldownUntilState
+  var seekFeedbackAmount by remember(session.url) { mutableIntStateOf(0) }
+  // AnimatedVisibility keeps composing during its exit. Retain the last non-zero amount so
+  // clearing visibility cannot turn a fading rewind indicator into a one-frame forward icon.
+  var displayedSeekFeedbackAmount by remember(session.url) { mutableIntStateOf(0) }
+  var seekFeedbackVersion by remember(session.url) { mutableIntStateOf(0) }
+  var playPauseFeedback by remember(session.url) { mutableStateOf<Boolean?>(null) }
+  LaunchedEffect(seekFeedbackVersion) {
+    if (seekFeedbackVersion > 0) {
+      delay(850)
+      seekFeedbackAmount = 0
+    }
+  }
+  LaunchedEffect(playPauseFeedback) {
+    if (playPauseFeedback != null) {
+      delay(650)
+      playPauseFeedback = null
+    }
+  }
+  AnimatedVisibility(
+    visible = seekFeedbackAmount != 0 && !controlsLocked,
+    modifier = Modifier.align(if (displayedSeekFeedbackAmount < 0) Alignment.CenterStart else Alignment.CenterEnd).padding(horizontal = 48.dp).zIndex(21f),
+    enter = fadeIn(tween(100)),
+    exit = fadeOut(tween(180)),
+  ) {
+    Surface(color = Color.Black.copy(alpha = 0.48f), shape = CircleShape) {
+      Column(Modifier.padding(horizontal = 18.dp, vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(if (displayedSeekFeedbackAmount < 0) Icons.Rounded.FastRewind else Icons.Rounded.FastForward, contentDescription = null, tint = Color.White)
+        Text("${if (displayedSeekFeedbackAmount > 0) "+" else "−"}${kotlin.math.abs(displayedSeekFeedbackAmount)}s", color = Color.White, fontWeight = FontWeight.Bold)
+      }
+    }
+  }
+  AnimatedVisibility(
+    visible = playPauseFeedback != null && !controlsLocked,
+    modifier = Modifier.align(Alignment.Center).zIndex(21f),
+    enter = fadeIn(tween(100)),
+    exit = fadeOut(tween(180)),
+  ) {
+    Surface(color = Color.Black.copy(alpha = 0.42f), shape = CircleShape) {
+      Icon(if (playPauseFeedback == true) Icons.Rounded.Pause else RoundedPlayerPlayIcon, contentDescription = null, tint = Color.White, modifier = Modifier.padding(16.dp).size(30.dp))
+    }
+  }
   AnimatedVisibility(
     visible = smartSwitchCandidate != null && !controlsLocked,
     modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = 24.dp).padding(bottom = 30.dp).zIndex(20f),
@@ -3628,8 +4036,11 @@ private fun BoxScope.PlayerSurfaceOverlays(
       message = when {
         nextEpisodeLoading -> listOfNotNull("Loading next episode", nextEpisodeLoadingLabel).joinToString(" · ")
         session.isLive && slowLoadHintVisible -> "This channel is available but is taking a while to load…"
+        peerSwarm != null -> "Buffering from peers..."
         else -> "Preparing stream..."
       },
+      swarm = peerSwarm,
+      sourceLabel = peerSourceLabel,
     )
   }
 
@@ -3649,6 +4060,15 @@ private fun BoxScope.PlayerSurfaceOverlays(
     modifier = Modifier
       .fillMaxSize()
       .background(Color.Black.copy(alpha = if (isLoading || controlsLocked || (!showControls && activePanel == PlayerPanel.None)) 0.0f else if (activePanel == PlayerPanel.None) 0.18f else 0.58f))
+      .pointerInput(session.url, isLoading, controlsLocked) {
+        if (isLoading || controlsLocked) return@pointerInput
+        detectTransformGestures { _, _, zoom, _ ->
+          if (zoom != 1f) {
+            customZoom = (customZoom * zoom).coerceIn(1f, 3f)
+            resizeModeState.value = if (customZoom <= 1.01f) "contain" else "custom"
+          }
+        }
+      }
       // Press and hold anywhere to play faster, for as long as the finger stays down. Kept in
       // its own non-consuming detector so the tap and drag handlers below still see every
       // event exactly as they did before.
@@ -3686,7 +4106,7 @@ private fun BoxScope.PlayerSurfaceOverlays(
           }
         }
       }
-      .pointerInput(session.url, session.isLive, isLoading, controlsLocked, audioManager, session.swipeToSeekEnabled, duration) {
+      .pointerInput(session.url, session.isLive, isLoading, controlsLocked, audioManager, session.swipeToSeekEnabled, session.levelGesturesEnabled, duration) {
         if (!isLoading && !controlsLocked) {
           var totalX = 0f
           var totalY = 0f
@@ -3698,6 +4118,7 @@ private fun BoxScope.PlayerSurfaceOverlays(
           // Scrubbing is for material with a known length: a linear channel has nothing to
           // scrub through, and the horizontal swipe there already opens the favourites drawer.
           val canScrub = session.swipeToSeekEnabled && !session.isLive && duration > 1.0
+          val canAdjustLevels = session.levelGesturesEnabled
           detectDragGestures(
             onDragStart = { offset ->
               totalX = 0f
@@ -3742,11 +4163,14 @@ private fun BoxScope.PlayerSurfaceOverlays(
               val verticalGesture = kotlin.math.abs(totalY) > kotlin.math.abs(totalX) && kotlin.math.abs(totalY) > 12f
               val horizontalGesture = kotlin.math.abs(totalX) > kotlin.math.abs(totalY) && kotlin.math.abs(totalX) > 16f
               when {
-                verticalGesture && dragStartX < size.width * 0.33f -> {
+                // Turned off, the two level drags simply are not here: the branches fall through,
+                // nothing is adjusted, and `didAdjustLevel` stays false so a vertical swipe is
+                // still available to the live channel list below.
+                canAdjustLevels && verticalGesture && dragStartX < size.width * 0.33f -> {
                   applyBrightness(adjustedPlayerLevel(initialBrightness, totalY, size.height.toFloat()))
                   didAdjustLevel = true
                 }
-                verticalGesture && dragStartX >= size.width * 0.67f -> {
+                canAdjustLevels && verticalGesture && dragStartX >= size.width * 0.67f -> {
                   applyMediaVolume(adjustedPlayerLevel(initialVolume, totalY, size.height.toFloat()))
                   didAdjustLevel = true
                 }
@@ -3762,24 +4186,55 @@ private fun BoxScope.PlayerSurfaceOverlays(
           )
         }
       }
-      .clickable(enabled = !isLoading, interactionSource = surfaceInteractionSource, indication = null) {
-        if (suppressNextTap) {
+      .pointerInput(session.url, isLoading, controlsLocked, activePanel, duration, session.doubleTapSeekEnabled, session.doubleTapSeekSeconds, session.doubleTapPlayPauseEnabled) {
+        if (isLoading) return@pointerInput
+        detectTapGestures(
+          onDoubleTap = { offset ->
+            if (controlsLocked || activePanel != PlayerPanel.None) return@detectTapGestures
+            val fraction = offset.x / size.width.coerceAtLeast(1).toFloat()
+            val seekDelta = playerDoubleTapSeekDelta(
+              horizontalFraction = fraction,
+              enabled = session.doubleTapSeekEnabled,
+              stepSeconds = session.doubleTapSeekSeconds,
+              seekable = duration > 0.0,
+            )
+            when {
+              seekDelta != null -> {
+                val amount = seekDelta
+                currentTime = clampedPlayerSeekPosition(currentTime, amount, duration)
+                activeSeekTo(currentTime)
+                val sameDirection = (seekFeedbackAmount < 0 && amount < 0) || (seekFeedbackAmount > 0 && amount > 0)
+                val nextFeedbackAmount = if (sameDirection) seekFeedbackAmount + amount else amount
+                seekFeedbackAmount = nextFeedbackAmount
+                displayedSeekFeedbackAmount = nextFeedbackAmount
+                seekFeedbackVersion += 1
+              }
+              isPlayerCenterDoubleTap(fraction, session.doubleTapPlayPauseEnabled) -> {
+                playPauseFeedback = !isPaused
+                onTogglePause()
+              }
+            }
+          },
+          onTap = {
+            if (suppressNextTap) {
           // The finger that just lifted was holding to speed up, or scrubbing.
-          suppressNextTap = false
-        } else if (controlsLocked) {
-          showUnlockControl = true
-          unlockActivityVersion += 1
-        } else if (showLiveChannels) {
-          showLiveChannels = false
-          showControls = false
-        } else if (showFavouriteDrawer) {
-          showFavouriteDrawer = false
-          showControls = false
-        } else if (activePanel == PlayerPanel.None) {
-          showPausedInfo = false
-          showControls = !showControls
-        }
-        },
+              suppressNextTap = false
+            } else if (controlsLocked) {
+              showUnlockControl = true
+              unlockActivityVersion += 1
+            } else if (showLiveChannels) {
+              showLiveChannels = false
+              showControls = false
+            } else if (showFavouriteDrawer) {
+              showFavouriteDrawer = false
+              showControls = false
+            } else if (activePanel == PlayerPanel.None) {
+              showPausedInfo = false
+              showControls = !showControls
+            }
+          },
+        )
+      },
     )
 }
 
@@ -3918,13 +4373,15 @@ private fun BoxScope.PlayerLiveOverlays(
       color = if (session.isVod) Color(0xFF2563EB) else Color(0xFFE11D48),
       shape = CircleShape,
     ) {
-      Row(modifier = Modifier.padding(horizontal = 13.5.dp, vertical = 6.3.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+      // Every dimension here is the previous one scaled by 0.6 — the badge reads as a label on the
+      // picture rather than a control competing with it.
+      Row(modifier = Modifier.padding(horizontal = 8.1.dp, vertical = 3.8.dp), horizontalArrangement = Arrangement.spacedBy(3.6.dp), verticalAlignment = Alignment.CenterVertically) {
         if (session.isVod) {
-          Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp))
+          Icon(RoundedPlayerPlayIcon, contentDescription = null, tint = Color.White, modifier = Modifier.size(7.2.dp))
         } else {
-          Box(modifier = Modifier.size(6.3.dp).clip(CircleShape).background(Color.White))
+          Box(modifier = Modifier.size(3.8.dp).clip(CircleShape).background(Color.White))
         }
-        Text(if (session.isVod) "VOD" else "LIVE", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.8.sp, letterSpacing = 0.9.sp)
+        Text(if (session.isVod) "VOD" else "LIVE", color = Color.White, fontWeight = FontWeight.Black, fontSize = 6.5.sp, letterSpacing = 0.54.sp)
       }
     }
   }

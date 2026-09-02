@@ -64,6 +64,7 @@ data class SkyRepo(
   val name: String,
   val description: String?,
   val enabled: Boolean = true,
+  val favourite: Boolean = false,
 )
 
 data class SkyProvider(
@@ -156,7 +157,7 @@ class SkyStreamPluginManager(private val context: Context) {
       }
       val existingRepo = state.repos.firstOrNull { it.url == url }
       state = state.copy(
-        repos = state.repos.map { if (it.url == url) repo.copy(enabled = existingRepo?.enabled ?: true) else it },
+        repos = state.repos.map { if (it.url == url) repo.copy(enabled = existingRepo?.enabled ?: true, favourite = existingRepo?.favourite ?: false) else it },
         providers = state.providers.filterNot { it.repoUrl == url } + merged,
       )
       save()
@@ -176,6 +177,11 @@ class SkyStreamPluginManager(private val context: Context) {
 
   fun enableRepo(url: String, enabled: Boolean) {
     state = state.copy(repos = state.repos.map { if (it.url == url) it.copy(enabled = enabled) else it })
+    save()
+  }
+
+  fun toggleRepoFavourite(url: String) {
+    state = state.copy(repos = state.repos.map { if (it.url == url) it.copy(favourite = !it.favourite) else it })
     save()
   }
 
@@ -214,8 +220,9 @@ class SkyStreamPluginManager(private val context: Context) {
 
   /** Providers that are switched on, inside collections that are switched on. */
   fun activeProviders(): List<SkyProvider> {
-    val enabledRepos = state.repos.filter { it.enabled }.mapTo(mutableSetOf()) { it.url }
+    val enabledRepos = state.repos.filter { it.enabled }.associateBy { it.url }
     return state.providers.filter { it.enabled && it.repoUrl in enabledRepos }
+      .sortedWith(compareByDescending<SkyProvider> { enabledRepos[it.repoUrl]?.favourite == true }.thenBy { it.name.lowercase() })
   }
 
   // ── Streams ────────────────────────────────────────────────────────────────────────────────
@@ -449,7 +456,8 @@ class SkyStreamPluginManager(private val context: Context) {
               .put("url", it.url)
               .put("name", it.name)
               .put("description", it.description)
-              .put("enabled", it.enabled),
+              .put("enabled", it.enabled)
+              .put("favourite", it.favourite),
           )
         }
       },
@@ -490,6 +498,7 @@ class SkyStreamPluginManager(private val context: Context) {
             name = item.optString("name"),
             description = item.optString("description").ifBlank { null },
             enabled = item.optBoolean("enabled", true),
+            favourite = item.optBoolean("favourite", false),
           )
         },
         providers = List(providers.length()) { index ->

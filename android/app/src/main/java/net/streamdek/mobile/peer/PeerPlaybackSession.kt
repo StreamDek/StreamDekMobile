@@ -1,6 +1,6 @@
 package net.streamdek.mobile.peer
 
-import com.frostwire.jlibtorrent.TorrentHandle
+import org.libtorrent4j.TorrentHandle
 
 /**
  * A live view of one torrent's swarm, for the launch screen.
@@ -31,4 +31,6 @@ data class PeerPlaybackSession(
   @Volatile var fileIndex: Int = -1,
   @Volatile var filePath: String = "",
   @Volatile var fileLength: Long = 0L,
+  /** First piece of the deadline window the reader is currently being served from; -1 when none. */
+  @Volatile var deadlineAnchorPiece: Int = -1,
 )

@@ -2,7 +2,9 @@
 
 Native Android StreamDek client built with Kotlin and Jetpack Compose.
 
-This repository is the detached `StreamDekMobile-Kotlin` line. The old React Native / Expo app path has been removed from the repository and build flow.
+This is the canonical `StreamDek/StreamDekMobile` repository. The old React
+Native / Expo app has been retired; the repository and release flow contain
+only the Kotlin/Android application.
 
 ## What is here
 
@@ -42,12 +44,12 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 
 ## Production release
 
-Production Android releases are published from StreamDek/repo by
+Production Android releases are published from `StreamDek/StreamDekMobile` by
 .github/workflows/release.yml. Pushing a semantic version tag such as vX.Y.Z
 builds the signed APK, creates the GitHub Release, generates latest.json, and
 uploads that update manifest to the backend VPS.
 
-The Android package name is permanently com.example.mobile. Do not change the
+The Android package name is permanently `net.streamdek.mobile`. Do not change the
 application ID or UPDATE_PACKAGE_NAME; existing installations and in-app
 updates depend on that identity and the production signing key remaining stable.
 
@@ -55,8 +57,9 @@ updates depend on that identity and the production signing key remaining stable.
 
 Configure these Actions values in Repository:
 
-- Repository variable or secret: STREAMDEK_API_URL
-- Secrets: ANDROID_KEYSTORE_BASE64, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD, and DEPLOY_PATH
+- Repository variables or secrets: STREAMDEK_API_URL and STREAMDEK_PREMIUMIZE_CLIENT_ID
+- Secrets: ANDROID_KEYSTORE_BASE64, ANDROID_STORE_PASSWORD, ANDROID_KEY_ALIAS,
+  ANDROID_KEY_PASSWORD, SSH_HOST, SSH_USER, SSH_PRIVATE_KEY, SSH_PORT, and DEPLOY_PATH
 
 DEPLOY_PATH is the backend checkout directory on the VPS. The workflow writes
 the mobile manifest to:
@@ -77,10 +80,9 @@ https://api.example.com/public/updates/android-mobile/latest
 1. Update the shared Android version in android/version.properties. Increase
    VERSION_CODE for every release and set VERSION_NAME to the tag version
    without the leading v.
-2. Set the same version in the root package.json.
-3. Add optional custom notes at .github/release-notes/vX.Y.Z.md. When this
+2. Add optional custom notes at .github/release-notes/vX.Y.Z.md. When this
    file is absent, GitHub generates the release notes.
-4. Run the local release gates:
+3. Run the local release gates:
 
 ~~~powershell
 cd android
@@ -89,7 +91,7 @@ cd ..
 git diff --check
 ~~~
 
-5. Review and commit only the intended release/version/note changes before tagging.
+4. Review and commit only the intended release/version/note changes before tagging.
 
 For example, a v2.0.4 release should contain:
 
@@ -103,16 +105,14 @@ A local release build uses the debug key unless the four ANDROID_* signing
 environment variables are configured; a debug-key APK cannot upgrade a
 production-signed installation.
 
-### Publish to the live repository
+### Publish a release
 
-Confirm the live branch has not moved and that the tag is unused, then push the
-validated commit and annotated tag to StreamDekMobile (not the CMP repository):
+Run the repository release helper from PowerShell. It updates the version,
+opens the release notes, runs the release gates, and atomically pushes `main`
+and the annotated version tag to `StreamDekMobile`:
 
 ~~~powershell
-git ls-remote https://github.com/StreamDek/StreamDekMobile.git refs/heads/main refs/tags/vX.Y.Z
-git push https://github.com/StreamDek/StreamDekMobile.git HEAD:main
-git tag -a vX.Y.Z -m "StreamDek Mobile vX.Y.Z"
-git push https://github.com/StreamDek/StreamDekMobile.git refs/tags/vX.Y.Z
+C:\Dev\release.ps1 -Version X.Y.Z
 ~~~
 
 The tag must exactly match VERSION_NAME; otherwise the release workflow stops
@@ -136,7 +136,7 @@ The package field in the manifest must always be:
 ~~~json
 {
   "platform": "android-mobile",
-  "packageName": "com.example.mobile"
+  "packageName": "net.streamdek.mobile"
 }
 ~~~
 
@@ -174,7 +174,7 @@ set the same inputs CI uses and run the generator against an existing APK:
 
 ~~~powershell
 $env:UPDATE_PLATFORM='android-mobile'
-$env:UPDATE_PACKAGE_NAME='com.example.mobile'
+$env:UPDATE_PACKAGE_NAME='net.streamdek.mobile'
 $env:UPDATE_VERSION_CODE='43'
 $env:UPDATE_VERSION_NAME='X.X.X'
 $env:UPDATE_ASSET_NAME='appname-vX.X.X.apk'

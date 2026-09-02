@@ -68,13 +68,14 @@ private fun catalogList(values: JSONArray?): List<AddonCatalog> = buildList {
   }
 }
 
-private fun parseLocalManifest(id: String, manifestUrl: String, json: JSONObject, enabled: Boolean, position: Int): InstalledAddon {
+private fun parseLocalManifest(id: String, manifestUrl: String, json: JSONObject, enabled: Boolean, position: Int, favourite: Boolean): InstalledAddon {
   val behaviorHints = json.optJSONObject("behaviorHints") ?: JSONObject()
   val baseUrl = manifestUrl.substringBeforeLast("/manifest.json", missingDelimiterValue = manifestUrl).trimEnd('/')
   return InstalledAddon(
     id = id,
     enabled = enabled,
     position = position,
+    favourite = favourite,
     url = manifestUrl,
     baseUrl = baseUrl,
     manifestUrl = manifestUrl,
@@ -103,6 +104,7 @@ private data class LocalAddonRecord(
   val manifestUrl: String,
   val enabled: Boolean,
   val position: Int,
+  val favourite: Boolean,
   val manifestJson: String,
 )
 
@@ -156,6 +158,7 @@ object LocalAddonManager {
           manifestUrl = item.getString("manifestUrl"),
           enabled = item.optBoolean("enabled", true),
           position = item.optInt("position", 0),
+          favourite = item.optBoolean("favourite", false),
           manifestJson = item.getString("manifestJson"),
         )
       }
@@ -171,6 +174,7 @@ object LocalAddonManager {
           .put("manifestUrl", record.manifestUrl)
           .put("enabled", record.enabled)
           .put("position", record.position)
+          .put("favourite", record.favourite)
           .put("manifestJson", record.manifestJson),
       )
     }
@@ -183,7 +187,7 @@ object LocalAddonManager {
   fun list(): List<InstalledAddon> = readAll()
     .sortedBy { it.position }
     .mapNotNull { record ->
-      runCatching { parseLocalManifest(record.id, record.manifestUrl, JSONObject(record.manifestJson), record.enabled, record.position) }.getOrNull()
+      runCatching { parseLocalManifest(record.id, record.manifestUrl, JSONObject(record.manifestJson), record.enabled, record.position, record.favourite) }.getOrNull()
     }
 
   suspend fun install(rawUrl: String): Result<Unit> = withContext(Dispatchers.IO) {
@@ -197,7 +201,7 @@ object LocalAddonManager {
       val json = JSONObject(body)
       require(json.has("id") && json.has("name")) { "That URL doesn't look like a Stremio add-on manifest." }
       val id = ID_PREFIX + Integer.toHexString(normalized.hashCode())
-      writeAll(existing + LocalAddonRecord(id = id, manifestUrl = normalized, enabled = true, position = existing.size, manifestJson = body))
+      writeAll(existing + LocalAddonRecord(id = id, manifestUrl = normalized, enabled = true, position = existing.size, favourite = false, manifestJson = body))
     }
   }
 
@@ -230,17 +234,25 @@ object LocalAddonManager {
     writeAll(readAll().map { if (it.id == id) it.copy(enabled = enabled) else it })
   }
 
+  fun setFavourite(id: String, favourite: Boolean) {
+    writeAll(readAll().map { if (it.id == id) it.copy(favourite = favourite) else it })
+  }
+
   fun remove(id: String) {
     writeAll(readAll().filterNot { it.id == id })
   }
 
   fun move(id: String, delta: Int) {
-    val current = readAll().sortedBy { it.position }.toMutableList()
+    val all = readAll()
+    val favourite = all.firstOrNull { it.id == id }?.favourite ?: return
+    val current = all.filter { it.favourite == favourite }.sortedBy { it.position }.toMutableList()
     val index = current.indexOfFirst { it.id == id }
     val target = (index + delta).coerceIn(0, current.lastIndex)
     if (index < 0 || index == target) return
     val item = current.removeAt(index)
     current.add(target, item)
-    writeAll(current.mapIndexed { newPosition, record -> record.copy(position = newPosition) })
+    val groupPositions = all.filter { it.favourite == favourite }.map { it.position }.sorted()
+    val updated = current.mapIndexed { groupIndex, record -> record.copy(position = groupPositions[groupIndex]) }.associateBy { it.id }
+    writeAll(all.map { updated[it.id] ?: it })
   }
 }

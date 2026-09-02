@@ -6,6 +6,7 @@ import java.io.FileInputStream
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
+import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -24,7 +25,26 @@ class LocalStreamingHttpServer(
   private val peerEngine: PeerEngine,
 ) {
   companion object {
-    private const val MAX_TORRENT_RESPONSE_BYTES = 4L * 1024L * 1024L
+    private const val TAG = "StreamDekPeer"
+
+    /**
+     * How long the first byte of a range may take before the request is refused.
+     *
+     * Only the first byte waits. Everything after it is waited for inside the response body, where
+     * a slow swarm shows up as playback buffering rather than as a request that fails.
+     */
+    private const val FIRST_BYTE_TIMEOUT_MS = 45_000L
+
+    /**
+     * How long a stalled read head is given before the response is abandoned.
+     *
+     * Closing the connection is the right answer to a swarm that has stopped: the player treats it
+     * as a broken stream and re-requests the range it still needs, which is a far better position
+     * than being handed a truncated file it believes is complete.
+     */
+    private const val STALL_TIMEOUT_MS = 60_000L
+
+    private const val STREAM_BUFFER_BYTES = 128 * 1024
   }
   private data class ParsedRequest(
     val method: String,
@@ -213,12 +233,12 @@ class LocalStreamingHttpServer(
       return
     }
 
-    val targetFile = File(session.saveDirectory, session.filePath)
     val totalLength = session.fileLength
     if (session.filePath.isBlank() || totalLength <= 0L) {
       writeResponse(output, 503, "text/plain; charset=utf-8", "Torrent metadata not ready")
       return
     }
+    val targetFile = PeerStreamService.peerTargetFile(sessionId) ?: File(session.saveDirectory, session.filePath)
 
     val rangeHeader = requestHeaders["range"]
     val (start, requestedEnd, statusCode) = parseRange(rangeHeader, totalLength)
@@ -226,28 +246,43 @@ class LocalStreamingHttpServer(
       writeRangeNotSatisfiable(output, totalLength)
       return
     }
-    val end = minOf(requestedEnd, start + MAX_TORRENT_RESPONSE_BYTES - 1, totalLength - 1)
+    // The whole of what was asked for. Capping this at a fixed window was what made peer-to-peer
+    // playback impossible rather than merely slow: a player is told by Content-Length how long the
+    // file it is reading is, so a capped response is a complete file that happens to be a few
+    // seconds long, and an MP4 with its index at the end cannot be opened at all.
+    val end = minOf(requestedEnd, totalLength - 1)
 
     PeerStreamService.preparePeerRange(sessionId, start)
-    val requiredBytes = (end + 1).coerceAtLeast(start + 1)
-    val ready = PeerStreamService.waitForPeerBytes(sessionId, start, requiredBytes, 45_000L)
-    val availableBytes = if (ready) requiredBytes else PeerStreamService.peerBytesAvailable(sessionId)
-    if (!ready && availableBytes <= start) {
+    // Only the first byte is waited for before the response begins. The rest is waited for while
+    // the body is being written, which is what lets playback start on a torrent that is still
+    // arriving instead of only on one that has already arrived.
+    val waitStartedAt = System.currentTimeMillis()
+    if (!PeerStreamService.awaitPeerByte(sessionId, start, FIRST_BYTE_TIMEOUT_MS)) {
+      // A refusal here is the one outcome a player cannot explain for itself: it sees a failed
+      // source and nothing about why. Said plainly so a dead swarm is distinguishable from a
+      // reader that asked for a byte the engine was never going to fetch.
+      android.util.Log.w(
+        TAG,
+        "no first byte at $start after ${System.currentTimeMillis() - waitStartedAt}ms; refusing range $start-$end",
+      )
       writeResponse(output, 503, "text/plain; charset=utf-8", "Torrent data not ready")
       return
     }
+    android.util.Log.d(
+      TAG,
+      "serving $start-$end/$totalLength; first byte took ${System.currentTimeMillis() - waitStartedAt}ms",
+    )
 
-    val safeEnd = minOf(end, (availableBytes - 1).coerceAtLeast(start))
-    val contentLength = safeEnd - start + 1
+    val contentLength = end - start + 1
     val contentType = guessContentType(session.filePath)
-    val responseCode = if (statusCode == 206 || start > 0L || safeEnd < totalLength - 1) 206 else 200
+    val responseCode = if (statusCode == 206 || start > 0L || end < totalLength - 1) 206 else 200
 
     val response = buildString {
       append("HTTP/1.1 $responseCode ${reasonPhrase(responseCode)}\r\n")
       append("Content-Type: $contentType\r\n")
       append("Content-Length: $contentLength\r\n")
       append("Accept-Ranges: bytes\r\n")
-      if (responseCode == 206) append("Content-Range: bytes $start-$safeEnd/$totalLength\r\n")
+      if (responseCode == 206) append("Content-Range: bytes $start-$end/$totalLength\r\n")
       append("Connection: close\r\n")
       append("\r\n")
     }.toByteArray(StandardCharsets.UTF_8)
@@ -258,11 +293,62 @@ class LocalStreamingHttpServer(
       return
     }
 
-    FileInputStream(targetFile).use { input ->
-      skipFully(input, start)
-      copyFixedLength(input, output, contentLength)
-    }
+    streamAsPiecesArrive(output, targetFile, sessionId, start, contentLength)
     output.flush()
+  }
+
+  /**
+   * Writes [contentLength] bytes from [start], waiting at the read head for pieces still in flight.
+   *
+   * The file is read directly rather than through libtorrent, so the piece picker — not the file's
+   * length — decides what may be read: a sparse file reports its finished size from the moment it
+   * is created, and reading past what has arrived would quietly serve zeroes.
+   */
+  private fun streamAsPiecesArrive(
+    output: OutputStream,
+    targetFile: File,
+    sessionId: String,
+    start: Long,
+    contentLength: Long,
+  ) {
+    val buffer = ByteArray(STREAM_BUFFER_BYTES)
+    var offset = start
+    var remaining = contentLength
+
+    RandomAccessFile(targetFile, "r").use { file ->
+      file.seek(start)
+      while (remaining > 0L) {
+        var available = PeerStreamService.peerContiguousBytes(sessionId, offset)
+        if (available <= 0L) {
+          // The read head has caught up with the swarm. Move the deadline window to where the
+          // reader actually is before waiting, so the pieces being asked for are the next ones.
+          PeerStreamService.preparePeerRange(sessionId, offset)
+          if (!PeerStreamService.awaitPeerByte(sessionId, offset, STALL_TIMEOUT_MS)) break
+          available = PeerStreamService.peerContiguousBytes(sessionId, offset)
+          if (available <= 0L) break
+        }
+
+        val chunk = minOf(available, remaining, buffer.size.toLong()).toInt()
+        val read = file.read(buffer, 0, chunk)
+        if (read <= 0) {
+          android.util.Log.w(TAG, "read returned $read at $offset; ${remaining}B of the range unserved")
+          break
+        }
+        output.write(buffer, 0, read)
+        offset += read
+        remaining -= read
+      }
+    }
+    logStreamOutcome(start, offset, remaining)
+  }
+
+  /** Whether a stalled read head or a finished range ended the body, and how much got through. */
+  private fun logStreamOutcome(start: Long, offset: Long, remaining: Long) {
+    if (remaining <= 0L) {
+      android.util.Log.d(TAG, "served the whole range from $start (${offset - start} bytes)")
+    } else {
+      android.util.Log.w(TAG, "stalled at $offset after ${offset - start} bytes; ${remaining}B unserved")
+    }
   }
 
   private fun serveCachedFile(

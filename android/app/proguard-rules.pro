@@ -8,7 +8,7 @@
 #   http://developer.android.com/guide/developing/tools/proguard.html
 
 # Add any project specific keep options here:
--keep class com.frostwire.jlibtorrent.** { *; }
+-keep class org.libtorrent4j.** { *; }
 
 # Suppress R8 warnings from Google Cast SDK (invalid stack map tables in precompiled bytecode)
 -dontwarn com.google.android.gms.internal.cast.**

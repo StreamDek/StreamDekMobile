@@ -699,6 +699,8 @@ class ExoPlaybackView @JvmOverloads constructor(
   private fun dispatchLoaded(active: ExoPlayer) {
     val duration = active.duration.takeIf { it > 0 && it != C.TIME_UNSET }?.div(1000.0) ?: 0.0
     val videoSize = active.videoSize
+    // The end of the wait, from the viewer's point of view: the first frame is on the screen.
+    net.streamdek.mobile.nativeapp.Perf.endPlayback("playing", "${videoSize.width}x${videoSize.height}")
     Log.i(TAG, "Ready duration=${duration}s video=${videoSize.width}x${videoSize.height}")
     onLoadCallback?.invoke(duration, videoSize.width, videoSize.height)
   }

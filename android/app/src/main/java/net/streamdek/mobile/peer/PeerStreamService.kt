@@ -17,6 +17,18 @@ import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
+/**
+ * What a "Clear Storage Now" actually achieved, measured from the disk.
+ *
+ * Two numbers rather than one, because "nothing was freed" has two very different causes and the
+ * screen has to tell them apart: there was nothing stored, or there was and it could not be
+ * removed. Reporting only the delta meant the second was announced as the first.
+ */
+data class PeerStorageClearResult(val freedBytes: Long, val remainingBytes: Long) {
+  /** True when the stores are now empty, whether or not this call is what emptied them. */
+  val isEmpty: Boolean get() = remainingBytes <= 0L
+}
+
 class PeerStreamService : Service() {
   private lateinit var prefs: android.content.SharedPreferences
   private lateinit var cacheStore: StreamCacheStore
@@ -39,6 +51,7 @@ class PeerStreamService : Service() {
     cacheStore = StreamCacheStore(this)
     peerEngine = PeerEngine(this)
     peerEngineRef = peerEngine
+    cacheStoreRef = cacheStore
     cacheStorePath = cacheStore.cacheDirectoryPath()
     peerStorePath = peerEngine.storagePath()
     lifecycleState = "created"
@@ -125,6 +138,7 @@ class PeerStreamService : Service() {
     }
     startupExecutor.shutdown()
     peerEngineRef = null
+    cacheStoreRef = null
     isOnline = false
     recoveryMode = "idle"
     isForegroundMode = false
@@ -280,6 +294,7 @@ class PeerStreamService : Service() {
     @Volatile private var peerStorePath: String? = null
     private val proxySessions = ConcurrentHashMap<String, ProxySession>()
     @Volatile private var peerEngineRef: PeerEngine? = null
+    @Volatile private var cacheStoreRef: StreamCacheStore? = null
 
     fun createIntent(context: Context, config: PeerStreamConfig): Intent {
       return Intent(context, PeerStreamService::class.java).apply {
@@ -334,12 +349,68 @@ class PeerStreamService : Service() {
       peerEngineRef?.prepareForByteRange(sessionId, startByte)
     }
 
-    fun waitForPeerBytes(sessionId: String, startByte: Long, targetByteExclusive: Long, timeoutMs: Long): Boolean {
-      return peerEngineRef?.waitForAvailableBytes(sessionId, startByte, targetByteExclusive, timeoutMs) ?: false
+    fun awaitPeerByte(sessionId: String, offset: Long, timeoutMs: Long): Boolean {
+      return peerEngineRef?.awaitByteAvailable(sessionId, offset, timeoutMs) ?: false
     }
 
-    fun peerBytesAvailable(sessionId: String): Long {
-      return peerEngineRef?.estimateAvailableBytes(sessionId) ?: 0L
+    fun peerContiguousBytes(sessionId: String, offset: Long): Long {
+      return peerEngineRef?.contiguousAvailableFrom(sessionId, offset) ?: 0L
+    }
+
+    fun peerTargetFile(sessionId: String): File? = peerEngineRef?.targetFile(sessionId)
+
+    /**
+     * Empties both stores behind the "Storage Used" figure.
+     *
+     * Both, because that figure is their sum: the peer store holding torrent data and the cache
+     * holding proxied web streams. Clearing one and reporting the other would leave a viewer who
+     * pressed the button looking at a number that had barely moved.
+     *
+     * [activePeerSessionId] is the peer playback the viewer is watching right now, if any — the
+     * `sessionId` from the local URL the player is reading. Its torrent is the one thing spared;
+     * everything else goes. Pass null, as the settings screen does, and nothing is spared, because
+     * nothing can be playing while that screen is on top.
+     *
+     * Both figures come from measuring the directories before and after rather than from what the
+     * delete calls claim to have removed. That distinction is the whole point: a file that could
+     * not be unlinked used to be counted as freed, so a clear that achieved nothing still reported
+     * a total, and — when the total came out at zero — said there had been nothing there at all.
+     */
+    fun clearStoredData(activePeerSessionId: String? = null): PeerStorageClearResult {
+      val before = measureStoredBytes()
+      val activeInfoHashes = activePeerSessionId
+        ?.let { peerEngineRef?.getPlaybackSession(it)?.infoHash }
+        ?.let { setOf(it) }
+        .orEmpty()
+      // Through the live objects when the service is running, so that whatever is being played is
+      // spared; straight off disk when it is not, because then there is nothing to spare and the
+      // files are still there to delete.
+      peerEngineRef?.clearStorage(activeInfoHashes) ?: deleteDirectoryContents(peerStoreDirectory())
+      cacheStoreRef?.clearAll() ?: deleteDirectoryContents(cacheDirectory())
+      // Re-measured rather than deduced, which also refreshes the ten-second cache behind
+      // `snapshot` — without that the settings screen would go on showing the old total for that
+      // long after the files were gone.
+      val remaining = measureStoredBytes()
+      return PeerStorageClearResult(
+        freedBytes = (before - remaining).coerceAtLeast(0L),
+        remainingBytes = remaining,
+      )
+    }
+
+    /**
+     * Walks both stores now, ignoring the cache in [totalCacheUsageBytes], and adopts the result as
+     * the current figure.
+     *
+     * Call it off the main thread. The settings screen uses it so that the number it shows is what
+     * is on disk at the moment it is opened, rather than whatever was last measured — which on a
+     * launch where nothing has been played is nothing at all, and left the screen reporting "None"
+     * over gigabytes with its Clear button greyed out.
+     */
+    fun measureStoredBytes(): Long {
+      val measured = directorySize(peerStoreDirectory()) + directorySize(cacheDirectory())
+      cachedUsageBytes = measured
+      cachedUsageAt = System.currentTimeMillis()
+      return measured
     }
 
     fun snapshot(config: PeerStreamConfig): Map<String, Any> {
@@ -367,6 +438,20 @@ class PeerStreamService : Service() {
 
     fun peerStoreDirectory(): String = peerStorePath ?: ""
 
+    /**
+     * Works out where the two stores live without the service having run in this process.
+     *
+     * Both paths are otherwise only filled in by `onCreate`, so on a launch where nothing has been
+     * played the settings screen measured two empty strings and reported no storage at all — while
+     * gigabytes of it sat in the cache directory, with the button to clear it disabled because the
+     * figure said there was nothing there.
+     */
+    fun primeStoragePaths(context: Context) {
+      val cacheDir = context.applicationContext.cacheDir
+      if (peerStorePath.isNullOrBlank()) peerStorePath = File(cacheDir, "streamdek-peer-store").absolutePath
+      if (cacheStorePath.isNullOrBlank()) cacheStorePath = File(cacheDir, "streamdek-server-cache").absolutePath
+    }
+
     fun markStopped() {
       isOnline = false
       isForegroundMode = false
@@ -392,6 +477,18 @@ class PeerStreamService : Service() {
       cachedUsageBytes = measured
       cachedUsageAt = now
       return measured
+    }
+
+    /**
+     * Empties a store directory in place.
+     *
+     * Says nothing about what it freed; [clearStoredData] measures that itself, from the disk, so
+     * that a delete which quietly failed cannot be reported as a success.
+     */
+    private fun deleteDirectoryContents(path: String) {
+      if (path.isBlank()) return
+      val dir = File(path).takeIf { it.isDirectory } ?: return
+      dir.listFiles()?.forEach { entry -> runCatching { entry.deleteRecursively() } }
     }
 
     private fun directorySize(path: String): Long {

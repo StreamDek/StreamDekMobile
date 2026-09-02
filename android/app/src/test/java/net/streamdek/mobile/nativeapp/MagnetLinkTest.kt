@@ -14,7 +14,7 @@ import org.junit.Test
 class TorrentMagnetTest {
 
   @Test
-  fun `the add-on's own trackers are used when it sends them`() {
+  fun `the add-on's own trackers come first, with the public list behind them`() {
     val sources = listOf(
       "tracker:udp://tracker.example.org:1337/announce",
       "dht:1a2b3c",
@@ -25,8 +25,11 @@ class TorrentMagnetTest {
 
     assertEquals(
       listOf("udp://tracker.example.org:1337/announce", "http://tracker2.example.org:80/announce"),
-      trackers,
+      trackers.take(2),
     )
+    // The regression this guards: an add-on that declared one stale announce URL used to replace
+    // the entire public list with it, so a single dead tracker left the source with nowhere to ask.
+    assertTrue(trackers.size > 2)
   }
 
   @Test
@@ -49,7 +52,23 @@ class TorrentMagnetTest {
       "tracker:udp://tracker.example.org:1337/announce",
     )
 
-    assertEquals(1, streamTrackers(repeated).size)
+    assertEquals(1, streamTrackers(repeated).count { it == "udp://tracker.example.org:1337/announce" })
+  }
+
+  @Test
+  fun `a tracker the add-on already declares is not repeated by the public list`() {
+    val shared = streamTrackers(emptyList()).first()
+
+    val trackers = streamTrackers(listOf("tracker:$shared"))
+
+    assertEquals(1, trackers.count { it == shared })
+  }
+
+  @Test
+  fun `no https tracker is announced`() {
+    // The engine's OpenSSL has no certificate store it can reach on Android, so an https announce
+    // cannot complete a handshake — it only adds a timeout to the wait for peers.
+    assertTrue(streamTrackers(emptyList()).none { it.startsWith("https://") })
   }
 
   @Test

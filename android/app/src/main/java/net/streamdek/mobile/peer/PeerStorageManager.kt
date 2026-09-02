@@ -34,6 +34,24 @@ class PeerStorageManager(context: Context) {
       .fold(0L) { total, file -> total + file.length() }
   }
 
+  /**
+   * Deletes every stored torrent that is not currently being played, and says how much that freed.
+   *
+   * Sessions still in [activeInfoHashes] are left alone on purpose: their files are what a running
+   * playback is reading from, and removing them mid-stream would end the playback rather than tidy
+   * up after it. In the ordinary case — nobody watching anything — that set is empty and this
+   * clears the lot.
+   */
+  fun clearAll(activeInfoHashes: Set<String>): Long {
+    var freed = 0L
+    root.listFiles()?.forEach { entry ->
+      if (entry.name in activeInfoHashes) return@forEach
+      freed += entry.walkTopDown().filter { it.isFile }.fold(0L) { total, file -> total + file.length() }
+      entry.deleteRecursively()
+    }
+    return freed
+  }
+
   fun enforceLimit(cacheSizeGb: Int, activeInfoHashes: Set<String>) {
     if (cacheSizeGb <= 0) {
       root.listFiles()?.forEach { dir ->

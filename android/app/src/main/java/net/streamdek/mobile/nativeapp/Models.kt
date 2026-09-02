@@ -275,6 +275,7 @@ data class StreamProfile(
 )
 
 data class CloudPlaybackPreferences(
+  val favoriteSourceKeys: List<String>? = null,
   val appAppearance: String? = null,
   val themePreset: String? = null,
   val headerStyle: String? = null,
@@ -343,7 +344,6 @@ data class CloudPlaybackPreferences(
   val fusionBadgesEnabled: Boolean? = null,
   val streamDekFormattingEnabled: Boolean? = null,
   val showSizeBadges: Boolean? = null,
-  val showAddonTmdbRatings: Boolean? = null,
   val preferredQuality: String? = null,
   val maxFileSizeGb: Int? = null,
   val badgePosition: String? = null,
@@ -417,6 +417,7 @@ data class InstalledAddon(
   val id: String,
   val enabled: Boolean,
   val position: Int,
+  val favourite: Boolean = false,
   val url: String? = null,
   val baseUrl: String? = null,
   val manifestUrl: String? = null,
@@ -630,6 +631,26 @@ data class PlayerSession(
   val holdToSpeedMultiplier: Float = 2f,
   /** Drag left or right across the video to scrub, committed on release. */
   val swipeToSeekEnabled: Boolean = true,
+  /** Double-tap the outer thirds to seek by [doubleTapSeekSeconds]. */
+  val doubleTapSeekEnabled: Boolean = true,
+  val doubleTapSeekSeconds: Int = 10,
+  /** Double-tap the middle third without first revealing the controls. */
+  val doubleTapPlayPauseEnabled: Boolean = true,
+  /** Device-local player chrome preferences. */
+  val showPlayerControlLabels: Boolean = true,
+  val playerControlLayout: String = "Normal",
+  val fullscreenStatusBar: String = "Automatic",
+  val playerTitleDisplay: String = "Single line",
+  /**
+   * Drag up or down the left of the video for brightness and the right for volume.
+   *
+   * Off leaves those two drags doing nothing at all; every other gesture on the surface — tapping
+   * for the controls, holding to speed up, scrubbing, and the live channel and favourites swipes —
+   * is untouched, because this is about the two that fire by accident while holding the phone.
+   */
+  val levelGesturesEnabled: Boolean = true,
+  /** Stable source descriptors only; never temporary resolved URLs. */
+  val favoriteSourceKeys: Set<String> = emptySet(),
 )
 
 

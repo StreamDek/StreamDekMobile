@@ -82,6 +82,16 @@ enum class ContentService(
       "Generate a key if you have not already, then copy it.",
     ),
     keyHint = "MDBList API key",
+  ),
+  TheIntroDb(
+    id = "theintrodb",
+    label = "TheIntroDB",
+    tagline = "Movies, Series & Playback Timing",
+    blurb = "Provides community-verified intro, recap, credits and preview timestamps for movies and series.",
+    uses = listOf("Movie and episode timing", "Intro and recap skipping", "Credits, next episode and recommendations"),
+    keyUrl = "https://theintrodb.org/dashboard",
+    howToGet = listOf("Sign in at theintrodb.org.", "Open your dashboard and create an API key.", "Copy the complete key into StreamDek."),
+    keyHint = "TheIntroDB API key",
   );
 
   companion object {
@@ -143,6 +153,7 @@ data class ContentServiceState(
 data class ContentServicesState(
   val tmdb: ContentServiceState = ContentServiceState(ContentService.Tmdb),
   val mdblist: ContentServiceState = ContentServiceState(ContentService.Mdblist),
+  val theIntroDb: ContentServiceState = ContentServiceState(ContentService.TheIntroDb),
   /**
    * Whether StreamDek's own TMDB key still answers for viewers who have supplied none.
    *
@@ -167,17 +178,23 @@ data class ContentServicesState(
   /** True once the account state has been read at least once, so cards don't flash "not set up". */
   val loaded: Boolean = false,
 ) {
-  fun of(service: ContentService): ContentServiceState =
-    if (service == ContentService.Tmdb) tmdb else mdblist
+  fun of(service: ContentService): ContentServiceState = when (service) {
+    ContentService.Tmdb -> tmdb
+    ContentService.Mdblist -> mdblist
+    ContentService.TheIntroDb -> theIntroDb
+  }
 
-  fun with(state: ContentServiceState): ContentServicesState =
-    if (state.service == ContentService.Tmdb) copy(tmdb = state) else copy(mdblist = state)
+  fun with(state: ContentServiceState): ContentServicesState = when (state.service) {
+    ContentService.Tmdb -> copy(tmdb = state)
+    ContentService.Mdblist -> copy(mdblist = state)
+    ContentService.TheIntroDb -> copy(theIntroDb = state)
+  }
 
   /** True when neither service has anything configured — what the setup prompt keys off. */
-  val anyConfigured: Boolean get() = tmdb.configured || mdblist.configured
-  val allConfigured: Boolean get() = tmdb.configured && mdblist.configured
+  val anyConfigured: Boolean get() = tmdb.configured || mdblist.configured || theIntroDb.configured
+  val allConfigured: Boolean get() = tmdb.configured && mdblist.configured && theIntroDb.configured
   val needsAttention: List<ContentServiceState>
-    get() = listOf(tmdb, mdblist).filter { it.status == CredentialStatus.NeedsAttention }
+    get() = listOf(tmdb, mdblist, theIntroDb).filter { it.status == CredentialStatus.NeedsAttention }
 }
 
 // ── Secure local storage ──────────────────────────────────────────────────────────────────────
@@ -482,10 +499,14 @@ data class AccountCredentialState(
 data class AccountCredentials(
   val tmdb: AccountCredentialState? = null,
   val mdblist: AccountCredentialState? = null,
+  val theIntroDb: AccountCredentialState? = null,
   val sharedFallbackAvailable: Boolean = true,
 ) {
-  fun of(service: ContentService): AccountCredentialState? =
-    if (service == ContentService.Tmdb) tmdb else mdblist
+  fun of(service: ContentService): AccountCredentialState? = when (service) {
+    ContentService.Tmdb -> tmdb
+    ContentService.Mdblist -> mdblist
+    ContentService.TheIntroDb -> theIntroDb
+  }
 }
 
 /**

@@ -2294,6 +2294,8 @@ class StreamDekApiClient(context: Context? = null) {
         .put("endOfPlaybackRecommendationsEnabled", preferences.endOfPlaybackRecommendationsEnabled)
         .put("recommendationTiming", preferences.recommendationTiming)
         .put("recommendationItemCount", preferences.recommendationItemCount)
+        .put("timingProvider", preferences.timingProvider)
+        .put("timingProviderFallbackEnabled", preferences.timingProviderFallbackEnabled)
       val streams = JSONObject()
         .put("showStreamsList", preferences.showStreamsList)
         .put("rememberLastSource", preferences.rememberLastSource)
@@ -2355,6 +2357,8 @@ class StreamDekApiClient(context: Context? = null) {
           .put("endOfPlaybackRecommendationsEnabled", preferences.endOfPlaybackRecommendationsEnabled)
           .put("recommendationTiming", preferences.recommendationTiming)
           .put("recommendationItemCount", preferences.recommendationItemCount)
+          .put("timingProvider", preferences.timingProvider)
+          .put("timingProviderFallbackEnabled", preferences.timingProviderFallbackEnabled)
         val profilePayload = JSONObject()
           .put("home", home)
           .put("detail", profileDetail)
@@ -2478,6 +2482,8 @@ class StreamDekApiClient(context: Context? = null) {
         endOfPlaybackRecommendationsEnabled = optionalBoolean(playback, "endOfPlaybackRecommendationsEnabled"),
         recommendationTiming = optionalString(playback, "recommendationTiming"),
         recommendationItemCount = optionalInt(playback, "recommendationItemCount"),
+        timingProvider = optionalString(playback, "timingProvider"),
+        timingProviderFallbackEnabled = optionalBoolean(playback, "timingProviderFallbackEnabled"),
         showStreamsList = optionalBoolean(streams, "showStreamsList"),
         rememberLastSource = optionalBoolean(streams, "rememberLastSource"),
         favoriteSourceKeys = optionalStringList(streams, "favoriteSourceKeys"),
@@ -3284,6 +3290,11 @@ class StreamDekApiClient(context: Context? = null) {
           .url("https://api.mdblist.com/user?apikey=" + encodeQuery(trimmed))
           .addHeader("Accept", "application/json")
           .build()
+        ContentService.TheIntroDb -> Request.Builder()
+          .url("https://api.theintrodb.org/v3/media?tmdb_id=949")
+          .addHeader("Accept", "application/json")
+          .addHeader("Authorization", "Bearer $trimmed")
+          .build()
       }
 
       val response = execute(request)
@@ -3933,17 +3944,20 @@ private fun parseAccountCredentials(json: JSONObject): AccountCredentials {
   val services = json.optJSONArray("services") ?: JSONArray()
   var tmdb: AccountCredentialState? = null
   var mdblist: AccountCredentialState? = null
+  var theIntroDb: AccountCredentialState? = null
   for (index in 0 until services.length()) {
     val entry = services.optJSONObject(index) ?: continue
     when (ContentService.fromId(entry.optString("service"))) {
       ContentService.Tmdb -> tmdb = parseAccountCredentialState(ContentService.Tmdb, entry)
       ContentService.Mdblist -> mdblist = parseAccountCredentialState(ContentService.Mdblist, entry)
+      ContentService.TheIntroDb -> theIntroDb = parseAccountCredentialState(ContentService.TheIntroDb, entry)
       null -> Unit
     }
   }
   return AccountCredentials(
     tmdb = tmdb,
     mdblist = mdblist,
+    theIntroDb = theIntroDb,
     sharedFallbackAvailable = json.optBoolean("sharedFallbackAvailable", true),
   )
 }

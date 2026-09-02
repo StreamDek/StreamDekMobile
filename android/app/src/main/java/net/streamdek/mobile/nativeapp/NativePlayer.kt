@@ -2854,27 +2854,49 @@ private fun introdbRequest(url: String, apiKey: String): Request = Request.Build
   .build()
 
 private suspend fun fetchSkipSegments(session: PlayerSession): List<SkipSegment> = withContext(Dispatchers.IO) {
-  if (session.mediaType == "movie") {
-    val tmdbId = session.tmdbId ?: return@withContext emptyList()
-    val durationSec = session.runtimeMinutes?.takeIf { it > 0 }?.times(60.0)
-    val media = TheIntroDbClient(playerHttpClient)
-      .getMovie(tmdbId, durationSec?.times(1000.0)?.toLong())
-      .onFailure { Log.w("StreamDekPlayback", "TheIntroDB movie outro lookup failed tmdbId=$tmdbId", it) }
-      .getOrNull()
-      ?: return@withContext emptyList()
-    return@withContext media.credits.mapNotNull { credit ->
-      val start = credit.startMs / 1000.0
-      val end = credit.endMs?.div(1000.0) ?: durationSec
-      end?.takeIf { it > start }?.let { SkipSegment("outro", start, it) }
-    }.distinctBy { Triple(it.type, it.startSeconds, it.endSeconds) }.sortedBy { it.startSeconds }
+  val durationSec = session.runtimeMinutes?.takeIf { it > 0 }?.times(60.0)
+  fun valid(segments: List<SkipSegment>): List<SkipSegment> = segments.filter { segment ->
+    segment.startSeconds >= 0.0 && segment.endSeconds > segment.startSeconds &&
+      (durationSec == null || (segment.startSeconds < durationSec && segment.endSeconds <= durationSec + 2.0))
+  }.distinctBy { Triple(it.type, it.startSeconds, it.endSeconds) }.sortedBy { it.startSeconds }
+
+  fun theIntroDb(): List<SkipSegment> {
+    val tmdbId = session.tmdbId ?: return emptyList()
+    val url = buildString {
+      append(BuildConfig.API_BASE_URL.trimEnd('/')).append("/services/timings/theintrodb?tmdb_id=").append(tmdbId)
+      session.seasonNumber?.takeIf { session.mediaType == "tv" }?.let { append("&season=").append(it) }
+      session.episodeNumber?.takeIf { session.mediaType == "tv" }?.let { append("&episode=").append(it) }
+      durationSec?.times(1000.0)?.toLong()?.let { append("&duration_ms=").append(it) }
+    }
+    val request = Request.Builder().url(url).header("Accept", "application/json").apply {
+      session.timingApiToken.takeIf { it.isNotBlank() }?.let { header("Authorization", "Bearer $it") }
+      session.theIntroDbApiKey.takeIf { it.isNotBlank() }?.let { header("x-theintrodb-api-key", it) }
+    }.build()
+    val media = runCatching {
+      playerHttpClient.newCall(request).apply { timeout().timeout(4500, java.util.concurrent.TimeUnit.MILLISECONDS) }.execute().use { response ->
+        if (!response.isSuccessful) return@use null
+        TheIntroDbClient.parseMedia(response.body?.string().orEmpty())
+      }
+    }.getOrNull() ?: return emptyList()
+    if (media.tmdbId != null && media.tmdbId != tmdbId) return emptyList()
+    if (media.type != null && media.type != session.mediaType) return emptyList()
+    fun mapped(type: String, values: List<TheIntroDbTimestamp>) = values.mapNotNull { value ->
+      val start = value.startMs / 1000.0
+      val end = value.endMs?.div(1000.0) ?: durationSec
+      end?.let { SkipSegment(type, start, it) }
+    }
+    return valid(mapped("intro", media.intro) + mapped("recap", media.recap) + mapped("outro", media.credits))
   }
-  val imdbId = session.imdbId?.takeIf { it.startsWith("tt") } ?: return@withContext emptyList()
-  val season = session.seasonNumber ?: return@withContext emptyList()
-  val episode = session.episodeNumber ?: return@withContext emptyList()
-  val apiKey = introdbApiKeyFor(session)
-  runCatching {
+
+  fun introDb(): List<SkipSegment> {
+    if (session.mediaType != "tv") return emptyList()
+    val imdbId = session.imdbId?.takeIf { it.startsWith("tt") } ?: return emptyList()
+    val season = session.seasonNumber ?: return emptyList()
+    val episode = session.episodeNumber ?: return emptyList()
+    val apiKey = introdbApiKeyFor(session)
+    return runCatching {
     val request = introdbRequest("https://api.introdb.app/segments?imdb_id=$imdbId&season=$season&episode=$episode", apiKey)
-    val segments = playerHttpClient.newCall(request).execute().use { response -> if (response.isSuccessful) extractSkipSegments(response.body?.string().orEmpty()) else emptyList() }.toMutableList()
+    val segments = playerHttpClient.newCall(request).apply { timeout().timeout(4500, java.util.concurrent.TimeUnit.MILLISECONDS) }.execute().use { response -> if (response.isSuccessful) extractSkipSegments(response.body?.string().orEmpty()) else emptyList() }.toMutableList()
     if (segments.none { it.type == "intro" }) {
       val legacy = introdbRequest("https://api.introdb.app/intro?imdb=$imdbId&imdb_id=$imdbId&season=$season&episode=$episode", apiKey)
       playerHttpClient.newCall(legacy).execute().use { response ->
@@ -2888,8 +2910,24 @@ private suspend fun fetchSkipSegments(session: PlayerSession): List<SkipSegment>
         }
       }
     }
-    segments.distinctBy { Triple(it.type, it.startSeconds, it.endSeconds) }.sortedBy { it.startSeconds }
+    valid(segments)
   }.getOrDefault(emptyList())
+  }
+
+  val preferred = session.timingProvider.takeIf { it in setOf("introdb", "theintrodb") } ?: "introdb"
+  val primary = if (preferred == "theintrodb") theIntroDb() else introDb()
+  if (primary.isNotEmpty()) {
+    Log.i("StreamDekPlayback", "timing provider=$preferred fallback=none segments=${primary.size}")
+    return@withContext primary
+  }
+  if (!session.timingProviderFallbackEnabled) {
+    Log.i("StreamDekPlayback", "timing provider=none preferred=$preferred fallback=disabled")
+    return@withContext emptyList()
+  }
+  val alternate = if (preferred == "theintrodb") introDb() else theIntroDb()
+  val actual = if (alternate.isNotEmpty()) if (preferred == "theintrodb") "introdb" else "theintrodb" else "none"
+  Log.i("StreamDekPlayback", "timing provider=$actual preferred=$preferred fallback=no_usable_data segments=${alternate.size}")
+  alternate
 }
 private fun streamsRepresentSameSource(candidate: AddonStream, current: AddonStream?): Boolean {
   current ?: return false
@@ -3819,7 +3857,7 @@ LaunchedEffect(playbackEnded) {
   }
 }
 
-LaunchedEffect(playbackIdentity, session.skipIntroEnabled, session.skipRecapEnabled, session.skipEndingEnabled, session.autoSkipIntroEnabled, session.autoSkipRecapEnabled, session.autoSkipEndingEnabled, session.introdbApiKey, session.isLive) {
+LaunchedEffect(playbackIdentity, session.skipIntroEnabled, session.skipRecapEnabled, session.skipEndingEnabled, session.autoSkipIntroEnabled, session.autoSkipRecapEnabled, session.autoSkipEndingEnabled, session.introdbApiKey, session.theIntroDbApiKey, session.timingProvider, session.timingProviderFallbackEnabled, session.isLive) {
   if (session.isLive) {
     skipSegments = emptyList()
     return@LaunchedEffect

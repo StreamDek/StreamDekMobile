@@ -1115,6 +1115,8 @@ private data class AppUiState(
   val endOfPlaybackRecommendationsEnabled: Boolean = false,
   val recommendationTiming: String = "standard",
   val recommendationItemCount: Int = 1,
+  val timingProvider: String = "introdb",
+  val timingProviderFallbackEnabled: Boolean = true,
   val peerStreamSettings: PeerStreamSettings = PeerStreamSettings(),
   val peerStreamStatus: PeerStreamStatus = PeerStreamStatus(),
   /**
@@ -1824,6 +1826,7 @@ private class AppSettingsStore(context: Context) {
     "subtitle_background_color", "subtitle_outline", "subtitle_outline_color", "subtitle_default_source",
     "next_episode_threshold_mode", "next_episode_threshold_percent", "next_episode_threshold_minutes",
     "end_of_playback_recommendations_enabled", "recommendation_timing", "recommendation_item_count",
+    "timing_provider", "timing_provider_fallback_enabled",
     "ratings_enabled", "external_ratings_enabled", "enabled_rating_providers", "vivid_ambient", "ambient_tint_percent",
     "detail_ambient_tint_percent",
     "default_app_catalogs_enabled", "home_catalog_rows", "fusion_badges", "show_size_badges",
@@ -1937,6 +1940,8 @@ private class AppSettingsStore(context: Context) {
     endOfPlaybackRecommendationsEnabled = profilePrefs.getBoolean("end_of_playback_recommendations_enabled", false),
     recommendationTiming = profilePrefs.getString("recommendation_timing", "standard").takeIf { it in setOf("early", "standard", "late") } ?: "standard",
     recommendationItemCount = profilePrefs.getInt("recommendation_item_count", 1).coerceIn(1, 2),
+    timingProvider = profilePrefs.getString("timing_provider", "introdb").takeIf { it in setOf("introdb", "theintrodb") } ?: "introdb",
+    timingProviderFallbackEnabled = profilePrefs.getBoolean("timing_provider_fallback_enabled", true),
     peerStreamSettings = PeerStreamSettings(
       enabled = prefs.getBoolean("torrent_enabled", true),
       streamingMode = prefs.getString("torrent_streaming_mode", "server") ?: "server",
@@ -2072,6 +2077,8 @@ private class AppSettingsStore(context: Context) {
   fun saveEndOfPlaybackRecommendationsEnabled(value: Boolean) { profilePrefs.edit().putBoolean("end_of_playback_recommendations_enabled", value).apply() }
   fun saveRecommendationTiming(value: String) { profilePrefs.edit().putString("recommendation_timing", RecommendationTiming.fromKey(value).key).apply() }
   fun saveRecommendationItemCount(value: Int) { profilePrefs.edit().putInt("recommendation_item_count", value.coerceIn(1, 2)).apply() }
+  fun saveTimingProvider(value: String) { profilePrefs.edit().putString("timing_provider", value.takeIf { it in setOf("introdb", "theintrodb") } ?: "introdb").apply() }
+  fun saveTimingProviderFallbackEnabled(value: Boolean) { profilePrefs.edit().putBoolean("timing_provider_fallback_enabled", value).apply() }
   fun savePeerStreamSettings(value: PeerStreamSettings) {
     prefs.edit()
       .putBoolean("torrent_enabled", value.enabled)
@@ -7805,6 +7812,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     preferences.endOfPlaybackRecommendationsEnabled?.let(appSettingsStore::saveEndOfPlaybackRecommendationsEnabled)
     preferences.recommendationTiming?.let(appSettingsStore::saveRecommendationTiming)
     preferences.recommendationItemCount?.let(appSettingsStore::saveRecommendationItemCount)
+    preferences.timingProvider?.let(appSettingsStore::saveTimingProvider)
+    preferences.timingProviderFallbackEnabled?.let(appSettingsStore::saveTimingProviderFallbackEnabled)
     preferences.showStreamsList?.let(appSettingsStore::saveShowStreamsList)
     preferences.rememberLastSource?.let(appSettingsStore::saveRememberLastSource)
     preferences.favoriteSourceKeys?.map(String::trim)?.filter(String::isNotBlank)?.take(250)?.toSet()?.let(appSettingsStore::saveFavoriteSourceKeys)
@@ -7878,6 +7887,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       endOfPlaybackRecommendationsEnabled = preferences.endOfPlaybackRecommendationsEnabled ?: uiState.endOfPlaybackRecommendationsEnabled,
       recommendationTiming = preferences.recommendationTiming?.let { RecommendationTiming.fromKey(it).key } ?: uiState.recommendationTiming,
       recommendationItemCount = preferences.recommendationItemCount?.coerceIn(1, 2) ?: uiState.recommendationItemCount,
+      timingProvider = preferences.timingProvider?.takeIf { it in setOf("introdb", "theintrodb") } ?: uiState.timingProvider,
+      timingProviderFallbackEnabled = preferences.timingProviderFallbackEnabled ?: uiState.timingProviderFallbackEnabled,
       showStreamsList = preferences.showStreamsList ?: uiState.showStreamsList,
       rememberLastSource = preferences.rememberLastSource ?: uiState.rememberLastSource,
       favoriteSourceKeys = preferences.favoriteSourceKeys?.map(String::trim)?.filter(String::isNotBlank)?.take(250)?.toSet() ?: uiState.favoriteSourceKeys,
@@ -8809,6 +8820,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       endOfPlaybackRecommendationsEnabled = uiState.endOfPlaybackRecommendationsEnabled,
       recommendationTiming = uiState.recommendationTiming,
       recommendationItemCount = uiState.recommendationItemCount,
+      timingProvider = uiState.timingProvider,
+      timingProviderFallbackEnabled = uiState.timingProviderFallbackEnabled,
       showStreamsList = uiState.showStreamsList,
       rememberLastSource = uiState.rememberLastSource,
       favoriteSourceKeys = uiState.favoriteSourceKeys.sorted(),
@@ -8974,6 +8987,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setEndOfPlaybackRecommendationsEnabled(value: Boolean) { appSettingsStore.saveEndOfPlaybackRecommendationsEnabled(value); uiState = uiState.copy(endOfPlaybackRecommendationsEnabled = value); syncCloudPreferences() }
   fun setRecommendationTiming(value: String) { val safe = RecommendationTiming.fromKey(value).key; appSettingsStore.saveRecommendationTiming(safe); uiState = uiState.copy(recommendationTiming = safe); syncCloudPreferences() }
   fun setRecommendationItemCount(value: Int) { val safe = value.coerceIn(1, 2); appSettingsStore.saveRecommendationItemCount(safe); uiState = uiState.copy(recommendationItemCount = safe); syncCloudPreferences() }
+  fun setTimingProvider(value: String) { val safe = value.takeIf { it in setOf("introdb", "theintrodb") } ?: "introdb"; appSettingsStore.saveTimingProvider(safe); uiState = uiState.copy(timingProvider = safe); syncCloudPreferences() }
+  fun setTimingProviderFallbackEnabled(value: Boolean) { appSettingsStore.saveTimingProviderFallbackEnabled(value); uiState = uiState.copy(timingProviderFallbackEnabled = value); syncCloudPreferences() }
   fun setAutoLoadSubtitles(value: Boolean) { appSettingsStore.saveAutoLoadSubtitles(value); uiState = uiState.copy(autoLoadSubtitles = value); syncCloudPreferences() }
   // Subtitle appearance stays on the device: it is tuned to the screen being watched, and a phone
   // and a television want different answers.
@@ -10421,6 +10436,10 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     endOfPlaybackRecommendationsEnabled = uiState.endOfPlaybackRecommendationsEnabled,
     recommendationTiming = uiState.recommendationTiming,
     recommendationItemCount = uiState.recommendationItemCount,
+    timingProvider = uiState.timingProvider,
+    timingProviderFallbackEnabled = uiState.timingProviderFallbackEnabled,
+    theIntroDbApiKey = apiClient.serviceCredentials?.requestKey(ContentService.TheIntroDb).orEmpty(),
+    timingApiToken = uiState.session?.token.orEmpty(),
     requestHeaders = stream.requestHeaders,
     drmLicenseType = stream.drmLicenseType,
     drmClearKeys = stream.drmClearKeys,
@@ -17986,9 +18005,13 @@ private fun SettingsTab(
               enabled = uiState.endOfPlaybackRecommendationsEnabled,
               timing = uiState.recommendationTiming,
               itemCount = uiState.recommendationItemCount,
+              timingProvider = uiState.timingProvider,
+              fallbackEnabled = uiState.timingProviderFallbackEnabled,
               onEnabledChange = playerSettingsViewModel::setEndOfPlaybackRecommendationsEnabled,
               onTimingChange = playerSettingsViewModel::setRecommendationTiming,
               onItemCountChange = playerSettingsViewModel::setRecommendationItemCount,
+              onTimingProviderChange = playerSettingsViewModel::setTimingProvider,
+              onFallbackEnabledChange = playerSettingsViewModel::setTimingProviderFallbackEnabled,
             )
           }
           item { IntrodbApiKeySettings(uiState.introdbApiKey, onIntrodbApiKeyChange) }
@@ -19191,11 +19214,26 @@ private fun EndOfPlaybackRecommendationSettings(
   enabled: Boolean,
   timing: String,
   itemCount: Int,
+  timingProvider: String,
+  fallbackEnabled: Boolean,
   onEnabledChange: (Boolean) -> Unit,
   onTimingChange: (String) -> Unit,
   onItemCountChange: (Int) -> Unit,
+  onTimingProviderChange: (String) -> Unit,
+  onFallbackEnabledChange: (Boolean) -> Unit,
 ) {
   SettingsSection("End of Playback") {
+    Row(horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.CenterVertically) {
+      Image(painterResource(R.drawable.introdb_logo), contentDescription = "IntroDB", modifier = Modifier.width(104.dp).height(32.dp), contentScale = ContentScale.Fit)
+      Image(painterResource(R.drawable.theintrodb_logo), contentDescription = "TheIntroDB", modifier = Modifier.width(104.dp).height(32.dp), contentScale = ContentScale.Fit)
+    }
+    Text("IntroDB supports series. TheIntroDB supports movies and series.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodySmall)
+    SettingsChoiceRow("SRC", Color(0xFF05DF72), "Preferred Timing Provider", "Used for intro, recap, credits and outro timing.", listOf("IntroDB", "TheIntroDB"), if (timingProvider == "theintrodb") "TheIntroDB" else "IntroDB") {
+      onTimingProviderChange(if (it == "TheIntroDB") "theintrodb" else "introdb")
+    }
+    SettingsDivider()
+    SettingsSwitchRow("ALT", Color(0xFF60A5FA), "Automatically use the other provider when needed", "Improves coverage when the preferred service cannot supply usable data.", fallbackEnabled, onFallbackEnabledChange)
+    SettingsDivider()
     SettingsSwitchRow(
       "UP",
       Color(0xFFF59E0B),

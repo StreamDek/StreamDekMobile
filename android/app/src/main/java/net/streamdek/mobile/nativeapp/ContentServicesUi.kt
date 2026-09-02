@@ -121,11 +121,13 @@ private fun serviceAccent(service: ContentService): Color = when (service) {
   // a glance at the page tells the two apart before any text is read.
   ContentService.Tmdb -> Color(0xFF01B4E4)
   ContentService.Mdblist -> Color(0xFFF5A524)
+  ContentService.TheIntroDb -> Color(0xFF05DF72)
 }
 
 private fun serviceLogoRes(service: ContentService): Int = when (service) {
   ContentService.Tmdb -> R.drawable.rating_tmdb_logo
   ContentService.Mdblist -> R.drawable.sync_mdblist_logo
+  ContentService.TheIntroDb -> R.drawable.theintrodb_logo
 }
 
 private fun openUrl(context: Context, url: String) {
@@ -1043,6 +1045,15 @@ fun ContentServicesSettings(
       actions = actions,
       compact = true,
       notice = state.notice.takeIf { state.noticeService == ContentService.Mdblist },
+      noticeIsError = state.noticeIsError,
+    )
+    ContentServiceCard(
+      state = state.theIntroDb,
+      busy = state.busy == ContentService.TheIntroDb,
+      signedIn = signedIn,
+      actions = actions,
+      compact = true,
+      notice = state.notice.takeIf { state.noticeService == ContentService.TheIntroDb },
       noticeIsError = state.noticeIsError,
     )
 

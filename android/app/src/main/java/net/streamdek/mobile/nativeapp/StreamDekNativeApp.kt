@@ -18014,7 +18014,6 @@ private fun SettingsTab(
               onFallbackEnabledChange = playerSettingsViewModel::setTimingProviderFallbackEnabled,
             )
           }
-          item { IntrodbApiKeySettings(uiState.introdbApiKey, onIntrodbApiKeyChange) }
         }
         SettingsRoute.Subtitles -> {
           item {
@@ -18555,6 +18554,8 @@ private fun SettingsTab(
             state = uiState.contentServices,
             signedIn = uiState.session != null,
             actions = contentServiceActions,
+            introDbApiKey = uiState.introdbApiKey,
+            onIntroDbApiKeyChange = onIntrodbApiKeyChange,
           )
         }
         SettingsRoute.Debrid -> item { DebridSettingsSummary(uiState, onRefreshDebrid, onAddDebrid, onRemoveDebrid, onSetDebridEnabled, onMoveDebrid, onSetDebridCloudSync, onPremiumizeSignIn, onRealDebridSignIn, onDismissDebridSignIn, onDismissDebridNotice) }
@@ -19223,11 +19224,7 @@ private fun EndOfPlaybackRecommendationSettings(
   onFallbackEnabledChange: (Boolean) -> Unit,
 ) {
   SettingsSection("End of Playback") {
-    Row(horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.CenterVertically) {
-      Image(painterResource(R.drawable.introdb_logo), contentDescription = "IntroDB", modifier = Modifier.width(104.dp).height(32.dp), contentScale = ContentScale.Fit)
-      Image(painterResource(R.drawable.theintrodb_logo), contentDescription = "TheIntroDB", modifier = Modifier.width(104.dp).height(32.dp), contentScale = ContentScale.Fit)
-    }
-    Text("IntroDB supports series. TheIntroDB supports movies and series.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodySmall)
+    TimingProviderBrandPanel(timingProvider)
     SettingsChoiceRow("SRC", Color(0xFF05DF72), "Preferred Timing Provider", "Used for intro, recap, credits and outro timing.", listOf("IntroDB", "TheIntroDB"), if (timingProvider == "theintrodb") "TheIntroDB" else "IntroDB") {
       onTimingProviderChange(if (it == "TheIntroDB") "theintrodb" else "introdb")
     }
@@ -19265,36 +19262,84 @@ private fun EndOfPlaybackRecommendationSettings(
   }
 }
 
-/**
- * The viewer's own IntroDB key for the skip-segment lookups the player already makes. Held in a
- * local draft rather than saved per keystroke: every save also pushes the synced preferences.
- */
 @Composable
-private fun IntrodbApiKeySettings(savedKey: String, onIntrodbApiKeyChange: (String) -> Unit) {
-  var draft by remember(savedKey) { mutableStateOf(savedKey) }
-  SettingsSection("Intro Detection") {
-    Text("IntroDB API Key", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
+private fun TimingProviderBrandPanel(timingProvider: String) {
+  Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
     Text(
-      "StreamDek looks up intro, recap, and ending times on IntroDB. Add a key from introdb.app to use your own allowance, or leave this empty to use the one built into StreamDek.",
-      color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
-      style = MaterialTheme.typography.bodyMedium,
+      "Timing services",
+      color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+      style = MaterialTheme.typography.labelLarge,
+      fontWeight = FontWeight.SemiBold,
     )
-    Spacer(modifier = Modifier.height(12.dp))
-    OutlinedTextField(
-      value = draft,
-      onValueChange = { draft = it },
+    Row(
       modifier = Modifier.fillMaxWidth(),
-      singleLine = true,
-      placeholder = { InputGuideText("idb_...") },
+      horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+      TimingProviderBrandTile(
+        modifier = Modifier.weight(1f),
+        logo = R.drawable.introdb_logo,
+        name = "IntroDB",
+        coverage = "Series",
+        selected = timingProvider != "theintrodb",
+      )
+      TimingProviderBrandTile(
+        modifier = Modifier.weight(1f),
+        logo = R.drawable.theintrodb_logo,
+        name = "TheIntroDB",
+        coverage = "Movies & series",
+        selected = timingProvider == "theintrodb",
+      )
+    }
+    Text(
+      "Choose which service StreamDek asks first. When fallback is enabled, the other service is used only if your preferred service has no usable timing.",
+      color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.64f),
+      style = MaterialTheme.typography.bodySmall,
     )
-    Spacer(modifier = Modifier.height(10.dp))
-    Button(
-      onClick = { onIntrodbApiKeyChange(draft) },
-      enabled = draft.trim() != savedKey,
-      modifier = Modifier.fillMaxWidth().height(54.dp),
-      colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.surface),
-      shape = StreamDekRadius.pill,
-    ) { Text("Save", fontWeight = FontWeight.Black) }
+  }
+}
+
+@Composable
+private fun TimingProviderBrandTile(
+  modifier: Modifier,
+  logo: Int,
+  name: String,
+  coverage: String,
+  selected: Boolean,
+) {
+  Surface(
+    modifier = modifier,
+    shape = RoundedCornerShape(14.dp),
+    color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (selected) 0.09f else 0.045f),
+    border = BorderStroke(
+      1.dp,
+      if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.48f)
+      else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.09f),
+    ),
+  ) {
+    Column(
+      modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+      verticalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+      Box(
+        modifier = Modifier.fillMaxWidth().height(34.dp),
+        contentAlignment = Alignment.CenterStart,
+      ) {
+        Image(
+          painter = painterResource(logo),
+          contentDescription = name,
+          modifier = Modifier.fillMaxWidth(0.78f).height(28.dp),
+          contentScale = ContentScale.Fit,
+          alignment = Alignment.CenterStart,
+        )
+      }
+      Text(name, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+      Text(
+        if (selected) "$coverage · Preferred" else coverage,
+        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
+        style = MaterialTheme.typography.labelSmall,
+        maxLines = 1,
+      )
+    }
   }
 }
 
@@ -19379,7 +19424,7 @@ internal fun settingsRouteKeywords(route: SettingsRoute): String = when (route) 
   SettingsRoute.Plugins -> "plugin source provider repository javascript cloudstream cs3 extension collection scraper"
   SettingsRoute.M3uPlaylists -> "m3u m3u8 iptv playlist url link xtream provider channels live vod refresh import"
   SettingsRoute.Debrid -> "premium debrid real debrid alldebrid premiumize torbox debrid-link deepbrid account cached api key keys cloud sync store device only"
-  SettingsRoute.ContentServices -> "content services tmdb mdblist api key keys metadata artwork posters ratings enrichment own key personal key device only save to streamdek account credential"
+  SettingsRoute.ContentServices -> "content services tmdb mdblist introdb theintrodb api key keys metadata artwork posters ratings timing intro recap credits outro enrichment own key personal key device only save to streamdek account credential"
   SettingsRoute.PeerToPeer -> "peer to peer p2p torrent magnet seed cache storage engine background service"
   SettingsRoute.SyncServices -> "sync services tracking tracker trakt simkl mdblist scrobble watchlist history connect cellular mobile data"
   SettingsRoute.Trakt -> "trakt scrobble watchlist history sync"
@@ -19439,7 +19484,7 @@ internal fun settingsRouteSubtitle(route: SettingsRoute): String = when (route) 
   SettingsRoute.Plugins -> "Add plugin and CloudStream collections, and choose the streaming sources they provide."
   SettingsRoute.M3uPlaylists -> "Add IPTV M3U or M3U8 playlist URLs and choose which ones are on."
   SettingsRoute.Debrid -> "Connect premium services and choose which one StreamDek tries first."
-  SettingsRoute.ContentServices -> "Use your own TMDB and MDBList keys, and choose whether StreamDek keeps them for your other devices."
+  SettingsRoute.ContentServices -> "Manage metadata and timing-service keys, including TMDB, MDBList, IntroDB and TheIntroDB."
   SettingsRoute.PeerToPeer -> "Play peer-to-peer and magnet sources through this phone, and limit what they store."
   SettingsRoute.SyncServices -> "Connect Trakt, SIMKL, or MDBList to the profile you are using."
   SettingsRoute.Trakt -> "Connect Trakt and keep the current profile up to date."

@@ -1171,6 +1171,11 @@ fun NativePlayerScreen(
         recommendationVisible = false
         recommendationDismissed = true
         queuedRecommendation = null
+        queuedNextEpisode = false
+      },
+      onRecommendationTimeout = {
+        recommendationVisible = false
+        recommendationDismissed = true
       },
       onTogglePause = {
         val nextPaused = !isPaused
@@ -3972,10 +3977,19 @@ private fun RecommendationPanel(
   onQueueRecommendation: (MediaItem) -> Unit,
   onQueueNextEpisode: () -> Unit,
   onDismiss: () -> Unit,
+  onTimeout: () -> Unit,
 ) {
   val visibleItems = recommendations.take(2)
+  var secondsRemaining by remember { mutableIntStateOf(45) }
+  LaunchedEffect(Unit) {
+    while (secondsRemaining > 0) {
+      delay(1_000)
+      secondsRemaining -= 1
+    }
+    onTimeout()
+  }
   Surface(
-    modifier = Modifier.widthIn(max = 860.dp),
+    modifier = Modifier.widthIn(max = 720.dp),
     color = Color(0xF214171C),
     shape = RoundedCornerShape(18.dp),
     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
@@ -3983,24 +3997,26 @@ private fun RecommendationPanel(
   ) {
     BoxWithConstraints {
       val useColumns = !showNextEpisode && visibleItems.size == 2 && maxWidth >= 700.dp
-      Column(Modifier.padding(horizontal = 18.dp, vertical = 15.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+      Column(Modifier.padding(horizontal = 14.dp, vertical = 11.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Recommended for you", color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
         if (showNextEpisode) {
           RecommendationChoice(null, "Continue when this episode finishes", nextEpisodeQueued, onQueueNextEpisode)
         } else if (useColumns) {
-          Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+          Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             visibleItems.forEach { item ->
               RecommendationChoice(item, "Because you watched $currentTitle", queuedRecommendationId == item.id, { onQueueRecommendation(item) }, Modifier.weight(1f))
             }
           }
         } else {
-          Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+          Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
             visibleItems.forEach { item ->
               RecommendationChoice(item, "Because you watched $currentTitle", queuedRecommendationId == item.id, { onQueueRecommendation(item) })
             }
           }
         }
-        TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("Dismiss", color = Color.White.copy(alpha = 0.72f)) }
+        TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End).height(38.dp)) {
+          Text("Dismiss · ${secondsRemaining}s", color = Color.White.copy(alpha = 0.72f), style = MaterialTheme.typography.labelMedium)
+        }
       }
     }
   }
@@ -4015,12 +4031,12 @@ private fun RecommendationChoice(
   modifier: Modifier = Modifier,
 ) {
   Row(
-    modifier = modifier.widthIn(min = 300.dp, max = 410.dp).background(Color.White.copy(alpha = 0.035f), RoundedCornerShape(12.dp)).padding(10.dp),
-    horizontalArrangement = Arrangement.spacedBy(12.dp),
+    modifier = modifier.widthIn(min = 280.dp, max = 350.dp).background(Color.White.copy(alpha = 0.035f), RoundedCornerShape(12.dp)).padding(8.dp),
+    horizontalArrangement = Arrangement.spacedBy(10.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
     val artwork = item?.backdrop ?: item?.poster
-    Box(Modifier.width(112.dp).height(68.dp).clip(RoundedCornerShape(9.dp)).background(Color(0xFF272C35)), contentAlignment = Alignment.Center) {
+    Box(Modifier.width(92.dp).height(56.dp).clip(RoundedCornerShape(9.dp)).background(Color(0xFF272C35)), contentAlignment = Alignment.Center) {
       if (!artwork.isNullOrBlank()) {
         AsyncImage(model = artwork, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
       } else {
@@ -4032,12 +4048,12 @@ private fun RecommendationChoice(
       reason?.takeIf { it.isNotBlank() }?.let {
         Text(it, color = Color.White.copy(alpha = 0.55f), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
       }
-      if (queued) Text("Queued next", color = Color(0xFFF0BA66), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
       Button(
         onClick = onClick,
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+        modifier = Modifier.height(38.dp),
         colors = ButtonDefaults.buttonColors(containerColor = if (queued) Color.White.copy(alpha = 0.12f) else Color(0xFFF0BA66), contentColor = if (queued) Color.White else Color(0xFF171A20)),
-      ) { Text(if (queued) "Selected" else "Watch after this", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold) }
+      ) { Text(if (queued) "Selected - Queued next" else "Watch after this", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold) }
     }
   }
 }
@@ -4083,6 +4099,7 @@ private fun BoxScope.PlayerSurfaceOverlays(
   onQueueRecommendation: (MediaItem) -> Unit,
   onQueueNextEpisode: () -> Unit,
   onDismissRecommendation: () -> Unit,
+  onRecommendationTimeout: () -> Unit,
   onTogglePause: () -> Unit,
 ) {
   // Re-bound so the bodies below read and write exactly as they did in the screen.
@@ -4187,6 +4204,23 @@ private fun BoxScope.PlayerSurfaceOverlays(
     }
   }
 
+  if (recommendationVisible && !isLoading && activePanel == PlayerPanel.None) {
+    // The recommendation surface is modal to touch. A transparent hit target above the video
+    // consumes taps and drags, while the panel itself remains above it and fully interactive.
+    Box(
+      Modifier.fillMaxSize()
+        .zIndex(5.5f)
+        .pointerInput(Unit) {
+          awaitPointerEventScope {
+            while (true) {
+              val event = awaitPointerEvent()
+              event.changes.forEach { it.consume() }
+            }
+          }
+        },
+    )
+  }
+
   AnimatedVisibility(
     visible = recommendationVisible && !isLoading && activePanel == PlayerPanel.None,
     modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(horizontal = 24.dp, vertical = 28.dp).zIndex(6f),
@@ -4202,6 +4236,7 @@ private fun BoxScope.PlayerSurfaceOverlays(
       onQueueRecommendation = onQueueRecommendation,
       onQueueNextEpisode = onQueueNextEpisode,
       onDismiss = onDismissRecommendation,
+      onTimeout = onRecommendationTimeout,
     )
   }
 

@@ -3274,6 +3274,11 @@ class StreamDekApiClient(context: Context? = null) {
   ): Result<CredentialCheck> = withContext(Dispatchers.IO) {
     runCatching {
       val trimmed = apiKey.trim()
+      if (service == ContentService.TheIntroDb &&
+        !Regex("^theintrodb:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+$").matches(trimmed)
+      ) {
+        return@runCatching CredentialCheck.Failed(CredentialFailure.Malformed)
+      }
       val request = when (service) {
         ContentService.Tmdb -> {
           val builder = Request.Builder().addHeader("Accept", "application/json")
@@ -3298,6 +3303,25 @@ class StreamDekApiClient(context: Context? = null) {
       }
 
       val response = execute(request)
+      if (service == ContentService.TheIntroDb && response.ok) {
+        // V3 media reads are public, so an unknown bearer also receives HTTP 200. Compare its
+        // allowance with a public request: a recognised account key receives its own higher
+        // limit, while an invalid key silently remains on the public allowance.
+        val anonymous = execute(
+          Request.Builder()
+            .url("https://api.theintrodb.org/v3/media?tmdb_id=949")
+            .addHeader("Accept", "application/json")
+            .build(),
+        )
+        val publicLimit = anonymous.headers["x-usagelimit-limit"]?.toLongOrNull()
+        val accountLimit = response.headers["x-usagelimit-limit"]?.toLongOrNull()
+        val recognized = anonymous.ok && publicLimit != null && accountLimit != null && accountLimit > publicLimit
+        return@runCatching if (recognized && response.json.optInt("tmdb_id") == 949) {
+          CredentialCheck.Valid(null)
+        } else {
+          CredentialCheck.Failed(CredentialFailure.InvalidKey)
+        }
+      }
       when {
         // A refusal is the viewer's to fix. Anything else is not, and saying "check your key"
         // during an outage is how a correct key gets thrown away and typed in again.
@@ -3708,7 +3732,7 @@ class StreamDekApiClient(context: Context? = null) {
           JSONObject()
         }
       }
-      return JsonResponse(response.isSuccessful, json, response.code)
+      return JsonResponse(response.isSuccessful, json, response.code, response.headers)
     }
   }
 
@@ -3787,7 +3811,12 @@ class StreamDekApiClient(context: Context? = null) {
   }
 }
 
-private data class JsonResponse(val ok: Boolean, val json: JSONObject, val statusCode: Int)
+private data class JsonResponse(
+  val ok: Boolean,
+  val json: JSONObject,
+  val statusCode: Int,
+  val headers: okhttp3.Headers,
+)
 
 private fun parseSessionUser(user: JSONObject, token: String): SessionUser =
   SessionUser(

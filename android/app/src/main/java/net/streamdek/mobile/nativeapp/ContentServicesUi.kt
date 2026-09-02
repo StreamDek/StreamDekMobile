@@ -1007,6 +1007,8 @@ fun ContentServicesSettings(
   state: ContentServicesState,
   signedIn: Boolean,
   actions: ContentServiceActions,
+  introDbApiKey: String,
+  onIntroDbApiKeyChange: (String) -> Unit,
 ) {
   Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
     state.notice?.let { notice ->
@@ -1056,6 +1058,7 @@ fun ContentServicesSettings(
       notice = state.notice.takeIf { state.noticeService == ContentService.TheIntroDb },
       noticeIsError = state.noticeIsError,
     )
+    IntroDbApiKeyCard(introDbApiKey, onIntroDbApiKeyChange)
 
     ContentServiceSetupRoutes()
 
@@ -1074,6 +1077,84 @@ fun ContentServicesSettings(
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
       )
+    }
+  }
+}
+
+/** The viewer's optional IntroDB key replaces the deployment key without mixing the two services. */
+@Composable
+private fun IntroDbApiKeyCard(savedKey: String, onSave: (String) -> Unit) {
+  var draft by remember(savedKey) { mutableStateOf(savedKey) }
+  var savedFeedback by remember { mutableStateOf(false) }
+
+  Surface(
+    modifier = Modifier.fillMaxWidth(),
+    shape = StreamDekRadius.cardShape,
+    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.045f),
+    border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.09f)),
+  ) {
+    Column(
+      modifier = Modifier.padding(18.dp),
+      verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+          Image(
+            painter = painterResource(R.drawable.introdb_logo),
+            contentDescription = "IntroDB",
+            modifier = Modifier.fillMaxWidth(0.52f).height(30.dp),
+            contentScale = ContentScale.Fit,
+            alignment = Alignment.CenterStart,
+          )
+          Text("Series timing", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f))
+        }
+        Text(
+          if (savedKey.isBlank()) "StreamDek key" else "Own key",
+          style = MaterialTheme.typography.labelMedium,
+          fontWeight = FontWeight.SemiBold,
+          color = if (savedKey.isBlank()) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f) else Color(0xFF22C55E),
+        )
+      }
+      Text(
+        "IntroDB supplies intro, recap and ending times for series. Add your own API key for your personal allowance, or leave it empty to use StreamDek's built-in key.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.70f),
+      )
+      OutlinedTextField(
+        value = draft,
+        onValueChange = { draft = it; savedFeedback = false },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        label = { Text("IntroDB API key") },
+        placeholder = { Text("idb_...") },
+      )
+      Button(
+        onClick = {
+          val normalized = draft.trim()
+          onSave(normalized)
+          draft = normalized
+          savedFeedback = true
+        },
+        enabled = draft.trim() != savedKey,
+        modifier = Modifier.fillMaxWidth().height(50.dp),
+        shape = StreamDekRadius.pill,
+      ) {
+        Text(if (draft.isBlank() && savedKey.isNotBlank()) "Use StreamDek key" else "Save IntroDB key", fontWeight = FontWeight.Bold)
+      }
+      if (savedFeedback) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+          Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = Color(0xFF22C55E), modifier = Modifier.size(18.dp))
+          Text(
+            if (draft.isBlank()) "StreamDek's IntroDB key is active." else "IntroDB key saved successfully.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF22C55E),
+          )
+        }
+      }
     }
   }
 }

@@ -46,6 +46,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -291,6 +292,7 @@ fun NativePlayerScreen(
   onSelectStream: (AddonStream, Double) -> Unit,
   onReloadStreams: () -> Unit,
   onPlaybackEnded: () -> Unit,
+  onRecommendedPlaybackEnded: (MediaItem) -> Unit = { onPlaybackEnded() },
   nextEpisodeLoading: Boolean = false,
   nextEpisodeLoadingLabel: String? = null,
   onPreviousEpisode: () -> Unit = {},
@@ -588,6 +590,10 @@ fun NativePlayerScreen(
   var controlActivityVersion by source.controlActivityVersion
   var playbackEnded by playback.playbackEnded
   var completionDispatched by playback.completionDispatched
+  var recommendationDismissed by remember(playbackIdentity) { mutableStateOf(false) }
+  var recommendationVisible by remember(playbackIdentity) { mutableStateOf(false) }
+  var queuedRecommendation by remember(playbackIdentity) { mutableStateOf<MediaItem?>(null) }
+  var queuedNextEpisode by remember(playbackIdentity) { mutableStateOf(false) }
   var liveReconnectVersion by source.liveReconnectVersion
   var liveStalled by source.liveStalled
   var liveRetryAttempts by source.liveRetryAttempts
@@ -690,14 +696,29 @@ fun NativePlayerScreen(
     if (!isLoading) pollPeerSwarm = false
   }
   val currentProgressPercent = progressPercent()
-  val activeSkipSegment = skipSegments.firstOrNull { currentTime >= it.startSeconds && currentTime < it.endSeconds }
-  val nextEpisodeActionAvailable = activeSkipSegment?.type == "outro" && session.mediaType == "tv" && session.autoPlayNextEpisode && duration > 0.0 && run {
-    val thresholdStart = if (session.nextEpisodeThresholdMode == "percent") {
-      duration * (session.nextEpisodeThresholdPercent.coerceIn(50, 99) / 100.0)
-    } else {
-      duration - session.nextEpisodeThresholdMinutes.coerceIn(1, 15) * 60.0
+  val structuralOutro = skipSegments.firstOrNull { it.type == "outro" }
+  val activeSkipSegment = skipSegments.firstOrNull { segment ->
+    currentTime >= segment.startSeconds && currentTime < segment.endSeconds && when (segment.type) {
+      "intro" -> session.skipIntroEnabled
+      "recap" -> session.skipRecapEnabled
+      "outro" -> session.skipEndingEnabled || (session.mediaType == "tv" && session.autoPlayNextEpisode)
+      else -> false
     }
-    currentTime >= maxOf(activeSkipSegment.startSeconds, thresholdStart)
+  }
+  val meaningfulEnd = AdaptiveEndOfPlaybackTrigger.estimate(
+    durationSec = duration,
+    timing = RecommendationTiming.fromKey(session.recommendationTiming),
+    structuralOutroStartSec = structuralOutro?.startSeconds,
+  )
+  val nextEpisodeActionAvailable = activeSkipSegment?.type == "outro" && session.mediaType == "tv" && session.autoPlayNextEpisode &&
+    AdaptiveEndOfPlaybackTrigger.isReached(currentTime, meaningfulEnd)
+
+  LaunchedEffect(currentTime, duration, meaningfulEnd, session.endOfPlaybackRecommendationsEnabled, session.recommendations) {
+    if (!session.endOfPlaybackRecommendationsEnabled || session.isLive || recommendationDismissed || isLoading) return@LaunchedEffect
+    if (AdaptiveEndOfPlaybackTrigger.isReached(currentTime, meaningfulEnd) && (session.mediaType == "tv" || session.recommendations.isNotEmpty())) {
+      recommendationVisible = true
+      showControls = false
+    }
   }
 
   fun closePlayer() = onBack(progressPercent())
@@ -707,6 +728,16 @@ fun NativePlayerScreen(
     if (session.isLive) return
     isPaused = true
     onScrobble("stop", 100.0)
+    if (queuedNextEpisode) {
+      recommendationVisible = false
+      onNextEpisodeAtEnding()
+      return
+    }
+    queuedRecommendation?.let {
+      recommendationVisible = false
+      onRecommendedPlaybackEnded(it)
+      return
+    }
     playbackEnded = true
   }
   fun keepControlsVisible() {
@@ -1122,6 +1153,25 @@ fun NativePlayerScreen(
       progressPercent = ::progressPercent,
       onSelectStream = onSelectStream,
       onNextEpisodeAtEnding = onNextEpisodeAtEnding,
+      recommendationVisible = recommendationVisible,
+      recommendations = session.recommendations.takeUnless { session.mediaType == "tv" }.orEmpty(),
+      showNextEpisodeRecommendation = session.mediaType == "tv",
+      queuedRecommendationId = queuedRecommendation?.id,
+      nextEpisodeQueued = queuedNextEpisode,
+      currentTitle = session.title,
+      onQueueRecommendation = { item ->
+        queuedRecommendation = item
+        queuedNextEpisode = false
+      },
+      onQueueNextEpisode = {
+        queuedNextEpisode = true
+        queuedRecommendation = null
+      },
+      onDismissRecommendation = {
+        recommendationVisible = false
+        recommendationDismissed = true
+        queuedRecommendation = null
+      },
       onTogglePause = {
         val nextPaused = !isPaused
         if (nextPaused) {
@@ -2804,6 +2854,20 @@ private fun introdbRequest(url: String, apiKey: String): Request = Request.Build
   .build()
 
 private suspend fun fetchSkipSegments(session: PlayerSession): List<SkipSegment> = withContext(Dispatchers.IO) {
+  if (session.mediaType == "movie") {
+    val tmdbId = session.tmdbId ?: return@withContext emptyList()
+    val durationSec = session.runtimeMinutes?.takeIf { it > 0 }?.times(60.0)
+    val media = TheIntroDbClient(playerHttpClient)
+      .getMovie(tmdbId, durationSec?.times(1000.0)?.toLong())
+      .onFailure { Log.w("StreamDekPlayback", "TheIntroDB movie outro lookup failed tmdbId=$tmdbId", it) }
+      .getOrNull()
+      ?: return@withContext emptyList()
+    return@withContext media.credits.mapNotNull { credit ->
+      val start = credit.startMs / 1000.0
+      val end = credit.endMs?.div(1000.0) ?: durationSec
+      end?.takeIf { it > start }?.let { SkipSegment("outro", start, it) }
+    }.distinctBy { Triple(it.type, it.startSeconds, it.endSeconds) }.sortedBy { it.startSeconds }
+  }
   val imdbId = session.imdbId?.takeIf { it.startsWith("tt") } ?: return@withContext emptyList()
   val season = session.seasonNumber ?: return@withContext emptyList()
   val episode = session.episodeNumber ?: return@withContext emptyList()
@@ -3764,7 +3828,7 @@ LaunchedEffect(playbackIdentity, session.skipIntroEnabled, session.skipRecapEnab
     when (segment.type) {
       "intro" -> session.skipIntroEnabled || session.autoSkipIntroEnabled
       "recap" -> session.skipRecapEnabled || session.autoSkipRecapEnabled
-      "outro" -> session.skipEndingEnabled || session.autoSkipEndingEnabled
+      "outro" -> session.skipEndingEnabled || session.autoSkipEndingEnabled || session.endOfPlaybackRecommendationsEnabled
       else -> false
     }
   }
@@ -3861,6 +3925,86 @@ LaunchedEffect(session.url, isPaused, duration, session.isLive) {
  * alone declares a dozen lambdas, and each is memoised in whichever composable declares it.
  */
 @Composable
+private fun RecommendationPanel(
+  recommendations: List<MediaItem>,
+  showNextEpisode: Boolean,
+  queuedRecommendationId: String?,
+  nextEpisodeQueued: Boolean,
+  currentTitle: String,
+  onQueueRecommendation: (MediaItem) -> Unit,
+  onQueueNextEpisode: () -> Unit,
+  onDismiss: () -> Unit,
+) {
+  val visibleItems = recommendations.take(2)
+  Surface(
+    modifier = Modifier.widthIn(max = 860.dp),
+    color = Color(0xF214171C),
+    shape = RoundedCornerShape(18.dp),
+    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
+    tonalElevation = 10.dp,
+  ) {
+    BoxWithConstraints {
+      val useColumns = !showNextEpisode && visibleItems.size == 2 && maxWidth >= 700.dp
+      Column(Modifier.padding(horizontal = 18.dp, vertical = 15.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("Recommended for you", color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+        if (showNextEpisode) {
+          RecommendationChoice(null, "Continue when this episode finishes", nextEpisodeQueued, onQueueNextEpisode)
+        } else if (useColumns) {
+          Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            visibleItems.forEach { item ->
+              RecommendationChoice(item, "Because you watched $currentTitle", queuedRecommendationId == item.id, { onQueueRecommendation(item) }, Modifier.weight(1f))
+            }
+          }
+        } else {
+          Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            visibleItems.forEach { item ->
+              RecommendationChoice(item, "Because you watched $currentTitle", queuedRecommendationId == item.id, { onQueueRecommendation(item) })
+            }
+          }
+        }
+        TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("Dismiss", color = Color.White.copy(alpha = 0.72f)) }
+      }
+    }
+  }
+}
+
+@Composable
+private fun RecommendationChoice(
+  item: MediaItem?,
+  reason: String?,
+  queued: Boolean,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  Row(
+    modifier = modifier.widthIn(min = 300.dp, max = 410.dp).background(Color.White.copy(alpha = 0.035f), RoundedCornerShape(12.dp)).padding(10.dp),
+    horizontalArrangement = Arrangement.spacedBy(12.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    val artwork = item?.backdrop ?: item?.poster
+    Box(Modifier.width(112.dp).height(68.dp).clip(RoundedCornerShape(9.dp)).background(Color(0xFF272C35)), contentAlignment = Alignment.Center) {
+      if (!artwork.isNullOrBlank()) {
+        AsyncImage(model = artwork, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+      } else {
+        Icon(Icons.Rounded.Tv, contentDescription = null, tint = Color.White.copy(alpha = 0.30f))
+      }
+    }
+    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+      Text(item?.title ?: "Next Episode", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+      reason?.takeIf { it.isNotBlank() }?.let {
+        Text(it, color = Color.White.copy(alpha = 0.55f), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+      }
+      if (queued) Text("Queued next", color = Color(0xFFF0BA66), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
+      Button(
+        onClick = onClick,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = if (queued) Color.White.copy(alpha = 0.12f) else Color(0xFFF0BA66), contentColor = if (queued) Color.White else Color(0xFF171A20)),
+      ) { Text(if (queued) "Selected" else "Watch after this", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold) }
+    }
+  }
+}
+
+@Composable
 private fun BoxScope.PlayerSurfaceOverlays(
   session: PlayerSession,
   source: PlayerSourceState,
@@ -3892,6 +4036,15 @@ private fun BoxScope.PlayerSurfaceOverlays(
   progressPercent: () -> Double,
   onSelectStream: (AddonStream, Double) -> Unit,
   onNextEpisodeAtEnding: () -> Unit,
+  recommendationVisible: Boolean,
+  recommendations: List<MediaItem>,
+  showNextEpisodeRecommendation: Boolean,
+  queuedRecommendationId: String?,
+  nextEpisodeQueued: Boolean,
+  currentTitle: String,
+  onQueueRecommendation: (MediaItem) -> Unit,
+  onQueueNextEpisode: () -> Unit,
+  onDismissRecommendation: () -> Unit,
   onTogglePause: () -> Unit,
 ) {
   // Re-bound so the bodies below read and write exactly as they did in the screen.
@@ -3994,6 +4147,24 @@ private fun BoxScope.PlayerSurfaceOverlays(
         }) { Text("Switch") }
       }
     }
+  }
+
+  AnimatedVisibility(
+    visible = recommendationVisible && !isLoading && activePanel == PlayerPanel.None,
+    modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(horizontal = 24.dp, vertical = 28.dp).zIndex(6f),
+    enter = fadeIn(animationSpec = StreamDekMotion.enterSpec()) + slideInVertically(initialOffsetY = { it / 3 }, animationSpec = StreamDekMotion.enterSpec()),
+    exit = fadeOut(animationSpec = StreamDekMotion.exitSpec()) + slideOutVertically(targetOffsetY = { it / 4 }, animationSpec = StreamDekMotion.exitSpec()),
+  ) {
+    RecommendationPanel(
+      recommendations = recommendations,
+      showNextEpisode = showNextEpisodeRecommendation,
+      queuedRecommendationId = queuedRecommendationId,
+      nextEpisodeQueued = nextEpisodeQueued,
+      currentTitle = currentTitle,
+      onQueueRecommendation = onQueueRecommendation,
+      onQueueNextEpisode = onQueueNextEpisode,
+      onDismiss = onDismissRecommendation,
+    )
   }
 
   AnimatedVisibility(

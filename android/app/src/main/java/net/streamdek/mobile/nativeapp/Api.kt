@@ -2291,6 +2291,9 @@ class StreamDekApiClient(context: Context? = null) {
         .put("nextEpisodeThresholdMode", preferences.nextEpisodeThresholdMode)
         .put("nextEpisodeThresholdPercent", preferences.nextEpisodeThresholdPercent)
         .put("nextEpisodeThresholdMinutes", preferences.nextEpisodeThresholdMinutes)
+        .put("endOfPlaybackRecommendationsEnabled", preferences.endOfPlaybackRecommendationsEnabled)
+        .put("recommendationTiming", preferences.recommendationTiming)
+        .put("recommendationItemCount", preferences.recommendationItemCount)
       val streams = JSONObject()
         .put("showStreamsList", preferences.showStreamsList)
         .put("rememberLastSource", preferences.rememberLastSource)
@@ -2349,6 +2352,9 @@ class StreamDekApiClient(context: Context? = null) {
           .put("nextEpisodeThresholdMode", preferences.nextEpisodeThresholdMode)
           .put("nextEpisodeThresholdPercent", preferences.nextEpisodeThresholdPercent)
           .put("nextEpisodeThresholdMinutes", preferences.nextEpisodeThresholdMinutes)
+          .put("endOfPlaybackRecommendationsEnabled", preferences.endOfPlaybackRecommendationsEnabled)
+          .put("recommendationTiming", preferences.recommendationTiming)
+          .put("recommendationItemCount", preferences.recommendationItemCount)
         val profilePayload = JSONObject()
           .put("home", home)
           .put("detail", profileDetail)
@@ -2469,6 +2475,9 @@ class StreamDekApiClient(context: Context? = null) {
         nextEpisodeThresholdMode = optionalString(playback, "nextEpisodeThresholdMode"),
         nextEpisodeThresholdPercent = optionalInt(playback, "nextEpisodeThresholdPercent"),
         nextEpisodeThresholdMinutes = optionalInt(playback, "nextEpisodeThresholdMinutes"),
+        endOfPlaybackRecommendationsEnabled = optionalBoolean(playback, "endOfPlaybackRecommendationsEnabled"),
+        recommendationTiming = optionalString(playback, "recommendationTiming"),
+        recommendationItemCount = optionalInt(playback, "recommendationItemCount"),
         showStreamsList = optionalBoolean(streams, "showStreamsList"),
         rememberLastSource = optionalBoolean(streams, "rememberLastSource"),
         favoriteSourceKeys = optionalStringList(streams, "favoriteSourceKeys"),

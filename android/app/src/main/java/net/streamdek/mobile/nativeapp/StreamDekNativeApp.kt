@@ -925,6 +925,7 @@ private data class AppUiState(
   val pinPromptProfileId: String? = null,
   val pinPromptProfileName: String? = null,
   val playerSession: PlayerSession? = null,
+  val pendingEndRecommendation: MediaItem? = null,
   /** Artwork and metadata shown by the player while the selected source is still resolving. */
   val playerLaunchSession: PlayerSession? = null,
   val handoffDevices: List<LinkedTvDevice> = emptyList(),
@@ -1111,6 +1112,9 @@ private data class AppUiState(
   val nextEpisodeThresholdMode: String = "minutes",
   val nextEpisodeThresholdPercent: Int = 95,
   val nextEpisodeThresholdMinutes: Int = 2,
+  val endOfPlaybackRecommendationsEnabled: Boolean = false,
+  val recommendationTiming: String = "standard",
+  val recommendationItemCount: Int = 1,
   val peerStreamSettings: PeerStreamSettings = PeerStreamSettings(),
   val peerStreamStatus: PeerStreamStatus = PeerStreamStatus(),
   /**
@@ -1819,6 +1823,7 @@ private class AppSettingsStore(context: Context) {
     "subtitle_text_size", "subtitle_vertical_offset", "subtitle_bold", "subtitle_text_color",
     "subtitle_background_color", "subtitle_outline", "subtitle_outline_color", "subtitle_default_source",
     "next_episode_threshold_mode", "next_episode_threshold_percent", "next_episode_threshold_minutes",
+    "end_of_playback_recommendations_enabled", "recommendation_timing", "recommendation_item_count",
     "ratings_enabled", "external_ratings_enabled", "enabled_rating_providers", "vivid_ambient", "ambient_tint_percent",
     "detail_ambient_tint_percent",
     "default_app_catalogs_enabled", "home_catalog_rows", "fusion_badges", "show_size_badges",
@@ -1929,6 +1934,9 @@ private class AppSettingsStore(context: Context) {
     nextEpisodeThresholdMode = profilePrefs.getString("next_episode_threshold_mode", "minutes") ?: "minutes",
     nextEpisodeThresholdPercent = profilePrefs.getInt("next_episode_threshold_percent", 95).coerceIn(50, 99),
     nextEpisodeThresholdMinutes = profilePrefs.getInt("next_episode_threshold_minutes", 2).coerceIn(1, 15),
+    endOfPlaybackRecommendationsEnabled = profilePrefs.getBoolean("end_of_playback_recommendations_enabled", false),
+    recommendationTiming = profilePrefs.getString("recommendation_timing", "standard").takeIf { it in setOf("early", "standard", "late") } ?: "standard",
+    recommendationItemCount = profilePrefs.getInt("recommendation_item_count", 1).coerceIn(1, 2),
     peerStreamSettings = PeerStreamSettings(
       enabled = prefs.getBoolean("torrent_enabled", true),
       streamingMode = prefs.getString("torrent_streaming_mode", "server") ?: "server",
@@ -2061,6 +2069,9 @@ private class AppSettingsStore(context: Context) {
   fun saveNextEpisodeThresholdMode(value: String) { profilePrefs.edit().putString("next_episode_threshold_mode", value).apply() }
   fun saveNextEpisodeThresholdPercent(value: Int) { profilePrefs.edit().putInt("next_episode_threshold_percent", value.coerceIn(50, 99)).apply() }
   fun saveNextEpisodeThresholdMinutes(value: Int) { profilePrefs.edit().putInt("next_episode_threshold_minutes", value.coerceIn(1, 15)).apply() }
+  fun saveEndOfPlaybackRecommendationsEnabled(value: Boolean) { profilePrefs.edit().putBoolean("end_of_playback_recommendations_enabled", value).apply() }
+  fun saveRecommendationTiming(value: String) { profilePrefs.edit().putString("recommendation_timing", RecommendationTiming.fromKey(value).key).apply() }
+  fun saveRecommendationItemCount(value: Int) { profilePrefs.edit().putInt("recommendation_item_count", value.coerceIn(1, 2)).apply() }
   fun savePeerStreamSettings(value: PeerStreamSettings) {
     prefs.edit()
       .putBoolean("torrent_enabled", value.enabled)
@@ -3669,6 +3680,17 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     // Closes the news server connections and drops the partially assembled file. A no-op unless
     // what just stopped was a usenet source.
     UsenetPlayback.release()
+  }
+
+  fun playRecommendedFromEnding(item: MediaItem) {
+    saveCurrentPlaybackSnapshot(100.0)
+    dismissPlayer(100.0)
+    uiState = uiState.copy(pendingEndRecommendation = item)
+    loadDetail(item.type, item.id, item)
+  }
+
+  fun consumeEndRecommendation() {
+    uiState = uiState.copy(pendingEndRecommendation = null)
   }
 
   fun cancelPlayerLaunch() {
@@ -7780,6 +7802,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     preferences.nextEpisodeThresholdMode?.let(appSettingsStore::saveNextEpisodeThresholdMode)
     preferences.nextEpisodeThresholdPercent?.let(appSettingsStore::saveNextEpisodeThresholdPercent)
     preferences.nextEpisodeThresholdMinutes?.let(appSettingsStore::saveNextEpisodeThresholdMinutes)
+    preferences.endOfPlaybackRecommendationsEnabled?.let(appSettingsStore::saveEndOfPlaybackRecommendationsEnabled)
+    preferences.recommendationTiming?.let(appSettingsStore::saveRecommendationTiming)
+    preferences.recommendationItemCount?.let(appSettingsStore::saveRecommendationItemCount)
     preferences.showStreamsList?.let(appSettingsStore::saveShowStreamsList)
     preferences.rememberLastSource?.let(appSettingsStore::saveRememberLastSource)
     preferences.favoriteSourceKeys?.map(String::trim)?.filter(String::isNotBlank)?.take(250)?.toSet()?.let(appSettingsStore::saveFavoriteSourceKeys)
@@ -7850,6 +7875,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       nextEpisodeThresholdMode = preferences.nextEpisodeThresholdMode ?: uiState.nextEpisodeThresholdMode,
       nextEpisodeThresholdPercent = preferences.nextEpisodeThresholdPercent?.coerceIn(50, 99) ?: uiState.nextEpisodeThresholdPercent,
       nextEpisodeThresholdMinutes = preferences.nextEpisodeThresholdMinutes?.coerceIn(1, 15) ?: uiState.nextEpisodeThresholdMinutes,
+      endOfPlaybackRecommendationsEnabled = preferences.endOfPlaybackRecommendationsEnabled ?: uiState.endOfPlaybackRecommendationsEnabled,
+      recommendationTiming = preferences.recommendationTiming?.let { RecommendationTiming.fromKey(it).key } ?: uiState.recommendationTiming,
+      recommendationItemCount = preferences.recommendationItemCount?.coerceIn(1, 2) ?: uiState.recommendationItemCount,
       showStreamsList = preferences.showStreamsList ?: uiState.showStreamsList,
       rememberLastSource = preferences.rememberLastSource ?: uiState.rememberLastSource,
       favoriteSourceKeys = preferences.favoriteSourceKeys?.map(String::trim)?.filter(String::isNotBlank)?.take(250)?.toSet() ?: uiState.favoriteSourceKeys,
@@ -8778,6 +8806,9 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       nextEpisodeThresholdMode = uiState.nextEpisodeThresholdMode,
       nextEpisodeThresholdPercent = uiState.nextEpisodeThresholdPercent,
       nextEpisodeThresholdMinutes = uiState.nextEpisodeThresholdMinutes,
+      endOfPlaybackRecommendationsEnabled = uiState.endOfPlaybackRecommendationsEnabled,
+      recommendationTiming = uiState.recommendationTiming,
+      recommendationItemCount = uiState.recommendationItemCount,
       showStreamsList = uiState.showStreamsList,
       rememberLastSource = uiState.rememberLastSource,
       favoriteSourceKeys = uiState.favoriteSourceKeys.sorted(),
@@ -8940,6 +8971,9 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setNextEpisodeThresholdMode(value: String) { appSettingsStore.saveNextEpisodeThresholdMode(value); uiState = uiState.copy(nextEpisodeThresholdMode = value); syncCloudPreferences() }
   fun setNextEpisodeThresholdPercent(value: Int) { appSettingsStore.saveNextEpisodeThresholdPercent(value); uiState = uiState.copy(nextEpisodeThresholdPercent = value.coerceIn(50, 99)); syncCloudPreferences() }
   fun setNextEpisodeThresholdMinutes(value: Int) { appSettingsStore.saveNextEpisodeThresholdMinutes(value); uiState = uiState.copy(nextEpisodeThresholdMinutes = value.coerceIn(1, 15)); syncCloudPreferences() }
+  fun setEndOfPlaybackRecommendationsEnabled(value: Boolean) { appSettingsStore.saveEndOfPlaybackRecommendationsEnabled(value); uiState = uiState.copy(endOfPlaybackRecommendationsEnabled = value); syncCloudPreferences() }
+  fun setRecommendationTiming(value: String) { val safe = RecommendationTiming.fromKey(value).key; appSettingsStore.saveRecommendationTiming(safe); uiState = uiState.copy(recommendationTiming = safe); syncCloudPreferences() }
+  fun setRecommendationItemCount(value: Int) { val safe = value.coerceIn(1, 2); appSettingsStore.saveRecommendationItemCount(safe); uiState = uiState.copy(recommendationItemCount = safe); syncCloudPreferences() }
   fun setAutoLoadSubtitles(value: Boolean) { appSettingsStore.saveAutoLoadSubtitles(value); uiState = uiState.copy(autoLoadSubtitles = value); syncCloudPreferences() }
   // Subtitle appearance stays on the device: it is tuned to the screen being watched, and a phone
   // and a television want different answers.
@@ -10353,6 +10387,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     resumePositionSec = resumePositionSec,
     currentStream = stream,
     imdbId = detail.imdbId ?: detail.id.takeIf { it.startsWith("tt") },
+    tmdbId = detail.id.toIntOrNull()?.takeIf { it > 0 },
     // This is the explicit subtitle setting shown to the viewer. A general profile-language field
     // must not silently replace it or "Show only preferred" filters the list using another value.
     subtitleLanguage = uiState.preferredSubtitleLanguage,
@@ -10382,6 +10417,10 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     nextEpisodeThresholdMode = uiState.nextEpisodeThresholdMode,
     nextEpisodeThresholdPercent = uiState.nextEpisodeThresholdPercent,
     nextEpisodeThresholdMinutes = uiState.nextEpisodeThresholdMinutes,
+    recommendations = detail.similarTitles.filter { it.id != detail.id }.take(uiState.recommendationItemCount),
+    endOfPlaybackRecommendationsEnabled = uiState.endOfPlaybackRecommendationsEnabled,
+    recommendationTiming = uiState.recommendationTiming,
+    recommendationItemCount = uiState.recommendationItemCount,
     requestHeaders = stream.requestHeaders,
     drmLicenseType = stream.drmLicenseType,
     drmClearKeys = stream.drmClearKeys,
@@ -10604,6 +10643,7 @@ fun StreamDekNativeApp(
                 onSelectStream = { stream, resumePercent -> viewModel.playStream(stream, resumePercentOverride = resumePercent) },
                 onReloadStreams = { viewModel.loadStreamsForCurrentDetail(uiState.selectedEpisode) },
                 onPlaybackEnded = viewModel::onPlayerPlaybackEnded,
+                onRecommendedPlaybackEnded = viewModel::playRecommendedFromEnding,
                 nextEpisodeLoading = uiState.nextEpisodeLoading,
                 nextEpisodeLoadingLabel = uiState.nextEpisodeLoadingLabel,
                 onPreviousEpisode = { viewModel.playAdjacentEpisode(-1) },
@@ -11210,6 +11250,11 @@ private fun MainScene(
   var selectedTab by rememberSaveable { mutableStateOf(MainTab.Home) }
   var previousTab by rememberSaveable { mutableStateOf(MainTab.Home) }
   var openDetail by rememberSaveable { mutableStateOf(uiState.detail?.let { it.type to it.id }) }
+  LaunchedEffect(uiState.pendingEndRecommendation) {
+    val item = uiState.pendingEndRecommendation ?: return@LaunchedEffect
+    openDetail = item.type to item.id
+    viewModel.consumeEndRecommendation()
+  }
   LaunchedEffect(pendingEpisodeNotification, uiState.booting, uiState.activeProfileId) {
     val target = pendingEpisodeNotification ?: return@LaunchedEffect
     if (uiState.booting || uiState.activeProfileId == null) return@LaunchedEffect
@@ -17357,9 +17402,6 @@ private fun SettingsScene(
       onIntrodbApiKeyChange = viewModel::setIntrodbApiKey,
       onAutoPlayNextEpisodeChange = viewModel::setAutoPlayNextEpisode,
       onPreferBingeGroupChange = viewModel::setPreferBingeGroup,
-      onNextEpisodeThresholdModeChange = viewModel::setNextEpisodeThresholdMode,
-      onNextEpisodeThresholdPercentChange = viewModel::setNextEpisodeThresholdPercent,
-      onNextEpisodeThresholdMinutesChange = viewModel::setNextEpisodeThresholdMinutes,
       onAutoLoadSubtitlesChange = viewModel::setAutoLoadSubtitles,
       onSubtitleTextSizeChange = viewModel::setSubtitleTextSize,
       onSubtitleVerticalOffsetChange = viewModel::setSubtitleVerticalOffset,
@@ -17530,9 +17572,6 @@ private fun SettingsTab(
   onIntrodbApiKeyChange: (String) -> Unit,
   onAutoPlayNextEpisodeChange: (Boolean) -> Unit,
   onPreferBingeGroupChange: (Boolean) -> Unit,
-  onNextEpisodeThresholdModeChange: (String) -> Unit,
-  onNextEpisodeThresholdPercentChange: (Int) -> Unit,
-  onNextEpisodeThresholdMinutesChange: (Int) -> Unit,
   onAutoLoadSubtitlesChange: (Boolean) -> Unit,
   onSubtitleTextSizeChange: (Int) -> Unit,
   onSubtitleVerticalOffsetChange: (Int) -> Unit,
@@ -17943,7 +17982,14 @@ private fun SettingsTab(
             }
           }
           item {
-            NextEpisodeThresholdSettings(uiState, onNextEpisodeThresholdModeChange, onNextEpisodeThresholdPercentChange, onNextEpisodeThresholdMinutesChange)
+            EndOfPlaybackRecommendationSettings(
+              enabled = uiState.endOfPlaybackRecommendationsEnabled,
+              timing = uiState.recommendationTiming,
+              itemCount = uiState.recommendationItemCount,
+              onEnabledChange = playerSettingsViewModel::setEndOfPlaybackRecommendationsEnabled,
+              onTimingChange = playerSettingsViewModel::setRecommendationTiming,
+              onItemCountChange = playerSettingsViewModel::setRecommendationItemCount,
+            )
           }
           item { IntrodbApiKeySettings(uiState.introdbApiKey, onIntrodbApiKeyChange) }
         }
@@ -19141,46 +19187,42 @@ private fun SettingsDetailHeader(route: SettingsRoute) {
 }
 
 @Composable
-private fun NextEpisodeThresholdSettings(
-  uiState: AppUiState,
-  onModeChange: (String) -> Unit,
-  onPercentChange: (Int) -> Unit,
-  onMinutesChange: (Int) -> Unit,
+private fun EndOfPlaybackRecommendationSettings(
+  enabled: Boolean,
+  timing: String,
+  itemCount: Int,
+  onEnabledChange: (Boolean) -> Unit,
+  onTimingChange: (String) -> Unit,
+  onItemCountChange: (Int) -> Unit,
 ) {
-  SettingsSection("Next Episode Button") {
-    Text("Choose when the next-episode button appears near the end.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodyMedium)
-    Spacer(modifier = Modifier.height(16.dp))
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-      listOf("percent" to "Percentage", "minutes" to "Minutes").forEach { (mode, label) ->
-        val selected = uiState.nextEpisodeThresholdMode == mode
-        OutlinedButton(
-          onClick = { onModeChange(mode) },
-          modifier = Modifier.weight(1f).height(48.dp),
-          shape = StreamDekRadius.thumbShape,
-          colors = ButtonDefaults.outlinedButtonColors(
-            containerColor = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
-            contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-          ),
-          border = BorderStroke(1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
-        ) { Text(label, fontWeight = FontWeight.Bold) }
-      }
-    }
-    Spacer(modifier = Modifier.height(14.dp))
-    val percentMode = uiState.nextEpisodeThresholdMode == "percent"
-    val value = if (percentMode) uiState.nextEpisodeThresholdPercent else uiState.nextEpisodeThresholdMinutes
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), shape = StreamDekRadius.cardShape) {
-      Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-          Text(if (percentMode) "$value% watched" else "$value min left", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Black)
-          Text("Drag to adjust", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f))
-        }
-        androidx.compose.material3.Slider(
-          value = value.toFloat(),
-          onValueChange = { updated -> if (percentMode) onPercentChange((updated + 0.5f).toInt()) else onMinutesChange((updated + 0.5f).toInt()) },
-          valueRange = if (percentMode) 50f..99f else 1f..15f,
-          steps = if (percentMode) 48 else 13,
-        )
-      }
+  SettingsSection("End of Playback") {
+    SettingsSwitchRow(
+      "UP",
+      Color(0xFFF59E0B),
+      "End-of-Playback Recommendations",
+      "Show relevant recommendations as you approach the end of something you're watching.",
+      enabled,
+      onEnabledChange,
+    )
+    if (enabled) {
+      SettingsDivider()
+      SettingsChoiceRow(
+        "TIME",
+        Color(0xFF60A5FA),
+        "Recommendation Timing",
+        "Choose how early the adaptive invitation appears.",
+        listOf("Early", "Standard", "Late"),
+        RecommendationTiming.fromKey(timing).name,
+      ) { onTimingChange(it.lowercase()) }
+      SettingsDivider()
+      SettingsChoiceRow(
+        "COUNT",
+        Color(0xFFA78BFA),
+        "Recommendations Shown",
+        "Choose how many suggestions appear in the player.",
+        listOf("1", "2"),
+        itemCount.coerceIn(1, 2).toString(),
+      ) { selected -> onItemCountChange(selected.toInt()) }
     }
   }
 }

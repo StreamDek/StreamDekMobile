@@ -3395,6 +3395,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private var streamRequestGeneration: Long = 0L
   private var playbackRequestGeneration: Long = 0L
   private var watchlistMutationGeneration: Long = 0L
+  private var addonMutationGeneration: Long = 0L
+  private val latestAddonMutation = mutableMapOf<String, Long>()
   private var liveChannelCatalogGeneration: Long = 0L
   private var m3uLoadGeneration: Long = 0L
   private var liveChannelSwitchSnapshot: LiveChannelSwitchSnapshot? = null
@@ -6097,12 +6099,54 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     )
   }
   fun toggleAddon(addon: InstalledAddon, enabled: Boolean) {
+    if (addon.enabled == enabled) return
+
+    // Reflect the tap immediately. Waiting for the toggle request and then refreshAddons() used to
+    // leave the Switch unchanged for the whole round trip. That refresh also re-fetched every
+    // local manifest before publishing the backend list, which could turn a normal network delay
+    // into a 6-10 second apparent UI freeze.
+    val generation = ++addonMutationGeneration
+    latestAddonMutation[addon.id] = generation
+    fun publish(value: Boolean) {
+      val addons = uiState.addons.map { current ->
+        if (current.id == addon.id) current.copy(enabled = value) else current
+      }
+      uiState = uiState.copy(addons = addons)
+    }
+    publish(enabled)
+
     if (LocalAddonManager.isLocalAddonId(addon.id)) {
       LocalAddonManager.setEnabled(addon.id, enabled)
-      refreshAddons()
+      latestAddonMutation.remove(addon.id, generation)
+      loadHome(force = true, silent = true)
       return
     }
-    launchWork(onStart = {}, block = { apiClient.toggleAddon(uiState.session, addon.id, enabled, uiState.activeProfileId) }, onSuccess = { refreshAddons() })
+    val session = uiState.session
+    val profileId = uiState.activeProfileId
+    launchWork(
+      onStart = {},
+      block = { apiClient.toggleAddon(session, addon.id, enabled, profileId) },
+      onSuccess = {
+        if (latestAddonMutation[addon.id] == generation) {
+          latestAddonMutation.remove(addon.id)
+          // Only the Home catalogue contents depend on this mutation. Re-fetching every add-on
+          // manifest here delays the control and adds unrelated failure points.
+          if (uiState.activeProfileId == profileId) loadHome(force = true, silent = true)
+        }
+      },
+      onFailure = { message ->
+        // A newer tap owns the visible state and must not be undone by an older request finishing.
+        if (latestAddonMutation[addon.id] == generation) {
+          latestAddonMutation.remove(addon.id)
+          // Profile changes can replace the add-on list while this request is in flight. In that
+          // case the failure belongs to the old profile and must not rewrite the new one's state.
+          if (uiState.activeProfileId == profileId) {
+            publish(addon.enabled)
+            uiState = uiState.copy(errorMessage = message)
+          }
+        }
+      },
+    )
   }
   fun toggleAddonFavourite(addon: InstalledAddon) {
     val favourite = !addon.favourite

@@ -89,8 +89,8 @@ enum class ContentService(
     tagline = "Movies, Series & Playback Timing",
     blurb = "Provides community-verified intro, recap, credits and preview timestamps for movies and series.",
     uses = listOf("Movie and episode timing", "Intro and recap skipping", "Credits, next episode and recommendations"),
-    keyUrl = "https://theintrodb.org/dashboard",
-    howToGet = listOf("Sign in at theintrodb.org.", "Open your dashboard and create an API key.", "Copy the complete key into StreamDek."),
+    keyUrl = "https://theintrodb.org/docs",
+    howToGet = listOf("Open TheIntroDB documentation.", "Follow the API-key instructions and sign in when asked.", "Copy the complete key into StreamDek."),
     keyHint = "TheIntroDB API key",
   );
 

@@ -51,6 +51,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -73,7 +74,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.streamdek.mobile.R
+import net.streamdek.mobile.BuildConfig
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.TimeUnit
 
 /**
  * Content Services, as the viewer meets them: two service cards, one key each, and a choice about
@@ -1058,7 +1068,7 @@ fun ContentServicesSettings(
       notice = state.notice.takeIf { state.noticeService == ContentService.TheIntroDb },
       noticeIsError = state.noticeIsError,
     )
-    IntroDbApiKeyCard(introDbApiKey, onIntroDbApiKeyChange)
+    IntroDbApiKeyCard(introDbApiKey, signedIn, onIntroDbApiKeyChange)
 
     ContentServiceSetupRoutes()
 
@@ -1081,81 +1091,238 @@ fun ContentServicesSettings(
   }
 }
 
-/** The viewer's optional IntroDB key replaces the deployment key without mixing the two services. */
-@Composable
-private fun IntroDbApiKeyCard(savedKey: String, onSave: (String) -> Unit) {
-  var draft by remember(savedKey) { mutableStateOf(savedKey) }
-  var savedFeedback by remember { mutableStateOf(false) }
+private val introDbValidationClient by lazy {
+  OkHttpClient.Builder().callTimeout(6, TimeUnit.SECONDS).build()
+}
 
-  Surface(
-    modifier = Modifier.fillMaxWidth(),
-    shape = StreamDekRadius.cardShape,
-    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.045f),
-    border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.09f)),
-  ) {
-    Column(
-      modifier = Modifier.padding(18.dp),
-      verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-          Image(
-            painter = painterResource(R.drawable.introdb_logo),
-            contentDescription = "IntroDB",
-            modifier = Modifier.fillMaxWidth(0.52f).height(30.dp),
-            contentScale = ContentScale.Fit,
-            alignment = Alignment.CenterStart,
-          )
-          Text("Series timing", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f))
+/**
+ * Authenticates without creating a submission. IntroDB checks X-API-Key before validating the
+ * body, so an empty body returns 400 only after a real key passed authentication; bad keys return
+ * 401. No media or timing data can be written by this probe.
+ */
+private suspend fun validateIntroDbKey(key: String): Boolean? = withContext(Dispatchers.IO) {
+  val normalized = key.trim()
+  if (!Regex("^idb_[A-Za-z0-9_-]{8,}$").matches(normalized)) return@withContext false
+  runCatching {
+    val request = Request.Builder()
+      .url("https://api.introdb.app/submit")
+      .header("Accept", "application/json")
+      .header("X-API-Key", normalized)
+      .post("{}".toRequestBody("application/json".toMediaType()))
+      .build()
+    introDbValidationClient.newCall(request).execute().use { response ->
+      when (response.code) {
+        400 -> true
+        401, 403 -> false
+        else -> null
+      }
+    }
+  }.getOrNull()
+}
+
+private fun maskedIntroDbKey(key: String): String = "••••••••" + key.takeLast(4)
+
+/** IntroDB rendered with the same header, status, storage and action hierarchy as every card. */
+@Composable
+private fun IntroDbApiKeyCard(savedKey: String, signedIn: Boolean, onSave: (String) -> Unit) {
+  val scope = rememberCoroutineScope()
+  val context = LocalContext.current
+  val effectiveKey = savedKey.ifBlank { BuildConfig.INTRODB_API_KEY.trim() }
+  var checking by remember(effectiveKey) { mutableStateOf(effectiveKey.isNotBlank()) }
+  var connected by remember(effectiveKey) { mutableStateOf<Boolean?>(null) }
+  var dialogOpen by rememberSaveable { mutableStateOf(false) }
+  var draft by rememberSaveable(dialogOpen) { mutableStateOf("") }
+  var dialogFeedback by remember(dialogOpen) { mutableStateOf<String?>(null) }
+  var dialogError by remember(dialogOpen) { mutableStateOf(false) }
+  var showHelp by rememberSaveable(dialogOpen) { mutableStateOf(false) }
+
+  LaunchedEffect(effectiveKey) {
+    if (effectiveKey.isBlank()) {
+      checking = false
+      connected = false
+    } else {
+      checking = true
+      connected = validateIntroDbKey(effectiveKey)
+      checking = false
+    }
+  }
+
+  val status = when {
+    checking -> CredentialStatus.Checking
+    connected == true -> CredentialStatus.Connected
+    effectiveKey.isBlank() -> CredentialStatus.NotConfigured
+    else -> CredentialStatus.NeedsAttention
+  }
+  val accent = Color(0xFFA78BFA)
+  ContentServicesCard(accent = accent) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.Top) {
+      Surface(shape = StreamDekRadius.thumbShape, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f), modifier = Modifier.size(48.dp)) {
+        Box(contentAlignment = Alignment.Center) {
+          Image(painterResource(R.drawable.introdb_logo), "IntroDB", Modifier.size(34.dp), contentScale = ContentScale.Fit)
         }
-        Text(
-          if (savedKey.isBlank()) "StreamDek key" else "Own key",
-          style = MaterialTheme.typography.labelMedium,
-          fontWeight = FontWeight.SemiBold,
-          color = if (savedKey.isBlank()) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f) else Color(0xFF22C55E),
-        )
       }
+      Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("IntroDB", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+        Text("Series Playback Timing", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f))
+        StatusBadge(status)
+      }
+    }
+
+    if (status != CredentialStatus.Connected) {
       Text(
-        "IntroDB supplies intro, recap and ending times for series. Add your own API key for your personal allowance, or leave it empty to use StreamDek's built-in key.",
+        "Provides intro, recap and ending timestamps for series.",
         style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.70f),
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
       )
-      OutlinedTextField(
-        value = draft,
-        onValueChange = { draft = it; savedFeedback = false },
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
-        label = { Text("IntroDB API key") },
-        placeholder = { Text("idb_...") },
-      )
-      Button(
-        onClick = {
-          val normalized = draft.trim()
-          onSave(normalized)
-          draft = normalized
-          savedFeedback = true
-        },
-        enabled = draft.trim() != savedKey,
-        modifier = Modifier.fillMaxWidth().height(50.dp),
-        shape = StreamDekRadius.pill,
-      ) {
-        Text(if (draft.isBlank() && savedKey.isNotBlank()) "Use StreamDek key" else "Save IntroDB key", fontWeight = FontWeight.Bold)
-      }
-      if (savedFeedback) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-          Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = Color(0xFF22C55E), modifier = Modifier.size(18.dp))
-          Text(
-            if (draft.isBlank()) "StreamDek's IntroDB key is active." else "IntroDB key saved successfully.",
-            style = MaterialTheme.typography.bodySmall,
-            color = Color(0xFF22C55E),
-          )
+      Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        listOf("Episode timing", "Intro and recap skipping", "Ending detection and next episode").forEach { use ->
+          Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.Top) {
+            Box(Modifier.padding(top = 7.dp).size(5.dp).background(accent.copy(alpha = 0.8f), StreamDekRadius.pill))
+            Text(use, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f))
+          }
         }
       }
     }
+
+    if (savedKey.isNotBlank()) {
+      Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Text("STORAGE", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f))
+        Text(
+          (if (signedIn) "StreamDek account" else "This device") + "  ·  " + maskedIntroDbKey(savedKey),
+          style = MaterialTheme.typography.labelLarge,
+          fontWeight = FontWeight.SemiBold,
+          color = MaterialTheme.colorScheme.onSurface,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+          if (signedIn) "Saved with your preferences so your other StreamDek devices can use it."
+          else "Saved on this phone.",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.60f),
+        )
+      }
+    } else if (connected == true) {
+      Text("Using StreamDek's built-in IntroDB key.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.60f))
+    }
+
+    if (status == CredentialStatus.NeedsAttention) {
+      Text("IntroDB did not accept this key. Replace it to restore authenticated timing lookups.", color = Color(0xFFF59E0B), style = MaterialTheme.typography.bodySmall)
+    }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+      Button(onClick = { dialogOpen = true }, enabled = !checking, shape = StreamDekRadius.pill) {
+        Text(if (savedKey.isBlank()) "Enter IntroDB Key" else "Replace Key", fontWeight = FontWeight.SemiBold)
+      }
+      if (savedKey.isNotBlank()) {
+        TextButton(onClick = { onSave("") }, enabled = !checking) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+      }
+    }
+  }
+
+  if (dialogOpen) {
+    AlertDialog(
+      modifier = contentServiceDialogModifier(sub = true),
+      properties = ContentServiceDialogProperties,
+      onDismissRequest = { if (!checking) dialogOpen = false },
+      title = { Text(if (savedKey.isBlank()) "Add your IntroDB key" else "Update your IntroDB key", fontWeight = FontWeight.Bold) },
+      text = {
+        Column(
+          modifier = Modifier.verticalScroll(rememberScrollState()),
+          verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+          Text("Provides intro, recap and ending timestamps for series.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f))
+          OutlinedTextField(
+            value = draft,
+            onValueChange = { draft = it.trim(); dialogFeedback = null },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            enabled = !checking,
+            isError = dialogError,
+            label = { Text("IntroDB API key") },
+            placeholder = { Text("idb_...") },
+          )
+          dialogFeedback?.let {
+            Text(it, color = if (dialogError) MaterialTheme.colorScheme.error else Color(0xFF22C55E), style = MaterialTheme.typography.bodyMedium)
+          }
+          TextButton(
+            onClick = { showHelp = !showHelp },
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+          ) { Text(if (showHelp) "Hide instructions" else "Don't have an IntroDB key?") }
+          AnimatedVisibility(
+            visible = showHelp,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically(),
+          ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+              listOf(
+                "Sign in at introdb.app/account.",
+                "Create or copy your API key from the account page.",
+                "Paste the complete key into StreamDek.",
+              ).forEachIndexed { index, step ->
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                  Text("${index + 1}.", fontWeight = FontWeight.Bold, color = accent)
+                  Text(step, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f))
+                }
+              }
+              OutlinedButton(
+                onClick = { openUrl(context, "https://introdb.app/account") },
+                shape = StreamDekRadius.pill,
+              ) {
+                Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(17.dp))
+                Text("  Open IntroDB")
+              }
+            }
+          }
+          Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Where should this key be kept?", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            StorageOption(
+              title = if (signedIn) "Save to StreamDek" else "This device only",
+              detail = if (signedIn) {
+                "Saved with your StreamDek profile."
+              } else {
+                "Saved on this phone. Sign in first if you want it available on your other devices."
+              },
+              selected = true,
+              enabled = !checking,
+              onSelect = {},
+            )
+          }
+        }
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            checking = true
+            dialogFeedback = null
+            scope.launch {
+              when (validateIntroDbKey(draft)) {
+                true -> {
+                  onSave(draft.trim())
+                  connected = true
+                  dialogError = false
+                  dialogFeedback = "IntroDB connected successfully."
+                  delay(900)
+                  dialogOpen = false
+                }
+                false -> {
+                  dialogError = true
+                  dialogFeedback = "That key was not accepted by IntroDB."
+                }
+                null -> {
+                  dialogError = true
+                  dialogFeedback = "IntroDB could not be reached. Nothing was saved."
+                }
+              }
+              checking = false
+            }
+          },
+          enabled = draft.length >= 8 && !checking,
+          shape = StreamDekRadius.pill,
+        ) { Text(if (checking) "Checking…" else "Check & Connect") }
+      },
+      dismissButton = { TextButton(onClick = { dialogOpen = false }, enabled = !checking) { Text("Cancel") } },
+    )
   }
 }
 
@@ -1174,6 +1341,8 @@ fun ContentServicesSetupPrompt(
   state: ContentServicesState,
   signedIn: Boolean,
   actions: ContentServiceActions,
+  introDbApiKey: String,
+  onIntroDbApiKeyChange: (String) -> Unit,
   onLater: (SetupDeferral) -> Unit,
   onDone: () -> Unit,
 ) {
@@ -1227,6 +1396,16 @@ fun ContentServicesSetupPrompt(
           notice = state.notice.takeIf { state.noticeService == ContentService.Mdblist },
           noticeIsError = state.noticeIsError,
         )
+        ContentServiceCard(
+          state = state.theIntroDb,
+          busy = state.busy == ContentService.TheIntroDb,
+          signedIn = signedIn,
+          actions = actions,
+          usesLimit = 3,
+          notice = state.notice.takeIf { state.noticeService == ContentService.TheIntroDb },
+          noticeIsError = state.noticeIsError,
+        )
+        IntroDbApiKeyCard(introDbApiKey, signedIn, onIntroDbApiKeyChange)
         ContentServiceSetupRoutes()
       }
     },

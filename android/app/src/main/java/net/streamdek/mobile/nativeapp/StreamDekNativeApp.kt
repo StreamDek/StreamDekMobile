@@ -7229,6 +7229,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   ): ContentServicesState = previous.copy(
     tmdb = manager.merge(ContentService.Tmdb, account?.tmdb),
     mdblist = manager.merge(ContentService.Mdblist, account?.mdblist),
+    theIntroDb = manager.merge(ContentService.TheIntroDb, account?.theIntroDb),
     sharedFallbackAvailable = account?.sharedFallbackAvailable ?: previous.sharedFallbackAvailable,
     loading = false,
     busy = null,
@@ -11526,6 +11527,8 @@ private fun MainScene(
         onDismissNotice = viewModel::dismissContentServiceNotice,
         onShowSetupGuide = viewModel::showContentServicesSetup,
       ),
+      introDbApiKey = uiState.introdbApiKey,
+      onIntroDbApiKeyChange = viewModel::setIntrodbApiKey,
       onLater = { deferral -> viewModel.deferContentServicesSetup(deferral) },
       onDone = viewModel::dismissContentServicesSetup,
     )

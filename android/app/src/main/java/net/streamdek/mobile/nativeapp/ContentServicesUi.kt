@@ -131,12 +131,14 @@ private fun serviceAccent(service: ContentService): Color = when (service) {
   // a glance at the page tells the two apart before any text is read.
   ContentService.Tmdb -> Color(0xFF01B4E4)
   ContentService.Mdblist -> Color(0xFFF5A524)
+  ContentService.IntroDb -> Color(0xFFA78BFA)
   ContentService.TheIntroDb -> Color(0xFF05DF72)
 }
 
 private fun serviceLogoRes(service: ContentService): Int = when (service) {
   ContentService.Tmdb -> R.drawable.rating_tmdb_logo
   ContentService.Mdblist -> R.drawable.sync_mdblist_logo
+  ContentService.IntroDb -> R.drawable.introdb_logo
   ContentService.TheIntroDb -> R.drawable.theintrodb_logo
 }
 
@@ -1017,8 +1019,6 @@ fun ContentServicesSettings(
   state: ContentServicesState,
   signedIn: Boolean,
   actions: ContentServiceActions,
-  introDbApiKey: String,
-  onIntroDbApiKeyChange: (String) -> Unit,
 ) {
   Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
     state.notice?.let { notice ->
@@ -1060,6 +1060,15 @@ fun ContentServicesSettings(
       noticeIsError = state.noticeIsError,
     )
     ContentServiceCard(
+      state = state.introDb,
+      busy = state.busy == ContentService.IntroDb,
+      signedIn = signedIn,
+      actions = actions,
+      compact = true,
+      notice = state.notice.takeIf { state.noticeService == ContentService.IntroDb },
+      noticeIsError = state.noticeIsError,
+    )
+    ContentServiceCard(
       state = state.theIntroDb,
       busy = state.busy == ContentService.TheIntroDb,
       signedIn = signedIn,
@@ -1068,8 +1077,6 @@ fun ContentServicesSettings(
       notice = state.notice.takeIf { state.noticeService == ContentService.TheIntroDb },
       noticeIsError = state.noticeIsError,
     )
-    IntroDbApiKeyCard(introDbApiKey, signedIn, onIntroDbApiKeyChange)
-
     ContentServiceSetupRoutes()
 
     TextButton(onClick = actions.onShowSetupGuide) { Text("Show the setup guide") }
@@ -1341,8 +1348,6 @@ fun ContentServicesSetupPrompt(
   state: ContentServicesState,
   signedIn: Boolean,
   actions: ContentServiceActions,
-  introDbApiKey: String,
-  onIntroDbApiKeyChange: (String) -> Unit,
   onLater: (SetupDeferral) -> Unit,
   onDone: () -> Unit,
 ) {
@@ -1397,6 +1402,15 @@ fun ContentServicesSetupPrompt(
           noticeIsError = state.noticeIsError,
         )
         ContentServiceCard(
+          state = state.introDb,
+          busy = state.busy == ContentService.IntroDb,
+          signedIn = signedIn,
+          actions = actions,
+          usesLimit = 3,
+          notice = state.notice.takeIf { state.noticeService == ContentService.IntroDb },
+          noticeIsError = state.noticeIsError,
+        )
+        ContentServiceCard(
           state = state.theIntroDb,
           busy = state.busy == ContentService.TheIntroDb,
           signedIn = signedIn,
@@ -1405,7 +1419,6 @@ fun ContentServicesSetupPrompt(
           notice = state.notice.takeIf { state.noticeService == ContentService.TheIntroDb },
           noticeIsError = state.noticeIsError,
         )
-        IntroDbApiKeyCard(introDbApiKey, signedIn, onIntroDbApiKeyChange)
         ContentServiceSetupRoutes()
       }
     },

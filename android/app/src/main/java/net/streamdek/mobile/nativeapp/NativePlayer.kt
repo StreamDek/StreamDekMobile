@@ -2849,13 +2849,10 @@ private fun extractSkipSegments(body: String): List<SkipSegment> {
  * counted against. The viewer's own key wins; otherwise the build supplies StreamDek's, which is
  * blank in builds that were not given one and simply leaves the request anonymous.
  */
-private fun introdbApiKeyFor(session: PlayerSession): String =
-  session.introdbApiKey.trim().ifBlank { BuildConfig.INTRODB_API_KEY.trim() }
-
 private fun introdbRequest(url: String, apiKey: String): Request = Request.Builder()
   .url(url)
   .header("Accept", "application/json")
-  .apply { if (apiKey.isNotBlank()) header("X-API-Key", apiKey) }
+  .apply { if (apiKey.isNotBlank()) header("x-introdb-api-key", apiKey) }
   .build()
 
 private suspend fun fetchSkipSegments(session: PlayerSession): List<SkipSegment> = withContext(Dispatchers.IO) {
@@ -2898,12 +2895,17 @@ private suspend fun fetchSkipSegments(session: PlayerSession): List<SkipSegment>
     val imdbId = session.imdbId?.takeIf { it.startsWith("tt") } ?: return emptyList()
     val season = session.seasonNumber ?: return emptyList()
     val episode = session.episodeNumber ?: return emptyList()
-    val apiKey = introdbApiKeyFor(session)
+    val apiKey = session.introdbApiKey.trim()
     return runCatching {
-    val request = introdbRequest("https://api.introdb.app/segments?imdb_id=$imdbId&season=$season&episode=$episode", apiKey)
+    val baseUrl = BuildConfig.API_BASE_URL.trimEnd('/') + "/services/timings/introdb?imdb_id=$imdbId&season=$season&episode=$episode"
+    val request = introdbRequest(baseUrl, apiKey).newBuilder().apply {
+      session.timingApiToken.takeIf { it.isNotBlank() }?.let { header("Authorization", "Bearer $it") }
+    }.build()
     val segments = playerHttpClient.newCall(request).apply { timeout().timeout(4500, java.util.concurrent.TimeUnit.MILLISECONDS) }.execute().use { response -> if (response.isSuccessful) extractSkipSegments(response.body?.string().orEmpty()) else emptyList() }.toMutableList()
     if (segments.none { it.type == "intro" }) {
-      val legacy = introdbRequest("https://api.introdb.app/intro?imdb=$imdbId&imdb_id=$imdbId&season=$season&episode=$episode", apiKey)
+      val legacy = introdbRequest("$baseUrl&legacy=1", apiKey).newBuilder().apply {
+        session.timingApiToken.takeIf { it.isNotBlank() }?.let { header("Authorization", "Bearer $it") }
+      }.build()
       playerHttpClient.newCall(legacy).execute().use { response ->
         if (response.isSuccessful) {
           val root = JSONObject(response.body?.string().orEmpty())

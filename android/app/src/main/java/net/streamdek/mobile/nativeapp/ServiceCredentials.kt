@@ -83,6 +83,16 @@ enum class ContentService(
     ),
     keyHint = "MDBList API key",
   ),
+  IntroDb(
+    id = "introdb",
+    label = "IntroDB",
+    tagline = "Series Playback Timing",
+    blurb = "Provides intro, recap and ending timestamps for series.",
+    uses = listOf("Episode timing", "Intro and recap skipping", "Ending detection and next episode"),
+    keyUrl = "https://introdb.app/account",
+    howToGet = listOf("Sign in at introdb.app/account.", "Create or copy your API key from the account page.", "Paste the complete key into StreamDek."),
+    keyHint = "IntroDB API key",
+  ),
   TheIntroDb(
     id = "theintrodb",
     label = "TheIntroDB",
@@ -153,6 +163,7 @@ data class ContentServiceState(
 data class ContentServicesState(
   val tmdb: ContentServiceState = ContentServiceState(ContentService.Tmdb),
   val mdblist: ContentServiceState = ContentServiceState(ContentService.Mdblist),
+  val introDb: ContentServiceState = ContentServiceState(ContentService.IntroDb),
   val theIntroDb: ContentServiceState = ContentServiceState(ContentService.TheIntroDb),
   /**
    * Whether StreamDek's own TMDB key still answers for viewers who have supplied none.
@@ -181,22 +192,24 @@ data class ContentServicesState(
   fun of(service: ContentService): ContentServiceState = when (service) {
     ContentService.Tmdb -> tmdb
     ContentService.Mdblist -> mdblist
+    ContentService.IntroDb -> introDb
     ContentService.TheIntroDb -> theIntroDb
   }
 
   fun with(state: ContentServiceState): ContentServicesState = when (state.service) {
     ContentService.Tmdb -> copy(tmdb = state)
     ContentService.Mdblist -> copy(mdblist = state)
+    ContentService.IntroDb -> copy(introDb = state)
     ContentService.TheIntroDb -> copy(theIntroDb = state)
   }
 
   /** True when neither service has anything configured — what the setup prompt keys off. */
-  val anyConfigured: Boolean get() = tmdb.configured || mdblist.configured || theIntroDb.configured
+  val anyConfigured: Boolean get() = tmdb.configured || mdblist.configured || introDb.configured || theIntroDb.configured
   // TheIntroDB reads remain available through its public API, so its optional user key must not
   // keep the general content-service setup reminder alive.
   val allConfigured: Boolean get() = tmdb.configured && mdblist.configured
   val needsAttention: List<ContentServiceState>
-    get() = listOf(tmdb, mdblist, theIntroDb).filter { it.status == CredentialStatus.NeedsAttention }
+    get() = listOf(tmdb, mdblist, introDb, theIntroDb).filter { it.status == CredentialStatus.NeedsAttention }
 }
 
 // ── Secure local storage ──────────────────────────────────────────────────────────────────────
@@ -501,12 +514,14 @@ data class AccountCredentialState(
 data class AccountCredentials(
   val tmdb: AccountCredentialState? = null,
   val mdblist: AccountCredentialState? = null,
+  val introDb: AccountCredentialState? = null,
   val theIntroDb: AccountCredentialState? = null,
   val sharedFallbackAvailable: Boolean = true,
 ) {
   fun of(service: ContentService): AccountCredentialState? = when (service) {
     ContentService.Tmdb -> tmdb
     ContentService.Mdblist -> mdblist
+    ContentService.IntroDb -> introDb
     ContentService.TheIntroDb -> theIntroDb
   }
 }

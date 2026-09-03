@@ -7201,6 +7201,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val manager = credentials ?: return
     val session = uiState.session
     if (session == null) {
+      migrateLegacyIntroDbKey(manager, null)
       // Signed out, the device vault is the whole story. Cards still work; only the account
       // column is unknown, and it is shown as absent rather than guessed at.
       uiState = uiState.copy(contentServices = mergeContentServices(manager, null, uiState.contentServices))
@@ -7211,6 +7212,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       block = { apiClient.fetchContentServiceCredentials(session) },
       onSuccess = { account ->
         migrateLegacyMdblistKey(manager, account)
+        migrateLegacyIntroDbKey(manager, account)
         uiState = uiState.copy(contentServices = mergeContentServices(manager, account, uiState.contentServices))
         maybeOfferContentServicesSetup()
       },
@@ -7229,6 +7231,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   ): ContentServicesState = previous.copy(
     tmdb = manager.merge(ContentService.Tmdb, account?.tmdb),
     mdblist = manager.merge(ContentService.Mdblist, account?.mdblist),
+    introDb = manager.merge(ContentService.IntroDb, account?.introDb),
     theIntroDb = manager.merge(ContentService.TheIntroDb, account?.theIntroDb),
     sharedFallbackAvailable = account?.sharedFallbackAvailable ?: previous.sharedFallbackAvailable,
     loading = false,
@@ -7252,6 +7255,17 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       manager.saveDeviceKey(ContentService.Mdblist, legacy)
     }
     appSettingsStore.clearLegacyMdblistApiKey()
+  }
+
+  /** Preserves a pre-existing IntroDB preference locally while retiring plaintext sync storage. */
+  private fun migrateLegacyIntroDbKey(manager: ServiceCredentialManager, account: AccountCredentials?) {
+    val legacy = uiState.introdbApiKey.trim()
+    if (legacy.isBlank()) return
+    if (account?.introDb?.configured != true && !manager.hasDeviceKey(ContentService.IntroDb)) {
+      manager.saveDeviceKey(ContentService.IntroDb, legacy)
+    }
+    appSettingsStore.saveIntrodbApiKey("")
+    uiState = uiState.copy(introdbApiKey = "")
   }
 
   /**
@@ -10427,7 +10441,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     autoSkipIntroEnabled = uiState.autoSkipIntroEnabled,
     autoSkipRecapEnabled = uiState.autoSkipRecapEnabled,
     autoSkipEndingEnabled = uiState.autoSkipEndingEnabled,
-    introdbApiKey = uiState.introdbApiKey,
+    introdbApiKey = apiClient.serviceCredentials?.requestKey(ContentService.IntroDb).orEmpty(),
     autoPlayNextEpisode = uiState.autoPlayNextEpisode,
     preferBingeGroup = uiState.preferBingeGroup,
     nextEpisodeThresholdMode = uiState.nextEpisodeThresholdMode,
@@ -11527,8 +11541,6 @@ private fun MainScene(
         onDismissNotice = viewModel::dismissContentServiceNotice,
         onShowSetupGuide = viewModel::showContentServicesSetup,
       ),
-      introDbApiKey = uiState.introdbApiKey,
-      onIntroDbApiKeyChange = viewModel::setIntrodbApiKey,
       onLater = { deferral -> viewModel.deferContentServicesSetup(deferral) },
       onDone = viewModel::dismissContentServicesSetup,
     )
@@ -18557,8 +18569,6 @@ private fun SettingsTab(
             state = uiState.contentServices,
             signedIn = uiState.session != null,
             actions = contentServiceActions,
-            introDbApiKey = uiState.introdbApiKey,
-            onIntroDbApiKeyChange = onIntrodbApiKeyChange,
           )
         }
         SettingsRoute.Debrid -> item { DebridSettingsSummary(uiState, onRefreshDebrid, onAddDebrid, onRemoveDebrid, onSetDebridEnabled, onMoveDebrid, onSetDebridCloudSync, onPremiumizeSignIn, onRealDebridSignIn, onDismissDebridSignIn, onDismissDebridNotice) }

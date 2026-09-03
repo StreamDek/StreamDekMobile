@@ -3279,6 +3279,11 @@ class StreamDekApiClient(context: Context? = null) {
       ) {
         return@runCatching CredentialCheck.Failed(CredentialFailure.Malformed)
       }
+      if (service == ContentService.IntroDb &&
+        !Regex("^idb_[A-Za-z0-9_-]{8,}$").matches(trimmed)
+      ) {
+        return@runCatching CredentialCheck.Failed(CredentialFailure.Malformed)
+      }
       val request = when (service) {
         ContentService.Tmdb -> {
           val builder = Request.Builder().addHeader("Accept", "application/json")
@@ -3295,6 +3300,12 @@ class StreamDekApiClient(context: Context? = null) {
           .url("https://api.mdblist.com/user?apikey=" + encodeQuery(trimmed))
           .addHeader("Accept", "application/json")
           .build()
+        ContentService.IntroDb -> Request.Builder()
+          .url("https://api.introdb.app/submit")
+          .addHeader("Accept", "application/json")
+          .addHeader("X-API-Key", trimmed)
+          .post("{}".toRequestBody("application/json".toMediaType()))
+          .build()
         ContentService.TheIntroDb -> Request.Builder()
           .url("https://api.theintrodb.org/v3/media?tmdb_id=949")
           .addHeader("Accept", "application/json")
@@ -3303,6 +3314,13 @@ class StreamDekApiClient(context: Context? = null) {
       }
 
       val response = execute(request)
+      if (service == ContentService.IntroDb) {
+        return@runCatching when (response.statusCode) {
+          400 -> CredentialCheck.Valid(null)
+          401, 403 -> CredentialCheck.Failed(CredentialFailure.InvalidKey)
+          else -> CredentialCheck.Failed(CredentialFailure.ServiceUnavailable)
+        }
+      }
       if (service == ContentService.TheIntroDb && response.ok) {
         // V3 media reads are public, so an unknown bearer also receives HTTP 200. Compare its
         // allowance with a public request: a recognised account key receives its own higher
@@ -3973,12 +3991,14 @@ private fun parseAccountCredentials(json: JSONObject): AccountCredentials {
   val services = json.optJSONArray("services") ?: JSONArray()
   var tmdb: AccountCredentialState? = null
   var mdblist: AccountCredentialState? = null
+  var introDb: AccountCredentialState? = null
   var theIntroDb: AccountCredentialState? = null
   for (index in 0 until services.length()) {
     val entry = services.optJSONObject(index) ?: continue
     when (ContentService.fromId(entry.optString("service"))) {
       ContentService.Tmdb -> tmdb = parseAccountCredentialState(ContentService.Tmdb, entry)
       ContentService.Mdblist -> mdblist = parseAccountCredentialState(ContentService.Mdblist, entry)
+      ContentService.IntroDb -> introDb = parseAccountCredentialState(ContentService.IntroDb, entry)
       ContentService.TheIntroDb -> theIntroDb = parseAccountCredentialState(ContentService.TheIntroDb, entry)
       null -> Unit
     }
@@ -3986,6 +4006,7 @@ private fun parseAccountCredentials(json: JSONObject): AccountCredentials {
   return AccountCredentials(
     tmdb = tmdb,
     mdblist = mdblist,
+    introDb = introDb,
     theIntroDb = theIntroDb,
     sharedFallbackAvailable = json.optBoolean("sharedFallbackAvailable", true),
   )

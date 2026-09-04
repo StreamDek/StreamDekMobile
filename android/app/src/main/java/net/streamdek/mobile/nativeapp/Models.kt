@@ -285,6 +285,7 @@ data class CloudPlaybackPreferences(
   val syncOnCellular: Boolean? = null,
   val detailPageStyle: String? = null,
   val continueWatchingStyle: String? = null,
+  val homeCardTextMode: String? = null,
   /** "Classic" or "Branded": which artwork the Streaming Networks row draws. Shared with the TV. */
   val networkCardStyle: String? = null,
   val liveLandscapeCards: Boolean? = null,

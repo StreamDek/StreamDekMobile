@@ -1012,6 +1012,7 @@ private data class AppUiState(
   /** Off by default, matching the TV app: the spotlight reads better as artwork and title alone. */
   val showHeroSynopsis: Boolean = false,
   val continueWatchingStyle: ContinueWatchingStyle = ContinueWatchingStyle.Glass,
+  val homeCardTextMode: HomeCardTextMode = HomeCardTextMode.Default,
   val networkCardStyle: NetworkCardStyle = NetworkCardStyle.Branded,
   val liveLandscapeCards: Boolean = true,
   /**
@@ -1816,7 +1817,7 @@ private class AppSettingsStore(context: Context) {
   private val profileSettingKeys = setOf(
     "detail_page_style", "season_tab_style", "show_streams_list", "hero_trailer_autoplay", "hero_trailer_resolution",
     "hero_trailer_delay_seconds",
-    "hero_trailer_muted", "show_hero_synopsis", "continue_watching_style", "live_landscape_cards", "live_favourite_drawer_cards",
+    "hero_trailer_muted", "show_hero_synopsis", "continue_watching_style", "home_card_text_mode", "live_landscape_cards", "live_favourite_drawer_cards",
     "live_categories_enabled", "live_progress_bar", "mdblist_api_key", "primary_sync_service",
     "remember_last_source", "skip_intro_enabled", "skip_segments_enabled", "skip_recap_enabled", "skip_ending_enabled",
     "auto_skip_intro_enabled", "auto_skip_recap_enabled", "auto_skip_ending_enabled",
@@ -1891,6 +1892,7 @@ private class AppSettingsStore(context: Context) {
     debridCloudSync = prefs.getBoolean("debrid_cloud_sync", true),
     showHeroSynopsis = profilePrefs.getBoolean("show_hero_synopsis", false),
     continueWatchingStyle = runCatching { ContinueWatchingStyle.valueOf(profilePrefs.getString("continue_watching_style", ContinueWatchingStyle.Glass.name) ?: ContinueWatchingStyle.Glass.name) }.getOrDefault(ContinueWatchingStyle.Glass),
+    homeCardTextMode = HomeCardTextMode.fromKey(profilePrefs.getString("home_card_text_mode", null)),
     networkCardStyle = runCatching { NetworkCardStyle.valueOf(profilePrefs.getString("network_card_style", NetworkCardStyle.Branded.name) ?: NetworkCardStyle.Branded.name) }.getOrDefault(NetworkCardStyle.Branded),
     liveLandscapeCards = profilePrefs.getBoolean("live_landscape_cards", true),
     newEpisodesLandscape = profilePrefs.getBoolean("new_episodes_landscape", true),
@@ -2028,6 +2030,7 @@ private class AppSettingsStore(context: Context) {
   fun saveDebridCloudSync(value: Boolean) { prefs.edit().putBoolean("debrid_cloud_sync", value).apply() }
   fun saveShowHeroSynopsis(value: Boolean) { profilePrefs.edit().putBoolean("show_hero_synopsis", value).apply() }
   fun saveContinueWatchingStyle(value: ContinueWatchingStyle) { profilePrefs.edit().putString("continue_watching_style", value.name).apply() }
+  fun saveHomeCardTextMode(value: HomeCardTextMode) { profilePrefs.edit().putString("home_card_text_mode", value.key).apply() }
   fun saveNetworkCardStyle(value: NetworkCardStyle) { profilePrefs.edit().putString("network_card_style", value.name).apply() }
   fun saveLiveLandscapeCards(value: Boolean) { profilePrefs.edit().putBoolean("live_landscape_cards", value).apply() }
   fun saveNewEpisodesLandscape(value: Boolean) { profilePrefs.edit().putBoolean("new_episodes_landscape", value).apply() }
@@ -7787,6 +7790,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val headerStyle = preferences.headerStyle?.let { runCatching { HeaderStyle.valueOf(it) }.getOrNull() }
     val detailPageStyle = preferences.detailPageStyle?.let { runCatching { DetailPageStyle.valueOf(it) }.getOrNull() }
     val continueWatchingStyle = preferences.continueWatchingStyle?.let { runCatching { ContinueWatchingStyle.valueOf(it) }.getOrNull() }
+    val homeCardTextMode = preferences.homeCardTextMode?.let(HomeCardTextMode::fromKey)
     val networkCardStyle = preferences.networkCardStyle?.let { runCatching { NetworkCardStyle.valueOf(it) }.getOrNull() }
     val seasonTabStyle = preferences.seasonTabStyle?.let { runCatching { SeasonTabStyle.valueOf(it) }.getOrNull() }
     val decoderMode = preferences.decoderMode?.let(::normalizeDecoderModeSetting)
@@ -7812,6 +7816,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     preferences.syncOnCellular?.let(appSettingsStore::saveSyncOnCellular)
     detailPageStyle?.let(appSettingsStore::saveDetailPageStyle)
     continueWatchingStyle?.let(appSettingsStore::saveContinueWatchingStyle)
+    homeCardTextMode?.let(appSettingsStore::saveHomeCardTextMode)
     networkCardStyle?.let(appSettingsStore::saveNetworkCardStyle)
     preferences.liveLandscapeCards?.let(appSettingsStore::saveLiveLandscapeCards)
     preferences.liveCategoriesEnabled?.let(appSettingsStore::saveLiveCategoriesEnabled)
@@ -7896,6 +7901,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       syncOnCellular = preferences.syncOnCellular ?: uiState.syncOnCellular,
       detailPageStyle = detailPageStyle ?: uiState.detailPageStyle,
       continueWatchingStyle = continueWatchingStyle ?: uiState.continueWatchingStyle,
+      homeCardTextMode = homeCardTextMode ?: uiState.homeCardTextMode,
       networkCardStyle = networkCardStyle ?: uiState.networkCardStyle,
       liveLandscapeCards = preferences.liveLandscapeCards ?: uiState.liveLandscapeCards,
       liveCategoriesEnabled = preferences.liveCategoriesEnabled ?: uiState.liveCategoriesEnabled,
@@ -8826,6 +8832,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       syncOnCellular = uiState.syncOnCellular,
       detailPageStyle = uiState.detailPageStyle.name,
       continueWatchingStyle = uiState.continueWatchingStyle.name,
+      homeCardTextMode = uiState.homeCardTextMode.key,
       networkCardStyle = uiState.networkCardStyle.name,
       liveLandscapeCards = uiState.liveLandscapeCards,
       liveCategoriesEnabled = uiState.liveCategoriesEnabled,
@@ -8976,6 +8983,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setHeroTrailerMuted(value: Boolean) { appSettingsStore.saveHeroTrailerMuted(value); uiState = uiState.copy(heroTrailerMuted = value) }
   fun setShowHeroSynopsis(value: Boolean) { appSettingsStore.saveShowHeroSynopsis(value); uiState = uiState.copy(showHeroSynopsis = value); syncCloudPreferences() }
   fun setContinueWatchingStyle(style: ContinueWatchingStyle) { appSettingsStore.saveContinueWatchingStyle(style); uiState = uiState.copy(continueWatchingStyle = style); syncCloudPreferences() }
+  fun setHomeCardTextMode(mode: HomeCardTextMode) { appSettingsStore.saveHomeCardTextMode(mode); uiState = uiState.copy(homeCardTextMode = mode); syncCloudPreferences() }
   fun setNetworkCardStyle(style: NetworkCardStyle) { appSettingsStore.saveNetworkCardStyle(style); uiState = uiState.copy(networkCardStyle = style); syncCloudPreferences() }
   fun setLiveLandscapeCards(value: Boolean) { appSettingsStore.saveLiveLandscapeCards(value); uiState = uiState.copy(liveLandscapeCards = value); syncCloudPreferences() }
   fun setNewEpisodesLandscape(value: Boolean) { appSettingsStore.saveNewEpisodesLandscape(value); uiState = uiState.copy(newEpisodesLandscape = value) }
@@ -12492,7 +12500,7 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
       itemsIndexed(rows, key = { _, row -> row.id }) { index, row ->
         Column {
           if (heroItems.isNotEmpty() && index > 0) Spacer(modifier = Modifier.height(homeLayout.rowGap - homeLayout.heroToRowGap))
-          HomeStrip(rowId = row.id, title = row.title, items = row.items, continueWatchingStyle = uiState.continueWatchingStyle, networkCardStyle = uiState.networkCardStyle, liveLandscapeCards = uiState.liveLandscapeCards, newEpisodesLandscape = uiState.newEpisodesLandscape, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = handoffDevices, onRefreshHandoffDevices = onRefreshHandoffDevices, onHandoffLive = onHandoffLive, onHandoffContinueWatching = onHandoffContinueWatching, onOpen = onOpen, onViewAll = { onViewAll(row) }, onToggleWatchlist = onToggleWatchlist, onToggleFavourite = onToggleFavourite, onEnableAddon = onEnableAddon, onMarkWatched = onMarkWatched, onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched, onRestartFromBeginning = onRestartFromBeginning, onRemoveFromContinueWatching = onRemoveFromContinueWatching, onPlayContinueWatching = onPlayContinueWatching)
+          HomeStrip(rowId = row.id, title = row.title, items = row.items, continueWatchingStyle = uiState.continueWatchingStyle, homeCardTextMode = uiState.homeCardTextMode, networkCardStyle = uiState.networkCardStyle, liveLandscapeCards = uiState.liveLandscapeCards, newEpisodesLandscape = uiState.newEpisodesLandscape, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = handoffDevices, onRefreshHandoffDevices = onRefreshHandoffDevices, onHandoffLive = onHandoffLive, onHandoffContinueWatching = onHandoffContinueWatching, onOpen = onOpen, onViewAll = { onViewAll(row) }, onToggleWatchlist = onToggleWatchlist, onToggleFavourite = onToggleFavourite, onEnableAddon = onEnableAddon, onMarkWatched = onMarkWatched, onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched, onRestartFromBeginning = onRestartFromBeginning, onRemoveFromContinueWatching = onRemoveFromContinueWatching, onPlayContinueWatching = onPlayContinueWatching)
         }
       }
     }
@@ -14842,7 +14850,7 @@ private fun NetworkHomeCard(item: MediaItem, sports: Boolean = false, branded: B
 }
 
 @Composable
-private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, continueWatchingStyle: ContinueWatchingStyle, networkCardStyle: NetworkCardStyle = NetworkCardStyle.Branded, liveLandscapeCards: Boolean, newEpisodesLandscape: Boolean = true, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onHandoffContinueWatching: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onOpen: (MediaItem) -> Unit, onViewAll: () -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, onMarkEarlierEpisodesWatched: (MediaItem) -> Unit, onRestartFromBeginning: (MediaItem) -> Unit, onRemoveFromContinueWatching: (MediaItem) -> Unit = {}, onPlayContinueWatching: (MediaItem) -> Unit) {
+private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, continueWatchingStyle: ContinueWatchingStyle, homeCardTextMode: HomeCardTextMode, networkCardStyle: NetworkCardStyle = NetworkCardStyle.Branded, liveLandscapeCards: Boolean, newEpisodesLandscape: Boolean = true, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onHandoffContinueWatching: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onOpen: (MediaItem) -> Unit, onViewAll: () -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, onMarkEarlierEpisodesWatched: (MediaItem) -> Unit, onRestartFromBeginning: (MediaItem) -> Unit, onRemoveFromContinueWatching: (MediaItem) -> Unit = {}, onPlayContinueWatching: (MediaItem) -> Unit) {
   fun isFavourite(item: MediaItem): Boolean = favouriteItems.hasFavouriteChannel(item)
   val isAddonRow = rowId.startsWith("addon:")
   val isFavouritesRow = rowId == "favourites"
@@ -14866,7 +14874,22 @@ private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, cont
     ) {
       Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Text(title, fontSize = if (isAddonRow) home.addonRowTitleSize else home.rowTitleSize, fontWeight = if (isAddonRow) FontWeight.Bold else FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-        TextButton(onClick = onViewAll) { Text("View All", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.78f), fontWeight = FontWeight.Bold) }
+        IconButton(onClick = onViewAll) {
+          Box(
+            modifier = Modifier
+              .size(30.dp)
+              .clip(CircleShape)
+              .background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.07f)),
+            contentAlignment = Alignment.Center,
+          ) {
+            Icon(
+              Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+              contentDescription = "View all $title",
+              modifier = Modifier.size(18.dp),
+              tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.50f),
+            )
+          }
+        }
       }
       if (home.showRowAccentBar) {
         Box(
@@ -14889,7 +14912,7 @@ private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, cont
         } else if (rowId == "streaming_networks" || (isSportsRow && liveLandscapeCards)) {
           NetworkHomeCard(item = item, sports = isSportsRow, branded = networkCardStyle == NetworkCardStyle.Branded, dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) }, onLongPress = { if (isSportsRow) { actionItem = item; onRefreshHandoffDevices() } })
         } else {
-          PosterCard(item = item, dimmed = disabled, landscape = rowId == "new-episodes" && newEpisodesLandscape, onClick = { handleOpen(item) }, onLongPress = { actionItem = item; if (isSportsRow) onRefreshHandoffDevices() })
+          PosterCard(item = item, textMode = homeCardTextMode, dimmed = disabled, landscape = rowId == "new-episodes" && newEpisodesLandscape, onClick = { handleOpen(item) }, onLongPress = { actionItem = item; if (isSportsRow) onRefreshHandoffDevices() })
         }
       }
     }
@@ -15709,14 +15732,20 @@ private fun LibraryStreamDekHeader(
             Text("$count titles", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.82f), fontSize = 12.sp, fontWeight = FontWeight.Bold)
           }
           trailingAction?.invoke()
-          GlassCircleButton(onClick = onToggleColumns) {
+          GlassCircleButton(borderless = true, onClick = onToggleColumns) {
             Icon(if (columns == 3) Icons.Rounded.ViewAgenda else Icons.Rounded.ViewModule, contentDescription = null, tint = MaterialTheme.colorScheme.onBackground)
           }
         }
       }
       Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         MediaFilter.values().forEach { value ->
-          FilterChip(selected = selectedFilter == value, onClick = { onFilterChange(value) }, label = { Text(if (value == MediaFilter.All) "All" else value.name) })
+          FilterChip(
+            selected = selectedFilter == value,
+            onClick = { onFilterChange(value) },
+            label = { Text(if (value == MediaFilter.All) "All" else value.name) },
+            border = null,
+            colors = borderlessFilterChipColors(),
+          )
         }
       }
     }
@@ -15744,6 +15773,12 @@ private fun LibraryStreamDekHeader(
 }
 
 @Composable
+private fun borderlessFilterChipColors() = androidx.compose.material3.FilterChipDefaults.filterChipColors(
+  containerColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.055f),
+  selectedContainerColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.14f),
+)
+
+@Composable
 private fun ContinueTab(
   uiState: AppUiState,
   onOpen: (MediaItem) -> Unit,
@@ -15766,7 +15801,7 @@ private fun ContinueTab(
   val headerHazeState = rememberHazeState()
   val clearAction: (@Composable () -> Unit)? = if (allItems.isEmpty()) null else {
     {
-      GlassCircleButton(onClick = { showClearConfirm = true }) {
+      GlassCircleButton(borderless = true, onClick = { showClearConfirm = true }) {
         Icon(Icons.Rounded.DeleteSweep, contentDescription = "Clear Continue Watching", tint = MaterialTheme.colorScheme.onBackground)
       }
     }
@@ -15857,7 +15892,7 @@ private fun WatchlistTab(uiState: AppUiState, onOpen: (MediaItem) -> Unit, onTog
   val headerHazeState = rememberHazeState()
   val clearAction: (@Composable () -> Unit)? = if (uiState.mergedWatchlist.isEmpty()) null else {
     {
-      GlassCircleButton(onClick = { showClearConfirm = true }) {
+      GlassCircleButton(borderless = true, onClick = { showClearConfirm = true }) {
         Icon(Icons.Rounded.DeleteSweep, contentDescription = "Clear watchlist", tint = MaterialTheme.colorScheme.onBackground)
       }
     }
@@ -16450,7 +16485,13 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
         ) {
           Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             MediaFilter.values().forEach { value ->
-              FilterChip(selected = filter == value, onClick = { filter = value }, label = { Text(if (value == MediaFilter.All) "All" else value.name) })
+              FilterChip(
+                selected = filter == value,
+                onClick = { filter = value },
+                label = { Text(if (value == MediaFilter.All) "All" else value.name) },
+                border = null,
+                colors = borderlessFilterChipColors(),
+              )
             }
           }
           Text(
@@ -16515,12 +16556,16 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
                   selected = playlistGroup == null,
                   onClick = { playlistGroup = null },
                   label = { Text("All") },
+                  border = null,
+                  colors = borderlessFilterChipColors(),
                 )
                 playlistGroups.forEach { group ->
                   FilterChip(
                     selected = playlistGroup == group,
                     onClick = { playlistGroup = if (playlistGroup == group) null else group },
                     label = { Text(group, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    border = null,
+                    colors = borderlessFilterChipColors(),
                   )
                 }
               }
@@ -16700,7 +16745,7 @@ private fun SearchHeader(
       Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         AdaptivePageTitle(title = "Search", maxLines = 1)
       }
-      GlassCircleButton(onClick = onToggleColumns) {
+      GlassCircleButton(borderless = true, onClick = onToggleColumns) {
         Icon(if (columns == 3) Icons.Rounded.ViewAgenda else Icons.Rounded.ViewModule, contentDescription = null, tint = MaterialTheme.colorScheme.onBackground)
       }
     }
@@ -17471,6 +17516,7 @@ private fun SettingsScene(
       onSwipeToSeekEnabledChange = viewModel::setSwipeToSeekEnabled,
       onPlayerLevelGesturesEnabledChange = viewModel::setPlayerLevelGesturesEnabled,
       onHomeDensityChange = viewModel::setHomeDensity,
+      onHomeCardTextModeChange = viewModel::setHomeCardTextMode,
       onSkipIntroEnabledChange = viewModel::setSkipIntroEnabled,
       onSkipRecapEnabledChange = viewModel::setSkipRecapEnabled,
       onSkipEndingEnabledChange = viewModel::setSkipEndingEnabled,
@@ -17641,6 +17687,7 @@ private fun SettingsTab(
   onSwipeToSeekEnabledChange: (Boolean) -> Unit,
   onPlayerLevelGesturesEnabledChange: (Boolean) -> Unit,
   onHomeDensityChange: (HomeDensity) -> Unit,
+  onHomeCardTextModeChange: (HomeCardTextMode) -> Unit,
   onSkipIntroEnabledChange: (Boolean) -> Unit,
   onSkipRecapEnabledChange: (Boolean) -> Unit,
   onSkipEndingEnabledChange: (Boolean) -> Unit,
@@ -18186,6 +18233,17 @@ private fun SettingsTab(
           item {
             SettingsSection("Home Screen") {
               HomeDensityPicker(selected = uiState.homeDensity, onSelected = onHomeDensityChange)
+              SettingsDivider()
+              SettingsChoiceRow(
+                "TXT",
+                Color(0xFF38BDF8),
+                "Card Title Text",
+                "Choose the text shown below ordinary Home cards.",
+                HomeCardTextMode.entries.map(HomeCardTextMode::label),
+                uiState.homeCardTextMode.label,
+              ) { selected ->
+                HomeCardTextMode.entries.firstOrNull { it.label == selected }?.let(onHomeCardTextModeChange)
+              }
               SettingsDivider()
               SettingsNavRow("GRID", Color(0xFF38BDF8), "Home Rows", "Choose which rows appear on Home and drag to reorder them.", value = "${uiState.homeCatalogRows.count { it.enabled }}", onClick = { onRouteChange(SettingsRoute.HomeLayout) })
               SettingsDivider()
@@ -27218,6 +27276,7 @@ private fun FusionBadgeRow(stream: AddonStream, uiState: AppUiState, modifier: M
 private fun PosterCard(
   item: MediaItem,
   showMeta: Boolean = true,
+  textMode: HomeCardTextMode = HomeCardTextMode.ShowFull,
   dimmed: Boolean = false,
   /**
    * Wide 16:9 card using the item's backdrop instead of its poster.
@@ -27265,7 +27324,7 @@ private fun PosterCard(
 
       CardImdbRatingBadge(rating = item.rating)
     }
-    if (showMeta) {
+    if (showMeta && textMode == HomeCardTextMode.ShowFull) {
       // The caption is rebalanced rather than scaled with the poster: it is reserved a little more
       // height than a straight multiplier would give it, and its two lines come down by 8% instead
       // of 20%, because a card that fits more titles on screen is no use if the titles cannot be
@@ -27290,6 +27349,16 @@ private fun PosterCard(
           } else {
             MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f)
           },
+        )
+      }
+    } else if (showMeta && textMode == HomeCardTextMode.ShowYearOnly) {
+      item.year?.takeIf(String::isNotBlank)?.let { year ->
+        Text(
+          year,
+          fontSize = home.text(11.sp),
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+          color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f),
         )
       }
     }
@@ -29328,6 +29397,7 @@ internal fun GlassCircleButton(
   modifier: Modifier = Modifier,
   hazeState: HazeState? = null,
   navigationHazeStyle: Boolean = false,
+  borderless: Boolean = false,
   onClick: () -> Unit,
   content: @Composable BoxScope.() -> Unit,
 ) {
@@ -29348,7 +29418,9 @@ internal fun GlassCircleButton(
     } else {
       0.12f
     },
-    borderAlpha = if (navigationHazeStyle) {
+    borderAlpha = if (borderless) {
+      0f
+    } else if (navigationHazeStyle) {
       if (lightNavigation) 0.10f else 0.08f
     } else {
       0.38f
@@ -29359,7 +29431,7 @@ internal fun GlassCircleButton(
       0.08f
     },
     fillColorOverride = if (navigationHazeStyle && !lightNavigation) Color.White else null,
-    showEdgeGradient = !navigationHazeStyle,
+    showEdgeGradient = !navigationHazeStyle && !borderless,
   ) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center, content = content)
   }

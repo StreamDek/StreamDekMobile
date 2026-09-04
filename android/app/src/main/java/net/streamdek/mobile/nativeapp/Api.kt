@@ -652,6 +652,18 @@ class StreamDekApiClient(context: Context? = null) {
       }
     }
     .build()
+  /**
+   * Credential checks can legitimately outlive OkHttp's ten-second default because the backend
+   * gives MDBList up to ten seconds to answer before it can return a useful service-unavailable
+   * result. A separate client keeps ordinary app requests snappy while allowing that considered
+   * response to reach the settings screen instead of racing the phone's read timeout.
+   */
+  private val credentialValidationClient = client.newBuilder()
+    .connectTimeout(15, TimeUnit.SECONDS)
+    .readTimeout(25, TimeUnit.SECONDS)
+    .writeTimeout(20, TimeUnit.SECONDS)
+    .callTimeout(30, TimeUnit.SECONDS)
+    .build()
   private val directStreamClient = client.newBuilder()
     .connectTimeout(15, TimeUnit.SECONDS)
     .readTimeout(120, TimeUnit.SECONDS)
@@ -2229,6 +2241,7 @@ class StreamDekApiClient(context: Context? = null) {
       val home = JSONObject()
         .put("detailPageStyle", preferences.detailPageStyle)
         .put("continueWatchingStyle", preferences.continueWatchingStyle)
+        .put("homeCardTextMode", preferences.homeCardTextMode)
         .put("networkCardStyle", preferences.networkCardStyle)
         .put("liveLandscapeCards", preferences.liveLandscapeCards)
         .put("liveFavouriteDrawerCards", preferences.liveFavouriteDrawerCards)
@@ -2431,6 +2444,7 @@ class StreamDekApiClient(context: Context? = null) {
         syncOnCellular = optionalBoolean(app, "syncOverCellular"),
         detailPageStyle = optionalString(home, "detailPageStyle"),
         continueWatchingStyle = optionalString(home, "continueWatchingStyle"),
+        homeCardTextMode = optionalString(home, "homeCardTextMode"),
         networkCardStyle = optionalString(home, "networkCardStyle"),
         liveLandscapeCards = optionalBoolean(home, "liveLandscapeCards"),
         liveFavouriteDrawerCards = optionalBoolean(home, "liveFavouriteDrawerCards"),
@@ -3313,7 +3327,7 @@ class StreamDekApiClient(context: Context? = null) {
           .build()
       }
 
-      val response = execute(request)
+      val response = execute(request, credentialValidationClient)
       if (service == ContentService.IntroDb) {
         return@runCatching when (response.statusCode) {
           400 -> CredentialCheck.Valid(null)
@@ -3330,6 +3344,7 @@ class StreamDekApiClient(context: Context? = null) {
             .url("https://api.theintrodb.org/v3/media?tmdb_id=949")
             .addHeader("Accept", "application/json")
             .build(),
+          credentialValidationClient,
         )
         val publicLimit = anonymous.headers["x-usagelimit-limit"]?.toLongOrNull()
         val accountLimit = response.headers["x-usagelimit-limit"]?.toLongOrNull()
@@ -3366,6 +3381,7 @@ class StreamDekApiClient(context: Context? = null) {
         "/services/credentials/${encodeQuery(service.id)}/validate",
         JSONObject().put("apiKey", apiKey),
         session = session,
+        httpClient = credentialValidationClient,
       )
       when {
         // Anything that is not a considered answer from this route -- a 404 from a deployment
@@ -3389,6 +3405,7 @@ class StreamDekApiClient(context: Context? = null) {
         "/services/credentials/${encodeQuery(service.id)}",
         JSONObject().put("apiKey", apiKey),
         session = session,
+        httpClient = credentialValidationClient,
       )
       if (!response.ok) {
         // The backend refuses a key it has checked with a 400 and a `failure`; everything else is
@@ -3717,13 +3734,14 @@ class StreamDekApiClient(context: Context? = null) {
     payload: JSONObject,
     session: AuthSession? = null,
     profileId: String? = null,
+    httpClient: OkHttpClient = client,
   ): JsonResponse {
     val request = Request.Builder()
       .url("$apiBaseUrl$path")
       .post(payload.toString().toRequestBody(jsonMediaType))
       .headers(authHeaders(session, profileId = profileId))
       .build()
-    return execute(request)
+    return execute(request, httpClient)
   }
 
   private fun executePut(
@@ -3731,13 +3749,14 @@ class StreamDekApiClient(context: Context? = null) {
     payload: JSONObject,
     session: AuthSession? = null,
     profileId: String? = null,
+    httpClient: OkHttpClient = client,
   ): JsonResponse {
     val request = Request.Builder()
       .url("$apiBaseUrl$path")
       .put(payload.toString().toRequestBody(jsonMediaType))
       .headers(authHeaders(session, profileId = profileId))
       .build()
-    return execute(request)
+    return execute(request, httpClient)
   }
 
   private fun execute(request: Request, httpClient: OkHttpClient = client): JsonResponse {

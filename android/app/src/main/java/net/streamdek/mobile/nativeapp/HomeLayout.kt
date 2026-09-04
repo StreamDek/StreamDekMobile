@@ -18,6 +18,28 @@ import androidx.compose.ui.unit.sp
  */
 internal const val HOME_DENSITY_PREFERENCE = "home_density"
 
+/** Which caption is drawn below ordinary poster cards on Home. */
+enum class HomeCardTextMode(
+  val key: String,
+  val label: String,
+) {
+  ShowFull("show_full", "Show Full"),
+  ShowYearOnly("show_year_only", "Show Year Only"),
+  Off("off", "Off");
+
+  companion object {
+    val Default = ShowFull
+
+    fun fromKey(key: String?): HomeCardTextMode {
+      val normalized = key?.trim()?.lowercase().orEmpty()
+      if (normalized.isEmpty()) return Default
+      return entries.firstOrNull {
+        it.key == normalized || it.name.lowercase() == normalized || it.label.lowercase() == normalized
+      } ?: Default
+    }
+  }
+}
+
 /**
  * How much of Home fits on the screen at once.
  *

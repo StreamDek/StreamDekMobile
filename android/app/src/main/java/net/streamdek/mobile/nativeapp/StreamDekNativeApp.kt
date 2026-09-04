@@ -239,6 +239,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
@@ -798,6 +799,16 @@ data class DebridSignInPrompt(
 
 private data class AppUiState(
   val booting: Boolean = true,
+  /**
+   * A sign-in is in flight.
+   *
+   * Separate from [booting], which means the app itself is starting and is what puts the splash
+   * on screen. Signing in borrowed that flag, so submitting the form tore the auth screen down,
+   * showed the splash, and brought a different scene back -- three full-screen swaps for one
+   * button press, on the screen where the app makes its first impression. The form already has a
+   * spinner in its button for exactly this; it simply never got the chance to draw.
+   */
+  val authSubmitting: Boolean = false,
   val rememberedEmail: String = "",
   val session: AuthSession? = null,
   val homeLoading: Boolean = false,
@@ -5924,13 +5935,32 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           profiles.size > 1 && !uiState.rememberLastProfileAtStartup
         } else uiState.showProfilePicker
         routeAfterProfileRefresh = false
-        uiState = uiState.copy(profilesLoading = false, profiles = profiles, activeProfileId = selected?.id ?: uiState.activeProfileId, showProfilePicker = showPicker)
+        /**
+         * Handing a completed sign-in to the home screen.
+         *
+         * Going straight home -- one profile, or the picker turned off -- would otherwise cut
+         * from the sign-in form to a populated home screen with no transition at all, because the
+         * scene branch changes inside an AnimatedContent that is keyed on something else. The
+         * profile-to-home overlay already exists for exactly this handoff and already resets the
+         * tab and the settings stack on its way, which is also what stops a sign-in started from
+         * Settings > Account landing back on Settings.
+         *
+         * Gated on authSubmitting rather than on routeAfterProfileRefresh: the same flag is set
+         * when a stored session is restored at launch, and an overlay that plays every time the
+         * app opens is a splash screen nobody asked for.
+         */
+        val landingHome = uiState.authSubmitting && !showPicker && selected != null
+        // Clearing authSubmitting here is what makes the sign-in one transition instead of three:
+        // the form stays up until this line, and what replaces it is already the right scene.
+        uiState = uiState.copy(authSubmitting = false, profilesLoading = false, profiles = profiles, activeProfileId = selected?.id ?: uiState.activeProfileId, showProfilePicker = showPicker, profileTransitioning = landingHome || uiState.profileTransitioning)
         selected?.id?.let { profileSelectionStore.save(session.user.uid, it) }
         if (refreshScopedData) refreshProfileScopedData()
       },
       onFailure = { message ->
         routeAfterProfileRefresh = false
-        uiState = uiState.copy(profilesLoading = false, errorMessage = message)
+        // Released on failure too, or a sign-in whose profile fetch fails leaves the form on
+        // screen with a dead spinner and no way past it.
+        uiState = uiState.copy(authSubmitting = false, profilesLoading = false, errorMessage = message)
       },
     )
   }
@@ -8480,10 +8510,29 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       watchedEpisodeRevision = uiState.watchedEpisodeRevision + 1,
       infoMessage = if (targetWatched) "Episode marked as watched." else "Episode marked as unwatched.",
     )
-    // Reuse the same series policy as initial detail loading. Marking the current episode watched
-    // advances to the next unwatched slot; reversing it makes that exact episode the continuation.
-    seriesResumeState(detail).target?.let { target ->
-      loadSeason(detail.id, target.seasonNumber, target.episodeNumber)
+    /**
+     * Ticking an episode does not move the viewer to another season.
+     *
+     * This used to route to wherever the series resume pointer landed, on the reasoning that
+     * marking the episode you are on should advance to the next one. That reasoning only holds
+     * for the episode you are actually watching. The pointer is the furthest-watched point in the
+     * whole series -- getSeriesResumeState takes indexOfLast over every slot -- so on a series
+     * with later seasons already part-watched, ticking an episode in season one targeted the slot
+     * after that furthest point and threw the viewer to the last season. It looked series-specific
+     * because it needs a show whose later seasons you have already been through.
+     *
+     * Nothing needs reloading here in any case: the episode list itself does not change when an
+     * episode is marked, and the watched set, the progress records and the Next Up badge have all
+     * been updated above. The season is only fetched when there is none on screen to update --
+     * marking from somewhere other than the episode list, where there is no context to keep.
+     *
+     * The resume pointer is untouched and still advances; Continue Watching reads it. It simply no
+     * longer decides what the person looking at season one is shown.
+     */
+    if (uiState.selectedSeasonNumber == null) {
+      seriesResumeState(detail).target?.let { target ->
+        loadSeason(detail.id, target.seasonNumber, target.episodeNumber)
+      }
     }
 
     val session = uiState.session ?: return
@@ -9608,15 +9657,21 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
 
   private fun submitAuth(guestDataOwnerKey: String? = null, block: suspend () -> Result<AuthSession>) {
     launchWork(
-      onStart = { uiState = uiState.copy(booting = true, errorMessage = null, infoMessage = null) },
+      onStart = { uiState = uiState.copy(authSubmitting = true, errorMessage = null, infoMessage = null) },
       block = block,
       onSuccess = { session ->
         sessionStore.save(session)
         routeAfterProfileRefresh = true
-        uiState = appSettingsStore.applyTo(uiState.copy(booting = false, session = session, profilesLoading = true, showProfilePicker = true, pendingGuestMerge = guestDataOwnerKey))
+        // authSubmitting deliberately stays set. The credentials are accepted but where to land
+        // is not known yet -- it depends on how many profiles the account has and on whether the
+        // viewer asked to skip the picker -- and answering that takes another request. Dropping
+        // the form here would show the picker to everyone for as long as that took, including the
+        // viewer with one profile who is about to be sent straight home. refreshProfiles clears
+        // it once, when there is an answer.
+        uiState = appSettingsStore.applyTo(uiState.copy(session = session, profilesLoading = true, showProfilePicker = true, pendingGuestMerge = guestDataOwnerKey))
         bootstrapAfterAuth(forceHome = true)
       },
-      onFailure = { message -> uiState = uiState.copy(booting = false, errorMessage = message) },
+      onFailure = { message -> uiState = uiState.copy(authSubmitting = false, errorMessage = message) },
     )
   }
 
@@ -11082,6 +11137,18 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
   var form by remember(uiState.rememberedEmail) { mutableStateOf(AuthFormState(email = uiState.rememberedEmail)) }
   val white = Color.White
   val muted = Color(0xFFB6C4C8)
+  /**
+   * Every field on this screen is clipped to its own shape as well as given it.
+   *
+   * OutlinedTextField takes a `shape` and draws its outline with it, but the container fill and
+   * the focus indication are drawn by the framework and land square in the corners -- so a field
+   * with a twenty-point radius still showed four hard angles inside the curve, most visible on
+   * this screen because the fields sit on a dark gradient with nothing else to hide them against.
+   * Clipping the node is the one treatment nothing drawn inside it can escape.
+   */
+  val fieldShape = StreamDekRadius.cardShape
+  val fieldClip = Modifier.clip(fieldShape)
+
   val fieldColors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
     focusedTextColor = white,
     unfocusedTextColor = white,
@@ -11135,18 +11202,14 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
       Text("Your entertainment, all in one place", color = muted, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
 
       Spacer(modifier = Modifier.height(if (compact) 14.dp else 20.dp))
-      Text(
-        when (mode) {
-          "signup" -> "Create Your Account"
-          "reset" -> "Reset Your Password"
-          else -> "Welcome Back"
-        },
-        modifier = Modifier.fillMaxWidth(),
-        color = white,
-        fontSize = if (compact) 27.sp else 30.sp,
-        lineHeight = 34.sp,
-        fontWeight = FontWeight.Black,
-      )
+      /**
+       * The line below carries the mode on its own.
+       *
+       * There was a display-sized heading above it -- Welcome Back, Create Your Account, Reset
+       * Your Password -- under a wordmark that had already said StreamDek at 27 points. Two large
+       * headings stacked pushed the fields down the screen to tell the viewer something the
+       * sentence beneath them says more precisely and the button they are reaching for says again.
+       */
       Text(
         when (mode) {
           "signup" -> "Sign up to sync your library, profiles, and progress."
@@ -11160,6 +11223,9 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
         modifier = Modifier.fillMaxWidth(),
         color = muted,
         style = MaterialTheme.typography.bodyMedium,
+        // Centred to line up with the wordmark and tagline above it, which are the only other
+        // things on this screen not aligned to the edge of a field.
+        textAlign = TextAlign.Center,
       )
 
       Spacer(modifier = Modifier.height(sectionGap))
@@ -11168,8 +11234,8 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
         onValueChange = { form = form.copy(email = it); viewModel.rememberAuthEmail(it) },
         placeholder = { InputGuideText("Email") },
         leadingIcon = { Icon(Icons.Rounded.Email, contentDescription = null) },
-        modifier = Modifier.fillMaxWidth(),
-        shape = StreamDekRadius.cardShape,
+        modifier = Modifier.fillMaxWidth().then(fieldClip),
+        shape = fieldShape,
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
         colors = fieldColors,
@@ -11188,8 +11254,8 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
             }
           },
           visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-          modifier = Modifier.fillMaxWidth(),
-          shape = StreamDekRadius.cardShape,
+          modifier = Modifier.fillMaxWidth().then(fieldClip),
+          shape = fieldShape,
           singleLine = true,
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
           colors = fieldColors,
@@ -11201,8 +11267,8 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
           onValueChange = { form = form.copy(resetCode = it) },
           placeholder = { InputGuideText("Reset code") },
           leadingIcon = { Icon(Icons.Rounded.Email, contentDescription = null) },
-          modifier = Modifier.fillMaxWidth(),
-          shape = StreamDekRadius.cardShape,
+          modifier = Modifier.fillMaxWidth().then(fieldClip),
+          shape = fieldShape,
           singleLine = true,
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
           colors = fieldColors,
@@ -11220,8 +11286,8 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
             }
           },
           visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-          modifier = Modifier.fillMaxWidth(),
-          shape = StreamDekRadius.cardShape,
+          modifier = Modifier.fillMaxWidth().then(fieldClip),
+          shape = fieldShape,
           singleLine = true,
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
           colors = fieldColors,
@@ -11259,7 +11325,7 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
             }
           }
         },
-        enabled = !uiState.booting && when (mode) {
+        enabled = !uiState.authSubmitting && when (mode) {
           "reset" -> if (resetCodeSent) {
             form.email.isNotBlank() && form.resetCode.isNotBlank() && form.newPassword.length >= 6
           } else {
@@ -11271,7 +11337,7 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
         shape = StreamDekRadius.cardShape,
         colors = ButtonDefaults.buttonColors(containerColor = white, contentColor = Color.Black, disabledContainerColor = white.copy(alpha = 0.58f), disabledContentColor = Color.Black.copy(alpha = 0.58f)),
       ) {
-        if (uiState.booting) {
+        if (uiState.authSubmitting) {
           CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp, color = Color.Black)
         } else {
           Text(
@@ -11555,8 +11621,26 @@ private fun MainScene(
     }
   }
 
-  LaunchedEffect(uiState.session) {
-    if (uiState.session != null) {
+  /**
+   * Leaving the sign-in form, once, for the scene the viewer actually asked for.
+   *
+   * Held until authSubmitting clears rather than dropped the moment a session exists: the session
+   * arrives before the profile list does, and where a viewer lands depends on that list. Waiting
+   * one request is what turns three scene swaps into one.
+   *
+   * Signing in is also almost always reached from Settings > Account, and the tab underneath the
+   * form is still Settings. Without this the profile picker closes onto the settings page the
+   * viewer left, which reads as the sign-in having gone nowhere. The tab and the settings stack
+   * are reset only when the form was actually open, so restoring a session at startup -- which
+   * never shows the form -- keeps whatever tab was saved.
+   */
+  LaunchedEffect(uiState.session, uiState.authSubmitting) {
+    if (uiState.session != null && !uiState.authSubmitting) {
+      if (showAuth) {
+        selectedTab = MainTab.Home
+        setSettingsRoute(null)
+        detailReturnFromSettings = null
+      }
       showAuth = false
       requireGuestProfile = false
       guestProfileCountAtEntry = -1
@@ -11750,11 +11834,19 @@ private fun MainScene(
             )
 
             if (uiState.updateDownloading) {
+              // The glow behind the bar while an update downloads.
+              //
+              // Modifier.blur defaults to BlurredEdgeTreatment.Rectangle, which clips the blurred
+              // result to the node rectangular bounds -- so a soft halo drawn behind a pill was
+              // sliced off square at all four corners, and the update indicator was the one place
+              // in the app with hard angles. Unbounded lets the blur spread past the box, which is
+              // what a glow does and the only treatment whose edges cannot disagree with the shape
+              // casting it.
               Box(
                 modifier = Modifier
                   .width(navigationWidth)
                   .height(74.dp)
-                  .blur(18.dp)
+                  .blur(18.dp, BlurredEdgeTreatment.Unbounded)
                   .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.42f), RoundedCornerShape(navigationCornerRadius)),
               )
             }
@@ -18820,7 +18912,14 @@ private fun ProfilesSettingsSummary(
   var createExpanded by rememberSaveable { mutableStateOf(false) }
   var profileName by rememberSaveable { mutableStateOf("") }
   var selectedAvatarIndex by rememberSaveable { mutableStateOf(0) }
-  var expandedProfileId by rememberSaveable { mutableStateOf(uiState.activeProfileId) }
+  /**
+   * Nothing is open when the page arrives.
+   *
+   * It used to open the active profile, which is the one the viewer is least likely to have come
+   * here to change and the one whose controls -- rename, PIN, delete, make default -- push every
+   * other profile below the fold before the list has been read once.
+   */
+  var expandedProfileId by rememberSaveable { mutableStateOf<String?>(null) }
   var editingProfileId by rememberSaveable { mutableStateOf<String?>(null) }
   var editingName by rememberSaveable(editingProfileId) { mutableStateOf("") }
   var editingAvatarIndex by rememberSaveable(editingProfileId) { mutableStateOf(0) }
@@ -18831,7 +18930,9 @@ private fun ProfilesSettingsSummary(
   var pin by rememberSaveable(uiState.pinPromptProfileId) { mutableStateOf("") }
 
   LaunchedEffect(uiState.activeProfileId, uiState.profiles.map(StreamProfile::id)) {
-    if (expandedProfileId !in uiState.profiles.map(StreamProfile::id)) expandedProfileId = uiState.activeProfileId
+    // A profile that has gone -- deleted here or on another device -- closes rather than handing
+    // its open state to whichever profile happens to be active.
+    if (expandedProfileId !in uiState.profiles.map(StreamProfile::id)) expandedProfileId = null
   }
 
   uiState.pinPromptProfileId?.let { profileId ->
@@ -18885,7 +18986,6 @@ private fun ProfilesSettingsSummary(
       Surface(
         color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
         shape = StreamDekRadius.sheetShape,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.24f)),
       ) {
         Column(modifier = Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
           Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -18970,9 +19070,11 @@ private fun ProfilesSettingsSummary(
       val expanded = expandedProfileId == profile.id
       val active = profile.id == uiState.activeProfileId
       Surface(
-        color = if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.065f) else MaterialTheme.colorScheme.surface,
+        // The fill alone separates these from the page, and separates the active profile from the
+        // rest. A stroke on top of a tint states the same boundary twice, and on a list of cards
+        // that is a grid of hairlines rather than a set of surfaces.
+        color = if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
         shape = StreamDekRadius.panelShape,
-        border = BorderStroke(1.dp, if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.26f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f)),
         modifier = Modifier.fillMaxWidth().animateContentSize(),
       ) {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -20387,7 +20489,7 @@ private fun SettingsChoiceSheet(
       ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
           Text(title, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-          if (title == "Continue Watching Style" || title == "Title Page Style" || title == "Streaming Network Cards") {
+          if (title == "Continue Watching Style" || title == "Title Page Style" || title == "Streaming Network Cards" || title == "Episode Layout") {
             options.chunked(2).forEach { rowOptions ->
               Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 rowOptions.forEach { option ->
@@ -20410,6 +20512,11 @@ private fun SettingsChoiceSheet(
                     } else if (title == "Streaming Network Cards") {
                       NetworkCardStyleSkeletonPreview(
                         style = runCatching { NetworkCardStyle.valueOf(option) }.getOrDefault(NetworkCardStyle.Branded),
+                        selected = isSelected,
+                      )
+                    } else if (title == "Episode Layout") {
+                      EpisodeLayoutSkeletonPreview(
+                        layout = runCatching { EpisodeLayout.valueOf(option) }.getOrDefault(EpisodeLayout.Strip),
                         selected = isSelected,
                       )
                     } else {
@@ -20489,6 +20596,72 @@ private fun NetworkCardStyleSkeletonPreview(style: NetworkCardStyle, selected: B
           )
         }
         if (!branded) SkeletonBlock(modifier = Modifier.fillMaxWidth(0.72f).height(6.dp), radius = 999.dp)
+      }
+    }
+  }
+}
+
+/**
+ * A season in miniature, so the layout is chosen by looking rather than by reading "Strip".
+ *
+ * The two previews are drawn to the same width and differ only in the way this setting differs:
+ * cards laid across, running off the right edge because that is what the strip does and what the
+ * viewer swipes to reach; or rows laid down, each one a thumbnail with lines beside it, with the
+ * third clipped by the bottom of the frame because a stack continues past the fold rather than
+ * ending. Both are the shape of the thing, not a diagram of it.
+ *
+ * Deliberately no artwork. Unlike the network cards, where the treatment is the whole point and
+ * real posters are the only honest preview, what is being chosen here is an arrangement -- and
+ * two stills would draw the eye to the pictures rather than to where they sit.
+ */
+@Composable
+private fun EpisodeLayoutSkeletonPreview(layout: EpisodeLayout, selected: Boolean) {
+  val border = if (selected) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.24f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+  val fill = if (selected) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
+  Box(
+    modifier = Modifier
+      .fillMaxWidth()
+      .height(88.dp)
+      .clip(StreamDekRadius.thumbShape)
+      .background(fill)
+      .border(1.dp, border, StreamDekRadius.thumbShape)
+      // Clipped by the frame in both directions: the strip runs off the right, the stack off the
+      // bottom, and showing a tidy whole number of either would misdescribe both.
+      .padding(8.dp),
+  ) {
+    when (layout) {
+      EpisodeLayout.Strip -> {
+        Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.fillMaxSize()) {
+          // Four, not three: three fit inside the preview on a tablet-width sheet, and a row that
+          // ends tidily inside the frame is the one thing a strip never does.
+          repeat(4) {
+            Column(
+              modifier = Modifier.width(64.dp),
+              verticalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+              SkeletonBlock(modifier = Modifier.fillMaxWidth().height(40.dp), radius = 8.dp)
+              SkeletonBlock(modifier = Modifier.fillMaxWidth(0.82f).height(7.dp), radius = 8.dp)
+              SkeletonBlock(modifier = Modifier.fillMaxWidth(0.5f).height(5.dp), radius = 8.dp)
+            }
+          }
+        }
+      }
+      EpisodeLayout.Stack -> {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
+          repeat(3) {
+            Row(
+              horizontalArrangement = Arrangement.spacedBy(7.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              modifier = Modifier.fillMaxWidth(),
+            ) {
+              SkeletonBlock(modifier = Modifier.width(38.dp).height(22.dp), radius = 6.dp)
+              Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                SkeletonBlock(modifier = Modifier.fillMaxWidth(0.62f).height(7.dp), radius = 8.dp)
+                SkeletonBlock(modifier = Modifier.fillMaxWidth(0.9f).height(5.dp), radius = 8.dp)
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -20642,6 +20815,7 @@ private fun settingsOptionLabel(title: String, option: String): String = when {
     "MPV" -> "libmpv"
     else -> option
   }
+  title == "Episode Layout" -> if (option == EpisodeLayout.Stack.name) "Vertical stack" else "Horizontal strip"
   title == "Max File Size" && option == "0" -> "Unlimited"
   title == "Max File Size" -> "$option GB"
   title == "Temporary Storage Limit" -> "$option GB"
@@ -24374,6 +24548,9 @@ private fun DetailScreen(
             val forcedStrip = seasonRequiresStripLayout(uiState.selectedSeasonEpisodes.size)
             val episodeLayout = if (forcedStrip) EpisodeLayout.Strip else uiState.episodeLayout
             item {
+              // Read once for the whole section: the season swap, its dim, and the strip dim all
+              // scale with the viewer's animation-speed setting rather than being fixed.
+              val motion = LocalMotionSettings.current
               Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Row(modifier = Modifier.padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                   Text("Episodes", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.weight(1f))
@@ -24443,78 +24620,142 @@ private fun DetailScreen(
                   fallbackPoster = detail.poster ?: detail.backdrop,
                   onSelect = { season -> onLoadSeason(detail.id, season.seasonNumber) },
                 )
-                if (uiState.seasonLoading) {
+                /**
+                 * A loading season keeps the episodes it already had.
+                 *
+                 * Replacing them with the skeleton collapsed this item from the height of a whole
+                 * season to a few placeholder rows, and a list that loses that much content
+                 * underneath the viewer clamps its scroll -- which is why choosing a season sent
+                 * the page back to the top, and why marking an episode watched did too: that
+                 * reloads the season to advance the resume point, so it sets the same flag.
+                 *
+                 * The episodes are never cleared while the next season is fetched, so they are
+                 * still here to draw. Dimming them says a load is happening without taking the
+                 * page apart to say it. The skeleton is kept for the one case it was written for,
+                 * a first load with nothing to show yet, where there is no scroll to lose.
+                 */
+                if (uiState.seasonLoading && uiState.selectedSeasonEpisodes.isEmpty()) {
                   SeasonSelectorSkeleton(style = uiState.seasonTabStyle)
-                } else if (episodeLayout == EpisodeLayout.Strip) {
-                  SeasonEpisodeStrip(
-                    detailId = detail.id,
-                    seasonNumber = uiState.selectedSeasonNumber,
-                    episodes = uiState.selectedSeasonEpisodes,
-                    watchedEpisodeIds = watchedEpisodeIds,
-                    progressRecords = uiState.playbackProgressRecords,
-                    selectedEpisodeId = selectedEpisode?.id,
-                    blurUnwatched = uiState.blurUnwatchedEpisodes,
-                    foreground = streamsForeground,
-                    accent = streamsAccent,
-                    onAccent = onStreamsAccent,
-                    onToggleWatched = { episode ->
-                      onToggleEpisodeWatched(detail, episode, watchedEpisodeKey(detail.id, episode.seasonNumber, episode.episodeNumber) in watchedEpisodeIds)
-                    },
-                    onOpen = { episode ->
-                      if (uiState.showStreamsList) {
-                        episodePageId = episode.id
-                        onLoadStreams(episode)
-                      } else {
-                        onPlayBestStream(episode)
-                      }
-                    },
+                } else if (episodeLayout == EpisodeLayout.Stack) {
+                  /**
+                   * The stacked season, in one item rather than one item per episode.
+                   *
+                   * Emitting a row per item looked right and was wrong twice. The page's list sets
+                   * verticalArrangement to 26dp, which is the gap between a synopsis and a cast
+                   * row and far too much between two episodes of the same season; and the rows
+                   * were only emitted when the season was not loading, so every season change and
+                   * every watched toggle removed them all, collapsed the list, and clamped the
+                   * scroll back to the top.
+                   *
+                   * Composing the whole season at once is what makes this safe, and it is only
+                   * safe because a season longer than sixty episodes is forced to the strip: the
+                   * arrangement that needs laziness is the one that no longer uses this path.
+                   */
+                  /**
+                   * Changing season, without the list blinking.
+                   *
+                   * Three separate steps were landing on top of each other and reading as one
+                   * flicker. The dim that marks a season loading was a hard jump between two alpha
+                   * values rather than a fade. The episodes themselves were swapped underneath it
+                   * with no transition at all, because nothing above them animates on a change of
+                   * season. And a season of ten replacing a season of twenty-four resized the page
+                   * in a single frame, which moves everything below it at once.
+                   *
+                   * Animating the alpha, crossfading on the episodes rather than on the season
+                   * number -- the number changes on the tap, the episodes when they arrive, and it
+                   * is the arrival worth fading -- and easing the height covers all three.
+                   */
+                  val stackAlpha by animateFloatAsState(
+                    targetValue = if (uiState.seasonLoading) 0.5f else 1f,
+                    animationSpec = tween(durationMillis = motion.scaled(MotionDuration.short), easing = FastOutSlowInEasing),
+                    label = "season_stack_dim",
                   )
-                }
-              }
-            }
-            /**
-             * The stacked layout's rows, emitted into the page's own list rather than into the
-             * item above.
-             *
-             * A vertical list nested inside a vertically scrolling parent is the one arrangement
-             * Compose will not measure, and wrapping the season in a plain Column instead would
-             * compose every episode at once -- fine for eight, not for the two hundred the strip
-             * pages into blocks precisely because they exist. Emitted here, a season costs the
-             * same to open however long it is, and it scrolls continuously with the rest of the
-             * page, which is the whole reason to choose this layout.
-             */
-            if (!uiState.seasonLoading && episodeLayout == EpisodeLayout.Stack) {
-              val stackData = seasonEpisodeStackData(
-                detailId = detail.id,
-                seasonNumber = uiState.selectedSeasonNumber,
-                episodes = uiState.selectedSeasonEpisodes,
-                watchedEpisodeIds = watchedEpisodeIds,
-                progressRecords = uiState.playbackProgressRecords,
-              )
-              items(uiState.selectedSeasonEpisodes, key = { "episode-stack-${it.id}" }) { episode ->
-                val record = stackData.progressByEpisode[episode.episodeNumber]
-                EpisodeListRow(
-                  episode = episode,
-                  watched = watchedEpisodeKey(detail.id, episode.seasonNumber, episode.episodeNumber) in watchedEpisodeIds,
-                  blurUnwatched = uiState.blurUnwatchedEpisodes,
-                  selected = episode.id == selectedEpisode?.id,
-                  nextUp = episode.episodeNumber == stackData.nextUnwatched,
-                  progress = record?.progress?.takeIf { !record.completed && it > 0.0 && it < 0.95 },
-                  foreground = streamsForeground,
-                  accent = streamsAccent,
-                  onToggleWatched = {
-                    onToggleEpisodeWatched(detail, episode, watchedEpisodeKey(detail.id, episode.seasonNumber, episode.episodeNumber) in watchedEpisodeIds)
-                  },
-                  onOpen = {
-                    if (uiState.showStreamsList) {
-                      episodePageId = episode.id
-                      onLoadStreams(episode)
-                    } else {
-                      onPlayBestStream(episode)
+                  Crossfade(
+                    targetState = uiState.selectedSeasonEpisodes,
+                    animationSpec = tween(durationMillis = motion.scaled(MotionDuration.standard), easing = FastOutSlowInEasing),
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .alpha(stackAlpha)
+                      .animateContentSize(
+                        animationSpec = tween(durationMillis = motion.scaled(MotionDuration.standard), easing = FastOutSlowInEasing),
+                      ),
+                    label = "season_episode_stack",
+                  ) { seasonEpisodes ->
+                  Column(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .padding(horizontal = 24.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                  ) {
+                    val stackData = seasonEpisodeStackData(
+                      detailId = detail.id,
+                      seasonNumber = seasonEpisodes.firstOrNull()?.seasonNumber ?: uiState.selectedSeasonNumber,
+                      episodes = seasonEpisodes,
+                      watchedEpisodeIds = watchedEpisodeIds,
+                      progressRecords = uiState.playbackProgressRecords,
+                    )
+                    seasonEpisodes.forEach { episode ->
+                      val record = stackData.progressByEpisode[episode.episodeNumber]
+                      key(episode.id) {
+                        EpisodeListRow(
+                          episode = episode,
+                          watched = watchedEpisodeKey(detail.id, episode.seasonNumber, episode.episodeNumber) in watchedEpisodeIds,
+                          blurUnwatched = uiState.blurUnwatchedEpisodes,
+                          selected = episode.id == selectedEpisode?.id,
+                          nextUp = episode.episodeNumber == stackData.nextUnwatched,
+                          progress = record?.progress?.takeIf { !record.completed && it > 0.0 && it < 0.95 },
+                          foreground = streamsForeground,
+                          accent = streamsAccent,
+                          onToggleWatched = {
+                            onToggleEpisodeWatched(detail, episode, watchedEpisodeKey(detail.id, episode.seasonNumber, episode.episodeNumber) in watchedEpisodeIds)
+                          },
+                          onOpen = {
+                            if (uiState.showStreamsList) {
+                              episodePageId = episode.id
+                              onLoadStreams(episode)
+                            } else {
+                              onPlayBestStream(episode)
+                            }
+                          },
+                        )
+                      }
                     }
-                  },
-                  modifier = Modifier.padding(horizontal = 24.dp, vertical = 5.dp),
-                )
+                  }
+                  }
+                } else {
+                  // The strip animates its own block changes; it needs only the loading dim, on
+                  // the same fade as the stack rather than as a step.
+                  val stripAlpha by animateFloatAsState(
+                    targetValue = if (uiState.seasonLoading) 0.5f else 1f,
+                    animationSpec = tween(durationMillis = motion.scaled(MotionDuration.short), easing = FastOutSlowInEasing),
+                    label = "season_strip_dim",
+                  )
+                  Box(modifier = Modifier.alpha(stripAlpha)) {
+                    SeasonEpisodeStrip(
+                      detailId = detail.id,
+                      seasonNumber = uiState.selectedSeasonNumber,
+                      episodes = uiState.selectedSeasonEpisodes,
+                      watchedEpisodeIds = watchedEpisodeIds,
+                      progressRecords = uiState.playbackProgressRecords,
+                      selectedEpisodeId = selectedEpisode?.id,
+                      blurUnwatched = uiState.blurUnwatchedEpisodes,
+                      foreground = streamsForeground,
+                      accent = streamsAccent,
+                      onAccent = onStreamsAccent,
+                      onToggleWatched = { episode ->
+                        onToggleEpisodeWatched(detail, episode, watchedEpisodeKey(detail.id, episode.seasonNumber, episode.episodeNumber) in watchedEpisodeIds)
+                      },
+                      onOpen = { episode ->
+                        if (uiState.showStreamsList) {
+                          episodePageId = episode.id
+                          onLoadStreams(episode)
+                        } else {
+                          onPlayBestStream(episode)
+                        }
+                      },
+                    )
+                  }
+                }
               }
             }
           }
@@ -28020,17 +28261,33 @@ private fun seasonEpisodeStackData(
 }
 
 /**
+ * The stacked row corner radii.
+ *
+ * Concentric, not merely both-rounded: an inner corner keeps its parent curve only when its radius
+ * is the parent radius less the gap between them. Drawn at the same radius as the card, the
+ * thumbnail reads as a sticker sitting on top of it rather than as part of it, which is what a
+ * mismatched inner corner always looks like even when nobody can say why.
+ */
+private val EpisodeRowPadding = 8.dp
+
+/** Room reserved on the right of the text for the watched tick in the corner beneath it. */
+private val EpisodeRowGutter = 26.dp
+private val EpisodeRowShape = RoundedCornerShape(20.dp)
+private val EpisodeRowThumbShape = RoundedCornerShape(12.dp)
+
+/**
  * One episode as a row, for the stacked layout.
  *
  * The same information the wide card carries, rearranged for a list: the still is a thumbnail on
  * the left at the aspect it was shot in, and the text runs beside it rather than over it. Reading
- * dark text off artwork is the compromise the card makes to look cinematic, and it is the wrong
- * compromise for a list somebody is scanning -- so here the type sits on the page's own surface,
- * at the page's own contrast.
+ * type off artwork is the compromise the card makes to look cinematic, and it is the wrong
+ * compromise for a list somebody is scanning.
  *
- * The still keeps its overlays, because they are properties of the image: the episode number,
- * which is what somebody scanning is matching against, and the progress sliver, which belongs to
- * the picture rather than the paragraph. Everything else moves into the column.
+ * The right-hand edge carries state at the top and action at the bottom -- the Next Up pill in the
+ * corner where a badge belongs, the watched tick under it. Both started in the text column, the
+ * pill beside the title where it truncated the name it was meant to annotate, and the tick on a
+ * row of its own that added twenty wasted points of height to every episode in the season. Neither
+ * costs any height here: the column is only as tall as the artwork already made the row.
  */
 @Composable
 private fun EpisodeListRow(
@@ -28048,12 +28305,19 @@ private fun EpisodeListRow(
 ) {
   val unreleased = isEpisodeUnreleased(episode)
   val locked = blurUnwatched && !watched
-  Row(
+  // Kept per episode and across a scroll, so opening a synopsis and coming back does not shut it.
+  var expanded by rememberSaveable(episode.id) { mutableStateOf(false) }
+  // Only what actually overflowed offers to open: a "Show more" under a synopsis that is already
+  // complete is a control that does nothing, and there is one on every short episode in a season.
+  var overflowed by remember(episode.id) { mutableStateOf(false) }
+  val synopsis = episode.overview.ifBlank { "Tap to view streams." }
+
+  Box(
     modifier = modifier
       .fillMaxWidth()
-      .clip(StreamDekRadius.panelShape)
+      .clip(EpisodeRowShape)
       .background(foreground.copy(alpha = 0.055f))
-      .then(if (selected) Modifier.border(2.dp, accent, StreamDekRadius.panelShape) else Modifier)
+      .then(if (selected) Modifier.border(2.dp, accent, EpisodeRowShape) else Modifier)
       .clickable(onClick = onOpen)
       .semantics {
         this.selected = selected
@@ -28063,60 +28327,61 @@ private fun EpisodeListRow(
           nextUp -> "Next up"
           else -> "Not watched"
         }
-      }
-      .padding(8.dp),
-    horizontalArrangement = Arrangement.spacedBy(12.dp),
+      },
   ) {
-    Box(
-      modifier = Modifier
-        .width(132.dp)
-        .aspectRatio(16f / 9f)
-        .clip(StreamDekRadius.badgeShape),
+    Row(
+      modifier = Modifier.fillMaxWidth().padding(EpisodeRowPadding),
+      horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-      AsyncImage(
-        model = episode.still,
-        contentDescription = null,
-        modifier = Modifier.fillMaxSize().then(EpisodeContentBlurModifier(locked)),
-        contentScale = ContentScale.Crop,
-      )
       Box(
         modifier = Modifier
-          .align(Alignment.TopStart)
-          .padding(6.dp)
-          .clip(StreamDekRadius.badgeShape)
-          .background(Color.Black.copy(alpha = 0.62f))
-          .padding(horizontal = 7.dp, vertical = 3.dp),
+          .width(132.dp)
+          .aspectRatio(16f / 9f)
+          .clip(EpisodeRowThumbShape),
       ) {
-        Text(
-          "S${episode.seasonNumber}E${episode.episodeNumber}",
-          color = Color.White,
-          style = MaterialTheme.typography.labelSmall,
-          fontWeight = FontWeight.Black,
+        AsyncImage(
+          model = episode.still,
+          contentDescription = null,
+          modifier = Modifier.fillMaxSize().then(EpisodeContentBlurModifier(locked)),
+          contentScale = ContentScale.Crop,
         )
-      }
-      if (locked && unreleased) LockedEpisodeOverlay("Upcoming")
-      progress?.let { fraction ->
         Box(
           modifier = Modifier
-            .align(Alignment.BottomStart)
-            .fillMaxWidth()
-            .height(3.dp)
-            .background(Color.Black.copy(alpha = 0.42f)),
+            .align(Alignment.TopStart)
+            .padding(6.dp)
+            .clip(StreamDekRadius.badgeShape)
+            .background(Color.Black.copy(alpha = 0.62f))
+            .padding(horizontal = 7.dp, vertical = 3.dp),
         ) {
-          Box(
-            modifier = Modifier
-              .fillMaxHeight()
-              .fillMaxWidth(fraction.coerceIn(0.02, 1.0).toFloat())
-              .background(accent),
+          Text(
+            "S${episode.seasonNumber}E${episode.episodeNumber}",
+            color = Color.White,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Black,
           )
         }
+        if (locked && unreleased) LockedEpisodeOverlay("Upcoming")
+        progress?.let { fraction ->
+          Box(
+            modifier = Modifier
+              .align(Alignment.BottomStart)
+              .fillMaxWidth()
+              .height(3.dp)
+              .background(Color.Black.copy(alpha = 0.42f)),
+          ) {
+            Box(
+              modifier = Modifier
+                .fillMaxHeight()
+                .fillMaxWidth(fraction.coerceIn(0.02, 1.0).toFloat())
+                .background(accent),
+            )
+          }
+        }
       }
-    }
-    Column(
-      modifier = Modifier.weight(1f).padding(top = 2.dp, end = 4.dp),
-      verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-      Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+      Column(
+        modifier = Modifier.weight(1f).padding(top = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+      ) {
         Text(
           episode.name,
           color = foreground,
@@ -28124,47 +28389,94 @@ private fun EpisodeListRow(
           fontWeight = FontWeight.Black,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis,
-          modifier = Modifier.weight(1f, fill = false),
+          // Clears the badge-and-tick cluster above it, which is wider with the badge in it.
+          // Reserving the wider gap unconditionally would shorten every title in the season to
+          // accommodate the one episode that is next up.
+          modifier = Modifier.padding(end = if (nextUp) 62.dp else 0.dp),
         )
-        if (nextUp) {
-          Box(modifier = Modifier.clip(StreamDekRadius.badgeShape).background(accent).padding(horizontal = 7.dp, vertical = 3.dp)) {
-            Text("Next Up", color = readableOn(accent), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black, maxLines = 1)
-          }
+        // Air date and runtime on one line: two short facts that never need a row each.
+        val meta = listOfNotNull(
+          episode.airDate?.let(::formatEpisodeAirDateLabel),
+          episode.runtime?.takeIf { it > 0 }?.let { "${it}m" },
+        )
+        if (meta.isNotEmpty()) {
+          Text(
+            meta.joinToString("  ·  "),
+            color = foreground.copy(alpha = 0.62f),
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+          )
         }
-      }
-      // Air date and runtime on one line: two short facts that never need a row each.
-      val meta = listOfNotNull(
-        episode.airDate?.let(::formatEpisodeAirDateLabel),
-        episode.runtime?.takeIf { it > 0 }?.let { "${it}m" },
-      )
-      if (meta.isNotEmpty()) {
         Text(
-          meta.joinToString("  ·  "),
-          color = foreground.copy(alpha = 0.62f),
-          style = MaterialTheme.typography.labelMedium,
-          fontWeight = FontWeight.Bold,
-          maxLines = 1,
+          synopsis,
+          color = foreground.copy(alpha = 0.72f),
+          style = MaterialTheme.typography.bodySmall,
+          maxLines = if (expanded) Int.MAX_VALUE else 2,
+          overflow = TextOverflow.Ellipsis,
+          // Measured while collapsed only. Asking an expanded paragraph whether it overflows answers
+          // no, which would take the control away at the moment it is needed to close it again.
+          onTextLayout = { result -> if (!expanded) overflowed = result.hasVisualOverflow },
         )
-      }
-      Text(
-        episode.overview.ifBlank { "Tap to view streams." },
-        color = foreground.copy(alpha = 0.72f),
-        style = MaterialTheme.typography.bodySmall,
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis,
-      )
-      // An icon rather than the card's labelled button: in a list the label repeats down the whole
-      // season, and the tick already says which state the row is in.
-      Row(verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = onToggleWatched, modifier = Modifier.size(30.dp)) {
-          Icon(
-            Icons.Rounded.CheckCircle,
-            contentDescription = if (watched) "Mark as unwatched" else "Mark as watched",
-            tint = if (watched) Color(0xFF22C55E) else foreground.copy(alpha = 0.42f),
-            modifier = Modifier.size(19.dp),
+        if (overflowed || expanded) {
+          Text(
+            if (expanded) "Show less" else "Show more",
+            color = accent,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Black,
+            // Its own target rather than the whole paragraph: a tap on the synopsis should still
+            // open the episode, which is what a tap anywhere else on the row does.
+            modifier = Modifier
+              .clip(StreamDekRadius.badgeShape)
+              .clickable { expanded = !expanded }
+              .padding(vertical = 2.dp),
           )
         }
       }
+      // Keeps the synopsis clear of the tick in the corner below it. A gutter in the layout rather
+      // than padding on the text, so the text does not have to know what is overlaid beside it.
+      Spacer(modifier = Modifier.width(EpisodeRowGutter))
+    }
+
+    // Status and action together in the top corner, against the card rather than against the
+    // text. One row rather than two corner alignments: read as a pair they say "this is the one to
+    // watch next, and here is where you mark it done", which is a sentence the two halves do not
+    // make from opposite ends of the card.
+    //
+    // An overlay rather than a trailing column because fillMaxHeight does nothing to a child of a
+    // wrap-height Row -- the column shrank to its contents and SpaceBetween had nothing to
+    // distribute, which is how both ended up stacked at the top by accident before.
+    Row(
+      modifier = Modifier.align(Alignment.TopEnd).padding(EpisodeRowPadding - 2.dp),
+      horizontalArrangement = Arrangement.spacedBy(6.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      if (nextUp) {
+        Box(
+          modifier = Modifier
+            .clip(StreamDekRadius.badgeShape)
+            .background(accent)
+            .padding(horizontal = 7.dp, vertical = 3.dp),
+        ) {
+          Text(
+            "Next Up",
+            color = readableOn(accent),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Black,
+            maxLines = 1,
+          )
+        }
+      }
+      Icon(
+        Icons.Rounded.CheckCircle,
+        contentDescription = if (watched) "Mark as unwatched" else "Mark as watched",
+        tint = if (watched) Color(0xFF22C55E) else foreground.copy(alpha = 0.38f),
+        modifier = Modifier
+          .clip(CircleShape)
+          .clickable(onClick = onToggleWatched)
+          .padding(5.dp)
+          .size(20.dp),
+      )
     }
   }
 }

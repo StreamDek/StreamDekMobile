@@ -308,6 +308,7 @@ data class CloudPlaybackPreferences(
   val defaultAppCatalogsEnabled: Boolean? = null,
   val homeCatalogRowsJson: String? = null,
   val seasonTabStyle: String? = null,
+  val episodeLayout: String? = null,
   val heroTrailerAutoplay: Boolean? = null,
   val heroTrailerResolution: Int? = null,
   val heroTrailerDelaySeconds: Int? = null,

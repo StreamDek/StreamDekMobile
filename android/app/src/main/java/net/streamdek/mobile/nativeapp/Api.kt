@@ -646,6 +646,51 @@ class StreamDekApiClient(context: Context? = null) {
      * `https://api.streamdek.net.example.com/`, and a plugin is free to return a stream URL —
      * which this same client fetches — so that is a way to be handed somebody's API key.
      */
+    /**
+     * Identity on every request to StreamDek's own API, including the ones built by hand.
+     *
+     * Most calls go through executeJson/executePut, which attach authHeaders(session). Fourteen
+     * did not: the enrichment reads behind the media details page -- /tmdb/details, /tmdb/find,
+     * /tmdb/search, /tmdb/home, /tmdb/catalogs and the rest -- were built as bare requests and
+     * carried no token, no device id, nothing.
+     *
+     * That was invisible until the API gained rate limits, because an unidentified caller is
+     * bucketed by address in the anonymous tier: thirty requests a minute across every device
+     * behind one address, where a signed-in account gets two hundred and forty of its own. One
+     * media details page fans out to several of these at once, so the About section filled in or
+     * came back empty depending on what else the phone had just done. Every TMDB request from
+     * this client was landing in that bucket, and 1,740 of them were refused.
+     *
+     * An interceptor rather than fourteen edits: the next request built by hand is covered too,
+     * which is the failure mode worth designing out. It never overwrites an Authorization header
+     * a caller set deliberately, and it is scoped to StreamDek's API host by host comparison for
+     * the reason spelled out below -- a plugin can hand this same client a URL to fetch.
+     *
+     * x-user-id is deliberately not sent here. It is the insecure impersonation header, now
+     * strictly opt-in and off by default on the server; the bearer token is the credential.
+     */
+    .addInterceptor { chain ->
+      val request = chain.request()
+      if (apiHost == null
+        || !request.url.host.equals(apiHost, ignoreCase = true)
+        || !request.header("Authorization").isNullOrBlank()
+      ) {
+        chain.proceed(request)
+      } else {
+        val builder = request.newBuilder()
+        sessionStore?.load()?.let { stored ->
+          builder.header("Authorization", "Bearer ${stored.token}")
+        }
+        clientIdentity?.let { identity ->
+          builder.header("x-client-session-id", identity.sessionId)
+          builder.header("x-client-device-id", identity.deviceId)
+          builder.header("x-client-name", "StreamDek Mobile")
+          builder.header("x-client-platform", "android")
+          builder.header("x-app-version", BuildConfig.VERSION_NAME)
+        }
+        chain.proceed(builder.build())
+      }
+    }
     .addInterceptor { chain ->
       val request = chain.request()
       val manager = serviceCredentials
@@ -2274,6 +2319,7 @@ class StreamDekApiClient(context: Context? = null) {
         .put("homeCatalogRows", preferences.homeCatalogRowsJson?.let(::JSONArray))
       val detail = JSONObject()
         .put("seasonTabStyle", preferences.seasonTabStyle)
+        .put("episodeLayout", preferences.episodeLayout)
         // Trailer playback choices are this device's own — see [PLATFORM_PREFERENCES_KEY]. They are
         // deliberately no longer written to the shared section: a television's idea of when a
         // trailer should start has nothing to do with a phone's, and while both wrote here the last
@@ -2475,6 +2521,7 @@ class StreamDekApiClient(context: Context? = null) {
         defaultAppCatalogsEnabled = optionalBoolean(home, "defaultAppCatalogsEnabled"),
         homeCatalogRowsJson = home.optJSONArray("homeCatalogRows")?.toString(),
         seasonTabStyle = optionalString(detail, "seasonTabStyle"),
+        episodeLayout = optionalString(detail, "episodeLayout"),
         heroTrailerAutoplay = optionalBoolean(platform, "heroTrailerAutoplay") ?: optionalBoolean(detail, "heroTrailerAutoplay"),
         trailerCacheClearHours = optionalInt(detail, "trailerCacheClearHours"),
         detailBackgroundMode = optionalString(detail, "detailBackgroundMode"),

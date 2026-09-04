@@ -24,6 +24,30 @@ const val EPISODE_RANGE_THRESHOLD = 20
 const val EPISODE_RANGE_SIZE = 20
 
 /**
+ * The season length past which the stacked layout stops being the better one.
+ *
+ * Deliberately well above [EPISODE_RANGE_THRESHOLD]. Twenty is the point at which a strip starts
+ * needing blocks to stay reachable; it is nowhere near the point at which a vertical list stops
+ * working, and a twenty-four episode network season is precisely the case the stack is good at --
+ * one continuous scroll, which is why somebody chose it.
+ *
+ * Sixty is roughly where that stops being true. Sixty rows is eight or nine full-screen flings
+ * with no way to skip ahead, because the stack lists a whole season by design and has no blocks
+ * and no jump. Past that the strip is not a preference any more, it is the only layout that can
+ * reach episode 176 in two taps -- so a long season is drawn as a strip whichever layout is set.
+ */
+const val EPISODE_STACK_LIMIT = 60
+
+/**
+ * Whether a season of this length has to be shown as a strip.
+ *
+ * Here rather than in the Compose tree so the rule is one testable expression shared with whatever
+ * else needs it, and so the number is not buried in a layout condition.
+ */
+fun seasonRequiresStripLayout(episodeCount: Int, limit: Int = EPISODE_STACK_LIMIT): Boolean =
+  episodeCount > limit
+
+/**
  * One block of a long season.
  *
  * [label] is built from the episode numbers actually present rather than from the block's position,

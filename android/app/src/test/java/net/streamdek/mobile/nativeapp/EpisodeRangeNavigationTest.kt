@@ -1,6 +1,7 @@
 package net.streamdek.mobile.nativeapp
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -163,5 +164,34 @@ class EpisodeRangeNavigationTest {
   fun `a jump with nothing to jump to is refused`() {
     assertNull(resolveJumpTarget(emptyList(), 3))
     assertNull(resolveJumpTarget(season(200), null))
+  }
+
+  /**
+   * The layout override for long seasons.
+   *
+   * The limit sits well above the range threshold on purpose: blocks start earning their place at
+   * twenty, and a vertical list is still the better way to read a season several times that long.
+   * These pin both ends of that gap, because collapsing the two numbers into one would quietly
+   * take the stacked layout away from the ordinary network season it was built for.
+   */
+  @Test
+  fun `an ordinary season is left to the viewer's chosen layout`() {
+    assertFalse(seasonRequiresStripLayout(0))
+    assertFalse(seasonRequiresStripLayout(10))
+    // Long enough to be cut into blocks, nowhere near long enough to need them.
+    assertTrue(buildEpisodeRanges(season(24)).isNotEmpty())
+    assertFalse(seasonRequiresStripLayout(24))
+    assertFalse(seasonRequiresStripLayout(EPISODE_STACK_LIMIT))
+  }
+
+  @Test
+  fun `a season past the limit is forced to the strip`() {
+    assertTrue(seasonRequiresStripLayout(EPISODE_STACK_LIMIT + 1))
+    assertTrue(seasonRequiresStripLayout(200))
+  }
+
+  @Test
+  fun `the stack limit leaves room above the range threshold`() {
+    assertTrue(EPISODE_STACK_LIMIT > EPISODE_RANGE_THRESHOLD)
   }
 }

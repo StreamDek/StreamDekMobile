@@ -359,6 +359,22 @@ private enum class LibraryTab { Continue, Watchlist, Profiles, Addons, Debrid, T
 private enum class DetailTab { About, Episodes, Streams }
 private enum class DetailPageStyle { Classic, Centered }
 private enum class SeasonTabStyle { Regular, Posters }
+
+/**
+ * How a season's episodes are laid out on a series page.
+ *
+ * `Strip` is the horizontal row of wide cards the app has always drawn: cinematic, and it keeps
+ * the sources list within reach because the episodes take one band of the page rather than all of
+ * it. It costs a sideways swipe per episode, which is the wrong gesture when somebody is reading
+ * down a season deciding what to watch.
+ *
+ * `Stack` lists them down the page instead, one row each, so a season is a single continuous
+ * scroll in the direction the rest of the page already scrolls. Longer seasons are where the
+ * difference tells: the strip pages them into blocks of twenty to keep any episode within a few
+ * swipes, and the stack does not need to, because scrolling past forty rows is something a thumb
+ * already knows how to do.
+ */
+private enum class EpisodeLayout { Strip, Stack }
 private enum class ContinueWatchingStyle { Cinematic, Glass, Ticket, Mini, Stacked }
 
 /**
@@ -985,6 +1001,7 @@ private data class AppUiState(
   val addonSubtitleLoading: String = ADDON_SUBTITLE_LOADING_ALL,
   val detailPageStyle: DetailPageStyle = DetailPageStyle.Classic,
   val seasonTabStyle: SeasonTabStyle = SeasonTabStyle.Regular,
+  val episodeLayout: EpisodeLayout = EpisodeLayout.Strip,
   val showNavLabels: Boolean = true,
   val collapsibleNavigationEnabled: Boolean = false,
   val navigationAutoCollapseSeconds: Int = 5,
@@ -1877,6 +1894,7 @@ private class AppSettingsStore(context: Context) {
     addonSubtitleLoading = prefs.getString("addon_subtitle_loading", ADDON_SUBTITLE_LOADING_ALL) ?: ADDON_SUBTITLE_LOADING_ALL,
     detailPageStyle = runCatching { DetailPageStyle.valueOf(profilePrefs.getString("detail_page_style", DetailPageStyle.Classic.name) ?: DetailPageStyle.Classic.name) }.getOrDefault(DetailPageStyle.Classic),
     seasonTabStyle = runCatching { SeasonTabStyle.valueOf(profilePrefs.getString("season_tab_style", SeasonTabStyle.Regular.name) ?: SeasonTabStyle.Regular.name) }.getOrDefault(SeasonTabStyle.Regular),
+    episodeLayout = runCatching { EpisodeLayout.valueOf(profilePrefs.getString("episode_layout", EpisodeLayout.Strip.name) ?: EpisodeLayout.Strip.name) }.getOrDefault(EpisodeLayout.Strip),
     showNavLabels = prefs.getBoolean("show_nav_labels", true),
     collapsibleNavigationEnabled = prefs.getBoolean("collapsible_navigation_enabled", false),
     downloadsEnabled = prefs.getBoolean("downloads_enabled", false),
@@ -2017,6 +2035,7 @@ private class AppSettingsStore(context: Context) {
   fun saveAddonSubtitleLoading(value: String) { prefs.edit().putString("addon_subtitle_loading", value).apply() }
   fun saveDetailPageStyle(value: DetailPageStyle) { profilePrefs.edit().putString("detail_page_style", value.name).apply() }
   fun saveSeasonTabStyle(value: SeasonTabStyle) { profilePrefs.edit().putString("season_tab_style", value.name).apply() }
+  fun saveEpisodeLayout(value: EpisodeLayout) { profilePrefs.edit().putString("episode_layout", value.name).apply() }
   fun saveShowNavLabels(value: Boolean) { prefs.edit().putBoolean("show_nav_labels", value).apply() }
   fun saveCollapsibleNavigationEnabled(value: Boolean) { prefs.edit().putBoolean("collapsible_navigation_enabled", value).apply() }
   fun saveDownloadsEnabled(value: Boolean) { prefs.edit().putBoolean("downloads_enabled", value).apply() }
@@ -7826,6 +7845,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val homeCardTextMode = preferences.homeCardTextMode?.let(HomeCardTextMode::fromKey)
     val networkCardStyle = preferences.networkCardStyle?.let { runCatching { NetworkCardStyle.valueOf(it) }.getOrNull() }
     val seasonTabStyle = preferences.seasonTabStyle?.let { runCatching { SeasonTabStyle.valueOf(it) }.getOrNull() }
+    val episodeLayout = preferences.episodeLayout?.let { runCatching { EpisodeLayout.valueOf(it) }.getOrNull() }
     val decoderMode = preferences.decoderMode?.let(::normalizeDecoderModeSetting)
     val renderSurface = preferences.renderSurface?.let(::normalizeRenderSurfaceSetting)
     val playerEngine = preferences.playerEngine?.let(::normalizePlayerEngineSetting)
@@ -7862,6 +7882,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     preferences.defaultAppCatalogsEnabled?.let(appSettingsStore::saveDefaultAppCatalogsEnabled)
     homeCatalogRows?.let(appSettingsStore::saveHomeCatalogRows)
     seasonTabStyle?.let(appSettingsStore::saveSeasonTabStyle)
+    episodeLayout?.let(appSettingsStore::saveEpisodeLayout)
     preferences.heroTrailerAutoplay?.let(appSettingsStore::saveHeroTrailerAutoplay)
     preferences.heroTrailerResolution?.let(appSettingsStore::saveHeroTrailerResolution)
     preferences.heroTrailerDelaySeconds?.let(appSettingsStore::saveHeroTrailerDelaySeconds)
@@ -7947,6 +7968,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       defaultAppCatalogsEnabled = preferences.defaultAppCatalogsEnabled ?: uiState.defaultAppCatalogsEnabled,
       homeCatalogRows = homeCatalogRows ?: uiState.homeCatalogRows,
       seasonTabStyle = seasonTabStyle ?: uiState.seasonTabStyle,
+      episodeLayout = episodeLayout ?: uiState.episodeLayout,
       heroTrailerAutoplay = preferences.heroTrailerAutoplay ?: uiState.heroTrailerAutoplay,
       heroTrailerResolution = preferences.heroTrailerResolution?.coerceIn(360, 2160) ?: uiState.heroTrailerResolution,
       trailerCacheClearHours = preferences.trailerCacheClearHours ?: uiState.trailerCacheClearHours,
@@ -8878,6 +8900,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       defaultAppCatalogsEnabled = uiState.defaultAppCatalogsEnabled,
       homeCatalogRowsJson = serializeHomeCatalogRows(uiState.homeCatalogRows),
       seasonTabStyle = uiState.seasonTabStyle.name,
+      episodeLayout = uiState.episodeLayout.name,
       heroTrailerAutoplay = uiState.heroTrailerAutoplay,
       heroTrailerResolution = uiState.heroTrailerResolution,
       heroTrailerDelaySeconds = uiState.heroTrailerDelaySeconds,
@@ -8995,6 +9018,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   }
   fun setDetailPageStyle(style: DetailPageStyle) { appSettingsStore.saveDetailPageStyle(style); uiState = uiState.copy(detailPageStyle = style); syncCloudPreferences() }
   fun setSeasonTabStyle(style: SeasonTabStyle) { appSettingsStore.saveSeasonTabStyle(style); uiState = uiState.copy(seasonTabStyle = style); syncCloudPreferences() }
+  fun setEpisodeLayout(layout: EpisodeLayout) { appSettingsStore.saveEpisodeLayout(layout); uiState = uiState.copy(episodeLayout = layout); syncCloudPreferences() }
   fun setShowNavLabels(value: Boolean) { appSettingsStore.saveShowNavLabels(value); uiState = uiState.copy(showNavLabels = value); syncCloudPreferences() }
   fun setCollapsibleNavigationEnabled(value: Boolean) { appSettingsStore.saveCollapsibleNavigationEnabled(value); uiState = uiState.copy(collapsibleNavigationEnabled = value); syncCloudPreferences() }
   fun setNavigationAutoCollapseSeconds(value: Int) {
@@ -12052,6 +12076,7 @@ private fun MainScene(
           onToggleEpisodeWatched = viewModel::toggleEpisodeWatched,
           onMarkPreviousEpisodesWatched = viewModel::markPreviousEpisodesWatched,
           onSetSeasonWatched = viewModel::setSeasonWatched,
+          onSeasonTabStyleChange = viewModel::setSeasonTabStyle,
           onRefreshPlaybackProgress = viewModel::pullPlaybackProgress,
           onToggleFavourite = viewModel::toggleFavouriteChannelForCurrentDetail,
           onOpenPerson = viewModel::openPerson,
@@ -13275,7 +13300,7 @@ private fun NetworkCatalogHeaderContent(
         AdaptivePageTitle(title = networkCatalogDisplayName(network.title), maxLines = 2)
         Text("Network catalog", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.64f), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
       }
-      GlassCircleButton(onClick = onToggleColumns) {
+      GlassCircleButton(borderless = true, onClick = onToggleColumns) {
         Icon(if (columns == 3) Icons.Rounded.ViewAgenda else Icons.Rounded.ViewModule, contentDescription = "Change grid size", tint = MaterialTheme.colorScheme.onBackground)
       }
     }
@@ -13765,7 +13790,7 @@ private fun LiveChannelsBrowseScreen(
           verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
           Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            GlassCircleButton(onClick = onBack) {
+            GlassCircleButton(borderless = true, onClick = onBack) {
               Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onBackground)
             }
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -13778,7 +13803,7 @@ private fun LiveChannelsBrowseScreen(
               )
             }
             if (onClearFavourites != null && favouriteItems.isNotEmpty()) {
-              GlassCircleButton(onClick = { showClearConfirm = true }) {
+              GlassCircleButton(borderless = true, onClick = { showClearConfirm = true }) {
                 Icon(Icons.Rounded.DeleteSweep, contentDescription = "Clear favourites", tint = MaterialTheme.colorScheme.onBackground)
               }
             }
@@ -14679,7 +14704,7 @@ private fun BrowseSectionHeaderContent(
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
       // Only shown one level deep (inside a category), where back means "up", not "leave".
       if (onUpNavigate != null) {
-        GlassCircleButton(onClick = onUpNavigate) {
+        GlassCircleButton(borderless = true, onClick = onUpNavigate) {
           Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "All categories", tint = MaterialTheme.colorScheme.onBackground)
         }
       }
@@ -14693,12 +14718,12 @@ private fun BrowseSectionHeaderContent(
         }
       }
       if (onClearAll != null) {
-        GlassCircleButton(onClick = onClearAll) {
+        GlassCircleButton(borderless = true, onClick = onClearAll) {
           Icon(Icons.Rounded.DeleteSweep, contentDescription = clearAllDescription, tint = MaterialTheme.colorScheme.onBackground)
         }
       }
       if (showLayoutToggle) {
-        GlassCircleButton(onClick = onCycleLayout) {
+        GlassCircleButton(borderless = true, onClick = onCycleLayout) {
           Icon(
             when (layout) {
               BrowseLayout.Cards3 -> Icons.Rounded.ViewAgenda
@@ -17576,6 +17601,7 @@ private fun SettingsScene(
       onPreferredAudioLanguageChange = viewModel::setPreferredAudioLanguage,
       onDetailPageStyleChange = viewModel::setDetailPageStyle,
       onSeasonTabStyleChange = viewModel::setSeasonTabStyle,
+      onEpisodeLayoutChange = viewModel::setEpisodeLayout,
       onShowNavLabelsChange = viewModel::setShowNavLabels,
       onCollapsibleNavigationEnabledChange = viewModel::setCollapsibleNavigationEnabled,
       onNavigationAutoCollapseSecondsChange = viewModel::setNavigationAutoCollapseSeconds,
@@ -17747,6 +17773,7 @@ private fun SettingsTab(
   onPreferredAudioLanguageChange: (String) -> Unit,
   onDetailPageStyleChange: (DetailPageStyle) -> Unit,
   onSeasonTabStyleChange: (SeasonTabStyle) -> Unit,
+  onEpisodeLayoutChange: (EpisodeLayout) -> Unit,
   onShowNavLabelsChange: (Boolean) -> Unit,
   onCollapsibleNavigationEnabledChange: (Boolean) -> Unit,
   onNavigationAutoCollapseSecondsChange: (Int) -> Unit,
@@ -18485,6 +18512,9 @@ private fun SettingsTab(
           }
           item {
             SettingsSection("Episodes and Seasons") {
+              SettingsChoiceRow("EPL", Color(0xFF34D399), "Episode Layout", "Show a season as a horizontal strip of cards, or as a vertical list you scroll down.", EpisodeLayout.values().map { it.name }, uiState.episodeLayout.name) { selected ->
+                onEpisodeLayoutChange(EpisodeLayout.valueOf(selected))
+              }
               SettingsChoiceRow("SEA", Color(0xFF38BDF8), "Season Tabs", "Choose regular tabs or poster image tabs for series seasons.", SeasonTabStyle.values().map { it.name }, uiState.seasonTabStyle.name) { selected ->
                 onSeasonTabStyleChange(SeasonTabStyle.valueOf(selected))
               }
@@ -20724,6 +20754,7 @@ private fun settingsOptionDescription(title: String, option: String): String? = 
   }
   "Title Page Style" -> "Use the $option layout on media pages."
   "Season Tabs" -> if (option == SeasonTabStyle.Posters.name) "Show image tabs for seasons." else "Use compact regular season tabs."
+  "Episode Layout" -> if (option == EpisodeLayout.Stack.name) "List episodes down the page in one continuous scroll." else "Swipe through episodes as wide cards in a row."
   else -> null
 }
 
@@ -24030,6 +24061,7 @@ private fun DetailScreen(
   onToggleEpisodeWatched: (MediaDetail, EpisodeItem, Boolean) -> Unit,
   onMarkPreviousEpisodesWatched: (MediaDetail, EpisodeItem) -> Unit,
   onSetSeasonWatched: (MediaDetail, List<EpisodeItem>, Boolean) -> Unit,
+  onSeasonTabStyleChange: (SeasonTabStyle) -> Unit,
   onRefreshPlaybackProgress: () -> Unit,
   onToggleFavourite: () -> Unit,
   onOpenPerson: (CastMember) -> Unit,
@@ -24330,6 +24362,17 @@ private fun DetailScreen(
         }
         DetailTab.Episodes.name -> {
           if (detail.type == "tv" && detail.seasons.isNotEmpty()) {
+            /**
+             * A long season is drawn as a strip whichever layout is set.
+             *
+             * The stack lists a whole season and deliberately does not page it, which is the
+             * reason to choose it and also the reason it cannot serve a two-hundred episode
+             * season: there is no block row and no jump, so episode 176 is only reachable by
+             * scrolling to it. The strip has both. Past the limit this stops being a matter of
+             * taste, so the preference is overridden rather than honoured into a dead end.
+             */
+            val forcedStrip = seasonRequiresStripLayout(uiState.selectedSeasonEpisodes.size)
+            val episodeLayout = if (forcedStrip) EpisodeLayout.Strip else uiState.episodeLayout
             item {
               Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Row(modifier = Modifier.padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -24350,6 +24393,49 @@ private fun DetailScreen(
                     Text(if (fullSeasonWatched) "Mark Season as Unwatched" else "Mark Season as Watched", fontWeight = FontWeight.Bold)
                   }
                 }
+                // The same choice as Settings > Season Tabs, put where the seasons actually are.
+                // It is a looking-at-it decision -- these posters are worth the room, those ones
+                // are not -- and making it costs two taps here instead of leaving the page.
+                Row(
+                  modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                ) {
+                  Text(
+                    "Seasons",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Black,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.weight(1f),
+                  )
+                  val posters = uiState.seasonTabStyle == SeasonTabStyle.Posters
+                  Row(
+                    modifier = Modifier
+                      .heightIn(min = 36.dp)
+                      .clip(StreamDekRadius.pill)
+                      .background(streamsForeground.copy(alpha = 0.08f))
+                      .border(1.dp, streamsForeground.copy(alpha = 0.16f), StreamDekRadius.pill)
+                      .clickable { onSeasonTabStyleChange(if (posters) SeasonTabStyle.Regular else SeasonTabStyle.Posters) }
+                      .padding(horizontal = 13.dp, vertical = 7.dp)
+                      .semantics { stateDescription = if (posters) "Poster tabs" else "Regular tabs" },
+                    verticalAlignment = Alignment.CenterVertically,
+                  ) {
+                    Text(
+                      if (posters) "Posters" else "Tabs",
+                      color = streamsForeground,
+                      style = MaterialTheme.typography.labelMedium,
+                      fontWeight = FontWeight.Black,
+                      maxLines = 1,
+                    )
+                  }
+                }
+                if (forcedStrip && uiState.episodeLayout == EpisodeLayout.Stack) {
+                  Text(
+                    "This season is too long to list. Showing it as a strip so you can jump between episodes.",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.58f),
+                    modifier = Modifier.padding(horizontal = 24.dp),
+                  )
+                }
                 SeasonSelector(
                   seasons = detail.seasons,
                   selectedSeasonNumber = uiState.selectedSeasonNumber,
@@ -24359,7 +24445,7 @@ private fun DetailScreen(
                 )
                 if (uiState.seasonLoading) {
                   SeasonSelectorSkeleton(style = uiState.seasonTabStyle)
-                } else {
+                } else if (episodeLayout == EpisodeLayout.Strip) {
                   SeasonEpisodeStrip(
                     detailId = detail.id,
                     seasonNumber = uiState.selectedSeasonNumber,
@@ -24384,6 +24470,51 @@ private fun DetailScreen(
                     },
                   )
                 }
+              }
+            }
+            /**
+             * The stacked layout's rows, emitted into the page's own list rather than into the
+             * item above.
+             *
+             * A vertical list nested inside a vertically scrolling parent is the one arrangement
+             * Compose will not measure, and wrapping the season in a plain Column instead would
+             * compose every episode at once -- fine for eight, not for the two hundred the strip
+             * pages into blocks precisely because they exist. Emitted here, a season costs the
+             * same to open however long it is, and it scrolls continuously with the rest of the
+             * page, which is the whole reason to choose this layout.
+             */
+            if (!uiState.seasonLoading && episodeLayout == EpisodeLayout.Stack) {
+              val stackData = seasonEpisodeStackData(
+                detailId = detail.id,
+                seasonNumber = uiState.selectedSeasonNumber,
+                episodes = uiState.selectedSeasonEpisodes,
+                watchedEpisodeIds = watchedEpisodeIds,
+                progressRecords = uiState.playbackProgressRecords,
+              )
+              items(uiState.selectedSeasonEpisodes, key = { "episode-stack-${it.id}" }) { episode ->
+                val record = stackData.progressByEpisode[episode.episodeNumber]
+                EpisodeListRow(
+                  episode = episode,
+                  watched = watchedEpisodeKey(detail.id, episode.seasonNumber, episode.episodeNumber) in watchedEpisodeIds,
+                  blurUnwatched = uiState.blurUnwatchedEpisodes,
+                  selected = episode.id == selectedEpisode?.id,
+                  nextUp = episode.episodeNumber == stackData.nextUnwatched,
+                  progress = record?.progress?.takeIf { !record.completed && it > 0.0 && it < 0.95 },
+                  foreground = streamsForeground,
+                  accent = streamsAccent,
+                  onToggleWatched = {
+                    onToggleEpisodeWatched(detail, episode, watchedEpisodeKey(detail.id, episode.seasonNumber, episode.episodeNumber) in watchedEpisodeIds)
+                  },
+                  onOpen = {
+                    if (uiState.showStreamsList) {
+                      episodePageId = episode.id
+                      onLoadStreams(episode)
+                    } else {
+                      onPlayBestStream(episode)
+                    }
+                  },
+                  modifier = Modifier.padding(horizontal = 24.dp, vertical = 5.dp),
+                )
               }
             }
           }
@@ -27851,6 +27982,188 @@ private fun EpisodeViewportCard(
             .fillMaxWidth(fraction.coerceIn(0.02, 1.0).toFloat())
             .background(accent),
         )
+      }
+    }
+  }
+}
+
+/**
+ * The derived state a stacked season needs, worked out once for the whole list.
+ *
+ * A plain function rather than a composable because the stack emits its rows straight into the
+ * page's own LazyColumn -- that scope is not composable, and computing this per row would walk
+ * every progress record once per episode.
+ */
+private class SeasonEpisodeStackData(
+  val progressByEpisode: Map<Int, PlaybackProgressRecord>,
+  val nextUnwatched: Int?,
+)
+
+private fun seasonEpisodeStackData(
+  detailId: String,
+  seasonNumber: Int?,
+  episodes: List<EpisodeItem>,
+  watchedEpisodeIds: List<String>,
+  progressRecords: List<PlaybackProgressRecord>,
+): SeasonEpisodeStackData {
+  val watchedNumbers = episodes
+    .filter { watchedEpisodeKey(detailId, it.seasonNumber, it.episodeNumber) in watchedEpisodeIds }
+    .mapTo(mutableSetOf()) { it.episodeNumber }
+  val progressByEpisode = progressRecords
+    .filter { it.entityType.equals("tv", ignoreCase = true) && it.entityId == detailId && it.seasonNumber == seasonNumber && it.episodeNumber != null }
+    .groupBy { it.episodeNumber!! }
+    .mapValues { (_, records) -> records.maxByOrNull { it.updatedAt }!! }
+  return SeasonEpisodeStackData(
+    progressByEpisode = progressByEpisode,
+    nextUnwatched = nextUnwatchedEpisodeNumber(episodes.map { it.episodeNumber }, watchedNumbers),
+  )
+}
+
+/**
+ * One episode as a row, for the stacked layout.
+ *
+ * The same information the wide card carries, rearranged for a list: the still is a thumbnail on
+ * the left at the aspect it was shot in, and the text runs beside it rather than over it. Reading
+ * dark text off artwork is the compromise the card makes to look cinematic, and it is the wrong
+ * compromise for a list somebody is scanning -- so here the type sits on the page's own surface,
+ * at the page's own contrast.
+ *
+ * The still keeps its overlays, because they are properties of the image: the episode number,
+ * which is what somebody scanning is matching against, and the progress sliver, which belongs to
+ * the picture rather than the paragraph. Everything else moves into the column.
+ */
+@Composable
+private fun EpisodeListRow(
+  episode: EpisodeItem,
+  watched: Boolean,
+  blurUnwatched: Boolean,
+  selected: Boolean = false,
+  nextUp: Boolean = false,
+  progress: Double? = null,
+  foreground: Color,
+  accent: Color,
+  onToggleWatched: () -> Unit,
+  onOpen: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val unreleased = isEpisodeUnreleased(episode)
+  val locked = blurUnwatched && !watched
+  Row(
+    modifier = modifier
+      .fillMaxWidth()
+      .clip(StreamDekRadius.panelShape)
+      .background(foreground.copy(alpha = 0.055f))
+      .then(if (selected) Modifier.border(2.dp, accent, StreamDekRadius.panelShape) else Modifier)
+      .clickable(onClick = onOpen)
+      .semantics {
+        this.selected = selected
+        stateDescription = when {
+          watched -> "Watched"
+          progress != null -> "Part watched"
+          nextUp -> "Next up"
+          else -> "Not watched"
+        }
+      }
+      .padding(8.dp),
+    horizontalArrangement = Arrangement.spacedBy(12.dp),
+  ) {
+    Box(
+      modifier = Modifier
+        .width(132.dp)
+        .aspectRatio(16f / 9f)
+        .clip(StreamDekRadius.badgeShape),
+    ) {
+      AsyncImage(
+        model = episode.still,
+        contentDescription = null,
+        modifier = Modifier.fillMaxSize().then(EpisodeContentBlurModifier(locked)),
+        contentScale = ContentScale.Crop,
+      )
+      Box(
+        modifier = Modifier
+          .align(Alignment.TopStart)
+          .padding(6.dp)
+          .clip(StreamDekRadius.badgeShape)
+          .background(Color.Black.copy(alpha = 0.62f))
+          .padding(horizontal = 7.dp, vertical = 3.dp),
+      ) {
+        Text(
+          "S${episode.seasonNumber}E${episode.episodeNumber}",
+          color = Color.White,
+          style = MaterialTheme.typography.labelSmall,
+          fontWeight = FontWeight.Black,
+        )
+      }
+      if (locked && unreleased) LockedEpisodeOverlay("Upcoming")
+      progress?.let { fraction ->
+        Box(
+          modifier = Modifier
+            .align(Alignment.BottomStart)
+            .fillMaxWidth()
+            .height(3.dp)
+            .background(Color.Black.copy(alpha = 0.42f)),
+        ) {
+          Box(
+            modifier = Modifier
+              .fillMaxHeight()
+              .fillMaxWidth(fraction.coerceIn(0.02, 1.0).toFloat())
+              .background(accent),
+          )
+        }
+      }
+    }
+    Column(
+      modifier = Modifier.weight(1f).padding(top = 2.dp, end = 4.dp),
+      verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+      Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+          episode.name,
+          color = foreground,
+          style = MaterialTheme.typography.titleSmall,
+          fontWeight = FontWeight.Black,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+          modifier = Modifier.weight(1f, fill = false),
+        )
+        if (nextUp) {
+          Box(modifier = Modifier.clip(StreamDekRadius.badgeShape).background(accent).padding(horizontal = 7.dp, vertical = 3.dp)) {
+            Text("Next Up", color = readableOn(accent), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black, maxLines = 1)
+          }
+        }
+      }
+      // Air date and runtime on one line: two short facts that never need a row each.
+      val meta = listOfNotNull(
+        episode.airDate?.let(::formatEpisodeAirDateLabel),
+        episode.runtime?.takeIf { it > 0 }?.let { "${it}m" },
+      )
+      if (meta.isNotEmpty()) {
+        Text(
+          meta.joinToString("  ·  "),
+          color = foreground.copy(alpha = 0.62f),
+          style = MaterialTheme.typography.labelMedium,
+          fontWeight = FontWeight.Bold,
+          maxLines = 1,
+        )
+      }
+      Text(
+        episode.overview.ifBlank { "Tap to view streams." },
+        color = foreground.copy(alpha = 0.72f),
+        style = MaterialTheme.typography.bodySmall,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+      )
+      // An icon rather than the card's labelled button: in a list the label repeats down the whole
+      // season, and the tick already says which state the row is in.
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onToggleWatched, modifier = Modifier.size(30.dp)) {
+          Icon(
+            Icons.Rounded.CheckCircle,
+            contentDescription = if (watched) "Mark as unwatched" else "Mark as watched",
+            tint = if (watched) Color(0xFF22C55E) else foreground.copy(alpha = 0.42f),
+            modifier = Modifier.size(19.dp),
+          )
+        }
       }
     }
   }

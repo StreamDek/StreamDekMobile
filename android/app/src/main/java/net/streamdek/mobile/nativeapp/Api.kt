@@ -31,6 +31,7 @@ import java.util.concurrent.TimeUnit
 private const val SESSION_PREFS = "streamdek_native_session"
 private const val SESSION_TOKEN_KEY = "token"
 private const val SESSION_USER_JSON_KEY = "user_json"
+private const val SESSION_REFRESH_TOKEN_KEY = "refresh_token"
 private const val PROFILE_PREFS = "streamdek_native_profiles"
 private const val GUEST_PROFILE_PREFS = "streamdek_native_guest_profiles"
 private const val WATCHLIST_PREFS = "streamdek_native_watchlist"
@@ -103,15 +104,23 @@ class SessionStore(context: Context) {
     val token = prefs.getString(SESSION_TOKEN_KEY, null) ?: return null
     val userJson = prefs.getString(SESSION_USER_JSON_KEY, null) ?: return null
     return runCatching {
-      AuthSession(token = token, user = parseSessionUser(JSONObject(userJson), token))
+      AuthSession(
+        token = token,
+        user = parseSessionUser(JSONObject(userJson), token),
+        refreshToken = prefs.getString(SESSION_REFRESH_TOKEN_KEY, null),
+      )
     }.getOrNull()
   }
 
   fun save(session: AuthSession) {
-    prefs.edit()
+    val editor = prefs.edit()
       .putString(SESSION_TOKEN_KEY, session.token)
       .putString(SESSION_USER_JSON_KEY, serializeSessionUser(session.user).toString())
-      .apply()
+    // Carried across rather than cleared when a save does not carry one: several writes here are
+    // metadata refreshes that rebuild the session from /auth/me, and dropping the refresh token
+    // on one of those would leave the session unable to renew.
+    session.refreshToken?.let { editor.putString(SESSION_REFRESH_TOKEN_KEY, it) }
+    editor.apply()
   }
 
   fun clear() {
@@ -570,9 +579,37 @@ data class PlaybackProgressRecord(
   val lastPlatform: String? = null,
 )
 
+/** Why a session ended without the person asking. */
+enum class SessionEndReason { EXPIRED, SUSPENDED }
+
+/**
+ * Raised when the account has been suspended.
+ *
+ * Distinct from an ordinary failure so a caller can tell the difference. Before this, a banned
+ * account's requests came back as generic errors, the app kept its interface up, and it kept
+ * firing requests that were all refused -- which reads as the app being broken rather than the
+ * account being stopped, and gives the person nothing to act on.
+ */
+class AccountSuspendedException(message: String) : IllegalStateException(message)
+
 class StreamDekApiClient(context: Context? = null) {
   private val appContext = context?.applicationContext
   private val clientIdentity = appContext?.let { ClientIdentityStore(it).load() }
+
+  /**
+   * The session store, so the HTTP layer can renew a token and clear a suspended session without
+   * every call site having to be taught about either.
+   */
+  private val sessionStore: SessionStore? = appContext?.let { SessionStore(it) }
+
+  /**
+   * Told when a session ends by itself. Set once, by the app.
+   *
+   * A callback rather than a return value because this happens underneath sixty different call
+   * sites, and threading "the session is over" back through all of them is how half of them end
+   * up not handling it.
+   */
+  var onSessionEnded: ((SessionEndReason, String) -> Unit)? = null
 
   /**
    * The viewer's own content-service keys, for the device-only case.
@@ -716,7 +753,7 @@ class StreamDekApiClient(context: Context? = null) {
       return null
     }
     val user = parseSessionUser(response.json.optJSONObject("user") ?: JSONObject(), existing.token)
-    return AuthSession(existing.token, user).also(sessionStore::save)
+    return AuthSession(existing.token, user, refreshToken = existing.refreshToken).also(sessionStore::save)
   }
 
   suspend fun login(email: String, password: String): Result<AuthSession> =
@@ -3660,7 +3697,12 @@ class StreamDekApiClient(context: Context? = null) {
         ensureOk(response, "Authentication failed")
         val token = response.json.optString("token")
         val user = parseSessionUser(response.json.optJSONObject("user") ?: JSONObject(), token)
-        AuthSession(token, user)
+        // The refresh token has been in every sign-in response since the backend shipped it; this
+        // is the client learning to keep it. Both spellings are read because the response carries
+        // both -- the OAuth routes use snake_case on the wire and everything else here is camel.
+        AuthSession(token, user, refreshToken = response.json.optString("refreshToken").ifBlank {
+          response.json.optString("refresh_token")
+        }.ifBlank { null })
       }
     }
 
@@ -3741,7 +3783,40 @@ class StreamDekApiClient(context: Context? = null) {
     return execute(request, httpClient)
   }
 
+  /**
+   * Every request this client makes.
+   *
+   * Two answers are handled here rather than at each call site, because there are dozens of call
+   * sites and neither is something a call site can sensibly decide about.
+   *
+   * **403 with ACCOUNT_SUSPENDED** ends the session immediately and throws, so the app signs out
+   * and says why. Never retried: a suspended account has nothing to renew, and asking again is a
+   * client politely requesting to be refused a second time.
+   *
+   * **401** is retried once with a renewed token. Access tokens do not expire yet, so that path
+   * is dormant today -- it ships first so that on the day AUTH_TOKEN_TTL is set, this app renews
+   * rather than signing people out mid-use.
+   */
   private fun execute(request: Request, httpClient: OkHttpClient = client): JsonResponse {
+    val first = performRequest(request, httpClient)
+
+    if (first.statusCode == 403 && errorCodeOf(first.json) == "ACCOUNT_SUSPENDED") {
+      val message = errorMessageOf(first.json) ?: "This account has been suspended."
+      endSession(SessionEndReason.SUSPENDED, message)
+      throw AccountSuspendedException(message)
+    }
+
+    // Only a request that carried a token can have an expired one.
+    if (first.statusCode != 401 || request.header("Authorization").isNullOrBlank()) return first
+
+    val renewed = renewAccessToken() ?: return first
+    val retried = request.newBuilder().header("Authorization", "Bearer $renewed").build()
+    // Once, and once only: a second 401 on a fresh token is not a timing problem, and looping
+    // would turn one refused request into a hot loop against the API.
+    return performRequest(retried, httpClient)
+  }
+
+  private fun performRequest(request: Request, httpClient: OkHttpClient): JsonResponse {
     httpClient.newCall(request).execute().use { response ->
       val body = response.body?.string().orEmpty()
       val json = runCatching { JSONObject(body) }.getOrElse {
@@ -3753,6 +3828,74 @@ class StreamDekApiClient(context: Context? = null) {
       }
       return JsonResponse(response.isSuccessful, json, response.code, response.headers)
     }
+  }
+
+  /**
+   * Reads the error code out of either envelope.
+   *
+   * Legacy paths answer `{ "error": "message", "errorDetail": { "code" } }` and /api/v1 answers
+   * `{ "error": { "code", "message" } }`. This app still calls legacy paths for almost everything,
+   * so both have to be understood -- and will for as long as those aliases exist.
+   */
+  private fun errorCodeOf(json: JSONObject): String? {
+    json.optJSONObject("error")?.optString("code")?.takeIf { it.isNotBlank() }?.let { return it }
+    return json.optJSONObject("errorDetail")?.optString("code")?.takeIf { it.isNotBlank() }
+  }
+
+  private fun errorMessageOf(json: JSONObject): String? {
+    json.optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }?.let { return it }
+    return json.optString("error").takeIf { it.isNotBlank() }
+  }
+
+  /**
+   * Renews the access token, at most once at a time.
+   *
+   * Synchronised because this app fires several requests at once on almost every screen. Eight
+   * concurrent 401s would otherwise rotate the refresh token eight times, which the server reads
+   * as reuse and answers by revoking the whole chain -- turning a recoverable expiry into a
+   * forced sign-out.
+   */
+  @Synchronized
+  private fun renewAccessToken(): String? {
+    val store = sessionStore ?: return null
+    val current = store.load() ?: return null
+    val refreshToken = current.refreshToken ?: return null
+
+    val response = performRequest(
+      Request.Builder()
+        .url("$apiBaseUrl/auth/refresh")
+        .post(JSONObject().put("refresh_token", refreshToken).toString().toRequestBody(jsonMediaType))
+        .headers(authHeaders(null))
+        .build(),
+      client,
+    )
+
+    if (!response.ok) {
+      val suspended = errorCodeOf(response.json) == "ACCOUNT_SUSPENDED"
+      endSession(
+        if (suspended) SessionEndReason.SUSPENDED else SessionEndReason.EXPIRED,
+        errorMessageOf(response.json)
+          ?: if (suspended) "This account has been suspended." else "Your session has ended. Please sign in again.",
+      )
+      return null
+    }
+
+    val token = response.json.optString("token").takeIf { it.isNotBlank() } ?: return null
+    val rotated = response.json.optString("refreshToken").ifBlank {
+      response.json.optString("refresh_token")
+    }.takeIf { it.isNotBlank() } ?: return null
+
+    // The rotated token replaces the one that was spent. Keeping the old one would mean the next
+    // renewal presents a used token, which the server reads as theft.
+    store.save(current.copy(token = token, refreshToken = rotated))
+    return token
+  }
+
+  private fun endSession(reason: SessionEndReason, message: String) {
+    // The stored session goes first: whatever the app does in response, the token must already be
+    // gone, or a request already in flight can put it back.
+    sessionStore?.clear()
+    runCatching { onSessionEnded?.invoke(reason, message) }
   }
 
   private fun authHeaders(

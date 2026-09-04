@@ -11,6 +11,14 @@ data class SessionUser(
 data class AuthSession(
   val token: String,
   val user: SessionUser,
+  /**
+   * Renews [token] when it expires.
+   *
+   * Null for a session stored before this shipped. Such a session keeps working exactly as it did
+   * -- access tokens do not expire yet -- and its holder signs in again on the day they do, which
+   * is what would have happened anyway.
+   */
+  val refreshToken: String? = null,
 )
 
 data class LinkedTvDevice(

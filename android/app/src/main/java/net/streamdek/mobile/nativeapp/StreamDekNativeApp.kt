@@ -3336,7 +3336,11 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private var lastKnownPluginVersion: Long = 0L
   private var pluginRefreshJob: Job? = null
   private var cloudStreamLoadJob: Job? = null
-  private val apiClient = StreamDekApiClient(application.applicationContext)
+  private val apiClient = StreamDekApiClient(application.applicationContext).also { client ->
+    // Wired once, here, because the HTTP layer is what discovers a session has ended and this is
+    // the only object that can do anything about it.
+    client.onSessionEnded = ::onSessionEnded
+  }
 
   /** Keeps the viewer's normal quality/debrid ordering inside two collection-priority groups. */
   private fun rankedProfileStreams(streams: List<AddonStream>): List<AddonStream> {
@@ -3604,6 +3608,31 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   fun rememberAuthEmail(email: String) {
     authEntryStore.saveEmail(email)
     uiState = uiState.copy(rememberedEmail = email)
+  }
+
+  /**
+   * The session ending without the person asking.
+   *
+   * A suspension is what this exists for. Before it, a banned account kept its interface on screen
+   * and kept firing requests that were all refused -- which reads as the app being broken rather
+   * than the account being stopped, and gives the person nothing to act on.
+   *
+   * Runs the same teardown as a deliberate sign-out, because the account is equally gone either
+   * way, and leaves the reason on screen so the sign-in form explains itself.
+   */
+  private fun onSessionEnded(reason: SessionEndReason, message: String) {
+    viewModelScope.launch(Dispatchers.Main) {
+      // Already signed out: a second ended session is one late response from a request that was
+      // already in flight, and re-running the teardown would wipe a sign-in in progress.
+      if (uiState.session == null) return@launch
+      signOut()
+      uiState = uiState.copy(
+        errorMessage = message,
+        // A suspension is not something to try again, so nothing is left mid-flight suggesting
+        // that it might be.
+        infoMessage = null,
+      )
+    }
   }
 
   fun signOut() {

@@ -28,6 +28,10 @@ import java.net.URLEncoder
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 
+/** The version prefix every canonical StreamDek API path carries. */
+const val API_PATH_PREFIX = "/api/v1"
+
+
 private const val SESSION_PREFS = "streamdek_native_session"
 private const val SESSION_TOKEN_KEY = "token"
 private const val SESSION_USER_JSON_KEY = "user_json"
@@ -697,7 +701,10 @@ class StreamDekApiClient(context: Context? = null) {
       if (manager == null || apiHost == null || !request.url.host.equals(apiHost, ignoreCase = true)) {
         chain.proceed(request)
       } else {
-        val path = request.url.encodedPath
+        // Matched without the version prefix so these stay written as the domain paths they
+        // describe. removePrefix is a no-op on a path that does not carry it, so a request built
+        // against a bare prefix still gets its credential.
+        val path = request.url.encodedPath.removePrefix(API_PATH_PREFIX)
         val builder = request.newBuilder()
         if (path.startsWith("/tmdb/") || path == "/tmdb" || path.startsWith("/addons/resolve-id/")) {
           manager.requestKey(ContentService.Tmdb)?.let { builder.header("x-tmdb-api-key", it) }
@@ -760,7 +767,20 @@ class StreamDekApiClient(context: Context? = null) {
     .addNetworkInterceptor(AddonResponseCacheInterceptor)
     .build()
   private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
-  val apiBaseUrl: String = BuildConfig.API_BASE_URL.trimEnd('/')
+  /**
+   * The canonical prefix every StreamDek API path now carries.
+   *
+   * The bare prefixes this app grew up on -- /tmdb, /sync, /auth -- still work: the backend
+   * rewrites them onto the canonical paths and answers with a Deprecation header. They are
+   * aliases kept so that an old build keeps working, not a second API, and every request that
+   * arrives on one is recorded as deprecated traffic whose only purpose is to say when the alias
+   * can finally be removed. This app should not be the reason it never can.
+   *
+   * Applied in one place, on the base URL, rather than at sixty call sites: a prefix threaded
+   * through by hand is one somebody forgets, and the forgotten one is invisible because it still
+   * works.
+   */
+  val apiBaseUrl: String = BuildConfig.API_BASE_URL.trimEnd('/') + API_PATH_PREFIX
 
   /**
    * Region used for theatrical listings and watch-provider catalogs. Taken from the device, which

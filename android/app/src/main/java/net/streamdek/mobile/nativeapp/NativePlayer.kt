@@ -2865,7 +2865,7 @@ private suspend fun fetchSkipSegments(session: PlayerSession): List<SkipSegment>
   fun theIntroDb(): List<SkipSegment> {
     val tmdbId = session.tmdbId ?: return emptyList()
     val url = buildString {
-      append(BuildConfig.API_BASE_URL.trimEnd('/')).append("/services/timings/theintrodb?tmdb_id=").append(tmdbId)
+      append(BuildConfig.API_BASE_URL.trimEnd('/')).append(API_PATH_PREFIX).append("/services/timings/theintrodb?tmdb_id=").append(tmdbId)
       session.seasonNumber?.takeIf { session.mediaType == "tv" }?.let { append("&season=").append(it) }
       session.episodeNumber?.takeIf { session.mediaType == "tv" }?.let { append("&episode=").append(it) }
       durationSec?.times(1000.0)?.toLong()?.let { append("&duration_ms=").append(it) }
@@ -2897,7 +2897,7 @@ private suspend fun fetchSkipSegments(session: PlayerSession): List<SkipSegment>
     val episode = session.episodeNumber ?: return emptyList()
     val apiKey = session.introdbApiKey.trim()
     return runCatching {
-    val baseUrl = BuildConfig.API_BASE_URL.trimEnd('/') + "/services/timings/introdb?imdb_id=$imdbId&season=$season&episode=$episode"
+    val baseUrl = BuildConfig.API_BASE_URL.trimEnd('/') + API_PATH_PREFIX + "/services/timings/introdb?imdb_id=$imdbId&season=$season&episode=$episode"
     val request = introdbRequest(baseUrl, apiKey).newBuilder().apply {
       session.timingApiToken.takeIf { it.isNotBlank() }?.let { header("Authorization", "Bearer $it") }
     }.build()

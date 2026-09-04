@@ -3641,34 +3641,38 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     launchWork(
       onStart = { uiState = uiState.copy(errorMessage = null, infoMessage = null) },
       block = { apiClient.requestPasswordReset(email) },
-      onSuccess = { code -> uiState = uiState.copy(infoMessage = if (code.isNullOrBlank()) "Reset request sent." else "Reset code: $code") },
-    )
-  }
-
-  fun confirmPasswordReset(email: String, token: String, newPassword: String) {
-    launchWork(
-      onStart = { uiState = uiState.copy(errorMessage = null, infoMessage = null) },
-      block = { apiClient.confirmPasswordReset(email, token, newPassword) },
-      onSuccess = { uiState = uiState.copy(infoMessage = "Password updated. You can sign in now.") },
+      onSuccess = { code ->
+        // A development backend hands the code straight back instead of emailing it; production
+        // never does. Showing it is what makes a local build testable without a mailbox.
+        uiState = uiState.copy(
+          infoMessage = if (code.isNullOrBlank()) {
+            "We emailed you a reset code. It expires in 15 minutes."
+          } else {
+            "Reset code: $code"
+          },
+        )
+      },
     )
   }
 
   /**
-   * Resets a password without a code, then signs in with it.
+   * Step two of a reset: spend the emailed code, then sign in with the new password.
    *
-   * Signing in here rather than sending the viewer back to the form is the point of it: the
-   * reset invalidates every existing session for the account, so there is nothing to return to.
+   * Signing in here rather than returning to the form is deliberate -- the reset bumps the
+   * account's token version, so every existing session is already dead and there is nothing to
+   * go back to.
    */
-  fun resetPasswordDirect(email: String, newPassword: String) {
+  fun confirmPasswordReset(email: String, token: String, newPassword: String) {
     launchWork(
       onStart = { uiState = uiState.copy(errorMessage = null, infoMessage = null) },
-      block = { apiClient.resetPasswordDirect(email, newPassword) },
+      block = { apiClient.confirmPasswordReset(email, token, newPassword) },
       onSuccess = {
         uiState = uiState.copy(infoMessage = "Password updated.")
         signIn(email, newPassword, true)
       },
     )
   }
+
 
   private fun invalidatePendingPlaybackRequest(clearPendingContinue: Boolean = true) {
     playbackRequestGeneration += 1
@@ -11017,6 +11021,10 @@ private fun SkeletonBlock(modifier: Modifier = Modifier, radius: androidx.compos
 private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> Unit)? = null) {
   val uiState = viewModel.uiState
   var mode by rememberSaveable { mutableStateOf("signin") }
+  // A reset is two steps now: ask for a code, then spend it. The old single-step form posted to
+  // /auth/password-reset/direct, which set a password from the address alone -- that route is
+  // disabled by default on the backend and answers 404.
+  var resetCodeSent by rememberSaveable { mutableStateOf(false) }
   var showPassword by rememberSaveable { mutableStateOf(false) }
   var form by remember(uiState.rememberedEmail) { mutableStateOf(AuthFormState(email = uiState.rememberedEmail)) }
   val white = Color.White
@@ -11089,7 +11097,11 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
       Text(
         when (mode) {
           "signup" -> "Sign up to sync your library, profiles, and progress."
-          "reset" -> "Enter your email and a new password to regain access."
+          "reset" -> if (resetCodeSent) {
+            "Enter the code we emailed you and choose a new password."
+          } else {
+            "Enter your email and we will send you a reset code."
+          }
           else -> "Sign in to access your library and progress."
         },
         modifier = Modifier.fillMaxWidth(),
@@ -11129,9 +11141,21 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
           colors = fieldColors,
         )
-      } else {
-        // No reset code: there is no mail server to deliver one, so the address and a new
-        // password are the whole form. Same shape as the web portal.
+      } else if (resetCodeSent) {
+        // Step two. The emailed code is the proof of ownership the old form never asked for.
+        OutlinedTextField(
+          value = form.resetCode,
+          onValueChange = { form = form.copy(resetCode = it) },
+          placeholder = { InputGuideText("Reset code") },
+          leadingIcon = { Icon(Icons.Rounded.Email, contentDescription = null) },
+          modifier = Modifier.fillMaxWidth(),
+          shape = StreamDekRadius.cardShape,
+          singleLine = true,
+          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+          colors = fieldColors,
+        )
+
+        Spacer(modifier = Modifier.height(9.dp))
         OutlinedTextField(
           value = form.newPassword,
           onValueChange = { form = form.copy(newPassword = it) },
@@ -11149,6 +11173,13 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
           colors = fieldColors,
         )
+
+        TextButton(
+          onClick = { resetCodeSent = false; form = form.copy(resetCode = "", newPassword = "") },
+          modifier = Modifier.align(Alignment.End),
+          colors = ButtonDefaults.textButtonColors(contentColor = muted),
+          contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+        ) { Text("Use a different email") }
       }
 
       if (mode == "signin") {
@@ -11167,11 +11198,20 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
           when (mode) {
             "signin" -> viewModel.signIn(form.email.trim(), form.password, true)
             "signup" -> viewModel.signUp(form.email.trim(), form.password, true)
-            else -> viewModel.resetPasswordDirect(form.email.trim(), form.newPassword)
+            else -> if (resetCodeSent) {
+              viewModel.confirmPasswordReset(form.email.trim(), form.resetCode.trim(), form.newPassword)
+            } else {
+              viewModel.requestPasswordReset(form.email.trim())
+              resetCodeSent = true
+            }
           }
         },
         enabled = !uiState.booting && when (mode) {
-          "reset" -> form.email.isNotBlank() && form.newPassword.length >= 6
+          "reset" -> if (resetCodeSent) {
+            form.email.isNotBlank() && form.resetCode.isNotBlank() && form.newPassword.length >= 6
+          } else {
+            form.email.isNotBlank()
+          }
           else -> form.email.isNotBlank() && form.password.isNotBlank()
         },
         modifier = Modifier.fillMaxWidth().height(54.dp),
@@ -11185,7 +11225,7 @@ private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> U
             when (mode) {
               "signin" -> "Sign In"
               "signup" -> "Create Account"
-              else -> "Reset Password"
+              else -> if (resetCodeSent) "Reset Password" else "Email Me A Code"
             },
             fontWeight = FontWeight.Black,
             fontSize = 16.sp,

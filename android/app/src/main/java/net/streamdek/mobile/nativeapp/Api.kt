@@ -736,24 +736,6 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
 
-  /**
-   * Sets a new password from the address alone, with no emailed code.
-   *
-   * This deployment has no mail server, so the code [requestPasswordReset] mints never reaches
-   * anyone and the flow it belongs to cannot be completed. The trade is that knowing an address
-   * is enough to take the account; the code endpoints are left in place for when SMTP exists.
-   */
-  suspend fun resetPasswordDirect(email: String, newPassword: String): Result<Unit> =
-    withContext(Dispatchers.IO) {
-      runCatching {
-        val response = executeJson(
-          "/auth/password-reset/direct",
-          JSONObject().put("email", email).put("newPassword", newPassword),
-        )
-        ensureOk(response, "Could not reset password")
-      }
-    }
-
   suspend fun confirmPasswordReset(email: String, token: String, newPassword: String): Result<Unit> =
     withContext(Dispatchers.IO) {
       runCatching {

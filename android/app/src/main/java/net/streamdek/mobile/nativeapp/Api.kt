@@ -692,6 +692,20 @@ class StreamDekApiClient(context: Context? = null) {
           builder.header("x-client-platform", "android")
           builder.header("x-app-version", BuildConfig.VERSION_NAME)
         }
+        // Which language this phone would like its *metadata* in - synopses, genres, certification
+        // labels - for the backend to pass on to TMDB. Interface text does not come from here; it
+        // comes from the app's own resources. Read per request rather than captured, so it is
+        // current after the viewer changes the language without the client being rebuilt.
+        //
+        // Scoped to StreamDek's own host by the check above, like the identity headers: a plugin
+        // can hand this client an arbitrary URL, and where a viewer is reading is not something to
+        // volunteer to a third party.
+        appContext?.let { context ->
+          builder.header(
+            "Accept-Language",
+            metadataAcceptLanguage(resolveAppLanguage(savedAppLanguageSelection(context))),
+          )
+        }
         chain.proceed(builder.build())
       }
     }
@@ -1173,14 +1187,25 @@ class StreamDekApiClient(context: Context? = null) {
     .replace(Regex("[^a-z0-9]+"), " ")
     .trim()
 
+  /**
+   * The first of these ids the backend can describe.
+   *
+   * One request per id, and deliberately not one per id per *spelling of the type*. This used to
+   * try `tv` and then Stremio's `series`, but the backend normalises both to the same word before
+   * it reaches TMDB, so the second pass could only ever repeat what the first pass had already
+   * been refused for. On a title nothing can resolve it simply doubled the requests -- which is
+   * how identical `tv` and `series` refusals came to sit next to each other in the API logs.
+   *
+   * Non-TMDB ids are no longer a lost cause here either: an id from an add-on catalogue is served
+   * by the backend from whichever installed add-on claims it, behind this same URL. There is
+   * deliberately no second call to /addons/meta from here -- that lookup happens server-side, and
+   * making it again from the client would be the same request twice.
+   */
   private fun fetchDetailsByCandidates(type: String, idCandidates: List<String>): MediaDetail? {
     val normalizedType = normalizeMediaType(type)
-    val typeCandidates = listOf(normalizedType, if (normalizedType == "tv") "series" else normalizedType).distinct()
-    for (candidateType in typeCandidates) {
-      for (candidateId in idCandidates) {
-        val response = execute(Request.Builder().url("$apiBaseUrl/tmdb/details/$candidateType/${encodeQuery(candidateId)}").build())
-        if (response.ok) return parseMediaDetail(response.json)
-      }
+    for (candidateId in idCandidates) {
+      val response = execute(Request.Builder().url("$apiBaseUrl/tmdb/details/$normalizedType/${encodeQuery(candidateId)}").build())
+      if (response.ok) return parseMediaDetail(response.json)
     }
     return null
   }

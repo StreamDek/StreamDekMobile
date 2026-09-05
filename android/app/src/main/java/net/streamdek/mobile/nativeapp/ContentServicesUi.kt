@@ -65,6 +65,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -73,17 +74,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
-import kotlinx.coroutines.delay
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import net.streamdek.mobile.R
 import net.streamdek.mobile.BuildConfig
+import net.streamdek.mobile.R
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.util.concurrent.TimeUnit
 
 /**
  * Content Services, as the viewer meets them: two service cards, one key each, and a choice about
@@ -375,7 +376,8 @@ private fun StorageLine(state: ContentServiceState) {
     // its own intrinsic width and pushed the storage name into breaking a character at a time;
     // as one line it either fits or ellipsises, and both of those are readable.
     Text(
-      storage.label + (state.maskedKey?.let { "  ·  $it" } ?: ""),
+      state.maskedKey?.let { key -> stringResource(R.string.content_services_storage_with_key_phone, stringResource(storage.labelRes), key) }
+        ?: stringResource(storage.labelRes),
       style = MaterialTheme.typography.labelLarge,
       fontWeight = FontWeight.SemiBold,
       color = MaterialTheme.colorScheme.onSurface,
@@ -383,7 +385,7 @@ private fun StorageLine(state: ContentServiceState) {
       overflow = TextOverflow.Ellipsis,
     )
     Text(
-      storage.detail,
+      stringResource(storage.detailRes),
       style = MaterialTheme.typography.bodySmall,
       color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.60f),
     )
@@ -419,7 +421,7 @@ private fun NoticeBar(notice: String, isError: Boolean, onDismiss: () -> Unit) {
       IconButton(onClick = onDismiss, modifier = Modifier.size(36.dp)) {
         Icon(
           Icons.Rounded.Close,
-          contentDescription = "Dismiss",
+          contentDescription = stringResource(R.string.action_dismiss),
           tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
           modifier = Modifier.size(18.dp),
         )
@@ -508,7 +510,7 @@ fun ContentServiceKeyDialog(
           enabled = !busy && verified == null,
           isError = failure != null,
           label = { Text(service.keyHint) },
-          placeholder = { Text("Paste your key", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)) },
+          placeholder = { Text(stringResource(R.string.content_services_paste_key), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)) },
           // Not a password field: this is pasted from a clipboard, and hiding it makes a mistyped
           // key impossible to spot. It is masked everywhere it is shown back, which is the part
           // that matters.
@@ -558,7 +560,7 @@ fun ContentServiceKeyDialog(
             service.howToGet.forEachIndexed { index, step ->
               Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                  "${index + 1}.",
+                  stringResource(R.string.content_services_step_number, index + 1),
                   style = MaterialTheme.typography.bodyMedium,
                   fontWeight = FontWeight.Bold,
                   color = serviceAccent(service),
@@ -575,7 +577,7 @@ fun ContentServiceKeyDialog(
               shape = StreamDekRadius.pill,
             ) {
               Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(17.dp))
-              Text("  Open ${service.label}")
+              Text("  " + stringResource(R.string.content_services_open_service, service.label))
             }
           }
         }
@@ -597,9 +599,9 @@ fun ContentServiceKeyDialog(
         when {
           busy -> {
             CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-            Text("  Checking…")
+            Text("  " + stringResource(R.string.content_services_checking))
           }
-          verified != null -> Text("Verified")
+          verified != null -> Text(stringResource(R.string.content_services_verified))
           // "Check &" rather than just "Connect": the button says what it is about to do, so a
           // refusal a moment later reads as the check working rather than as the save failing.
           else -> Text(if (updating) "Check & Update" else "Check & Connect")
@@ -607,7 +609,7 @@ fun ContentServiceKeyDialog(
       }
     },
     dismissButton = {
-      TextButton(onClick = onDismiss, enabled = !busy && verified == null) { Text("Cancel") }
+      TextButton(onClick = onDismiss, enabled = !busy && verified == null) { Text(stringResource(R.string.action_cancel)) }
     },
   )
 }
@@ -629,13 +631,13 @@ private fun StorageChoiceSelector(
 ) {
   Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
     Text(
-      "Where should this key be kept?",
+      stringResource(R.string.content_services_where_kept),
       style = MaterialTheme.typography.titleSmall,
       fontWeight = FontWeight.SemiBold,
       color = MaterialTheme.colorScheme.onSurface,
     )
     StorageOption(
-      title = "Save to StreamDek",
+      title = stringResource(R.string.content_services_save_to_account),
       detail = if (signedIn) {
         "Stored encrypted in your StreamDek account, so your TV and other devices use it automatically — you only enter it once."
       } else {
@@ -646,7 +648,7 @@ private fun StorageChoiceSelector(
       onSelect = { onChoice(StorageChoice.SaveToStreamDek) },
     )
     StorageOption(
-      title = "This device only",
+      title = stringResource(R.string.content_services_this_device_only),
       detail = "Stored encrypted on this phone, and StreamDek keeps no copy. It is sent with your " +
         "own requests so they can be made, and never saved. Your other devices will each need " +
         "their own key.",
@@ -738,7 +740,7 @@ fun ContentServiceRemoveDialog(
     modifier = contentServiceDialogModifier(sub = true),
     properties = ContentServiceDialogProperties,
     onDismissRequest = onDismiss,
-    title = { Text("Remove your ${service.label} key?", fontWeight = FontWeight.Bold) },
+    title = { Text(stringResource(R.string.content_services_remove_prompt, service.label), fontWeight = FontWeight.Bold) },
     text = {
       Text(
         when {
@@ -759,23 +761,23 @@ fun ContentServiceRemoveDialog(
     confirmButton = {
       Column(horizontalAlignment = Alignment.End) {
         if (bothPlaces) {
-          TextButton(onClick = { onRemove(CredentialRemoval.Device) }) { Text("Remove from this device") }
+          TextButton(onClick = { onRemove(CredentialRemoval.Device) }) { Text(stringResource(R.string.content_services_remove_from_device)) }
           TextButton(onClick = { onRemove(CredentialRemoval.Account) }) {
-            Text("Remove from StreamDek", color = MaterialTheme.colorScheme.error)
+            Text(stringResource(R.string.content_services_remove_from_account), color = MaterialTheme.colorScheme.error)
           }
         } else {
           TextButton(
             onClick = { onRemove(if (onAccount) CredentialRemoval.Account else CredentialRemoval.Device) },
           ) {
             Text(
-              if (onAccount) "Remove from StreamDek" else "Remove from this device",
+              stringResource(if (onAccount) R.string.content_services_remove_from_account else R.string.content_services_remove_from_device),
               color = MaterialTheme.colorScheme.error,
             )
           }
         }
       }
     },
-    dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
   )
 }
 
@@ -836,8 +838,16 @@ fun ContentServiceCard(
             modifier = Modifier.size(19.dp),
           )
           Text(
-            "${service.label} is no longer accepting your saved key. Update it to get " +
-              "${if (service == ContentService.Tmdb) "artwork and details" else "ratings"} back.",
+            // Whole sentences rather than a noun slotted into the middle of one: see the same
+            // decision on the television side.
+            stringResource(
+              if (service == ContentService.Tmdb) {
+                R.string.content_services_needs_attention_artwork_phone
+              } else {
+                R.string.content_services_needs_attention_ratings_phone
+              },
+              service.label,
+            ),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f),
           )
@@ -858,14 +868,13 @@ fun ContentServiceCard(
       ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
           Text(
-            "Use this key on your other devices?",
+            stringResource(R.string.content_services_share_prompt_title),
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
           )
           Text(
-            "Save it to your StreamDek account and your TV picks it up automatically, with no " +
-              "typing on the remote.",
+            stringResource(R.string.content_services_share_prompt_detail),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.66f),
           )
@@ -873,15 +882,14 @@ fun ContentServiceCard(
             onClick = { actions.onCopyDeviceKeyToAccount(service) },
             enabled = !busy,
             shape = StreamDekRadius.pill,
-          ) { Text("Save to StreamDek") }
+          ) { Text(stringResource(R.string.content_services_save_to_account)) }
         }
       }
     }
 
     if (state.storage == CredentialStorage.Device && state.accountKeyAlsoAvailable) {
       Text(
-        "Your StreamDek account also has a ${service.label} key. This phone is using its own; " +
-          "remove the one on this device to fall back to the account key.",
+        stringResource(R.string.content_services_account_key_also_phone, service.label),
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.60f),
       )
@@ -909,7 +917,7 @@ fun ContentServiceCard(
       }
       if (state.configured) {
         TextButton(onClick = { removeOpen = true }, enabled = !busy) {
-          Text("Remove", color = MaterialTheme.colorScheme.error)
+          Text(stringResource(R.string.action_remove), color = MaterialTheme.colorScheme.error)
         }
       }
     }
@@ -970,7 +978,7 @@ fun ContentServiceSetupRoutes(modifier: Modifier = Modifier) {
           modifier = Modifier.size(19.dp),
         )
         Text(
-          "Three ways to set these up",
+          stringResource(R.string.content_services_three_ways),
           style = MaterialTheme.typography.titleSmall,
           fontWeight = FontWeight.SemiBold,
           color = MaterialTheme.colorScheme.onSurface,
@@ -1032,8 +1040,7 @@ fun ContentServicesSettings(
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
       ) {
         Text(
-          "You're signed out. Keys you add now stay on this phone. Sign in to save them to your " +
-            "StreamDek account and share them with your TV.",
+          stringResource(R.string.content_services_signed_out_note),
           modifier = Modifier.padding(16.dp),
           style = MaterialTheme.typography.bodyMedium,
           color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f),
@@ -1079,18 +1086,17 @@ fun ContentServicesSettings(
     )
     ContentServiceSetupRoutes()
 
-    TextButton(onClick = actions.onShowSetupGuide) { Text("Show the setup guide") }
+    TextButton(onClick = actions.onShowSetupGuide) { Text(stringResource(R.string.content_services_show_setup_guide)) }
 
     if (state.tmdb.configured || !state.sharedFallbackAvailable) {
       Text(
-        "TMDB lookups use your own key, so StreamDek's shared allowance never limits you.",
+        stringResource(R.string.content_services_tmdb_own_key),
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
       )
     } else {
       Text(
-        "Until you add a TMDB key, StreamDek uses its own shared one. That works, but it's shared " +
-          "with everyone — your own key is faster and never runs into someone else's limit.",
+        stringResource(R.string.content_services_tmdb_shared_key_note),
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
       )
@@ -1170,14 +1176,14 @@ private fun IntroDbApiKeyCard(savedKey: String, signedIn: Boolean, onSave: (Stri
       }
       Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text("IntroDB", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-        Text("Series Playback Timing", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f))
+        Text(stringResource(R.string.introdb_subtitle), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f))
         StatusBadge(status)
       }
     }
 
     if (status != CredentialStatus.Connected) {
       Text(
-        "Provides intro, recap and ending timestamps for series.",
+        stringResource(R.string.introdb_description),
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
       )
@@ -1210,11 +1216,11 @@ private fun IntroDbApiKeyCard(savedKey: String, signedIn: Boolean, onSave: (Stri
         )
       }
     } else if (connected == true) {
-      Text("Using StreamDek's built-in IntroDB key.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.60f))
+      Text(stringResource(R.string.introdb_using_builtin_key), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.60f))
     }
 
     if (status == CredentialStatus.NeedsAttention) {
-      Text("IntroDB did not accept this key. Replace it to restore authenticated timing lookups.", color = Color(0xFFF59E0B), style = MaterialTheme.typography.bodySmall)
+      Text(stringResource(R.string.introdb_key_rejected), color = Color(0xFFF59E0B), style = MaterialTheme.typography.bodySmall)
     }
 
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1222,7 +1228,7 @@ private fun IntroDbApiKeyCard(savedKey: String, signedIn: Boolean, onSave: (Stri
         Text(if (savedKey.isBlank()) "Enter IntroDB Key" else "Replace Key", fontWeight = FontWeight.SemiBold)
       }
       if (savedKey.isNotBlank()) {
-        TextButton(onClick = { onSave("") }, enabled = !checking) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+        TextButton(onClick = { onSave("") }, enabled = !checking) { Text(stringResource(R.string.action_remove), color = MaterialTheme.colorScheme.error) }
       }
     }
   }
@@ -1238,7 +1244,7 @@ private fun IntroDbApiKeyCard(savedKey: String, signedIn: Boolean, onSave: (Stri
           modifier = Modifier.verticalScroll(rememberScrollState()),
           verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-          Text("Provides intro, recap and ending timestamps for series.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f))
+          Text(stringResource(R.string.introdb_description), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f))
           OutlinedTextField(
             value = draft,
             onValueChange = { draft = it.trim(); dialogFeedback = null },
@@ -1246,7 +1252,7 @@ private fun IntroDbApiKeyCard(savedKey: String, signedIn: Boolean, onSave: (Stri
             singleLine = true,
             enabled = !checking,
             isError = dialogError,
-            label = { Text("IntroDB API key") },
+            label = { Text(stringResource(R.string.introdb_api_key_label)) },
             placeholder = { Text("idb_...") },
           )
           dialogFeedback?.let {
@@ -1268,7 +1274,7 @@ private fun IntroDbApiKeyCard(savedKey: String, signedIn: Boolean, onSave: (Stri
                 "Paste the complete key into StreamDek.",
               ).forEachIndexed { index, step ->
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                  Text("${index + 1}.", fontWeight = FontWeight.Bold, color = accent)
+                  Text(stringResource(R.string.content_services_step_number, index + 1), fontWeight = FontWeight.Bold, color = accent)
                   Text(step, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f))
                 }
               }
@@ -1277,14 +1283,14 @@ private fun IntroDbApiKeyCard(savedKey: String, signedIn: Boolean, onSave: (Stri
                 shape = StreamDekRadius.pill,
               ) {
                 Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(17.dp))
-                Text("  Open IntroDB")
+                Text("  " + stringResource(R.string.content_services_open_service, "IntroDB"))
               }
             }
           }
           Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Where should this key be kept?", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.content_services_where_kept), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             StorageOption(
-              title = if (signedIn) "Save to StreamDek" else "This device only",
+              title = stringResource(if (signedIn) R.string.content_services_save_to_account else R.string.content_services_this_device_only),
               detail = if (signedIn) {
                 "Saved with your StreamDek profile."
               } else {
@@ -1328,7 +1334,7 @@ private fun IntroDbApiKeyCard(savedKey: String, signedIn: Boolean, onSave: (Stri
           shape = StreamDekRadius.pill,
         ) { Text(if (checking) "Checking…" else "Check & Connect") }
       },
-      dismissButton = { TextButton(onClick = { dialogOpen = false }, enabled = !checking) { Text("Cancel") } },
+      dismissButton = { TextButton(onClick = { dialogOpen = false }, enabled = !checking) { Text(stringResource(R.string.action_cancel)) } },
     )
   }
 }
@@ -1368,10 +1374,9 @@ fun ContentServicesSetupPrompt(
     onDismissRequest = { onLater(SetupDeferral.Tomorrow) },
     title = {
       Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("Enhance your StreamDek", fontWeight = FontWeight.Bold, fontSize = 22.sp)
+        Text(stringResource(R.string.content_services_onboard_title), fontWeight = FontWeight.Bold, fontSize = 22.sp)
         Text(
-          "Connect your own content services for richer artwork, details and ratings — and use " +
-            "them across every StreamDek device.",
+          stringResource(R.string.content_services_onboard_detail),
           style = MaterialTheme.typography.bodyMedium,
           color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.70f),
         )
@@ -1435,7 +1440,7 @@ fun ContentServicesSetupPrompt(
           }
         }
       } else {
-        TextButton(onClick = { choosingLater = true }) { Text("Do this later") }
+        TextButton(onClick = { choosingLater = true }) { Text(stringResource(R.string.action_do_this_later)) }
       }
     },
   )
@@ -1502,9 +1507,9 @@ fun ContentServiceHint(
           color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
         )
       }
-      TextButton(onClick = onSetUp) { Text("Set up") }
+      TextButton(onClick = onSetUp) { Text(stringResource(R.string.action_set_up)) }
       TextButton(onClick = onLater) {
-        Text("Later", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f))
+        Text(stringResource(R.string.action_later), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f))
       }
     }
   }
@@ -1579,7 +1584,7 @@ internal fun ContentServicesLoading() {
   ) {
     CircularProgressIndicator(modifier = Modifier.size(26.dp), strokeWidth = 2.dp)
     Text(
-      "Checking your content services…",
+      stringResource(R.string.content_services_checking_all),
       style = MaterialTheme.typography.bodyMedium,
       color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
       textAlign = TextAlign.Center,

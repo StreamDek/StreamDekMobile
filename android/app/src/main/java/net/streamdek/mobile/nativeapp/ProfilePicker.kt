@@ -72,6 +72,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -514,7 +515,7 @@ internal fun ProfilePickerScreen(
             hazeState = profileHazeState,
           ) {
             Text(
-              "TRENDING NOW",
+              stringResource(R.string.home_trending_now),
               style = MaterialTheme.typography.titleSmall,
               fontWeight = FontWeight.ExtraBold,
               color = Color.White.copy(alpha = 0.76f),
@@ -579,7 +580,7 @@ internal fun ProfilePickerScreen(
         verticalArrangement = Arrangement.spacedBy(28.dp),
       ) {
         Text(
-          "Who's watching?",
+          stringResource(R.string.profiles_who_is_watching),
           style = MaterialTheme.typography.displaySmall.let {
             if (pickerMetrics.headlineScale == 1f) it else it.copy(fontSize = it.fontSize * pickerMetrics.headlineScale)
           },
@@ -622,7 +623,7 @@ internal fun ProfilePickerScreen(
           shape = StreamDekRadius.pill,
           modifier = Modifier.pickerCue(reveal, PickerCue.ManageStart, PickerCue.ManageDuration, rise = 10.dp),
         ) {
-          Text("Manage Profiles", fontWeight = FontWeight.Bold)
+          Text(stringResource(R.string.profiles_manage), fontWeight = FontWeight.Bold)
         }
       }
     }
@@ -744,7 +745,7 @@ private fun ProfilePickerAvatar(
             .border(2.dp, Color.Black, CircleShape),
           contentAlignment = Alignment.Center,
         ) {
-          Icon(Icons.Rounded.Lock, contentDescription = "PIN protected", tint = Color.Black, modifier = Modifier.size(badgeSize * 0.62f))
+          Icon(Icons.Rounded.Lock, contentDescription = stringResource(R.string.profiles_pin_protected), tint = Color.Black, modifier = Modifier.size(badgeSize * 0.62f))
         }
       }
     }
@@ -775,7 +776,7 @@ private fun AddProfileAvatar(avatarSize: Dp = 92.dp, modifier: Modifier = Modifi
     ) {
       Text("+", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.78f))
     }
-    Text("Add Profile", maxLines = 1, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onBackground)
+    Text(stringResource(R.string.profiles_add), maxLines = 1, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onBackground)
   }
 }
 
@@ -808,8 +809,8 @@ internal fun ProfileHomeTransitionOverlay(profile: StreamProfile?) {
       ) {
         ProfileAvatarImage(profile?.avatarIndex ?: 0, Modifier.fillMaxSize())
       }
-      Text("Loading " + (profile?.name ?: "your profile"), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onBackground)
-      Text("Preparing your home screen", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.64f))
+      Text(stringResource(R.string.profiles_loading_name, profile?.name ?: stringResource(R.string.profiles_your_profile)), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onBackground)
+      Text(stringResource(R.string.profiles_preparing_home), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.64f))
       LinearProgressIndicator(
         modifier = Modifier.width(180.dp).clip(StreamDekRadius.pill),
         color = MaterialTheme.colorScheme.onBackground,
@@ -858,7 +859,7 @@ internal fun ProfilePinPadScreen(
         .padding(start = 24.dp, top = 34.dp)
         .size(54.dp),
     ) {
-      Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onBackground, modifier = Modifier.size(34.dp))
+      Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.action_back), tint = MaterialTheme.colorScheme.onBackground, modifier = Modifier.size(34.dp))
     }
     Column(
       modifier = Modifier
@@ -878,7 +879,7 @@ internal fun ProfilePinPadScreen(
         if (profile != null) ProfileAvatarImage(avatarIndex = profile.avatarIndex, modifier = Modifier.fillMaxSize())
       }
       Text(profile?.name ?: "Profile", color = MaterialTheme.colorScheme.onBackground, fontSize = 32.sp, lineHeight = 36.sp, fontWeight = FontWeight.Bold)
-      Text("Enter your PIN", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.70f), fontSize = 20.sp, lineHeight = 24.sp)
+      Text(stringResource(R.string.profiles_enter_your_pin), color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.70f), fontSize = 20.sp, lineHeight = 24.sp)
       Row(horizontalArrangement = Arrangement.spacedBy(22.dp), modifier = Modifier.padding(top = 14.dp)) {
         repeat(4) { index ->
           Box(
@@ -926,7 +927,7 @@ private fun PinPadButton(label: String, onClick: () -> Unit) {
     contentAlignment = Alignment.Center,
   ) {
     if (label == "delete") {
-      Icon(Icons.AutoMirrored.Rounded.Backspace, contentDescription = "Delete digit", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(22.dp))
+      Icon(Icons.AutoMirrored.Rounded.Backspace, contentDescription = stringResource(R.string.a11y_delete_digit), tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(22.dp))
     } else {
       Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 21.sp, lineHeight = 23.sp, fontWeight = FontWeight.Medium)
     }

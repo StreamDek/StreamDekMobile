@@ -1,0 +1,5 @@
+{
+  "ceiling": 57,
+  "note": "Upper bound on hard-coded interface strings. Only ever lower this - see check-hardcoded-strings.mjs.",
+  "whatIsLeft": "Almost all of the remainder is not translatable text. It is the stored values of the settings choice rows - listOf(\"Auto\", \"Media3\", \"MPV\") and its like - which are persisted and synced to the account, so they must stay exactly as they are; what the viewer reads for each one comes from settingsOptionLabel and is localised. The rest is product and service names: StreamDek, SyncDek, Trakt, MDBList, IMDb, IntroDB, PunchPlay. The detector counts every literal inside those builders on purpose, so a genuinely new English label cannot hide among them - which means this number will not reach zero, and should not be pushed there by silencing the check."
+}

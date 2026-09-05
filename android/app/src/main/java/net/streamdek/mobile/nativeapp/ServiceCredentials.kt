@@ -3,12 +3,14 @@ package net.streamdek.mobile.nativeapp
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import androidx.annotation.StringRes
 import java.security.KeyStore
 import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import net.streamdek.mobile.R
 
 /**
  * The viewer's own TMDB and MDBList keys, and the one place that decides which one gets used.
@@ -110,18 +112,24 @@ enum class ContentService(
   }
 }
 
-/** Where a configured key is kept. Shown to the viewer verbatim, so the wording matters. */
-enum class CredentialStorage(val label: String, val detail: String) {
+/**
+ * Where a configured key is kept.
+ *
+ * Resource ids rather than text: the wording is read by a viewer, and holding English in a data
+ * model would pin those two lines to English on a translated phone. The screen resolves them with
+ * `stringResource`, which also means they re-read when the language changes.
+ */
+enum class CredentialStorage(@StringRes val labelRes: Int, @StringRes val detailRes: Int) {
   /** Encrypted on this device, and nowhere else. StreamDek holds no copy. */
   Device(
-    label = "This device only",
-    detail = "Kept on this phone. Your other StreamDek devices need their own key.",
+    labelRes = R.string.credential_storage_device_label_phone,
+    detailRes = R.string.credential_storage_device_detail_phone,
   ),
 
   /** Encrypted in the StreamDek account, so every signed-in device can use it. */
   Account(
-    label = "StreamDek account",
-    detail = "Saved to your account, so your TV and other devices use it automatically.",
+    labelRes = R.string.content_services_account_storage,
+    detailRes = R.string.credential_storage_account_detail_phone,
   ),
 }
 

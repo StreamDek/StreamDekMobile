@@ -1,0 +1,56 @@
+name: Localization
+
+# The localisation resources can drift in ways that no compiler notices: a language offered in
+# Settings with no strings behind it, a placeholder dropped in translation that only crashes the one
+# screen nobody opened in Polish, or a new screen shipped with its text inline in English. These
+# checks are cheap and catch all three before review rather than after release.
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "android/app/src/main/res/values*/**"
+      - "android/app/src/main/res/xml/locales_config.xml"
+      - "android/app/src/main/java/**"
+      - "android/app/src/test/java/**"
+      - "scripts/check-translations.mjs"
+      - "scripts/check-hardcoded-strings.mjs"
+      - "scripts/hardcoded-strings-baseline.json"
+      - ".github/workflows/localization.yml"
+  pull_request:
+
+jobs:
+  resources:
+    name: Translation resources
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Every language the app offers has a strings file, is declared to the platform, and carries
+      # the same placeholders English does.
+      - name: Check translations
+        run: node scripts/check-translations.mjs
+
+      # A ratchet, not a gate: this fails only when the count of hard-coded interface strings goes
+      # up. Migrating them makes it go down. See the header of the script.
+      - name: Check for new hard-coded interface strings
+        run: node scripts/check-hardcoded-strings.mjs
+
+  rules:
+    name: Language resolution rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Unit tests
+        working-directory: android
+        run: ./gradlew :app:testDebugUnitTest --tests "*AppLanguageTest*"

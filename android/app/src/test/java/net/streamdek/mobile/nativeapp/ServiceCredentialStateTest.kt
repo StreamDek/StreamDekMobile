@@ -2,6 +2,7 @@ package net.streamdek.mobile.nativeapp
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -94,12 +95,18 @@ class ServiceCredentialStateTest {
   }
 
   @Test
-  fun `each storage mode says what it means for the viewer's other devices`() {
-    assertTrue(CredentialStorage.Account.detail.contains("automatically"))
-    assertTrue(
-      "device-only storage has to say the other devices need their own key",
-      CredentialStorage.Device.detail.contains("own key"),
-    )
+  fun `each storage mode carries its own wording`() {
+    // The sentences moved into string resources, so this can no longer read them: a plain JVM
+    // test has no resources to resolve against, and asserting on English would be asserting on
+    // one locale of eight. What is still worth pinning down is that the two modes are
+    // distinguishable and neither is left without a label or an explanation; that the sentences
+    // exist in every language is checked by scripts/check-translations.mjs.
+    for (storage in CredentialStorage.entries) {
+      assertNotEquals(0, storage.labelRes)
+      assertNotEquals(0, storage.detailRes)
+    }
+    assertNotEquals(CredentialStorage.Account.labelRes, CredentialStorage.Device.labelRes)
+    assertNotEquals(CredentialStorage.Account.detailRes, CredentialStorage.Device.detailRes)
   }
 
   @Test

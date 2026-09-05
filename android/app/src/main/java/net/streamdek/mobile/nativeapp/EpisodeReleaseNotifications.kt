@@ -176,8 +176,15 @@ object EpisodeReleaseNotifications {
     val manager = context.getSystemService(NotificationManager::class.java) ?: return
     if (manager.getNotificationChannel(CHANNEL_ID) != null) return
     manager.createNotificationChannel(
-      NotificationChannel(CHANNEL_ID, "New episodes", NotificationManager.IMPORTANCE_DEFAULT).apply {
-        description = "When a new episode of a series you follow is out."
+      // See the note in EpisodeNotificationSystem: the application context is never locale-wrapped.
+      localizedAppContext(context).resources.let { strings ->
+        NotificationChannel(
+          CHANNEL_ID,
+          strings.getString(R.string.episode_reminder_channel_name),
+          NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply {
+          description = strings.getString(R.string.episode_reminder_channel_description)
+        }
       },
     )
   }

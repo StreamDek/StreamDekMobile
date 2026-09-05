@@ -1,8 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  The languages StreamDek ships an interface in.
+
+  Must stay in step with AppLanguage.kt and with the values-<tag>/strings.xml folders; adding a
+  language means all three, and `node scripts/check-translations.mjs` fails the build if they drift.
+
+  Declaring this is what puts StreamDek in the system per-app language picker on Android 13 and
+  above. It does not replace the in-app setting: the in-app one is what the television has, what
+  older releases have, and what keeps the phone and the television independent of one another.
+-->
 <locale-config xmlns:android="http://schemas.android.com/apk/res/android">
   <locale android:name="en" />
-  <locale android:name="es" />
   <locale android:name="fr" />
+  <locale android:name="de" />
+  <locale android:name="es" />
   <locale android:name="it" />
+  <locale android:name="pt" />
   <locale android:name="nl" />
+  <locale android:name="pl" />
 </locale-config>

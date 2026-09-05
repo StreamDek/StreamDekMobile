@@ -1,9 +1,11 @@
 package net.streamdek.mobile.nativeapp
 
+import androidx.annotation.StringRes
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.ProvidableCompositionLocal
 import androidx.compose.runtime.staticCompositionLocalOf
 import kotlin.math.roundToInt
+import net.streamdek.mobile.R
 
 /**
  * StreamDek's canonical animation-speed model.
@@ -48,34 +50,44 @@ internal const val ANIMATION_SPEED_PREFERENCE = "animation_speed"
 enum class AnimationSpeed(
   /** The persisted form. Stable across releases; the enum name is not the storage contract. */
   val key: String,
-  val label: String,
+  /**
+   * The wording, as resources rather than as text.
+   *
+   * This enum is a specification about *motion* - which speeds exist and what each multiplies by -
+   * and the two lines a viewer reads are not part of that. Holding English here would pin the
+   * Animation speed row to English on a translated device, and would make the one file that is
+   * meant to be identical in both apps the file that decides how a setting reads.
+   *
+   * The two `R` imports are the only line on which the copies differ, alongside the package.
+   */
+  @StringRes val labelRes: Int,
   /** Multiplier applied to every duration in [MotionDuration]. */
   val scale: Float,
-  val description: String,
+  @StringRes val descriptionRes: Int,
 ) {
   Off(
     key = "off",
-    label = "Off",
+    labelRes = R.string.animation_speed_off,
     scale = 0f,
-    description = "Change state immediately. Only brief crossfades remain, so nothing snaps.",
+    descriptionRes = R.string.animation_speed_off_description,
   ),
   Fast(
     key = "fast",
-    label = "Fast",
+    labelRes = R.string.animation_speed_fast,
     scale = 0.7f,
-    description = "Shorter, subtler transitions for the most responsive feel.",
+    descriptionRes = R.string.animation_speed_fast_description,
   ),
   Standard(
     key = "standard",
-    label = "Standard",
+    labelRes = R.string.animation_speed_standard,
     scale = 1f,
-    description = "The recommended balance of smoothness and speed.",
+    descriptionRes = R.string.animation_speed_standard_description,
   ),
   Cinematic(
     key = "cinematic",
-    label = "Cinematic",
+    labelRes = R.string.animation_speed_cinematic,
     scale = 1.45f,
-    description = "Slower, fully visible transitions for the complete visual experience.",
+    descriptionRes = R.string.animation_speed_cinematic_description,
   );
 
   companion object {

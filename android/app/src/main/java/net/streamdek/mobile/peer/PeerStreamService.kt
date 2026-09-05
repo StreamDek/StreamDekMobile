@@ -11,11 +11,12 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import net.streamdek.mobile.R
 import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import net.streamdek.mobile.R
+import net.streamdek.mobile.nativeapp.localizedAppContext
 
 /**
  * What a "Clear Storage Now" actually achieved, measured from the disk.
@@ -265,7 +266,9 @@ class PeerStreamService : Service() {
       "StreamDek Server",
       NotificationManager.IMPORTANCE_LOW,
     ).apply {
-      description = "Keeps the local mobile streaming server alive when foreground mode is enabled."
+      // See EpisodeNotificationSystem: a service has no composition, and the application context
+      // is never locale-wrapped.
+      description = localizedAppContext(this@PeerStreamService).getString(R.string.peer_service_channel_description)
     }
     manager.createNotificationChannel(channel)
   }

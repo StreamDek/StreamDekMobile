@@ -225,9 +225,20 @@ object EpisodeNotificationSystem {
   internal fun ensureChannel(context: Context) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
     val manager = context.getSystemService(NotificationManager::class.java) ?: return
-    manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, "Episode updates", NotificationManager.IMPORTANCE_DEFAULT).apply {
-      description = "New and upcoming episodes from series you follow or are watching."
-    })
+    // localizedAppContext, not the raw context: a notification channel is named once, from a
+    // background caller with no composition, and the application context is never locale-wrapped -
+    // so reading straight off it would name the channel in the device language rather than the
+    // one the viewer chose.
+    val strings = localizedAppContext(context).resources
+    manager.createNotificationChannel(
+      NotificationChannel(
+        CHANNEL_ID,
+        strings.getString(R.string.episode_channel_name),
+        NotificationManager.IMPORTANCE_DEFAULT,
+      ).apply {
+        description = strings.getString(R.string.episode_channel_description)
+      },
+    )
   }
 
   internal fun post(context: Context, candidate: EpisodeNotificationCandidate): Boolean {

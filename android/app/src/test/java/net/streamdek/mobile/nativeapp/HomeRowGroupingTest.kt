@@ -20,15 +20,21 @@ import org.junit.Test
  */
 class HomeRowGroupingTest {
 
+  private companion object {
+    /** What the settings screen passes; the wording itself lives in string resources now. */
+    const val ORPHAN_TITLE = "No longer installed"
+    const val FALLBACK_ADDON_NAME = "Add-on"
+  }
+
   private fun addonRowId(addonId: String, catalogId: String, index: Int, type: String = "movie") =
     "addon:$addonId:$type:$catalogId:$index"
 
   /** A row as it comes back off disk: id and flag only, no title and no subtitle. */
   private fun savedAddonRow(addonId: String, catalogId: String, index: Int, enabled: Boolean = true) =
-    HomeCatalogRow(id = addonRowId(addonId, catalogId, index), title = "", subtitle = "", builtin = false, enabled = enabled)
+    HomeCatalogRow(id = addonRowId(addonId, catalogId, index), title = "", subtitleRes = null, builtin = false, enabled = enabled)
 
   private fun builtinRow(id: String, enabled: Boolean = true) =
-    HomeCatalogRow(id = id, title = id, subtitle = "Provided by StreamDek", builtin = true, enabled = enabled)
+    HomeCatalogRow(id = id, title = id, subtitleRes = null, builtin = true, enabled = enabled)
 
   private fun testAddon(id: String, name: String, enabled: Boolean = true) = InstalledAddon(
     id = id,
@@ -52,7 +58,7 @@ class HomeRowGroupingTest {
     )
     val addons = listOf(testAddon("uuid-a", "MediaFusion | Midnight RD", enabled = false))
 
-    val groups = buildHomeRowGroups(rows, addons, streamDekRowsEnabled = true)
+    val groups = buildHomeRowGroups(rows, addons, streamDekRowsEnabled = true, orphanGroupTitle = ORPHAN_TITLE, fallbackAddonName = FALLBACK_ADDON_NAME)
 
     assertEquals(1, groups.size)
     assertEquals("MediaFusion | Midnight RD", groups.single().title)
@@ -63,9 +69,9 @@ class HomeRowGroupingTest {
     val rows = listOf(savedAddonRow("uuid-a", "trending", 0))
     val addons = listOf(testAddon("uuid-a", "TvVoo", enabled = false))
 
-    val group = buildHomeRowGroups(rows, addons, streamDekRowsEnabled = true).single()
+    val group = buildHomeRowGroups(rows, addons, streamDekRowsEnabled = true, orphanGroupTitle = ORPHAN_TITLE, fallbackAddonName = FALLBACK_ADDON_NAME).single()
 
-    assertEquals("hidden while this add-on is off", group.gatedNote)
+    assertNotNull(group.gatedNoteRes)
   }
 
   @Test
@@ -73,21 +79,21 @@ class HomeRowGroupingTest {
     val rows = listOf(savedAddonRow("uuid-a", "trending", 0))
     val addons = listOf(testAddon("uuid-a", "TvVoo", enabled = true))
 
-    assertNull(buildHomeRowGroups(rows, addons, streamDekRowsEnabled = true).single().gatedNote)
+    assertNull(buildHomeRowGroups(rows, addons, streamDekRowsEnabled = true, orphanGroupTitle = ORPHAN_TITLE, fallbackAddonName = FALLBACK_ADDON_NAME).single().gatedNoteRes)
   }
 
   @Test
   fun `StreamDek rows are gated by the master switch and keep their stored flags`() {
     val rows = listOf(builtinRow("trending_movies"), builtinRow("new_movies", enabled = false))
 
-    val off = buildHomeRowGroups(rows, emptyList(), streamDekRowsEnabled = false).single()
+    val off = buildHomeRowGroups(rows, emptyList(), streamDekRowsEnabled = false, orphanGroupTitle = ORPHAN_TITLE, fallbackAddonName = FALLBACK_ADDON_NAME).single()
     assertEquals(STREAMDEK_ROW_GROUP_KEY, off.key)
-    assertEquals("hidden by StreamDek Home Rows", off.gatedNote)
+    assertNotNull(off.gatedNoteRes)
     // The gate must not rewrite what it gates.
     assertEquals(listOf(true, false), off.rows.map { it.enabled })
 
-    val on = buildHomeRowGroups(rows, emptyList(), streamDekRowsEnabled = true).single()
-    assertNull(on.gatedNote)
+    val on = buildHomeRowGroups(rows, emptyList(), streamDekRowsEnabled = true, orphanGroupTitle = ORPHAN_TITLE, fallbackAddonName = FALLBACK_ADDON_NAME).single()
+    assertNull(on.gatedNoteRes)
     assertEquals(listOf(true, false), on.rows.map { it.enabled })
   }
 
@@ -96,10 +102,10 @@ class HomeRowGroupingTest {
     val rows = listOf(builtinRow("trending_movies"), savedAddonRow("uuid-a", "trending", 0))
     val addons = listOf(testAddon("uuid-a", "Ultra MAX"))
 
-    val groups = buildHomeRowGroups(rows, addons, streamDekRowsEnabled = false)
+    val groups = buildHomeRowGroups(rows, addons, streamDekRowsEnabled = false, orphanGroupTitle = ORPHAN_TITLE, fallbackAddonName = FALLBACK_ADDON_NAME)
 
-    assertNotNull(groups.first { it.key == STREAMDEK_ROW_GROUP_KEY }.gatedNote)
-    assertNull(groups.first { it.key == "uuid-a" }.gatedNote)
+    assertNotNull(groups.first { it.key == STREAMDEK_ROW_GROUP_KEY }.gatedNoteRes)
+    assertNull(groups.first { it.key == "uuid-a" }.gatedNoteRes)
   }
 
   @Test
@@ -112,7 +118,7 @@ class HomeRowGroupingTest {
     )
     val addons = listOf(testAddon("uuid-a", "Alpha"), testAddon("uuid-b", "Beta"))
 
-    val groups = buildHomeRowGroups(rows, addons, streamDekRowsEnabled = true)
+    val groups = buildHomeRowGroups(rows, addons, streamDekRowsEnabled = true, orphanGroupTitle = ORPHAN_TITLE, fallbackAddonName = FALLBACK_ADDON_NAME)
 
     assertEquals(listOf("uuid-b", "uuid-a", STREAMDEK_ROW_GROUP_KEY), groups.map { it.key })
     assertEquals(2, groups.first { it.key == "uuid-b" }.rows.size)
@@ -127,13 +133,13 @@ class HomeRowGroupingTest {
     )
     val addons = listOf(testAddon("uuid-a", "Alpha"))
 
-    val groups = buildHomeRowGroups(rows, addons, streamDekRowsEnabled = true)
+    val groups = buildHomeRowGroups(rows, addons, streamDekRowsEnabled = true, orphanGroupTitle = ORPHAN_TITLE, fallbackAddonName = FALLBACK_ADDON_NAME)
 
     assertEquals(2, groups.size)
     val orphans = groups.first { it.key == ORPHAN_ROW_GROUP_KEY }
     assertEquals("No longer installed", orphans.title)
     assertEquals(2, orphans.rows.size)
-    assertNotNull(orphans.gatedNote)
+    assertNotNull(orphans.gatedNoteRes)
   }
 
   @Test
@@ -142,31 +148,31 @@ class HomeRowGroupingTest {
     // installed" for that second would be both alarming and wrong.
     val rows = listOf(savedAddonRow("uuid-a", "one", 0), savedAddonRow("uuid-b", "one", 0))
 
-    val groups = buildHomeRowGroups(rows, emptyList(), streamDekRowsEnabled = true)
+    val groups = buildHomeRowGroups(rows, emptyList(), streamDekRowsEnabled = true, orphanGroupTitle = ORPHAN_TITLE, fallbackAddonName = FALLBACK_ADDON_NAME)
 
     assertEquals(listOf("uuid-a", "uuid-b"), groups.map { it.key })
-    assertEquals(emptyList<String?>(), groups.mapNotNull { it.gatedNote })
+    assertEquals(emptyList<Int?>(), groups.mapNotNull { it.gatedNoteRes })
   }
 
   @Test
   fun `a row still carrying its subtitle names the group when the add-on is unknown but the list is empty`() {
     val rows = listOf(
-      HomeCatalogRow(id = addonRowId("uuid-a", "one", 0), title = "Live TV", subtitle = "From Xperience", builtin = false),
+      HomeCatalogRow(id = addonRowId("uuid-a", "one", 0), title = "Live TV", subtitleRes = 0, subtitleArg = "Xperience", builtin = false),
     )
 
-    assertEquals("Xperience", buildHomeRowGroups(rows, emptyList(), streamDekRowsEnabled = true).single().title)
+    assertEquals("Xperience", buildHomeRowGroups(rows, emptyList(), streamDekRowsEnabled = true, orphanGroupTitle = ORPHAN_TITLE, fallbackAddonName = FALLBACK_ADDON_NAME).single().title)
   }
 
   @Test
   fun `StreamDek's own assembled rows sit in the StreamDek group and follow the master switch`() {
     // Recommended, Trending On Trakt and Watchlist are built by Home rather than fetched from the
     // catalog registry, but they are StreamDek's rows and belong under the same switch.
-    val groups = buildHomeRowGroups(streamDekFeatureRows, emptyList(), streamDekRowsEnabled = false)
+    val groups = buildHomeRowGroups(streamDekFeatureRows, emptyList(), streamDekRowsEnabled = false, orphanGroupTitle = ORPHAN_TITLE, fallbackAddonName = FALLBACK_ADDON_NAME)
 
     val group = groups.single()
     assertEquals(STREAMDEK_ROW_GROUP_KEY, group.key)
     assertEquals(listOf("recommended", "trending", "watchlist"), group.rows.map { it.id })
-    assertEquals("hidden by StreamDek Home Rows", group.gatedNote)
+    assertNotNull(group.gatedNoteRes)
   }
 
   @Test

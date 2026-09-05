@@ -2,8 +2,17 @@ package net.streamdek.mobile.nativeapp
 
 import java.util.Locale
 
-/** A language a viewer can choose, as a stable code and the name shown for it. */
-data class AppLanguage(val code: String, val label: String)
+/**
+ * A language a viewer can choose *for a soundtrack or a subtitle track*, as a stable ISO code and
+ * the name shown for it.
+ *
+ * Named against the ISO table it is drawn from, and deliberately not `AppLanguage`, which is the
+ * language StreamDek draws its own interface in - a separate preference living in `AppLanguage.kt`,
+ * stored on the device rather than the profile, and limited to the handful of languages StreamDek
+ * has actually been translated into. This one spans every ISO 639-1 language, because a release can
+ * carry audio in any of them. Collapsing the two is the confusion this naming exists to prevent.
+ */
+data class IsoLanguage(val code: String, val label: String)
 
 /**
  * Every language the app offers, and the tools for recognising one however it was written down.
@@ -48,14 +57,14 @@ object Languages {
   )
 
   /** Every ISO 639-1 language, named for display and sorted the way a person would look for it. */
-  val all: List<AppLanguage> by lazy {
+  val all: List<IsoLanguage> by lazy {
     Locale.getISOLanguages()
-      .map { code -> AppLanguage(code, Locale(code).getDisplayLanguage(Locale.ENGLISH).ifBlank { code }) }
+      .map { code -> IsoLanguage(code, Locale(code).getDisplayLanguage(Locale.ENGLISH).ifBlank { code }) }
       .distinctBy { it.code }
       .sortedBy { it.label.lowercase() }
   }
 
-  private val byCode: Map<String, AppLanguage> by lazy { all.associateBy { it.code } }
+  private val byCode: Map<String, IsoLanguage> by lazy { all.associateBy { it.code } }
 
   /** Everything that could name a language, mapped to its two-letter code. */
   private val recognised: Map<String, String> by lazy {

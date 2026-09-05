@@ -36,7 +36,7 @@ class HomeCatalogRowPersistenceTest {
     "addon:$addonId:$type:$catalogId:$index"
 
   private fun savedRow(id: String, enabled: Boolean = true) =
-    HomeCatalogRow(id = id, title = id, subtitle = "", builtin = false, enabled = enabled)
+    HomeCatalogRow(id = id, title = id, subtitleRes = null, builtin = false, enabled = enabled)
 
   private fun testAddon(id: String, catalogIds: List<String>, enabled: Boolean = true) = InstalledAddon(
     id = id,

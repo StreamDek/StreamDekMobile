@@ -1,5 +1,6 @@
 package net.streamdek.mobile.nativeapp
 
+import androidx.annotation.StringRes
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.ProvidableCompositionLocal
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -9,6 +10,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.unit.sp
+import net.streamdek.mobile.R
 
 /**
  * The device-local key the selection is stored under, in [APP_SETTINGS_PREFERENCES].
@@ -57,18 +59,23 @@ enum class HomeCardTextMode(
 enum class HomeDensity(
   /** The persisted form. Stable across releases; the enum name is not the storage contract. */
   val key: String,
-  val label: String,
-  val description: String,
+  /**
+   * The wording, as resources rather than as text - the same reasoning as [AnimationSpeed]. This
+   * enum describes a *layout*; how that layout is described to a viewer is not part of it, and
+   * holding English here would pin the row to English on a translated phone.
+   */
+  @StringRes val labelRes: Int,
+  @StringRes val descriptionRes: Int,
 ) {
   Relaxed(
     key = "relaxed",
-    label = "Relaxed",
-    description = "Full-size artwork with room between rows.",
+    labelRes = R.string.home_density_relaxed,
+    descriptionRes = R.string.home_density_relaxed_description,
   ),
   Compact(
     key = "compact",
-    label = "Compact",
-    description = "Smaller cards and tighter rows, so more fits on screen.",
+    labelRes = R.string.home_density_compact,
+    descriptionRes = R.string.home_density_compact_description,
   );
 
   companion object {

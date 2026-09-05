@@ -1,5 +1,8 @@
 package net.streamdek.mobile.nativeapp
 
+import net.streamdek.mobile.R
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.pluralStringResource
 import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -343,7 +346,9 @@ fun NativePlayerScreen(
   }
   val playerContext = LocalContext.current
   val playerScope = rememberCoroutineScope()
-  val activity = playerContext as? Activity
+  // findActivity(), not a cast: ProvideAppLocale wraps LocalContext, and this activity is what
+  // turns the phone landscape for playback and hands the orientation back afterwards.
+  val activity = playerContext.findActivity()
   val audioManager = remember(playerContext) { playerContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager }
   // Manually added subtitle sources plus any installed addon that advertises the
   // Stremio "subtitles" resource.
@@ -1048,12 +1053,12 @@ fun NativePlayerScreen(
   if (handoffPickerVisible) {
     AlertDialog(
       onDismissRequest = { if (!handoffLoading) handoffPickerVisible = false },
-      title = { Text("Continue on a TV", fontWeight = FontWeight.Black) },
+      title = { Text(stringResource(R.string.handoff_continue_on_a_tv), fontWeight = FontWeight.Black) },
       text = {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-          Text("Choose a TV linked to your StreamDek account. Playback will resume at ${formatClock(currentTime)}.")
+          Text(stringResource(R.string.handoff_choose_tv, formatClock(currentTime)))
           if (handoffDevices.isEmpty()) {
-            Text("No linked TVs are available. Link a TV from Settings > Connect to TV first.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f))
+            Text(stringResource(R.string.handoff_no_linked_tvs), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f))
           } else {
             handoffDevices.forEach { device ->
               Button(
@@ -1082,7 +1087,7 @@ fun NativePlayerScreen(
           handoffError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }
       },
-      confirmButton = { TextButton(onClick = { handoffPickerVisible = false }, enabled = !handoffLoading) { Text("Cancel") } },
+      confirmButton = { TextButton(onClick = { handoffPickerVisible = false }, enabled = !handoffLoading) { Text(stringResource(R.string.action_cancel)) } },
     )
   }
   Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
@@ -1468,7 +1473,7 @@ private fun LiveChannelSwipeCue() {
   )
   Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
     Text(
-      "Swipe up in the middle for all channels", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+      stringResource(R.string.live_swipe_up_all_channels), color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
       style = MaterialTheme.typography.bodyMedium.copy(shadow = shadow),
     )
     Icon(
@@ -1511,12 +1516,12 @@ private fun LiveChannelTray(
           shadow = androidx.compose.ui.graphics.Shadow(Color.Black.copy(alpha = 0.8f), Offset(0f, 2f), 12f),
         ),
       )
-      Text("Swipe down to close", color = Color.White.copy(alpha = 0.72f), fontSize = 10.sp)
+      Text(stringResource(R.string.live_swipe_down_close), color = Color.White.copy(alpha = 0.72f), fontSize = 10.sp)
     }
     if (channels.isEmpty()) {
       Box(modifier = Modifier.fillMaxWidth().height(92.dp), contentAlignment = Alignment.Center) {
         if (loading) CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(26.dp))
-        else Text("No channels were returned by this add-on.", color = Color.White.copy(alpha = 0.78f), fontSize = 12.sp)
+        else Text(stringResource(R.string.live_no_channels_from_addon), color = Color.White.copy(alpha = 0.78f), fontSize = 12.sp)
       }
     } else {
       LazyRow(
@@ -1540,7 +1545,7 @@ private fun LiveChannelTray(
               maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             if (selected) Text(
-              "NOW PLAYING", modifier = Modifier.align(Alignment.TopStart).padding(7.dp), color = Color.White,
+              stringResource(R.string.live_now_playing), modifier = Modifier.align(Alignment.TopStart).padding(7.dp), color = Color.White,
               fontSize = 7.5.sp, fontWeight = FontWeight.Black, letterSpacing = 0.7.sp,
             )
             // Same filled yellow star as the player header, in the corner the NOW PLAYING marker
@@ -1549,7 +1554,7 @@ private fun LiveChannelTray(
               modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(20.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f)),
               contentAlignment = Alignment.Center,
             ) {
-              Icon(Icons.Rounded.Star, contentDescription = "In favourites", tint = Color(0xFFFACC15), modifier = Modifier.size(13.dp))
+              Icon(Icons.Rounded.Star, contentDescription = stringResource(R.string.a11y_in_favourites), tint = Color(0xFFFACC15), modifier = Modifier.size(13.dp))
             }
           }
         }
@@ -1573,10 +1578,10 @@ private fun LiveFavouriteDrawer(
     AlertDialog(
       onDismissRequest = { showClearConfirm = false },
       icon = { Icon(Icons.Rounded.DeleteSweep, contentDescription = null) },
-      title = { Text("Clear all favourites?") },
-      text = { Text("This removes all ${favourites.size} channels from your Live TV favourites.") },
-      confirmButton = { Button(onClick = { showClearConfirm = false; onClearAll() }) { Text("Clear all") } },
-      dismissButton = { TextButton(onClick = { showClearConfirm = false }) { Text("Cancel") } },
+      title = { Text(stringResource(R.string.live_clear_favourites_title)) },
+      text = { Text(pluralStringResource(R.plurals.live_clear_favourites_detail, favourites.size, favourites.size)) },
+      confirmButton = { Button(onClick = { showClearConfirm = false; onClearAll() }) { Text(stringResource(R.string.live_clear_all)) } },
+      dismissButton = { TextButton(onClick = { showClearConfirm = false }) { Text(stringResource(R.string.action_cancel)) } },
     )
   }
   Box(
@@ -1593,10 +1598,10 @@ private fun LiveFavouriteDrawer(
   ) {
     Column(modifier = Modifier.fillMaxSize().padding(start = 20.dp, end = 14.dp, top = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
       Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        IconButton(onClick = onClose) { Icon(Icons.Rounded.ChevronRight, contentDescription = "Close favourites", tint = Color.White) }
+        IconButton(onClick = onClose) { Icon(Icons.Rounded.ChevronRight, contentDescription = stringResource(R.string.a11y_close_favourites), tint = Color.White) }
         Column(modifier = Modifier.weight(1f)) {
-          Text("Favourites", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-          Text("${favourites.size} channels", color = Color.White.copy(alpha = 0.55f), fontSize = 10.sp)
+          Text(stringResource(R.string.live_favourites), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+          Text(pluralStringResource(R.plurals.live_channel_count, favourites.size, favourites.size), color = Color.White.copy(alpha = 0.55f), fontSize = 10.sp)
         }
         IconButton(onClick = { onToggleCardView(!cardView) }, modifier = Modifier.size(32.dp)) {
           Icon(
@@ -1608,7 +1613,7 @@ private fun LiveFavouriteDrawer(
         }
         IconButton(onClick = { showClearConfirm = true }, enabled = favourites.isNotEmpty(), modifier = Modifier.size(32.dp)) {
           Icon(
-            Icons.Rounded.DeleteSweep, contentDescription = "Clear all favourites",
+            Icons.Rounded.DeleteSweep, contentDescription = stringResource(R.string.a11y_clear_all_favourites),
             tint = Color.White.copy(alpha = if (favourites.isNotEmpty()) 0.85f else 0.3f),
             modifier = Modifier.size(18.dp),
           )
@@ -1616,7 +1621,7 @@ private fun LiveFavouriteDrawer(
       }
       if (favourites.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-          Text("Favourite channels appear here.", color = Color.White.copy(alpha = 0.62f), fontSize = 12.sp, textAlign = TextAlign.Center)
+          Text(stringResource(R.string.player_favourites_empty), color = Color.White.copy(alpha = 0.62f), fontSize = 12.sp, textAlign = TextAlign.Center)
         }
       } else {
         LazyColumn(verticalArrangement = Arrangement.spacedBy(if (cardView) 10.dp else 2.dp)) {
@@ -1705,7 +1710,7 @@ private fun PlayerResolvingScreen(
         .clickable(onClick = onBack),
       contentAlignment = Alignment.Center,
     ) {
-      Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = Color.White, modifier = Modifier.size(if (minimal) 30.dp else 24.dp))
+      Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.action_back), tint = Color.White, modifier = Modifier.size(if (minimal) 30.dp else 24.dp))
     }
   }
 }
@@ -1874,7 +1879,7 @@ private fun PlayerCenterControls(isPaused: Boolean, onPauseToggle: () -> Unit, o
       verticalAlignment = Alignment.CenterVertically,
     ) {
       val minimal = layout == "Minimal"
-      if (showSeeking) PlayerRoundAction(icon = Icons.Rounded.Replay10, label = "Rewind 10 seconds", minimal = minimal, onClick = { onSeek(-10.0) }) else Spacer(modifier = Modifier.size(74.dp))
+      if (showSeeking) PlayerRoundAction(icon = Icons.Rounded.Replay10, label = pluralStringResource(R.plurals.player_rewind_seconds, 10, 10), minimal = minimal, onClick = { onSeek(-10.0) }) else Spacer(modifier = Modifier.size(74.dp))
       Box(
         modifier = Modifier
           .size(90.dp)
@@ -1890,7 +1895,7 @@ private fun PlayerCenterControls(isPaused: Boolean, onPauseToggle: () -> Unit, o
           Icon(if (isPaused) RoundedPlayerPlayIcon else Icons.Rounded.Pause, contentDescription = if (isPaused) "Play" else "Pause", tint = Color.White, modifier = Modifier.size(if (isPaused) 51.dp else 54.dp))
         }
       }
-      if (showSeeking) PlayerRoundAction(icon = Icons.Rounded.Forward10, label = "Forward 10 seconds", minimal = minimal, onClick = { onSeek(10.0) }) else Spacer(modifier = Modifier.size(74.dp))
+      if (showSeeking) PlayerRoundAction(icon = Icons.Rounded.Forward10, label = pluralStringResource(R.plurals.player_forward_seconds, 10, 10), minimal = minimal, onClick = { onSeek(10.0) }) else Spacer(modifier = Modifier.size(74.dp))
     }
   }
 }
@@ -2083,11 +2088,11 @@ private fun PlayerBottomControls(
             minimal = minimal,
           )
         } else {
-          PlayerDockButton("Speed", Icons.Rounded.SlowMotionVideo, onSpeed, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+          PlayerDockButton(stringResource(R.string.player_playback_speed), Icons.Rounded.SlowMotionVideo, onSpeed, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
           PlayerDockButton("Subs", Icons.Rounded.Subtitles, onSubtitles, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
-          PlayerDockButton("Audio", Icons.Rounded.VolumeUp, onAudio, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+          PlayerDockButton(stringResource(R.string.player_audio), Icons.Rounded.VolumeUp, onAudio, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
         }
-        PlayerDockButton("Sources", Icons.Rounded.GridView, onSources, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+        PlayerDockButton(stringResource(R.string.player_sources), Icons.Rounded.GridView, onSources, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
         PlayerDockButton("Engine", Icons.Rounded.Tune, onEngine, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
         PlayerDockButton("Info", Icons.Rounded.Info, onInfo, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
       }
@@ -2134,9 +2139,9 @@ private fun androidx.compose.foundation.layout.BoxScope.PlayerTopHeader(
   if (fullTitleVisible) {
     AlertDialog(
       onDismissRequest = { fullTitleVisible = false },
-      title = { Text("Full title") },
+      title = { Text(stringResource(R.string.player_full_title)) },
       text = { Text(listOfNotNull(session.title, episodeContext(session), session.year?.toString()).joinToString(" | ")) },
-      confirmButton = { TextButton(onClick = { fullTitleVisible = false }) { Text("Close") } },
+      confirmButton = { TextButton(onClick = { fullTitleVisible = false }) { Text(stringResource(R.string.action_close)) } },
     )
   }
   Row(
@@ -2154,7 +2159,7 @@ private fun androidx.compose.foundation.layout.BoxScope.PlayerTopHeader(
         .clickable(onClick = onBack),
       contentAlignment = Alignment.Center,
     ) {
-      Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = Color.White, modifier = Modifier.size(if (minimal) 30.dp else 24.dp))
+      Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.action_back), tint = Color.White, modifier = Modifier.size(if (minimal) 30.dp else 24.dp))
     }
     Column(modifier = Modifier.weight(1f).padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
       val yearLabel = session.year?.toString().orEmpty()
@@ -2203,7 +2208,7 @@ private fun androidx.compose.foundation.layout.BoxScope.PlayerTopHeader(
         .clickable(onClick = onLock),
       contentAlignment = Alignment.Center,
     ) {
-      Icon(Icons.Rounded.LockOpen, contentDescription = "Lock the controls", tint = Color.White)
+      Icon(Icons.Rounded.LockOpen, contentDescription = stringResource(R.string.a11y_lock_controls), tint = Color.White)
     }
     // Live streams get the same handoff control as VOD, and it sits to the left of the
     // favourites star because it is declared first in this Row.
@@ -2216,7 +2221,7 @@ private fun androidx.compose.foundation.layout.BoxScope.PlayerTopHeader(
         .clickable(onClick = onHandoff),
       contentAlignment = Alignment.Center,
     ) {
-      Icon(Icons.Rounded.Tv, contentDescription = "Hand off to TV", tint = Color.White)
+      Icon(Icons.Rounded.Tv, contentDescription = stringResource(R.string.player_hand_off_to_tv), tint = Color.White)
     }
     if (session.isLive) {
       Box(
@@ -2299,12 +2304,12 @@ private fun PlayerSourceCard(
         // in the release name, and asking only for the field left this pill off nearly every row
         // while the loading screen a second later showed the size it had scraped from the same text.
         streamSizeLabel(stream)?.let {
-          StreamInfoPill(icon = Icons.Rounded.Sensors, label = "[$it]", containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f), contentColor = MaterialTheme.colorScheme.primary)
+          StreamInfoPill(icon = Icons.Rounded.Sensors, label = stringResource(R.string.stream_info_bracketed, it), containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f), contentColor = MaterialTheme.colorScheme.primary)
         }
         if (active) {
           StreamInfoPill(
             icon = Icons.Rounded.Tune,
-            label = "Playing",
+            label = stringResource(R.string.player_now_playing),
             containerColor = Color(0xFF22C55E).copy(alpha = 0.20f),
             contentColor = Color(0xFF22C55E),
           )
@@ -2313,7 +2318,7 @@ private fun PlayerSourceCard(
     }
     if (showDownload) {
       IconButton(onClick = onDownload, modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp).size(36.dp)) {
-        Icon(Icons.Rounded.Download, contentDescription = "Download for offline playback", tint = Color.White.copy(alpha = 0.78f), modifier = Modifier.size(18.dp))
+        Icon(Icons.Rounded.Download, contentDescription = stringResource(R.string.a11y_download_offline), tint = Color.White.copy(alpha = 0.78f), modifier = Modifier.size(18.dp))
       }
     }
   }
@@ -2359,7 +2364,7 @@ private fun PlayerModalPanel(title: String, onClose: () -> Unit, trailing: @Comp
         Text(title, color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
           trailing?.invoke()
-          Button(onClick = onClose, colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.12f), contentColor = Color.White), shape = StreamDekRadius.cardShape) { Text("Close") }
+          Button(onClick = onClose, colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.12f), contentColor = Color.White), shape = StreamDekRadius.cardShape) { Text(stringResource(R.string.action_close)) }
         }
       }
       val panelContentModifier = if (compact) Modifier.fillMaxWidth().heightIn(max = 220.dp) else Modifier.weight(1f).fillMaxWidth()
@@ -2394,38 +2399,45 @@ private fun PlayerStreamInfo(
     // The television's wording, and its distinction: the provider is who served this, and this is
     // what they are on this account — an add-on, a plugin out of a named collection, or a file
     // already here. Two providers with the same name can be different things entirely.
-    streamOriginLabel(stream)?.let { add("Installed as" to it) }
-    add("Delivery" to transport.label)
-    session.sizeLabel?.takeIf { it.isNotBlank() }?.let { add("Size" to it) }
-    session.qualityLabel?.takeIf { it.isNotBlank() }?.let { add("Quality" to it) }
-    stream?.filename?.takeIf { it.isNotBlank() }?.let { add("File" to it) }
-    if (session.isLive) add("Route" to if (session.isProxied) "Proxied" else "Direct")
+    streamOriginLabel(stream)?.let { add(stringResource(R.string.player_info_installed_as) to it) }
+    add(stringResource(R.string.player_info_delivery) to transport.label)
+    session.sizeLabel?.takeIf { it.isNotBlank() }?.let { add(stringResource(R.string.player_info_size) to it) }
+    session.qualityLabel?.takeIf { it.isNotBlank() }?.let { add(stringResource(R.string.player_quality) to it) }
+    stream?.filename?.takeIf { it.isNotBlank() }?.let { add(stringResource(R.string.player_info_file) to it) }
+    if (session.isLive) {
+      add(
+        stringResource(R.string.player_info_route) to
+          stringResource(if (session.isProxied) R.string.player_info_route_proxied else R.string.player_info_route_direct),
+      )
+    }
   }
   val playbackRows = buildList {
-    formatTransferRate(stats?.bytesPerSecond)?.let { add("Speed" to it) }
-    formatResolution(stats?.width ?: 0, stats?.height ?: 0)?.let { add("Resolution" to it) }
+    formatTransferRate(stats?.bytesPerSecond)?.let { add(stringResource(R.string.player_info_speed) to it) }
+    formatResolution(stats?.width ?: 0, stats?.height ?: 0)?.let { add(stringResource(R.string.player_info_resolution) to it) }
     val videoLine = listOfNotNull(
       prettyCodecName(stats?.videoCodec),
       formatBitrate(stats?.videoBitrateBps),
       stats?.frameRate?.let { String.format(Locale.US, "%.0f fps", it) },
     ).joinToString(" · ")
-    if (videoLine.isNotBlank()) add("Video" to videoLine)
+    if (videoLine.isNotBlank()) add(stringResource(R.string.player_info_video) to videoLine)
     val audioLine = listOfNotNull(
       prettyCodecName(stats?.audioCodec),
-      stats?.audioChannels?.let { channels -> if (channels > 2) "${channels}ch" else if (channels == 2) "Stereo" else "Mono" },
+      stats?.audioChannels?.let { channels ->
+        if (channels > 2) "${channels}ch" else stringResource(if (channels == 2) R.string.player_audio_stereo else R.string.player_audio_mono)
+      },
     ).joinToString(" · ")
-    if (audioLine.isNotBlank()) add("Audio" to audioLine)
-    stats?.bufferedSeconds?.let { add("Buffered" to String.format(Locale.US, "%.0f s ahead", it)) }
-    stats?.hardwareDecoder?.let { add("Decoder" to it) }
-    add("Engine" to if (engine == ActivePlaybackEngine.Media3) "ExoPlayer" else "mpv")
-    if (duration > 0.0) add("Runtime" to formatClock(duration))
+    if (audioLine.isNotBlank()) add(stringResource(R.string.player_audio) to audioLine)
+    stats?.bufferedSeconds?.let { add(stringResource(R.string.player_info_buffered) to String.format(Locale.US, "%.0f s ahead", it)) }
+    stats?.hardwareDecoder?.let { add(stringResource(R.string.player_info_decoder) to it) }
+    add(stringResource(R.string.player_engine) to if (engine == ActivePlaybackEngine.Media3) "ExoPlayer" else "mpv")
+    if (duration > 0.0) add(stringResource(R.string.player_info_runtime) to formatClock(duration))
   }
   Column(verticalArrangement = Arrangement.spacedBy(18.dp), modifier = Modifier.fillMaxWidth()) {
-    PlayerInfoSection("Source", sourceRows)
-    PlayerInfoSection("Playback", playbackRows)
+    PlayerInfoSection(stringResource(R.string.player_info_source), sourceRows)
+    PlayerInfoSection(stringResource(R.string.player_info_playback), playbackRows)
     if (stats == null) {
       Text(
-        "Reading playback details from the engine…",
+        stringResource(R.string.player_reading_details),
         color = Color.White.copy(alpha = 0.52f),
         style = MaterialTheme.typography.bodySmall,
       )
@@ -2482,7 +2494,7 @@ private fun PlayerOptionRow(label: String, selected: Boolean, supportingText: St
         Text(it, color = if (selected) Color.Black.copy(alpha = 0.68f) else Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall)
       }
     }
-    if (selected) Icon(Icons.Rounded.Check, contentDescription = "Selected", tint = Color.Black, modifier = Modifier.size(22.dp))
+    if (selected) Icon(Icons.Rounded.Check, contentDescription = stringResource(R.string.a11y_selected), tint = Color.Black, modifier = Modifier.size(22.dp))
   }
 }
 
@@ -3109,7 +3121,7 @@ private fun PlayerPanels(
     subtitleErrorMessage = null
   }
   when (activePanel) {
-    PlayerPanel.Audio -> PlayerModalPanel(title = "Audio", onClose = { activePanel = PlayerPanel.None }, compact = true) {
+    PlayerPanel.Audio -> PlayerModalPanel(title = stringResource(R.string.player_audio), onClose = { activePanel = PlayerPanel.None }, compact = true) {
       if (audioTracks.isEmpty()) {
         PlayerOptionRow("Default audio", selected = true, onClick = {})
       } else {
@@ -3123,7 +3135,7 @@ private fun PlayerPanels(
         }
       }
     }
-    PlayerPanel.Subtitles -> PlayerModalPanel(title = "Subtitles", onClose = { activePanel = PlayerPanel.None }) {
+    PlayerPanel.Subtitles -> PlayerModalPanel(title = stringResource(R.string.player_subtitles), onClose = { activePanel = PlayerPanel.None }) {
       Row(
         modifier = Modifier.fillMaxWidth().clip(StreamDekRadius.panelShape).background(Color.White.copy(alpha = 0.06f)).padding(6.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -3184,7 +3196,7 @@ private fun PlayerPanels(
             )
           }
           if (visibleEmbeddedTracks.isNotEmpty()) {
-            Text("Embedded in video", color = Color.White.copy(alpha = 0.64f), fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.player_subtitles_embedded), color = Color.White.copy(alpha = 0.64f), fontWeight = FontWeight.Bold)
           }
           visibleEmbeddedTracks.forEach { track ->
             PlayerOptionRow(
@@ -3201,7 +3213,7 @@ private fun PlayerPanels(
               activeSetSubtitleTrack(track.id)
             }
           }
-          if (subtitlesLoading) Text("Searching subtitle sources...", color = Color.White.copy(alpha = 0.72f))
+          if (subtitlesLoading) Text(stringResource(R.string.player_searching_subtitle_sources), color = Color.White.copy(alpha = 0.72f))
           if (visibleExternalSubtitles.isNotEmpty()) {
             Text(
               when (subtitleTab) {
@@ -3291,7 +3303,7 @@ private fun PlayerPanels(
         SubtitlePanelTab.Style -> {
           // Applied live as the slider moves, saved when it is let go: writing to preferences on
           // every frame of a drag would be dozens of commits for one adjustment.
-          Text("Subtitle size: $subtitleSize", color = Color.White.copy(alpha = 0.72f))
+          Text(stringResource(R.string.player_subtitle_size_value, subtitleSize), color = Color.White.copy(alpha = 0.72f))
           Slider(
             value = subtitleSize.toFloat(),
             valueRange = 28f..84f,
@@ -3301,7 +3313,7 @@ private fun PlayerPanels(
             },
             onValueChangeFinished = { onSubtitleTextSizeChange(subtitleSize) },
           )
-          Text("Position: $subtitlePosition", color = Color.White.copy(alpha = 0.72f))
+          Text(stringResource(R.string.player_subtitle_position_value, subtitlePosition), color = Color.White.copy(alpha = 0.72f))
           Slider(
             value = subtitlePosition.toFloat(),
             valueRange = 50f..110f,
@@ -3311,8 +3323,8 @@ private fun PlayerPanels(
             },
             onValueChangeFinished = { onSubtitleVerticalOffsetChange(subtitlePosition) },
           )
-          Text("Colour, outline and background are in Settings > Subtitles.", color = Color.White.copy(alpha = 0.52f), fontSize = 11.5.sp)
-          Text("Delay: ${"%.1f".format(subtitleDelay)}s", color = Color.White.copy(alpha = 0.72f))
+          Text(stringResource(R.string.player_subtitle_styling_note), color = Color.White.copy(alpha = 0.52f), fontSize = 11.5.sp)
+          Text(stringResource(R.string.player_subtitle_delay_value, AppFormats.number(LocalAppLanguage.current, subtitleDelay, decimals = 1)), color = Color.White.copy(alpha = 0.72f))
           Slider(value = subtitleDelay, valueRange = -15f..15f, onValueChange = {
             subtitleDelay = it
             activeSetSubtitleDelay(it.toDouble())
@@ -3320,8 +3332,8 @@ private fun PlayerPanels(
         }
       }
     }
-    PlayerPanel.Sources -> PlayerModalPanel(title = "Sources", onClose = { activePanel = PlayerPanel.None }, trailing = {
-      TextButton(onClick = onReloadStreams, colors = ButtonDefaults.textButtonColors(contentColor = Color.White)) { Text("Reload") }
+    PlayerPanel.Sources -> PlayerModalPanel(title = stringResource(R.string.player_sources), onClose = { activePanel = PlayerPanel.None }, trailing = {
+      TextButton(onClick = onReloadStreams, colors = ButtonDefaults.textButtonColors(contentColor = Color.White)) { Text(stringResource(R.string.player_reload)) }
     }) {
       // The source being played is hoisted to the top, with everything else keeping its order.
       // Hoisting before the cap also guarantees it is listed at all — a source further down a
@@ -3351,11 +3363,11 @@ private fun PlayerPanels(
             )
           }
         if (availableStreams.isEmpty()) {
-          Text("No loaded sources yet.", color = Color.White.copy(alpha = 0.66f))
+          Text(stringResource(R.string.player_no_loaded_sources), color = Color.White.copy(alpha = 0.66f))
         }
       }
     }
-    PlayerPanel.Engine -> PlayerModalPanel(title = "Player Engine", onClose = { activePanel = PlayerPanel.None }, compact = true) {
+    PlayerPanel.Engine -> PlayerModalPanel(title = stringResource(R.string.player_engine_panel_title), onClose = { activePanel = PlayerPanel.None }, compact = true) {
       Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
         PlayerOptionRow("ExoPlayer", selected = activeEngine == ActivePlaybackEngine.Media3) {
           switchEngine(ActivePlaybackEngine.Media3, "manual switch")
@@ -3366,13 +3378,13 @@ private fun PlayerPanels(
           activePanel = PlayerPanel.None
         }
         Text(
-          "Switching keeps your playback position. If a stream plays with no sound or a black screen, try the other engine.",
+          stringResource(R.string.player_engine_switch_note),
           color = Color.White.copy(alpha = 0.58f),
           style = MaterialTheme.typography.bodySmall,
         )
       }
     }
-    PlayerPanel.Speed -> PlayerModalPanel(title = "Speed", onClose = { activePanel = PlayerPanel.None }, compact = true) {
+    PlayerPanel.Speed -> PlayerModalPanel(title = stringResource(R.string.player_playback_speed), onClose = { activePanel = PlayerPanel.None }, compact = true) {
       FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         listOf(0.75f, 1f, 1.25f, 1.5f, 2f).forEach { speed ->
           FilterChip(
@@ -3386,7 +3398,7 @@ private fun PlayerPanels(
         }
       }
     }
-    PlayerPanel.Info -> PlayerModalPanel(title = "Stream info", onClose = { activePanel = PlayerPanel.None }) {
+    PlayerPanel.Info -> PlayerModalPanel(title = stringResource(R.string.player_stream_info), onClose = { activePanel = PlayerPanel.None }) {
       PlayerStreamInfo(
         session = session,
         stats = playbackStats,
@@ -3479,7 +3491,7 @@ private fun BoxScope.PlayerOverlays(
       ) {
         Icon(Icons.Rounded.FastForward, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
         Text(
-          "${formatPlaybackSpeed(playbackSpeed * session.holdToSpeedMultiplier)}x speed",
+          stringResource(R.string.player_speed_multiplier, formatPlaybackSpeed(playbackSpeed * session.holdToSpeedMultiplier)),
           color = Color.White,
           fontWeight = FontWeight.Bold,
         )
@@ -3548,7 +3560,12 @@ private fun BoxScope.PlayerOverlays(
           modifier = Modifier.size(19.dp),
         )
         Text(
-          "${if (adjustmentKind == PlayerAdjustmentKind.Brightness) "Brightness" else "Volume"} ${(adjustmentLevel * 100f).toInt()}%",
+          // Whole sentences per kind, and the percentage through the locale's own formatter: a
+          // trailing "%" is not universal punctuation and the two labels do not inflect alike.
+          stringResource(
+            if (adjustmentKind == PlayerAdjustmentKind.Brightness) R.string.player_brightness_level else R.string.player_volume_level,
+            AppFormats.percent(LocalAppLanguage.current, adjustmentLevel.toDouble()),
+          ),
           color = Color.White,
           fontWeight = FontWeight.SemiBold,
           fontSize = 12.sp,
@@ -3582,7 +3599,7 @@ private fun BoxScope.PlayerOverlays(
         verticalAlignment = Alignment.CenterVertically,
       ) {
         Icon(Icons.Rounded.Lock, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
-        Text("Hold to unlock", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Text(stringResource(R.string.player_hold_to_unlock), color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
       }
     }
   }
@@ -4000,7 +4017,7 @@ private fun RecommendationPanel(
     BoxWithConstraints {
       val useColumns = !showNextEpisode && visibleItems.size == 2 && maxWidth >= 700.dp
       Column(Modifier.padding(horizontal = 14.dp, vertical = 11.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Recommended for you", color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+        Text(stringResource(R.string.player_recommended_for_you), color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
         if (showNextEpisode) {
           RecommendationChoice(null, "Continue when this episode finishes", nextEpisodeQueued, onQueueNextEpisode)
         } else if (useColumns) {
@@ -4017,7 +4034,7 @@ private fun RecommendationPanel(
           }
         }
         TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End).height(38.dp)) {
-          Text("Dismiss · ${secondsRemaining}s", color = Color.White.copy(alpha = 0.72f), style = MaterialTheme.typography.labelMedium)
+          Text(stringResource(R.string.player_dismiss_countdown, secondsRemaining), color = Color.White.copy(alpha = 0.72f), style = MaterialTheme.typography.labelMedium)
         }
       }
     }
@@ -4156,7 +4173,14 @@ private fun BoxScope.PlayerSurfaceOverlays(
     Surface(color = Color.Black.copy(alpha = 0.48f), shape = CircleShape) {
       Column(Modifier.padding(horizontal = 18.dp, vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Icon(if (displayedSeekFeedbackAmount < 0) Icons.Rounded.FastRewind else Icons.Rounded.FastForward, contentDescription = null, tint = Color.White)
-        Text("${if (displayedSeekFeedbackAmount > 0) "+" else "−"}${kotlin.math.abs(displayedSeekFeedbackAmount)}s", color = Color.White, fontWeight = FontWeight.Bold)
+        Text(
+          stringResource(
+            if (displayedSeekFeedbackAmount > 0) R.string.player_seek_feedback_forward else R.string.player_seek_feedback_back,
+            kotlin.math.abs(displayedSeekFeedbackAmount),
+          ),
+          color = Color.White,
+          fontWeight = FontWeight.Bold,
+        )
       }
     }
   }
@@ -4187,21 +4211,21 @@ private fun BoxScope.PlayerSurfaceOverlays(
         verticalAlignment = Alignment.CenterVertically,
       ) {
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-          Text("This source keeps buffering", color = Color.White, fontWeight = FontWeight.Black)
-          Text("Switch to the next ranked source and keep your position?", color = Color.White.copy(alpha = 0.72f), style = MaterialTheme.typography.bodySmall)
+          Text(stringResource(R.string.player_source_keeps_buffering), color = Color.White, fontWeight = FontWeight.Black)
+          Text(stringResource(R.string.player_switch_next_ranked_prompt), color = Color.White.copy(alpha = 0.72f), style = MaterialTheme.typography.bodySmall)
         }
         TextButton(onClick = {
           smartSwitchCandidate = null
           smartSwitchCooldownUntil = android.os.SystemClock.elapsedRealtime() + 180_000L
           recentPlaybackStalls = emptyList()
-        }) { Text("Keep") }
+        }) { Text(stringResource(R.string.action_keep)) }
         Button(onClick = {
           val next = smartSwitchCandidate ?: return@Button
           smartSwitchCandidate = null
           recentPlaybackStalls = emptyList()
           smartSwitchCooldownUntil = android.os.SystemClock.elapsedRealtime() + 60_000L
           onSelectStream(next, progressPercent())
-        }) { Text("Switch") }
+        }) { Text(stringResource(R.string.action_switch)) }
       }
     }
   }
@@ -4540,7 +4564,7 @@ private fun BoxScope.PlayerLiveOverlays(
       modifier = Modifier.width(36.dp).height(92.dp).clickable { showLiveChannels = false; showFavouriteDrawer = true },
       color = Color(0xB3151820),
       shape = RoundedCornerShape(topStart = 22.dp, bottomStart = 22.dp),
-    ) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Rounded.ChevronLeft, contentDescription = "Open favourites", tint = Color.White, modifier = Modifier.size(28.dp)) } }
+    ) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Rounded.ChevronLeft, contentDescription = stringResource(R.string.a11y_open_favourites), tint = Color.White, modifier = Modifier.size(28.dp)) } }
   }
 
   AnimatedVisibility(

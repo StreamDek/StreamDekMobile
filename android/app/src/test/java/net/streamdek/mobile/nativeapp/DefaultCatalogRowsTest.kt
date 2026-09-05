@@ -24,7 +24,7 @@ class DefaultCatalogRowsTest {
   )
 
   private fun savedRow(id: String, enabled: Boolean = true) =
-    HomeCatalogRow(id = id, title = id, subtitle = "", builtin = false, enabled = enabled)
+    HomeCatalogRow(id = id, title = id, subtitleRes = null, builtin = false, enabled = enabled)
 
   /**
    * The catalog rows only.
@@ -147,8 +147,8 @@ class DefaultCatalogRowsTest {
       MediaSection("anime_series", "Anime", listOf(mediaItem("2"))),
     )
     val rows = listOf(
-      HomeCatalogRow("trending_movies", "Trending Movies", "", builtin = true),
-      HomeCatalogRow("anime_series", "Anime", "", builtin = true, enabled = false),
+      HomeCatalogRow("trending_movies", "Trending Movies", subtitleRes = null, builtin = true),
+      HomeCatalogRow("anime_series", "Anime", subtitleRes = null, builtin = true, enabled = false),
     )
 
     assertEquals(listOf("trending_movies"), applyHomeCatalogLayout(sections, rows, true).map { it.id })

@@ -28116,18 +28116,35 @@ private fun formatEpisodeAirDateLabel(date: String): String {
   }.getOrDefault(normalized)
 }
 
+/**
+ * The "not out yet" pill, on the bottom left of the still with the rest of the card's badges.
+ *
+ * A fifth smaller than it was: it is a state, not a headline, and at full size it was the loudest
+ * thing on a card whose subject is the artwork.
+ */
+@Composable
+private fun LockedEpisodePill(label: String) {
+  Box(
+    modifier = Modifier
+      .clip(StreamDekRadius.pill)
+      .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.92f))
+      .padding(horizontal = 9.dp, vertical = 5.dp),
+  ) {
+    Text(
+      label,
+      color = MaterialTheme.colorScheme.onPrimary,
+      style = MaterialTheme.typography.labelMedium.copy(fontSize = 9.6.sp, lineHeight = 12.8.sp),
+      fontWeight = FontWeight.Black,
+      maxLines = 1,
+    )
+  }
+}
+
+/** The pill laid over a still that carries nothing else in its bottom left corner. */
 @Composable
 private fun LockedEpisodeOverlay(label: String) {
-  Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopEnd) {
-    Box(
-      modifier = Modifier
-        .padding(12.dp)
-        .clip(StreamDekRadius.pill)
-        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.92f))
-        .padding(horizontal = 11.dp, vertical = 6.dp),
-    ) {
-      Text(label, color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Black)
-    }
+  Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomStart) {
+    Box(modifier = Modifier.padding(6.dp)) { LockedEpisodePill(label) }
   }
 }
 
@@ -28177,7 +28194,6 @@ private fun EpisodeViewportCard(
         ),
       ),
     )
-    if (locked && unreleased) LockedEpisodeOverlay("Upcoming")
     Column(
       modifier = Modifier.align(Alignment.BottomStart).padding(start = 14.dp, end = 14.dp, top = 14.dp, bottom = 10.dp),
       verticalArrangement = Arrangement.spacedBy(7.dp),
@@ -28191,6 +28207,7 @@ private fun EpisodeViewportCard(
             Text("Next Up", color = readableOn(accent), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black, maxLines = 1)
           }
         }
+        if (locked && unreleased) LockedEpisodePill("Upcoming")
       }
       Text(episode.name, color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
       episode.airDate?.let { airDate ->
@@ -29041,6 +29058,31 @@ private fun EpisodeStreamsPage(
             }
           },
         )
+        // Above the list rather than over it. Pinned either way - the list starts below it and
+        // scrolls under nothing - but as a sibling it needs no fill of its own, so the filters sit
+        // on exactly the wash the results sit on instead of on an opaque band a shade off it.
+        StreamSourceToolbar(
+          modifier = Modifier.fillMaxWidth().height(toolbarHeight),
+          providers = providers,
+          providerCounts = providerCounts,
+          totalCount = streams.size,
+          selectedProvider = providerFilter,
+          onProviderSelected = { providerFilter = it },
+          filterRowState = filterRowState,
+          foreground = streamsPageForeground,
+          accent = ambientAccent,
+          onAccent = onAmbientAccent,
+          chipsVisible = chipsVisible,
+          statusVisible = statusVisible,
+          searching = searching,
+          refreshing = refreshing,
+          searchedSources = (uiState.totalStreamSources - uiState.pendingStreamSources).coerceAtLeast(0),
+          totalSources = uiState.totalStreamSources,
+          pendingSources = uiState.searchingStreamSources,
+          failedSources = failedSources,
+          reducedMotion = reducedMotion,
+          onRetry = onReload,
+        )
         Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
           LazyColumn(
             state = listState,
@@ -29049,7 +29091,7 @@ private fun EpisodeStreamsPage(
             // hero. Capturing the whole list every frame for nothing is not free.
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
-              top = toolbarHeight + 10.dp,
+              top = 10.dp,
               // The floating navigation is drawn over this page rather than beside it, so the list
               // has to hand back its own height plus whatever the system reserves underneath -
               // otherwise the last result of the last source never scrolls clear of the bar.
@@ -29079,29 +29121,6 @@ private fun EpisodeStreamsPage(
               )
             }
           }
-          StreamSourceToolbar(
-            modifier = Modifier.align(Alignment.TopCenter).zIndex(3f).fillMaxWidth().height(toolbarHeight),
-            providers = providers,
-            providerCounts = providerCounts,
-            totalCount = streams.size,
-            selectedProvider = providerFilter,
-            onProviderSelected = { providerFilter = it },
-            filterRowState = filterRowState,
-            pageColor = episodeBackground,
-            foreground = streamsPageForeground,
-            accent = ambientAccent,
-            onAccent = onAmbientAccent,
-            chipsVisible = chipsVisible,
-            statusVisible = statusVisible,
-            searching = searching,
-            refreshing = refreshing,
-            searchedSources = (uiState.totalStreamSources - uiState.pendingStreamSources).coerceAtLeast(0),
-            totalSources = uiState.totalStreamSources,
-            pendingSources = uiState.searchingStreamSources,
-            failedSources = failedSources,
-            reducedMotion = reducedMotion,
-            onRetry = onReload,
-          )
         }
         }
       }
@@ -29302,7 +29321,11 @@ private fun EpisodeActionRow(
   }
 }
 
-/** One action button: a 48dp touch target whatever its label measures, and a label that wraps rather than truncates. */
+/**
+ * One action button: a 48dp touch target whatever its label measures, and a label that wraps rather
+ * than truncates. A fill and no outline - the pair sit on the page's own wash rather than in a
+ * panel, and the ring around each was the only thing on this page drawing boxes.
+ */
 @Composable
 private fun EpisodeActionButton(
   modifier: Modifier = Modifier,
@@ -29320,7 +29343,6 @@ private fun EpisodeActionButton(
       .heightIn(min = 48.dp)
       .clip(StreamDekRadius.pill)
       .background(if (filled) tint.copy(alpha = 0.18f) else foreground.copy(alpha = 0.08f))
-      .border(1.dp, if (filled) tint.copy(alpha = 0.42f) else foreground.copy(alpha = 0.16f), StreamDekRadius.pill)
       .clickable(enabled = !busy, onClick = onClick)
       .semantics { stateDescription = if (busy) "Working" else "Ready" }
       .padding(horizontal = 12.dp, vertical = 8.dp),
@@ -29346,9 +29368,9 @@ private fun EpisodeActionButton(
  * The pinned source toolbar: which sources to show, and how the search for them is going.
  *
  * Pinned rather than scrolled away, because filtering is the one control somebody reaches for
- * halfway down a hundred results. It is a band of the page's own colour rather than a titled panel
- * - the chips say "sources" perfectly well on their own, and the heading, the border and the fixed
- * two-row height were most of what made the old one read as a slab dropped on the list.
+ * halfway down a hundred results. It paints nothing behind itself - the chips say "sources"
+ * perfectly well on their own, and the heading, the border, the fixed two-row height and the band
+ * of flat colour were what made the old one read as a slab dropped on the list.
  */
 @Composable
 private fun StreamSourceToolbar(
@@ -29359,12 +29381,6 @@ private fun StreamSourceToolbar(
   selectedProvider: String,
   onProviderSelected: (String) -> Unit,
   filterRowState: androidx.compose.foundation.lazy.LazyListState,
-  /**
-   * Painted flat behind the controls. Opaque, and nothing more: the band is not a surface of its
-   * own, it is the page with the filters pinned to it, and it needs a fill only so that results
-   * scrolling underneath do not show through them.
-   */
-  pageColor: Color,
   foreground: Color,
   accent: Color,
   onAccent: Color,
@@ -29379,7 +29395,7 @@ private fun StreamSourceToolbar(
   reducedMotion: Boolean,
   onRetry: () -> Unit,
 ) {
-  Box(modifier = modifier.background(pageColor)) {
+  Box(modifier = modifier) {
     Column(modifier = Modifier.fillMaxSize()) {
       if (chipsVisible) {
         Box(modifier = Modifier.fillMaxWidth().height(SourceToolbarChipRowHeight), contentAlignment = Alignment.CenterStart) {
@@ -29474,8 +29490,9 @@ private fun StreamSourceFilterRow(
 /**
  * One source filter.
  *
- * Selected is a filled chip and unselected an outlined one, so the difference survives being read
- * without colour; the accessibility `selected` flag carries the same thing to a screen reader. The
+ * Selected is the accent fill and unselected a faint wash of the foreground, so the difference
+ * survives being read without colour; the accessibility `selected` flag carries the same thing to a
+ * screen reader. The
  * width cap is what stops a source called "All-in-One-Nuvio (Community Mirror)" from pushing every
  * other chip off the row.
  */
@@ -29496,7 +29513,6 @@ private fun StreamProviderChip(
       .widthIn(max = 210.dp)
       .clip(StreamDekRadius.pill)
       .background(if (selected) accent else foreground.copy(alpha = 0.08f))
-      .border(1.dp, if (selected) Color.Transparent else foreground.copy(alpha = 0.16f), StreamDekRadius.pill)
       .clickable(onClick = onClick)
       .padding(horizontal = 14.dp, vertical = 8.dp)
       .semantics { this.selected = selected },

@@ -73,9 +73,17 @@ function kotlinFiles(dir) {
   return out;
 }
 
-const paramPattern = new RegExp(`\\b(?:${USER_FACING_PARAMS.join("|")})\\s*=\\s*"((?:[^"\\\\]|\\\\.)*)"`, "g");
+/**
+ * Every pattern below spells a string literal as `"((?:[^"\\\n]|\\.)*)"`, and the `\n` in the
+ * character class is load-bearing: a Kotlin single-quoted string cannot contain a raw newline, so a
+ * pattern that allows one stops matching a string and starts matching the gap between two of them.
+ * Without it, `Torrent("torrent", ...),` followed on the next line by `Usenet("usenet", ...)` was
+ * reported as one finding whose text was `"),\r\n    Usenet("` - the code in between. Those are
+ * unactionable, and there were enough of them to pad the ceiling by a tenth.
+ */
+const paramPattern = new RegExp(`\\b(?:${USER_FACING_PARAMS.join("|")})\\s*=\\s*"((?:[^"\\\\\\n]|\\\\.)*)"`, "g");
 // Text("...") and Text(text = "..."), the single most common way a string reaches a screen.
-const textPattern = /\bText\s*\(\s*(?:text\s*=\s*)?"((?:[^"\\]|\\.)*)"/g;
+const textPattern = /\bText\s*\(\s*(?:text\s*=\s*)?"((?:[^"\\\n]|\\.)*)"/g;
 
 /**
  * Settings builders whose headings and subtitles are passed positionally.
@@ -96,7 +104,7 @@ const POSITIONAL_BUILDERS = [
   "LanguageChoiceRow",
 ];
 const builderPattern = new RegExp(`\\b(?:${POSITIONAL_BUILDERS.join("|")})\\s*\\(`, "g");
-const literalPattern = /"((?:[^"\\]|\\.)*)"/g;
+const literalPattern = /"((?:[^"\\\n]|\\.)*)"/g;
 
 /**
  * Three routes English took to the screen without passing any of the checks above.
@@ -109,11 +117,11 @@ const literalPattern = /"((?:[^"\\]|\\.)*)"/g;
  * parameter, and the settings builders. So they are checked too.
  */
 // `-> "Some words"`: a `when` arm handing back a sentence.
-const whenArmPattern = /->\s*"((?:[^"\\]|\\.)*)"/g;
+const whenArmPattern = /->\s*"((?:[^"\\\n]|\\.)*)"/g;
 // `ShowFull("show_full", "Show Full")`: an enum constant carrying its own label.
-const enumEntryPattern = /^\s{2,4}[A-Z]\w*\(\s*[^)\n]*"((?:[^"\\]|\\.)*)"/gm;
+const enumEntryPattern = /^\s{2,4}[A-Z]\w*\(\s*[^)\n]*"((?:[^"\\\n]|\\.)*)"/gm;
 // `SomeComposable("Some words", ...)`: words in the first position of a call.
-const positionalCallPattern = /\b([A-Z]\w+)\s*\(\s*"((?:[^"\\]|\\.)*)"/g;
+const positionalCallPattern = /\b([A-Z]\w+)\s*\(\s*"((?:[^"\\\n]|\\.)*)"/g;
 
 /**
  * Calls whose first argument is an id, a key, a pattern or a message for a log - never something a

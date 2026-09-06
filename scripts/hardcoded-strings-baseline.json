@@ -1,4 +1,4 @@
 {
-  "ceiling": 422,
+  "ceiling": 385,
   "note": "Upper bound on hard-coded interface strings. Only ever lower this - see check-hardcoded-strings.mjs."
 }

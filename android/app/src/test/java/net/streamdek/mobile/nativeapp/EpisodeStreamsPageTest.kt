@@ -169,23 +169,29 @@ class EpisodeStreamsPageTest {
 
   // --- search status wording ---
 
+  // These check which shape the status line takes, not the words it comes out as: the wording
+  // moved into string resources, so it is whichever language the viewer chose and a unit test
+  // cannot resolve it. The branch chosen is the part that is logic.
   @Test
   fun `outstanding sources are named up to two and counted after that`() {
-    assertEquals("PenguPlay", describeSourceList(listOf("PenguPlay")))
-    assertEquals("PenguPlay and AIOStreams", describeSourceList(listOf("PenguPlay", "AIOStreams")))
+    assertEquals(SourceListPhrase.One("PenguPlay"), sourceListPhrase(listOf("PenguPlay")))
     assertEquals(
-      "PenguPlay and 2 others",
-      describeSourceList(listOf("PenguPlay", "AIOStreams", "Flix-Streams")),
+      SourceListPhrase.Two("PenguPlay", "AIOStreams"),
+      sourceListPhrase(listOf("PenguPlay", "AIOStreams")),
+    )
+    assertEquals(
+      SourceListPhrase.Counted("PenguPlay", 2),
+      sourceListPhrase(listOf("PenguPlay", "AIOStreams", "Flix-Streams")),
     )
     // The status line is one line: a search across a dozen add-ons must not try to list them all.
     assertEquals(
-      "A and 11 others",
-      describeSourceList(('A'..'L').map { it.toString() }),
+      SourceListPhrase.Counted("A", 11),
+      sourceListPhrase(('A'..'L').map { it.toString() }),
     )
   }
 
   @Test
   fun `a status with no names still reads as a sentence`() {
-    assertEquals("some sources", describeSourceList(emptyList()))
+    assertEquals(SourceListPhrase.Unnamed, sourceListPhrase(emptyList()))
   }
 }

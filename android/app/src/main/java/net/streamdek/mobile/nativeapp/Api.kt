@@ -4777,6 +4777,17 @@ private fun parseReleaseDate(json: JSONObject): String? =
     }
   }
 
+
+/**
+ * True when a season's name says no more than its number does.
+ *
+ * TMDB fills the field with "Season 4" whenever nobody has given the season a title, and that
+ * arrives in English however the metadata request was made. Recognising the shape lets StreamDek
+ * write the number itself, in the right language, without discarding names that carry meaning.
+ */
+private fun isGenericSeasonName(name: String, seasonNumber: Int): Boolean =
+  name.trim().equals("Season $seasonNumber", ignoreCase = true)
+
 private fun parseMediaDetail(json: JSONObject): MediaDetail {
   val releasedSeasons = buildList {
     val source = json.optJSONArray("seasons") ?: JSONArray()
@@ -4784,7 +4795,11 @@ private fun parseMediaDetail(json: JSONObject): MediaDetail {
       val season = source.optJSONObject(index) ?: continue
       val summary = SeasonSummary(
         seasonNumber = season.optInt("season_number"),
-        name = season.optString("name").ifBlank { "Season ${season.optInt("season_number")}" },
+        // A provider that sends nothing, or sends the generic "Season 4", is not naming the
+        // season - it is numbering it, in English. Left blank in both cases so the screen numbers
+        // it in the viewer's language instead. A real name ("Specials", "The Final Season") is
+        // the provider's own and is kept exactly as sent.
+        name = season.optString("name").takeUnless { it.isBlank() || isGenericSeasonName(it, season.optInt("season_number")) }.orEmpty(),
         episodeCount = season.optInt("episode_count"),
         poster = season.optString("poster").ifBlank { tmdbImageUrl(season.optString("poster_path"), "w342") },
         airDate = season.optString("air_date").ifBlank { null },

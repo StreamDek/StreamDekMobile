@@ -111,16 +111,18 @@ class TrailerCacheScheduleTest {
   fun `the default schedule is daily`() {
     assertEquals(24, DEFAULT_TRAILER_CACHE_CLEAR_HOURS)
     assertEquals(9, TRAILER_CACHE_CLEAR_HOUR_OF_DAY)
-    assertEquals("Every 24 hours", trailerCacheClearLabel(DEFAULT_TRAILER_CACHE_CLEAR_HOURS))
   }
 
+  // The choices are hours now, not hours paired with an English label: the words come from a
+  // plural resource, so the only thing left here to check is the numbers - which is all this test
+  // was ever really about.
   @Test
   fun `the offered intervals are twelve, twenty four and forty eight hours`() {
-    assertEquals(listOf(12, 24, 48), trailerCacheClearChoices.map { it.first })
-    assertTrue(trailerCacheClearChoices.all { (hours, label) -> hours > 0 && label.isNotBlank() })
-    assertTrue(trailerCacheClearChoices.any { it.first == DEFAULT_TRAILER_CACHE_CLEAR_HOURS })
+    assertEquals(listOf(12, 24, 48), trailerCacheClearChoices)
+    assertTrue(trailerCacheClearChoices.all { it > 0 })
+    assertTrue(trailerCacheClearChoices.any { it == DEFAULT_TRAILER_CACHE_CLEAR_HOURS })
     // Each divides or is divided by a day, so anchors keep landing on the chosen hour.
-    assertTrue(trailerCacheClearChoices.all { 24 % it.first == 0 || it.first % 24 == 0 })
-    assertTrue(trailerCacheClearChoices.all { TimeUnit.HOURS.toMillis(it.first.toLong()) % 3_600_000L == 0L })
+    assertTrue(trailerCacheClearChoices.all { 24 % it == 0 || it % 24 == 0 })
+    assertTrue(trailerCacheClearChoices.all { TimeUnit.HOURS.toMillis(it.toLong()) % 3_600_000L == 0L })
   }
 }

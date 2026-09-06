@@ -39,10 +39,13 @@ class ServiceCredentialStateTest {
   @Test
   fun `every service explains itself well enough to be worth setting up`() {
     ContentService.values().forEach { service ->
-      assertTrue("${service.label} needs a tagline", service.tagline.isNotBlank())
-      assertTrue("${service.label} needs a blurb", service.blurb.isNotBlank())
-      assertTrue("${service.label} needs at least one stated use", service.uses.isNotEmpty())
-      assertTrue("${service.label} needs steps for getting a key", service.howToGet.isNotEmpty())
+      // Resource ids rather than text: the wording is whichever language the viewer chose, so what
+      // is checked here is that every service was given one at all. A missing id is 0.
+      assertTrue("${service.label} needs a tagline", service.taglineRes != 0)
+      assertTrue("${service.label} needs a blurb", service.blurbRes != 0)
+      assertTrue("${service.label} needs at least one stated use", service.usesRes.isNotEmpty())
+      assertTrue("${service.label} needs steps for getting a key", service.howToGetRes.isNotEmpty())
+      assertTrue("${service.label} needs a hint for its key field", service.keyHintRes != 0)
       assertTrue("${service.label} needs somewhere to get one", service.keyUrl.startsWith("https://"))
     }
   }

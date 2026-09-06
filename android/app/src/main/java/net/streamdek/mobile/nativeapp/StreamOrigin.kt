@@ -22,16 +22,23 @@ private const val DOWNLOADS_ADDON_ID = "streamdek:downloads"
  * CloudStream is loaded on demand, so its manager is only asked for once it exists — reaching for
  * it earlier is what would turn a missing collection name into a crash.
  */
-fun streamOriginLabel(stream: AddonStream?): String? = streamOriginLabel(
+fun streamOriginLabel(stream: AddonStream?, addonFallback: String): String? = streamOriginLabel(
   stream,
   StreamDekPlugins.manager.state,
   if (CloudStreamPlugins.isInitialized) CloudStreamPlugins.manager.state else CsPluginState(),
+  addonFallback,
 )
 
+/**
+ * @param addonFallback what to call a stream that came from a plain add-on rather than a plugin or
+ * CloudStream collection. Passed in rather than written here because it is a word on the screen,
+ * and this file has no composition to read a resource from.
+ */
 fun streamOriginLabel(
   stream: AddonStream?,
   plugins: PluginState,
   cloudStream: CsPluginState,
+  addonFallback: String,
 ): String? {
   val addonId = stream?.addonId?.trim().orEmpty()
   if (addonId.isEmpty()) return null
@@ -47,7 +54,7 @@ fun streamOriginLabel(
       val repoUrl = cloudStream.providers.firstOrNull { it.name == providerName }?.repoUrl.orEmpty()
       pluginOriginLabel(cloudStream.repos.firstOrNull { it.url == repoUrl }?.name, repoUrl)
     }
-    else -> "Add-on"
+    else -> addonFallback
   }
 }
 

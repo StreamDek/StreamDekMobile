@@ -22,12 +22,21 @@ internal const val HOME_DENSITY_PREFERENCE = "home_density"
 
 /** Which caption is drawn below ordinary poster cards on Home. */
 enum class HomeCardTextMode(
+  /** The persisted form, and the value the settings row stores. Never shown to anyone. */
   val key: String,
-  val label: String,
+  @StringRes val labelRes: Int,
+  /**
+   * The English wording this option used to be stored as.
+   *
+   * Not drawn anywhere - [labelRes] is what the viewer reads. It exists because the cloud
+   * preference on accounts written before the labels moved into resources holds this exact text,
+   * and [fromKey] has to keep recognising it or those installs silently fall back to Show Full.
+   */
+  val legacyLabel: String,
 ) {
-  ShowFull("show_full", "Show Full"),
-  ShowYearOnly("show_year_only", "Show Year Only"),
-  Off("off", "Off");
+  ShowFull("show_full", R.string.home_card_text_show_full, "Show Full"),
+  ShowYearOnly("show_year_only", R.string.home_card_text_show_year_only, "Show Year Only"),
+  Off("off", R.string.home_card_text_off, "Off");
 
   companion object {
     val Default = ShowFull
@@ -36,7 +45,7 @@ enum class HomeCardTextMode(
       val normalized = key?.trim()?.lowercase().orEmpty()
       if (normalized.isEmpty()) return Default
       return entries.firstOrNull {
-        it.key == normalized || it.name.lowercase() == normalized || it.label.lowercase() == normalized
+        it.key == normalized || it.name.lowercase() == normalized || it.legacyLabel.lowercase() == normalized
       } ?: Default
     }
   }

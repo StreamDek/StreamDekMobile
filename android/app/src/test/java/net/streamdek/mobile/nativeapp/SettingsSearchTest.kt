@@ -10,13 +10,56 @@ import org.junit.Test
  * user would plausibly type reach the page holding the setting.
  */
 class SettingsSearchTest {
-  private fun find(query: String) = searchSettingsRoutes(query)
+  /**
+   * The English headings, held here rather than in the app.
+   *
+   * The app draws each page's heading from `route.titleRes`, so the shipped wording is whichever
+   * language the viewer chose and a unit test cannot resolve it without an Android context. What
+   * this file needs is not the shipped wording but *a* set of titles to search against, and
+   * keeping the English ones here also states plainly what each page is expected to be called.
+   */
+  private val titles = mapOf(
+    SettingsRoute.Appearance to "Appearance and Language",
+    SettingsRoute.HomeScreen to "Home Screen",
+    SettingsRoute.HomeLayout to "Home Rows",
+    SettingsRoute.TitlePages to "Title Pages",
+    SettingsRoute.Ratings to "Ratings",
+    SettingsRoute.LiveTv to "Live TV",
+    SettingsRoute.Player to "Player",
+    SettingsRoute.SkipAndAutoplay to "Skip and Autoplay",
+    SettingsRoute.Subtitles to "Subtitles",
+    SettingsRoute.Streams to "Streams and Quality",
+    SettingsRoute.Downloads to "Downloads",
+    SettingsRoute.Addons to "Add-ons",
+    SettingsRoute.Plugins to "Plugins",
+    SettingsRoute.M3uPlaylists to "Playlists",
+    SettingsRoute.Debrid to "Premium Services",
+    SettingsRoute.PeerToPeer to "Peer-to-Peer",
+    SettingsRoute.ContentServices to "Content Services",
+    SettingsRoute.SyncServices to "Sync Services",
+    SettingsRoute.Trakt to "Trakt",
+    SettingsRoute.Simkl to "SIMKL",
+    SettingsRoute.Mdblist to "MDBList",
+    SettingsRoute.Punchplay to "PunchPlay",
+    SettingsRoute.ConnectTv to "Connect to TV",
+    SettingsRoute.Network to "Network",
+    SettingsRoute.Account to "Account",
+    SettingsRoute.Profiles to "Profiles",
+    SettingsRoute.AppUpdates to "App Updates",
+  )
+
+  private fun titleOf(route: SettingsRoute) = titles.getValue(route)
+  private fun bodyOf(route: SettingsRoute) = settingsRouteKeywords(route)
+  private fun find(query: String) = searchSettingsRoutes(query, ::titleOf, ::bodyOf)
+
+  @Test fun everyRouteHasATitleInThisTest() {
+    val missing = SettingsRoute.values().filterNot { it in titles }
+    assertTrue("add these to `titles`: $missing", missing.isEmpty())
+  }
 
   @Test fun everyPageIsFindableByItsOwnTitle() {
-    val unreachable = SettingsRoute.values().filterNot { route ->
-      route in searchSettingsRoutes(settingsRouteTitle(route))
-    }
-    assertTrue("not findable by title: ${unreachable.map(::settingsRouteTitle)}", unreachable.isEmpty())
+    val unreachable = SettingsRoute.values().filterNot { route -> route in find(titleOf(route)) }
+    assertTrue("not findable by title: ${unreachable.map(::titleOf)}", unreachable.isEmpty())
   }
 
   @Test fun everyPageHasKeywords() {

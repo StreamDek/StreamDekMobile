@@ -1,5 +1,6 @@
 package net.streamdek.mobile.nativeapp
 
+import androidx.annotation.StringRes
 import net.streamdek.mobile.R
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
@@ -242,7 +243,20 @@ internal fun nextUntriedPlaybackSource(
   val excluded = if (currentStream == null) failedKeys else failedKeys + playerStreamIdentity(currentStream)
   return availableStreams.firstOrNull { playerStreamIdentity(it) !in excluded }
 }
-private enum class SubtitlePanelTab { All, BuiltIn, Addons, Style }
+/**
+ * The subtitle panel's tabs.
+ *
+ * The constant name is the *stored* value - it is what `subtitleDefaultSource` persists and what
+ * [normalizeSubtitleDefaultSource] compares against - so it stays as it is, and the word on the
+ * pill comes from a resource beside it. Drawing `tab.name` was why these four stayed English on a
+ * translated phone.
+ */
+private enum class SubtitlePanelTab(@StringRes val labelRes: Int) {
+  All(R.string.subtitle_tab_all),
+  BuiltIn(R.string.subtitle_tab_built_in),
+  Addons(R.string.subtitle_tab_addons),
+  Style(R.string.subtitle_tab_style),
+}
 internal enum class ExternalSubtitleOrigin { BuiltIn, Addon }
 internal fun externalSubtitleOrigin(sourceId: String): ExternalSubtitleOrigin =
   if (sourceId.startsWith("addon:")) ExternalSubtitleOrigin.Addon else ExternalSubtitleOrigin.BuiltIn
@@ -1506,12 +1520,18 @@ private fun LiveChannelTray(
   ) {
     Row(
       modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-      horizontalArrangement = Arrangement.SpaceBetween,
+      horizontalArrangement = Arrangement.spacedBy(12.dp),
       verticalAlignment = Alignment.CenterVertically,
     ) {
+      // Same treatment as the modal panel's heading: the hint on the right keeps its natural width
+      // and the heading takes the rest, so a longer translation cannot squeeze it away.
       Text(
-        if (loading) "Loading all channels…" else "All channels", color = Color.White,
+        if (loading) stringResource(R.string.live_loading_all_channels) else stringResource(R.string.live_all_channels),
+        modifier = Modifier.weight(1f),
+        color = Color.White,
         fontWeight = FontWeight.Bold, fontSize = 14.sp,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
         style = MaterialTheme.typography.titleSmall.copy(
           shadow = androidx.compose.ui.graphics.Shadow(Color.Black.copy(alpha = 0.8f), Offset(0f, 2f), 12f),
         ),
@@ -1691,9 +1711,10 @@ private fun PlayerResolvingScreen(
     PlayerLoadingBackdrop(
       session = session,
       message = when {
-        swarm == null -> if (peerHash.isNullOrBlank()) "Preparing stream..." else "Preparing peer stream..."
-        !swarm.hasMetadata -> "Finding peers..."
-        else -> "Buffering from peers..."
+        swarm == null -> if (peerHash.isNullOrBlank()) stringResource(R.string.player_preparing_stream)
+          else stringResource(R.string.player_preparing_peer_stream)
+        !swarm.hasMetadata -> stringResource(R.string.player_finding_peers)
+        else -> stringResource(R.string.player_buffering_peers)
       },
       swarm = swarm,
       sourceLabel = sourceLabel,
@@ -1782,11 +1803,11 @@ private fun PlayerLoadingBackdrop(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
           PlayerSwarmStat("SEEDS", stats.seeds.toString())
-          PlayerSwarmStat("PEERS", stats.peers.toString())
-          PlayerSwarmStat("SPEED", playerRateLabel(stats.downloadRateBytesPerSecond.toLong()))
+          PlayerSwarmStat(stringResource(R.string.player_swarm_peers), stats.peers.toString())
+          PlayerSwarmStat(stringResource(R.string.player_swarm_speed), playerRateLabel(stats.downloadRateBytesPerSecond.toLong()))
         }
       }
-      sourceLabel?.takeIf { it.isNotBlank() }?.let {
+      (sourceLabel?.takeIf { it.isNotBlank() } ?: stringResource(R.string.player_finding_a_source)).let {
         Text(
           it,
           color = Color.White.copy(alpha = 0.50f),
@@ -2076,10 +2097,10 @@ private fun PlayerBottomControls(
         horizontalArrangement = Arrangement.spacedBy(when (layout) { "Compact" -> 32.dp; "Minimal" -> 6.dp; else -> 15.5.dp }),
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        PlayerDockButton("Zoom", Icons.Rounded.SettingsOverscan, onZoom, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+        PlayerDockButton(stringResource(R.string.player_zoom), Icons.Rounded.SettingsOverscan, onZoom, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
         if (isLive) {
           PlayerDockButton(
-            "Progress",
+            stringResource(R.string.player_progress),
             if (showLiveProgress) Icons.Rounded.Timeline else Icons.Rounded.HideSource,
             onToggleLiveProgress,
             active = showLiveProgress,
@@ -2089,12 +2110,12 @@ private fun PlayerBottomControls(
           )
         } else {
           PlayerDockButton(stringResource(R.string.player_playback_speed), Icons.Rounded.SlowMotionVideo, onSpeed, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
-          PlayerDockButton("Subs", Icons.Rounded.Subtitles, onSubtitles, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+          PlayerDockButton(stringResource(R.string.player_subs), Icons.Rounded.Subtitles, onSubtitles, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
           PlayerDockButton(stringResource(R.string.player_audio), Icons.Rounded.VolumeUp, onAudio, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
         }
         PlayerDockButton(stringResource(R.string.player_sources), Icons.Rounded.GridView, onSources, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
-        PlayerDockButton("Engine", Icons.Rounded.Tune, onEngine, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
-        PlayerDockButton("Info", Icons.Rounded.Info, onInfo, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+        PlayerDockButton(stringResource(R.string.player_engine), Icons.Rounded.Tune, onEngine, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+        PlayerDockButton(stringResource(R.string.player_info), Icons.Rounded.Info, onInfo, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
       }
     }
   }
@@ -2281,7 +2302,7 @@ private fun PlayerSourceCard(
         // Beside the name, as on the television. Switching source mid-film is usually a choice
         // between things that have already disappointed you once, and "which of these is even the
         // same kind of source" was not answerable from a list of names.
-        streamOriginLabel(stream)?.let {
+        streamOriginLabel(stream, stringResource(R.string.stream_origin_addon))?.let {
           Text(
             it,
             color = Color.White.copy(alpha = 0.52f),
@@ -2360,8 +2381,24 @@ private fun PlayerModalPanel(title: String, onClose: () -> Unit, trailing: @Comp
         .padding(22.dp),
       verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-      Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Text(title, color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        // Weighted, and the buttons are not. A Row measures its unweighted children first, so the
+        // close button keeps its natural width and the heading takes whatever is left - which is
+        // what stops a long title (German's "Wiedergabegeschwindigkeit" against English's
+        // "Playback Speed") from crushing the button into a column one letter wide.
+        Text(
+          title,
+          modifier = Modifier.weight(1f),
+          color = Color.White,
+          style = MaterialTheme.typography.headlineSmall,
+          fontWeight = FontWeight.Black,
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis,
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
           trailing?.invoke()
           Button(onClick = onClose, colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.12f), contentColor = Color.White), shape = StreamDekRadius.cardShape) { Text(stringResource(R.string.action_close)) }
@@ -2395,12 +2432,12 @@ private fun PlayerStreamInfo(
   val stream = session.currentStream
   val transport = remember(stream, session.url) { streamTransport(stream, session.url) }
   val sourceRows = buildList {
-    streamProviderLabel(stream, session.sourceLabel)?.let { add("Provider" to it) }
+    streamProviderLabel(stream, session.sourceLabel)?.let { add(stringResource(R.string.player_info_provider) to it) }
     // The television's wording, and its distinction: the provider is who served this, and this is
     // what they are on this account — an add-on, a plugin out of a named collection, or a file
     // already here. Two providers with the same name can be different things entirely.
-    streamOriginLabel(stream)?.let { add(stringResource(R.string.player_info_installed_as) to it) }
-    add(stringResource(R.string.player_info_delivery) to transport.label)
+    streamOriginLabel(stream, stringResource(R.string.stream_origin_addon))?.let { add(stringResource(R.string.player_info_installed_as) to it) }
+    add(stringResource(R.string.player_info_delivery) to stringResource(transport.labelRes))
     session.sizeLabel?.takeIf { it.isNotBlank() }?.let { add(stringResource(R.string.player_info_size) to it) }
     session.qualityLabel?.takeIf { it.isNotBlank() }?.let { add(stringResource(R.string.player_quality) to it) }
     stream?.filename?.takeIf { it.isNotBlank() }?.let { add(stringResource(R.string.player_info_file) to it) }
@@ -2529,9 +2566,21 @@ private const val MIN_PLAYBACK_SPEED = 0.25f
 private const val MAX_PLAYBACK_SPEED = 4f
 
 /** "2x" rather than "2.0x", but "1.5x" keeps its half. */
+/**
+ * A playback multiplier as the chosen language writes it: "1,5" in German, "1.5" in English.
+ *
+ * This used `"%.2f".format(...)`, which formats against the *device* locale rather than the app's.
+ * On an English phone set to German that produced "1.5x" beside otherwise German text, and on a
+ * German phone set to English the reverse. Going through [AppFormats] ties the separator to the
+ * language actually on screen.
+ */
+@Composable
 internal fun formatPlaybackSpeed(speed: Float): String {
   val clamped = speed.coerceIn(MIN_PLAYBACK_SPEED, MAX_PLAYBACK_SPEED)
-  return if (clamped % 1f == 0f) clamped.toInt().toString() else "%.2f".format(clamped).trimEnd('0').trimEnd('.')
+  val language = LocalAppLanguage.current
+  // Whole numbers stay whole - "2x", never "2,00x".
+  return if (clamped % 1f == 0f) AppFormats.number(language, clamped.toInt())
+  else AppFormats.number(language, clamped, decimals = 2).trimEnd('0').trimEnd(',', '.')
 }
 
 private fun formatClock(seconds: Double): String {
@@ -3157,11 +3206,7 @@ private fun PlayerPanels(
             contentAlignment = Alignment.Center,
           ) {
             Text(
-              when (tab) {
-                SubtitlePanelTab.All -> "All"
-                SubtitlePanelTab.BuiltIn -> "Built-in"
-                else -> tab.name
-              },
+              stringResource(tab.labelRes),
               color = if (selected) Color.Black else Color.White.copy(alpha = 0.72f),
               fontWeight = FontWeight.Bold,
             )
@@ -3170,7 +3215,7 @@ private fun PlayerPanels(
       }
       when (subtitleTab) {
         SubtitlePanelTab.All, SubtitlePanelTab.BuiltIn, SubtitlePanelTab.Addons -> {
-          PlayerOptionRow("None", selected = selectedSubtitleTrackId == null && selectedExternalSubtitleId == null) {
+          PlayerOptionRow(stringResource(R.string.subtitle_none), selected = selectedSubtitleTrackId == null && selectedExternalSubtitleId == null) {
             subtitleSelectionGeneration += 1
             subtitleDisabledByUser = true
             userPickedSubtitle = true
@@ -3201,7 +3246,7 @@ private fun PlayerPanels(
           visibleEmbeddedTracks.forEach { track ->
             PlayerOptionRow(
               label = trackLanguageName(track.language) ?: track.title ?: "Subtitle ${track.id}",
-              supportingText = listOfNotNull("Embedded", track.title, track.codec).distinct().joinToString(" • "),
+              supportingText = listOfNotNull(stringResource(R.string.subtitle_embedded), track.title, track.codec).distinct().joinToString(" • "),
               selected = selectedSubtitleTrackId == track.id,
             ) {
               subtitleSelectionGeneration += 1
@@ -3217,9 +3262,9 @@ private fun PlayerPanels(
           if (visibleExternalSubtitles.isNotEmpty()) {
             Text(
               when (subtitleTab) {
-                SubtitlePanelTab.BuiltIn -> "StreamDek sources"
-                SubtitlePanelTab.Addons -> "Subtitle add-ons"
-                else -> "Online subtitles"
+                SubtitlePanelTab.BuiltIn -> stringResource(R.string.subtitle_streamdek_sources)
+                SubtitlePanelTab.Addons -> stringResource(R.string.subtitle_addon_sources)
+                else -> stringResource(R.string.subtitle_online)
               },
               color = Color.White.copy(alpha = 0.64f),
               fontWeight = FontWeight.Bold,
@@ -3233,12 +3278,12 @@ private fun PlayerPanels(
               it.language == subtitle.language && it.sourceName == subtitle.sourceName
             }
             PlayerOptionRow(
-              label = trackLanguageName(subtitle.language) ?: "Unknown language",
+              label = trackLanguageName(subtitle.language) ?: stringResource(R.string.track_unknown_language),
               supportingText = listOfNotNull(
                 subtitle.sourceName,
-                if (subtitle.origin == ExternalSubtitleOrigin.BuiltIn) "Built-in source" else "Add-on",
+                if (subtitle.origin == ExternalSubtitleOrigin.BuiltIn) stringResource(R.string.subtitle_built_in_source) else stringResource(R.string.stream_origin_addon),
                 subtitle.release?.takeIf { it.isNotBlank() },
-                if (duplicateCount > 1) "Option $duplicateNumber" else null,
+                if (duplicateCount > 1) stringResource(R.string.subtitle_option_number, duplicateNumber) else null,
               ).joinToString(" • "),
               selected = selectedExternalSubtitleId == subtitle.id,
             ) {
@@ -4304,10 +4349,12 @@ private fun BoxScope.PlayerSurfaceOverlays(
     PlayerLoadingBackdrop(
       session = session,
       message = when {
-        nextEpisodeLoading -> listOfNotNull("Loading next episode", nextEpisodeLoadingLabel).joinToString(" · ")
-        session.isLive && slowLoadHintVisible -> "This channel is available but is taking a while to load…"
-        peerSwarm != null -> "Buffering from peers..."
-        else -> "Preparing stream..."
+        // The label beside it is the episode's own code, so the two are joined rather than written
+        // as one sentence - only the first half is StreamDek's words.
+        nextEpisodeLoading -> listOfNotNull(stringResource(R.string.player_loading_next_episode), nextEpisodeLoadingLabel).joinToString(" · ")
+        session.isLive && slowLoadHintVisible -> stringResource(R.string.player_channel_slow_to_load)
+        peerSwarm != null -> stringResource(R.string.player_buffering_peers)
+        else -> stringResource(R.string.player_preparing_stream)
       },
       swarm = peerSwarm,
       sourceLabel = peerSourceLabel,

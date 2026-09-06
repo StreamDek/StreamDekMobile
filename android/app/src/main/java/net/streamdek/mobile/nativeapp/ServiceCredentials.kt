@@ -34,76 +34,95 @@ import net.streamdek.mobile.R
 /**
  * A content service the viewer can bring their own key to.
  *
- * The blurb, the bullets and the help text live on the enum rather than in the composables that
- * draw them, so the phone, the television and the portal describe the same service the same way.
+ * The tagline, the blurb, the bullets and the help text are resource ids rather than text, for the
+ * same reason [CredentialStorage] below holds ids: these are read by a person, and a data model
+ * carrying English pins them to English on a translated phone. The [id] and the [label] stay plain
+ * strings - the id is a storage contract and the label is the service's own name, and neither is
+ * ever translated.
  */
 enum class ContentService(
   val id: String,
   val label: String,
-  val tagline: String,
-  val blurb: String,
-  val uses: List<String>,
+  @StringRes val taglineRes: Int,
+  @StringRes val blurbRes: Int,
+  val usesRes: List<Int>,
   val keyUrl: String,
-  val howToGet: List<String>,
-  val keyHint: String,
+  val howToGetRes: List<Int>,
+  @StringRes val keyHintRes: Int,
 ) {
   Tmdb(
     id = "tmdb",
     label = "TMDB",
-    tagline = "Movies, Shows & Metadata",
-    blurb = "Powers the artwork, descriptions and episode information across StreamDek.",
-    uses = listOf(
-      "Posters and backdrops",
-      "Movie and series information",
-      "Cast and crew",
-      "Seasons and episodes",
-      "Search and discovery",
+    taglineRes = R.string.service_tmdb_tagline,
+    blurbRes = R.string.service_tmdb_blurb,
+    usesRes = listOf(
+      R.string.service_tmdb_use_posters,
+      R.string.service_tmdb_use_information,
+      R.string.service_tmdb_use_cast,
+      R.string.service_tmdb_use_seasons,
+      R.string.service_tmdb_use_search,
     ),
     keyUrl = "https://www.themoviedb.org/settings/api",
-    howToGet = listOf(
-      "Create a free account at themoviedb.org.",
-      "Open Settings, then API, and request an API key for personal use.",
-      "Copy either the API Key or the API Read Access Token — StreamDek accepts both.",
+    howToGetRes = listOf(
+      R.string.service_tmdb_step_account,
+      R.string.service_tmdb_step_request,
+      R.string.service_tmdb_step_copy,
     ),
-    keyHint = "API key or read access token",
+    keyHintRes = R.string.service_tmdb_key_hint,
   ),
   Mdblist(
     id = "mdblist",
     label = "MDBList",
-    tagline = "Ratings & Lists",
-    blurb = "Brings in ratings from IMDb, Rotten Tomatoes and others, and keeps your lists in step.",
-    uses = listOf(
-      "IMDb, Rotten Tomatoes and Metacritic ratings",
-      "Extra rating services on title pages",
-      "Watchlist and list synchronisation",
+    taglineRes = R.string.service_mdblist_tagline,
+    blurbRes = R.string.service_mdblist_blurb,
+    usesRes = listOf(
+      R.string.service_mdblist_use_ratings,
+      R.string.service_mdblist_use_extra_ratings,
+      R.string.service_mdblist_use_lists,
     ),
     keyUrl = "https://mdblist.com/preferences",
-    howToGet = listOf(
-      "Sign in at mdblist.com.",
-      "Open Preferences and scroll to the API key section.",
-      "Generate a key if you have not already, then copy it.",
+    howToGetRes = listOf(
+      R.string.service_mdblist_step_sign_in,
+      R.string.service_mdblist_step_preferences,
+      R.string.service_mdblist_step_generate,
     ),
-    keyHint = "MDBList API key",
+    keyHintRes = R.string.service_mdblist_key_hint,
   ),
   IntroDb(
     id = "introdb",
     label = "IntroDB",
-    tagline = "Series Playback Timing",
-    blurb = "Provides intro, recap and ending timestamps for series.",
-    uses = listOf("Episode timing", "Intro and recap skipping", "Ending detection and next episode"),
+    taglineRes = R.string.service_introdb_tagline,
+    blurbRes = R.string.service_introdb_blurb,
+    usesRes = listOf(
+      R.string.service_introdb_use_timing,
+      R.string.service_introdb_use_skipping,
+      R.string.service_introdb_use_ending,
+    ),
     keyUrl = "https://introdb.app/account",
-    howToGet = listOf("Sign in at introdb.app/account.", "Create or copy your API key from the account page.", "Paste the complete key into StreamDek."),
-    keyHint = "IntroDB API key",
+    howToGetRes = listOf(
+      R.string.service_introdb_step_sign_in,
+      R.string.service_introdb_step_copy,
+      R.string.service_introdb_step_paste,
+    ),
+    keyHintRes = R.string.service_introdb_key_hint,
   ),
   TheIntroDb(
     id = "theintrodb",
     label = "TheIntroDB",
-    tagline = "Movies, Series & Playback Timing",
-    blurb = "Provides community-verified intro, recap, credits and preview timestamps for movies and series.",
-    uses = listOf("Movie and episode timing", "Intro and recap skipping", "Credits, next episode and recommendations"),
+    taglineRes = R.string.service_theintrodb_tagline,
+    blurbRes = R.string.service_theintrodb_blurb,
+    usesRes = listOf(
+      R.string.service_theintrodb_use_timing,
+      R.string.service_theintrodb_use_skipping,
+      R.string.service_theintrodb_use_credits,
+    ),
     keyUrl = "https://theintrodb.org/docs",
-    howToGet = listOf("Open TheIntroDB documentation.", "Follow the API-key instructions and sign in when asked.", "Copy the complete key into StreamDek."),
-    keyHint = "TheIntroDB API key",
+    howToGetRes = listOf(
+      R.string.service_theintrodb_step_docs,
+      R.string.service_theintrodb_step_follow,
+      R.string.service_theintrodb_step_copy,
+    ),
+    keyHintRes = R.string.service_theintrodb_key_hint,
   );
 
   companion object {

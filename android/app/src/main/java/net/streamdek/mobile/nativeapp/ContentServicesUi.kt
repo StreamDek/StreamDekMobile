@@ -246,10 +246,10 @@ private fun ContentServicesCard(
 @Composable
 private fun StatusBadge(status: CredentialStatus) {
   val (label, tint) = when (status) {
-    CredentialStatus.Connected -> "Connected" to Color(0xFF22C55E)
-    CredentialStatus.Checking -> "Checking…" to Color(0xFF60A5FA)
-    CredentialStatus.NeedsAttention -> "Needs attention" to Color(0xFFF59E0B)
-    CredentialStatus.NotConfigured -> "Not configured" to MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+    CredentialStatus.Connected -> stringResource(R.string.credential_status_connected) to Color(0xFF22C55E)
+    CredentialStatus.Checking -> stringResource(R.string.credential_status_checking) to Color(0xFF60A5FA)
+    CredentialStatus.NeedsAttention -> stringResource(R.string.credential_status_needs_attention) to Color(0xFFF59E0B)
+    CredentialStatus.NotConfigured -> stringResource(R.string.settings_tv_not_configured) to MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
   }
   Surface(
     shape = StreamDekRadius.pill,
@@ -316,7 +316,7 @@ private fun ServiceHeader(service: ContentService, state: ContentServiceState) {
         overflow = TextOverflow.Ellipsis,
       )
       Text(
-        service.tagline,
+        stringResource(service.taglineRes),
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
         maxLines = 2,
@@ -336,7 +336,7 @@ private fun ServiceHeader(service: ContentService, state: ContentServiceState) {
 @Composable
 private fun ServiceUses(service: ContentService, limit: Int = Int.MAX_VALUE) {
   Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-    service.uses.take(limit).forEach { use ->
+    service.usesRes.take(limit).forEach { use ->
       Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.Top) {
         // Nudged down to sit on the first line's baseline rather than in the middle of a use that
         // wraps to two lines.
@@ -347,7 +347,7 @@ private fun ServiceUses(service: ContentService, limit: Int = Int.MAX_VALUE) {
             .background(serviceAccent(service).copy(alpha = 0.8f), StreamDekRadius.pill),
         )
         Text(
-          use,
+          stringResource(use),
           style = MaterialTheme.typography.bodyMedium,
           color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f),
         )
@@ -368,7 +368,7 @@ private fun StorageLine(state: ContentServiceState) {
   val storage = state.storage ?: return
   Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
     Text(
-      "STORAGE",
+      stringResource(R.string.credential_storage_heading),
       style = MaterialTheme.typography.labelSmall,
       color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
     )
@@ -487,7 +487,7 @@ fun ContentServiceKeyDialog(
     onDismissRequest = { if (!busy && verified == null) onDismiss() },
     title = {
       Text(
-        if (updating) "Update your ${service.label} key" else "Add your ${service.label} key",
+        stringResource(if (updating) R.string.credential_update_named_key else R.string.credential_add_named_key, service.label),
         fontWeight = FontWeight.Bold,
       )
     },
@@ -497,7 +497,7 @@ fun ContentServiceKeyDialog(
         verticalArrangement = Arrangement.spacedBy(16.dp),
       ) {
         Text(
-          service.blurb,
+          stringResource(service.blurbRes),
           style = MaterialTheme.typography.bodyMedium,
           color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f),
         )
@@ -509,7 +509,7 @@ fun ContentServiceKeyDialog(
           singleLine = true,
           enabled = !busy && verified == null,
           isError = failure != null,
-          label = { Text(service.keyHint) },
+          label = { Text(stringResource(service.keyHintRes)) },
           placeholder = { Text(stringResource(R.string.content_services_paste_key), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)) },
           // Not a password field: this is pasted from a clipboard, and hiding it makes a mistyped
           // key impossible to spot. It is masked everywhere it is shown back, which is the part
@@ -548,7 +548,7 @@ fun ContentServiceKeyDialog(
           onClick = { showHelp = !showHelp },
           contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
         ) {
-          Text(if (showHelp) "Hide instructions" else "Don't have a ${service.label} key?")
+          Text(if (showHelp) stringResource(R.string.credential_hide_instructions) else stringResource(R.string.credential_no_key_question, service.label))
         }
 
         AnimatedVisibility(
@@ -557,7 +557,7 @@ fun ContentServiceKeyDialog(
           exit = fadeOut() + shrinkVertically(),
         ) {
           Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            service.howToGet.forEachIndexed { index, step ->
+            service.howToGetRes.forEachIndexed { index, step ->
               Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
                   stringResource(R.string.content_services_step_number, index + 1),
@@ -566,7 +566,7 @@ fun ContentServiceKeyDialog(
                   color = serviceAccent(service),
                 )
                 Text(
-                  step,
+                  stringResource(step),
                   style = MaterialTheme.typography.bodyMedium,
                   color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f),
                 )
@@ -813,7 +813,7 @@ fun ContentServiceCard(
 
     if (!compact || !state.configured) {
       Text(
-        service.blurb,
+        stringResource(service.blurbRes),
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
       )
@@ -908,9 +908,9 @@ fun ContentServiceCard(
       ) {
         Text(
           when {
-            state.status == CredentialStatus.NeedsAttention -> "Update Key"
-            state.configured -> "Replace Key"
-            else -> "Enter ${service.label} Key"
+            state.status == CredentialStatus.NeedsAttention -> stringResource(R.string.credential_update_key)
+            state.configured -> stringResource(R.string.credential_replace_key)
+            else -> stringResource(R.string.credential_enter_named_key, service.label)
           },
           fontWeight = FontWeight.SemiBold,
         )
@@ -985,18 +985,16 @@ fun ContentServiceSetupRoutes(modifier: Modifier = Modifier) {
         )
       }
       SetupRoute(
-        "On this phone",
-        "Enter a key here and choose whether StreamDek keeps it for your other devices.",
+        stringResource(R.string.credential_setup_phone_title),
+        stringResource(R.string.credential_setup_phone_detail),
       )
       SetupRoute(
-        "On the StreamDek web portal",
-        "Far easier for long keys — a keyboard beats a remote. Anything added there is saved to " +
-          "your account and appears on your devices automatically.",
+        stringResource(R.string.credential_setup_portal_title),
+        stringResource(R.string.credential_setup_portal_detail),
       )
       SetupRoute(
-        "On your TV",
-        "You can type a key straight into StreamDek TV, but you only need to if you chose to keep " +
-          "your key on one device.",
+        stringResource(R.string.credential_setup_tv_title),
+        stringResource(R.string.credential_setup_tv_detail),
       )
     }
   }
@@ -1199,7 +1197,7 @@ private fun IntroDbApiKeyCard(savedKey: String, signedIn: Boolean, onSave: (Stri
 
     if (savedKey.isNotBlank()) {
       Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        Text("STORAGE", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f))
+        Text(stringResource(R.string.credential_storage_heading), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f))
         Text(
           (if (signedIn) "StreamDek account" else "This device") + "  ·  " + maskedIntroDbKey(savedKey),
           style = MaterialTheme.typography.labelLarge,
@@ -1225,7 +1223,7 @@ private fun IntroDbApiKeyCard(savedKey: String, signedIn: Boolean, onSave: (Stri
 
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
       Button(onClick = { dialogOpen = true }, enabled = !checking, shape = StreamDekRadius.pill) {
-        Text(if (savedKey.isBlank()) "Enter IntroDB Key" else "Replace Key", fontWeight = FontWeight.SemiBold)
+        Text(if (savedKey.isBlank()) stringResource(R.string.credential_enter_named_key, ContentService.IntroDb.label) else stringResource(R.string.credential_replace_key), fontWeight = FontWeight.SemiBold)
       }
       if (savedKey.isNotBlank()) {
         TextButton(onClick = { onSave("") }, enabled = !checking) { Text(stringResource(R.string.action_remove), color = MaterialTheme.colorScheme.error) }

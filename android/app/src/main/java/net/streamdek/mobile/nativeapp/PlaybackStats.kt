@@ -1,5 +1,7 @@
 package net.streamdek.mobile.nativeapp
 
+import androidx.annotation.StringRes
+import net.streamdek.mobile.R
 import java.util.Locale
 
 /**
@@ -27,16 +29,21 @@ data class PlaybackStats(
   val hardwareDecoder: String? = null,
 )
 
-/** How the bytes actually reach the player, which is not always what the source advertised. */
-enum class StreamTransport(val label: String) {
-  Peer("Peer-to-Peer"),
-  Usenet("Usenet"),
-  Download("Offline download"),
-  Hls("HLS"),
-  Dash("DASH"),
-  Http("Direct HTTP"),
-  LocalFile("Local file"),
-  Unknown("Stream"),
+/**
+ * How the bytes actually reach the player, which is not always what the source advertised.
+ *
+ * A resource id rather than a word: this is drawn in the player's Stream Info panel, and HLS and
+ * DASH stay as they are in every language because they are the names of the protocols.
+ */
+enum class StreamTransport(@StringRes val labelRes: Int) {
+  Peer(R.string.transport_peer_to_peer),
+  Usenet(R.string.transport_usenet),
+  Download(R.string.transport_offline_download),
+  Hls(R.string.transport_hls),
+  Dash(R.string.transport_dash),
+  Http(R.string.transport_direct_http),
+  LocalFile(R.string.transport_local_file),
+  Unknown(R.string.transport_stream),
 }
 
 /**

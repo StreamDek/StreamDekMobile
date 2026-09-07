@@ -55,6 +55,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -156,6 +157,7 @@ import androidx.compose.material.icons.rounded.PlayCircleOutline
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.material.icons.rounded.Restaurant
 import androidx.compose.material.icons.rounded.Search
@@ -5957,7 +5959,11 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     uiState = uiState.copy(localResumeEntries = loadResumeEntries())
   }
 
-  fun playBestStream(episode: EpisodeItem? = null) {
+  fun playBestStream(
+    episode: EpisodeItem? = null,
+    resumePercentOverride: Double? = null,
+    returnToEpisodeStreams: Boolean = false,
+  ) {
     val detail = uiState.detail ?: return
     if (detail.type == "movie" && isFutureReleaseDate(detail.releaseDate)) {
       uiState = uiState.copy(streamLoading = false, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = true, availableStreams = emptyList(), errorMessage = null)
@@ -5968,12 +5974,17 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val selectedEpisode = episode ?: uiState.selectedEpisode ?: rememberedEpisodeFor(detail)
     val remembered = loadPlaybackMemoryEntry(detail, selectedEpisode)
     if (!uiState.detailIsLive && uiState.rememberLastSource && remembered?.stream != null && (remembered.progressPercent > 0.0 || !remembered.stream.url.isNullOrBlank() || !remembered.stream.infoHash.isNullOrBlank())) {
-      playStream(remembered.stream, selectedEpisode, remembered.progressPercent)
+      playStream(
+        remembered.stream,
+        selectedEpisode,
+        resumePercentOverride ?: remembered.progressPercent,
+        returnToEpisodeStreams = returnToEpisodeStreams,
+      )
       return
     }
     val cached = uiState.availableStreams.firstOrNull()
     if (cached != null && selectedEpisode == uiState.selectedEpisode) {
-      playStream(cached, selectedEpisode)
+      playStream(cached, selectedEpisode, resumePercentOverride, returnToEpisodeStreams)
       return
     }
     launchWork(
@@ -6025,7 +6036,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
               })
           }
         } ?: ranked.firstOrNull()
-        preferred?.let { playStream(it, selectedEpisode) } ?: run {
+        preferred?.let { playStream(it, selectedEpisode, resumePercentOverride, returnToEpisodeStreams) } ?: run {
           pendingDirectContinueFallback?.let { showDetails ->
             pendingDirectContinueFallback = null
             val resumeEpisode = pendingDirectContinueEpisode
@@ -10829,6 +10840,8 @@ private class NativeAppViewModelFactory(
  */
 @Composable
 fun StreamDekNativeApp(
+  pendingSetupDestination: String? = null,
+  onSetupDestinationConsumed: () -> Unit = {},
   pendingAddonManifestUrl: String? = null,
   onAddonManifestConsumed: () -> Unit = {},
   pendingEpisodeNotification: EpisodeNotificationTarget? = null,
@@ -10841,6 +10854,8 @@ fun StreamDekNativeApp(
   val viewModel = viewModel<NativeAppViewModel>(factory = NativeAppViewModelFactory(application))
   ProvideAppLocale(viewModel.uiState.appLanguage) {
     StreamDekNativeAppContent(
+      pendingSetupDestination = pendingSetupDestination,
+      onSetupDestinationConsumed = onSetupDestinationConsumed,
       pendingAddonManifestUrl = pendingAddonManifestUrl,
       onAddonManifestConsumed = onAddonManifestConsumed,
       pendingEpisodeNotification = pendingEpisodeNotification,
@@ -10852,6 +10867,8 @@ fun StreamDekNativeApp(
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun StreamDekNativeAppContent(
+  pendingSetupDestination: String? = null,
+  onSetupDestinationConsumed: () -> Unit = {},
   pendingAddonManifestUrl: String? = null,
   onAddonManifestConsumed: () -> Unit = {},
   pendingEpisodeNotification: EpisodeNotificationTarget? = null,
@@ -10992,6 +11009,17 @@ private fun StreamDekNativeAppContent(
                 BackHandler {
                   if (uiState.playerSession != null) viewModel.dismissPlayer() else viewModel.cancelPlayerLaunch()
                 }
+                val currentPlayerEpisode = uiState.selectedEpisode
+                val nextEpisodePreview = currentPlayerEpisode?.let { current ->
+                  uiState.selectedSeasonEpisodes
+                    .filter { it.seasonNumber == current.seasonNumber && it.episodeNumber > current.episodeNumber }
+                    .minByOrNull { it.episodeNumber }
+                }
+                val nextSeasonNumber = currentPlayerEpisode?.let { current ->
+                  uiState.detail?.seasons?.map { it.seasonNumber }?.filter { it > current.seasonNumber }?.minOrNull()
+                }
+                val nextEpisodeAvailable = rootPlayerSession.mediaType == "tv" &&
+                  currentPlayerEpisode != null && (nextEpisodePreview != null || nextSeasonNumber != null)
                 NativePlayerScreen(
                 session = rootPlayerSession,
                 resolving = uiState.playerSession == null,
@@ -11012,6 +11040,16 @@ private fun StreamDekNativeAppContent(
                 onReloadStreams = { viewModel.loadStreamsForCurrentDetail(uiState.selectedEpisode) },
                 onPlaybackEnded = viewModel::onPlayerPlaybackEnded,
                 onRecommendedPlaybackEnded = viewModel::playRecommendedFromEnding,
+                recommendationWatchlistIds = uiState.mergedWatchlist.mapTo(linkedSetOf()) { it.id },
+                onAddRecommendationToWatchlist = viewModel::toggleWatchlist,
+                nextEpisodeAvailable = nextEpisodeAvailable,
+                nextEpisodeLabel = nextEpisodePreview?.let {
+                  buildString {
+                    append("S${it.seasonNumber.toString().padStart(2, '0')} E${it.episodeNumber.toString().padStart(2, '0')}")
+                    it.name.takeIf(String::isNotBlank)?.let { title -> append(" — $title") }
+                  }
+                } ?: nextSeasonNumber?.let { "Next season" },
+                nextEpisodeArtwork = nextEpisodePreview?.still ?: uiState.detail?.backdrop,
                 nextEpisodeLoading = uiState.nextEpisodeLoading,
                 nextEpisodeLoadingLabel = uiState.nextEpisodeLoadingLabel,
                 onPreviousEpisode = { viewModel.playAdjacentEpisode(-1) },
@@ -11036,7 +11074,7 @@ private fun StreamDekNativeAppContent(
               )
               }
               else -> rootStateHolder.SaveableStateProvider("main_scene") {
-                MainScene(viewModel, pendingAddonManifestUrl, onAddonManifestConsumed, pendingEpisodeNotification, onEpisodeNotificationConsumed)
+                MainScene(viewModel, pendingSetupDestination, onSetupDestinationConsumed, pendingAddonManifestUrl, onAddonManifestConsumed, pendingEpisodeNotification, onEpisodeNotificationConsumed)
               }
           }
           // Sits above the scene rather than inside it so it reads the same over the launch screen,
@@ -11296,9 +11334,13 @@ private fun SkeletonBlock(modifier: Modifier = Modifier, radius: androidx.compos
 }
 
 @Composable
-private fun AuthScene(viewModel: NativeAppViewModel, onContinueAsGuest: (() -> Unit)? = null) {
+private fun AuthScene(
+  viewModel: NativeAppViewModel,
+  initialMode: String = "signin",
+  onContinueAsGuest: (() -> Unit)? = null,
+) {
   val uiState = viewModel.uiState
-  var mode by rememberSaveable { mutableStateOf("signin") }
+  var mode by rememberSaveable(initialMode) { mutableStateOf(initialMode) }
   // A reset is two steps now: ask for a code, then spend it. The old single-step form posted to
   // /auth/password-reset/direct, which set a password from the address alone -- that route is
   // disabled by default on the backend and answers 404.
@@ -11630,6 +11672,8 @@ private fun NavigationCaretCue() {
 @Composable
 private fun MainScene(
   viewModel: NativeAppViewModel,
+  pendingSetupDestination: String?,
+  onSetupDestinationConsumed: () -> Unit,
   pendingAddonManifestUrl: String?,
   onAddonManifestConsumed: () -> Unit,
   pendingEpisodeNotification: EpisodeNotificationTarget?,
@@ -11665,10 +11709,19 @@ private fun MainScene(
   var selectedTab by rememberSaveable { mutableStateOf(MainTab.Home) }
   var previousTab by rememberSaveable { mutableStateOf(MainTab.Home) }
   var openDetail by rememberSaveable { mutableStateOf(uiState.detail?.let { it.type to it.id }) }
-  LaunchedEffect(uiState.pendingEndRecommendation) {
+  LaunchedEffect(uiState.pendingEndRecommendation, uiState.detail?.id, uiState.availableStreams) {
     val item = uiState.pendingEndRecommendation ?: return@LaunchedEffect
     openDetail = item.type to item.id
-    viewModel.consumeEndRecommendation()
+    // A Play Now decision must not become "open the detail page and wait". Movies can resolve
+    // immediately once the progressive source search publishes its first candidate. Series still
+    // land on detail because choosing an actual episode is part of their full media identity.
+    if (!item.type.equals("tv", ignoreCase = true) && uiState.detail?.id == item.id) {
+      val stream = uiState.availableStreams.firstOrNull() ?: return@LaunchedEffect
+      viewModel.consumeEndRecommendation()
+      viewModel.playStream(stream, resumePercentOverride = 0.0)
+    } else if (item.type.equals("tv", ignoreCase = true) && uiState.detail?.id == item.id) {
+      viewModel.consumeEndRecommendation()
+    }
   }
   LaunchedEffect(pendingEpisodeNotification, uiState.booting, uiState.activeProfileId) {
     val target = pendingEpisodeNotification ?: return@LaunchedEffect
@@ -11706,6 +11759,9 @@ private fun MainScene(
   var detailReturnFromSettings by rememberSaveable { mutableStateOf<Pair<String, String>?>(null) }
   var showExitPrompt by rememberSaveable { mutableStateOf(false) }
   var showAuth by rememberSaveable { mutableStateOf(false) }
+  var setupDestination by rememberSaveable { mutableStateOf<String?>(null) }
+  var setupAuthMode by rememberSaveable { mutableStateOf("signin") }
+  var profileCreateRequest by rememberSaveable { mutableIntStateOf(0) }
   var requireGuestProfile by rememberSaveable { mutableStateOf(false) }
   var guestProfileCountAtEntry by rememberSaveable { mutableIntStateOf(-1) }
   var homeScrollToTopSignal by rememberSaveable { mutableStateOf(0) }
@@ -11785,6 +11841,55 @@ private fun MainScene(
     }
   }
 
+  LaunchedEffect(pendingSetupDestination) {
+    val destination = pendingSetupDestination ?: return@LaunchedEffect
+    setupDestination = destination
+    onSetupDestinationConsumed()
+  }
+
+  LaunchedEffect(
+    setupDestination,
+    uiState.booting,
+    uiState.session,
+    uiState.authSubmitting,
+    uiState.profileTransitioning,
+    showProfilePicker,
+    requireGuestProfile,
+  ) {
+    val destination = setupDestination ?: return@LaunchedEffect
+    when (destination) {
+      SETUP_REGISTER -> {
+        setupAuthMode = "signup"
+        showAuth = true
+        setupDestination = null
+      }
+      SETUP_LOGIN -> {
+        setupAuthMode = "signin"
+        showAuth = true
+        setupDestination = null
+      }
+      else -> {
+        if (uiState.session == null) {
+          setupAuthMode = "signin"
+          showAuth = true
+          return@LaunchedEffect
+        }
+        if (uiState.booting || uiState.authSubmitting || uiState.profileTransitioning || requireGuestProfile) return@LaunchedEffect
+        val route = setupSettingsRoute(destination) ?: run {
+          setupDestination = null
+          return@LaunchedEffect
+        }
+        if (showProfilePicker) viewModel.dismissProfilePicker()
+        if (selectedTab != MainTab.Settings) previousTab = selectedTab
+        selectedTab = MainTab.Settings
+        setSettingsRoute(route)
+        if (destination == SETUP_CREATE_PROFILE) profileCreateRequest += 1
+        showAuth = false
+        setupDestination = null
+      }
+    }
+  }
+
   LaunchedEffect(uiState.playerSession, uiState.returnToDetailAfterPlayer, uiState.detail?.id) {
     if (uiState.playerSession == null && uiState.returnToDetailAfterPlayer) {
       uiState.detail?.let { detail -> openDetail = detail.type to detail.id }
@@ -11806,7 +11911,7 @@ private fun MainScene(
    */
   LaunchedEffect(uiState.session, uiState.authSubmitting) {
     if (uiState.session != null && !uiState.authSubmitting) {
-      if (showAuth) {
+      if (showAuth && setupDestination == null) {
         selectedTab = MainTab.Home
         setSettingsRoute(null)
         detailReturnFromSettings = null
@@ -12220,6 +12325,7 @@ private fun MainScene(
       } else if (showAuth) {
         AuthScene(
           viewModel = viewModel,
+          initialMode = setupAuthMode,
           onContinueAsGuest = {
             guestProfileCountAtEntry = uiState.profiles.size
             requireGuestProfile = true
@@ -12289,6 +12395,7 @@ private fun MainScene(
             MainTab.Settings -> SettingsScene(
               uiState = uiState,
               viewModel = viewModel,
+              profileCreateRequest = profileCreateRequest,
               settingsRoute = settingsRoute,
               setSettingsRoute = { setSettingsRoute(it) },
               onBack = {
@@ -12332,7 +12439,10 @@ private fun MainScene(
           onPlayStream = { stream, episode -> viewModel.playStream(stream, episode) },
           onPlayEpisodeStream = { stream, episode -> viewModel.playStream(stream, episode, returnToEpisodeStreams = true) },
           onClearPlayerReturnTarget = viewModel::clearPlayerReturnTarget,
-          onPlayBestStream = viewModel::playBestStream,
+          onPlayBestStream = { episode -> viewModel.playBestStream(episode) },
+          onRestartBestStream = { episode, returnToStreams ->
+            viewModel.playBestStream(episode, resumePercentOverride = 0.0, returnToEpisodeStreams = returnToStreams)
+          },
           onLoadSeason = viewModel::loadSeason,
           onToggleWatchlist = viewModel::toggleWatchlist,
           onToggleEpisodeWatched = viewModel::toggleEpisodeWatched,
@@ -17897,6 +18007,7 @@ private fun SettingsDetailPanePlaceholder() {
 private fun SettingsScene(
   uiState: AppUiState,
   viewModel: NativeAppViewModel,
+  profileCreateRequest: Int,
   settingsRoute: SettingsRoute?,
   setSettingsRoute: (SettingsRoute?) -> Unit,
   onBack: () -> Unit,
@@ -17913,6 +18024,7 @@ private fun SettingsScene(
     SettingsTab(
       uiState = uiState,
       playerSettingsViewModel = viewModel,
+      profileCreateRequest = profileCreateRequest,
       route = paneRoute,
       apiBaseUrl = viewModel.apiBaseUrl(),
       onRouteChange = { setSettingsRoute(it) },
@@ -18085,6 +18197,7 @@ private fun SettingsScene(
 private fun SettingsTab(
   uiState: AppUiState,
   playerSettingsViewModel: NativeAppViewModel,
+  profileCreateRequest: Int,
   route: SettingsRoute?,
   apiBaseUrl: String,
   onRouteChange: (SettingsRoute) -> Unit,
@@ -19163,7 +19276,7 @@ private fun SettingsTab(
         SettingsRoute.Simkl -> item { DeviceCodeSyncServiceSummary(SyncService.Simkl, uiState, onRequestSyncServiceDeviceCode, onPollSyncServiceAuthorization, onDisconnectSyncService, onRefreshSyncServices) }
         SettingsRoute.Punchplay -> item { DeviceCodeSyncServiceSummary(SyncService.Punchplay, uiState, onRequestSyncServiceDeviceCode, onPollSyncServiceAuthorization, onDisconnectSyncService, onRefreshSyncServices) }
         SettingsRoute.Mdblist -> item { ApiKeySyncServiceSummary(SyncService.Mdblist, uiState, uiState.contentServices.mdblist.maskedKey.orEmpty(), onConnectSyncServiceApiKey, onDisconnectSyncService, onRefreshSyncServices) }
-        SettingsRoute.Profiles -> item { ProfilesSettingsSummary(uiState, onSwitchProfile, onSelectProfile, onSubmitProfilePin, onCancelProfilePin, onCreateProfile, onUpdateProfile, onDeleteProfile, onMakeDefaultProfile, onRememberLastProfileAtStartupChange, onUpdateProfilePin) }
+        SettingsRoute.Profiles -> item { ProfilesSettingsSummary(uiState, profileCreateRequest, onSwitchProfile, onSelectProfile, onSubmitProfilePin, onCancelProfilePin, onCreateProfile, onUpdateProfile, onDeleteProfile, onMakeDefaultProfile, onRememberLastProfileAtStartupChange, onUpdateProfilePin) }
         SettingsRoute.Account -> item { AccountSettingsSummary(uiState, onSignOut, onSignIn, onRefreshSync) }
         SettingsRoute.AppUpdates -> item { AppUpdatesSettingsSummary(uiState, onAutoUpdateChecksChange, onCheckForUpdates, onStartUpdate) }
       }
@@ -19183,6 +19296,7 @@ private fun SettingsTab(
 @Composable
 private fun ProfilesSettingsSummary(
   uiState: AppUiState,
+  createRequest: Int,
   onOpenSwitcher: () -> Unit,
   onSelectProfile: (String) -> Unit,
   onSubmitProfilePin: (String) -> Unit,
@@ -19213,6 +19327,10 @@ private fun ProfilesSettingsSummary(
   var confirmPin by rememberSaveable(editingPinProfileId) { mutableStateOf("") }
   var deleteProfileId by rememberSaveable { mutableStateOf<String?>(null) }
   var pin by rememberSaveable(uiState.pinPromptProfileId) { mutableStateOf("") }
+
+  LaunchedEffect(createRequest) {
+    if (createRequest > 0 && uiState.profiles.size < 3) createExpanded = true
+  }
 
   LaunchedEffect(uiState.activeProfileId, uiState.profiles.map(StreamProfile::id)) {
     // A profile that has gone -- deleted here or on another device -- closes rather than handing
@@ -24669,6 +24787,7 @@ private fun DetailScreen(
   onPlayEpisodeStream: (AddonStream, EpisodeItem?) -> Unit,
   onClearPlayerReturnTarget: () -> Unit,
   onPlayBestStream: (EpisodeItem?) -> Unit,
+  onRestartBestStream: (EpisodeItem?, Boolean) -> Unit,
   onLoadSeason: (String, Int) -> Unit,
   onToggleWatchlist: (MediaItem) -> Unit,
   onToggleEpisodeWatched: (MediaDetail, EpisodeItem, Boolean) -> Unit,
@@ -24717,6 +24836,7 @@ private fun DetailScreen(
   val watchedMovieStore = remember(context) { WatchedMovieStore(context.applicationContext) }
   val watchedOwnerKey = remember(uiState.session?.user?.uid, uiState.activeProfileId) { watchedOwnerKey(uiState.session, uiState.activeProfileId) }
   var watchedEpisodeIds by rememberSaveable(detail.id, watchedOwnerKey) { mutableStateOf(watchedEpisodeStore.load(watchedOwnerKey, detail.id)) }
+  var episodeAction by remember(detail.id) { mutableStateOf<EpisodeItem?>(null) }
   LaunchedEffect(detail.id, watchedOwnerKey, uiState.watchedEpisodeRevision) {
     watchedEpisodeIds = watchedEpisodeStore.load(watchedOwnerKey, detail.id)
   }
@@ -24729,6 +24849,20 @@ private fun DetailScreen(
   val detailScope = rememberCoroutineScope()
   var watchedMovieIds by rememberSaveable(watchedOwnerKey) { mutableStateOf(watchedMovieStore.load(watchedOwnerKey)) }
   val movieWatched = detail.type == "movie" && detail.id in watchedMovieIds
+  fun episodeCanRestart(episode: EpisodeItem): Boolean {
+    val watched = watchedEpisodeKey(detail.id, episode.seasonNumber, episode.episodeNumber) in watchedEpisodeIds
+    val localProgress = uiState.localResumeEntries.any {
+      it.mediaId == detail.id && normalizedMediaType(it.mediaType) == "tv" &&
+        it.seasonNumber == episode.seasonNumber && it.episodeNumber == episode.episodeNumber &&
+        (it.positionSeconds ?: 0.0) > 0.0
+    }
+    val syncedProgress = uiState.playbackProgressRecords.any {
+      it.entityType.equals("tv", true) && it.entityId == detail.id &&
+        it.seasonNumber == episode.seasonNumber && it.episodeNumber == episode.episodeNumber &&
+        !it.unwatched && !it.dismissed && (it.positionSec > 0.0 || it.completed)
+    }
+    return watched || localProgress || syncedProgress
+  }
   fun persistMovieWatched(watched: Boolean) {
     val updated = if (watched) (watchedMovieIds + detail.id).distinct() else watchedMovieIds.filterNot { it == detail.id }
     watchedMovieIds = updated
@@ -24786,6 +24920,16 @@ private fun DetailScreen(
       .filter { it.mediaId == detail.id && it.mediaType == mediaType && !it.isLive && it.progressPercent in 3.0..94.9 }
       .maxByOrNull { it.updatedAt }
   }
+  val movieRestartAvailable = detail.type == "movie" && (
+    movieWatched ||
+      uiState.localResumeEntries.any {
+        it.mediaId == detail.id && normalizedMediaType(it.mediaType) == "movie" && (it.positionSeconds ?: 0.0) > 0.0
+      } ||
+      uiState.playbackProgressRecords.any {
+        it.entityType.equals("movie", true) && it.entityId == detail.id &&
+          !it.unwatched && !it.dismissed && (it.positionSec > 0.0 || it.completed)
+      }
+    )
   val primaryPlayLabel = when {
     isUnreleasedMovie -> stringResource(R.string.detail_unreleased)
     // Resume state comes from the local store, so surface it instantly — stream
@@ -25164,6 +25308,9 @@ private fun DetailScreen(
                               onPlayBestStream(episode)
                             }
                           },
+                          onLongPress = {
+                            if (episodeCanRestart(episode)) episodeAction = episode
+                          },
                         )
                       }
                     }
@@ -25200,6 +25347,9 @@ private fun DetailScreen(
                           onPlayBestStream(episode)
                         }
                       },
+                      onLongPress = { episode ->
+                        if (episodeCanRestart(episode)) episodeAction = episode
+                      },
                     )
                   }
                 }
@@ -25224,6 +25374,16 @@ private fun DetailScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                   ) {
                     Text(stringResource(R.string.detail_sources), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black, color = streamsForeground, modifier = Modifier.weight(1f))
+                    if (movieRestartAvailable) {
+                      EpisodeActionButton(
+                        label = stringResource(R.string.action_restart_movie),
+                        icon = Icons.Rounded.Replay,
+                        tint = streamsForeground,
+                        foreground = streamsForeground,
+                        filled = false,
+                        onClick = { onRestartBestStream(null, false) },
+                      )
+                    }
                     StreamsRefreshControl(
                       loading = searching,
                       foreground = streamsForeground,
@@ -25368,6 +25528,7 @@ private fun DetailScreen(
         episode = episode,
         uiState = uiState,
         watched = watchedKey in watchedEpisodeIds,
+        restartAvailable = episodeCanRestart(episode),
         onBack = {
           episodePageId = null
           onClearPlayerReturnTarget()
@@ -25377,10 +25538,27 @@ private fun DetailScreen(
           onToggleEpisodeWatched(detail, episode, watchedKey in watchedEpisodeIds)
         },
         onMarkPreviousWatched = { onMarkPreviousEpisodesWatched(detail, episode) },
+        onRestart = { onRestartBestStream(episode, true) },
         onPlayStream = onPlayEpisodeStream,
         onDownloadStream = onDownloadStream,
         isStreamDownloadEligible = isStreamDownloadEligible,
         onManageSources = onManageSources,
+      )
+    }
+    episodeAction?.let { episode ->
+      AlertDialog(
+        onDismissRequest = { episodeAction = null },
+        title = { Text(stringResource(R.string.action_restart_episode)) },
+        text = { Text(stringResource(R.string.restart_episode_prompt, episode.seasonNumber, episode.episodeNumber)) },
+        confirmButton = {
+          Button(onClick = {
+            episodeAction = null
+            onRestartBestStream(episode, false)
+          }) { Text(stringResource(R.string.action_restart_episode)) }
+        },
+        dismissButton = {
+          TextButton(onClick = { episodeAction = null }) { Text(stringResource(R.string.action_close)) }
+        },
       )
     }
   }
@@ -28623,6 +28801,7 @@ private fun EpisodeViewportCard(
   accent: Color = Color.White,
   onToggleWatched: () -> Unit,
   onOpen: () -> Unit,
+  onLongPress: () -> Unit,
 ) {
   val unreleased = isEpisodeUnreleased(episode)
   val locked = blurUnwatched && !watched
@@ -28634,7 +28813,7 @@ private fun EpisodeViewportCard(
       // A ring rather than a tint, so which card is selected survives being read by somebody who
       // cannot pick the accent out from the artwork behind it.
       .then(if (selected) Modifier.border(2.dp, accent, StreamDekRadius.panelShape) else Modifier)
-      .clickable(onClick = onOpen)
+      .combinedClickable(onClick = onOpen, onLongClick = onLongPress)
       .semantics {
         this.selected = selected
         stateDescription = when {
@@ -28777,6 +28956,7 @@ private fun EpisodeListRow(
   accent: Color,
   onToggleWatched: () -> Unit,
   onOpen: () -> Unit,
+  onLongPress: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val unreleased = isEpisodeUnreleased(episode)
@@ -28794,7 +28974,7 @@ private fun EpisodeListRow(
       .clip(EpisodeRowShape)
       .background(foreground.copy(alpha = 0.055f))
       .then(if (selected) Modifier.border(2.dp, accent, EpisodeRowShape) else Modifier)
-      .clickable(onClick = onOpen)
+      .combinedClickable(onClick = onOpen, onLongClick = onLongPress)
       .semantics {
         this.selected = selected
         stateDescription = when {
@@ -29027,6 +29207,7 @@ private fun SeasonEpisodeStrip(
   onAccent: Color,
   onToggleWatched: (EpisodeItem) -> Unit,
   onOpen: (EpisodeItem) -> Unit,
+  onLongPress: (EpisodeItem) -> Unit,
 ) {
   val episodeNumbers = remember(episodes) { episodes.map { it.episodeNumber } }
   val ranges = remember(episodeNumbers) { buildEpisodeRanges(episodeNumbers) }
@@ -29185,6 +29366,7 @@ private fun SeasonEpisodeStrip(
           accent = accent,
           onToggleWatched = { onToggleWatched(episode) },
           onOpen = { onOpen(episode) },
+          onLongPress = { onLongPress(episode) },
         )
       }
     }
@@ -29319,10 +29501,12 @@ private fun EpisodeStreamsPage(
   episode: EpisodeItem,
   uiState: AppUiState,
   watched: Boolean,
+  restartAvailable: Boolean,
   onBack: () -> Unit,
   onReload: () -> Unit,
   onToggleWatched: () -> Unit,
   onMarkPreviousWatched: () -> Unit,
+  onRestart: () -> Unit,
   onPlayStream: (AddonStream, EpisodeItem?) -> Unit,
   onDownloadStream: (AddonStream, String) -> Unit = { _, _ -> },
   isStreamDownloadEligible: (AddonStream) -> Boolean = { false },
@@ -29507,11 +29691,13 @@ private fun EpisodeStreamsPage(
         ) {
         EpisodeActionRow(
           watched = watched,
+          restartAvailable = restartAvailable,
           showPreviousAction = hasEarlierEpisodes,
           markingPrevious = markingPrevious,
           foreground = streamsPageForeground,
           accent = ambientAccent,
           onToggleWatched = onToggleWatched,
+          onRestart = onRestart,
           onMarkPreviousWatched = {
             if (!markingPrevious) {
               previousRequest = uiState.watchedEpisodeRevision to uiState.infoMessage
@@ -29741,11 +29927,13 @@ private fun EpisodeStreamsHeader(
 @Composable
 private fun EpisodeActionRow(
   watched: Boolean,
+  restartAvailable: Boolean,
   showPreviousAction: Boolean,
   markingPrevious: Boolean,
   foreground: Color,
   accent: Color,
   onToggleWatched: () -> Unit,
+  onRestart: () -> Unit,
   onMarkPreviousWatched: () -> Unit,
 ) {
   val watchedGreen = Color(0xFF22C55E)
@@ -29766,6 +29954,17 @@ private fun EpisodeActionRow(
       filled = watched,
       onClick = onToggleWatched,
     )
+    if (restartAvailable) {
+      EpisodeActionButton(
+        modifier = Modifier.weight(1f).fillMaxHeight(),
+        label = stringResource(R.string.action_restart_episode),
+        icon = Icons.Rounded.Replay,
+        tint = foreground,
+        foreground = foreground,
+        filled = false,
+        onClick = onRestart,
+      )
+    }
     if (showPreviousAction) {
       EpisodeActionButton(
         modifier = Modifier.weight(1f).fillMaxHeight(),

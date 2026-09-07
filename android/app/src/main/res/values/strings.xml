@@ -11,6 +11,9 @@
   incremental translation safe. Run `node scripts/check-translations.mjs` after editing.
 -->
 <resources>
+    <string name="action_restart_episode">Restart Episode</string>
+    <string name="action_restart_movie">Restart Movie</string>
+    <string name="restart_episode_prompt">Start S%1$d E%2$d again from the beginning?</string>
   <!-- The product name. Never translated: a brand reads the same in every language. -->
   <string name="app_name" translatable="false">StreamDek</string>
   <string name="download_channel_name">Downloads</string>

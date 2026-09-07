@@ -310,6 +310,11 @@ fun NativePlayerScreen(
   onReloadStreams: () -> Unit,
   onPlaybackEnded: () -> Unit,
   onRecommendedPlaybackEnded: (MediaItem) -> Unit = { onPlaybackEnded() },
+  recommendationWatchlistIds: Set<String> = emptySet(),
+  onAddRecommendationToWatchlist: (MediaItem) -> Unit = {},
+  nextEpisodeAvailable: Boolean = false,
+  nextEpisodeLabel: String? = null,
+  nextEpisodeArtwork: String? = null,
   nextEpisodeLoading: Boolean = false,
   nextEpisodeLoadingLabel: String? = null,
   onPreviousEpisode: () -> Unit = {},
@@ -609,10 +614,9 @@ fun NativePlayerScreen(
   var controlActivityVersion by source.controlActivityVersion
   var playbackEnded by playback.playbackEnded
   var completionDispatched by playback.completionDispatched
-  var recommendationDismissed by remember(playbackIdentity) { mutableStateOf(false) }
-  var recommendationVisible by remember(playbackIdentity) { mutableStateOf(false) }
-  var queuedRecommendation by remember(playbackIdentity) { mutableStateOf<MediaItem?>(null) }
-  var queuedNextEpisode by remember(playbackIdentity) { mutableStateOf(false) }
+  var endOfPlaybackPhase by remember(playbackIdentity) { mutableStateOf(EndOfPlaybackPhase.Idle) }
+  var upNextCountdown by remember(playbackIdentity) { mutableStateOf<Int?>(null) }
+  var transitionClaimed by remember(playbackIdentity) { mutableStateOf(false) }
   var liveReconnectVersion by source.liveReconnectVersion
   var liveStalled by source.liveStalled
   var liveRetryAttempts by source.liveRetryAttempts
@@ -729,15 +733,58 @@ fun NativePlayerScreen(
     timing = RecommendationTiming.fromKey(session.recommendationTiming),
     structuralOutroStartSec = structuralOutro?.startSeconds,
   )
-  val nextEpisodeActionAvailable = activeSkipSegment?.type == "outro" && session.mediaType == "tv" && session.autoPlayNextEpisode &&
+  val upNextDecision = EndOfPlaybackCoordinator.decide(
+    nextEpisodeId = if (nextEpisodeAvailable) nextEpisodeLabel ?: "next-episode" else null,
+    currentMediaId = session.mediaId,
+    recommendationIds = session.recommendations
+      .filterNot { it.title.trim().equals(session.title.trim(), ignoreCase = true) }
+      .map { it.id },
+    recommendationLimit = session.recommendationItemCount,
+  )
+  val recommendationById = remember(session.recommendations) { session.recommendations.associateBy { it.id } }
+  val primaryRecommendation = upNextDecision?.takeIf { it.primaryKind == UpNextKind.Recommendation }?.primaryId?.let(recommendationById::get)
+  val alternativeRecommendations = upNextDecision?.alternativeIds.orEmpty().mapNotNull(recommendationById::get)
+  val nextEpisodeActionAvailable = activeSkipSegment?.type == "outro" && nextEpisodeAvailable &&
     AdaptiveEndOfPlaybackTrigger.isReached(currentTime, meaningfulEnd)
 
-  LaunchedEffect(currentTime, duration, meaningfulEnd, session.endOfPlaybackRecommendationsEnabled, session.recommendations) {
-    if (!session.endOfPlaybackRecommendationsEnabled || session.isLive || recommendationDismissed || isLoading) return@LaunchedEffect
-    if (AdaptiveEndOfPlaybackTrigger.isReached(currentTime, meaningfulEnd) && (session.mediaType == "tv" || session.recommendations.isNotEmpty())) {
-      recommendationVisible = true
+  LaunchedEffect(currentTime, meaningfulEnd, upNextDecision, session.endOfPlaybackRecommendationsEnabled, isLoading) {
+    if (session.isLive || isLoading || transitionClaimed || endOfPlaybackPhase == EndOfPlaybackPhase.Dismissed) return@LaunchedEffect
+    val allowed = upNextDecision?.primaryKind == UpNextKind.NextEpisode || session.endOfPlaybackRecommendationsEnabled
+    if (allowed && upNextDecision != null && AdaptiveEndOfPlaybackTrigger.isReached(currentTime, meaningfulEnd)) {
+      if (endOfPlaybackPhase == EndOfPlaybackPhase.Idle || endOfPlaybackPhase == EndOfPlaybackPhase.Armed) {
+        upNextCountdown = if (upNextDecision.primaryKind == UpNextKind.NextEpisode && session.autoPlayNextEpisode) 10 else null
+        endOfPlaybackPhase = if (upNextCountdown != null) EndOfPlaybackPhase.Countdown else EndOfPlaybackPhase.Presented
+      }
       showControls = false
+    } else if (endOfPlaybackPhase == EndOfPlaybackPhase.Idle) {
+      endOfPlaybackPhase = EndOfPlaybackPhase.Armed
     }
+  }
+
+  LaunchedEffect(currentTime, meaningfulEnd?.triggerPositionSec) {
+    if (EndOfPlaybackCoordinator.shouldResetAfterSeek(currentTime, meaningfulEnd?.triggerPositionSec) &&
+      endOfPlaybackPhase in setOf(EndOfPlaybackPhase.Presented, EndOfPlaybackPhase.Countdown, EndOfPlaybackPhase.Dismissed)
+    ) {
+      upNextCountdown = null
+      endOfPlaybackPhase = EndOfPlaybackPhase.Armed
+    }
+  }
+
+  fun claimTransition(block: () -> Unit) {
+    if (transitionClaimed) return
+    transitionClaimed = true
+    upNextCountdown = null
+    endOfPlaybackPhase = EndOfPlaybackPhase.Transitioning
+    showControls = false
+    isPaused = true
+    block()
+  }
+
+  LaunchedEffect(endOfPlaybackPhase, upNextCountdown) {
+    val remaining = upNextCountdown ?: return@LaunchedEffect
+    if (endOfPlaybackPhase != EndOfPlaybackPhase.Countdown || remaining <= 0) return@LaunchedEffect
+    delay(1_000)
+    if (remaining == 1) claimTransition(onNextEpisodeAtEnding) else upNextCountdown = remaining - 1
   }
 
   fun closePlayer() = onBack(progressPercent())
@@ -747,16 +794,12 @@ fun NativePlayerScreen(
     if (session.isLive) return
     isPaused = true
     onScrobble("stop", 100.0)
-    if (queuedNextEpisode) {
-      recommendationVisible = false
-      onNextEpisodeAtEnding()
+    if (transitionClaimed) return
+    if (nextEpisodeAvailable && session.autoPlayNextEpisode) {
+      claimTransition(onNextEpisodeAtEnding)
       return
     }
-    queuedRecommendation?.let {
-      recommendationVisible = false
-      onRecommendedPlaybackEnded(it)
-      return
-    }
+    endOfPlaybackPhase = EndOfPlaybackPhase.Completed
     playbackEnded = true
   }
   fun keepControlsVisible() {
@@ -1172,29 +1215,21 @@ fun NativePlayerScreen(
       progressPercent = ::progressPercent,
       onSelectStream = onSelectStream,
       onNextEpisodeAtEnding = onNextEpisodeAtEnding,
-      recommendationVisible = recommendationVisible,
-      recommendations = session.recommendations.takeUnless { session.mediaType == "tv" }.orEmpty(),
-      showNextEpisodeRecommendation = session.mediaType == "tv",
-      queuedRecommendationId = queuedRecommendation?.id,
-      nextEpisodeQueued = queuedNextEpisode,
+      upNextVisible = endOfPlaybackPhase == EndOfPlaybackPhase.Presented || endOfPlaybackPhase == EndOfPlaybackPhase.Countdown,
+      primaryRecommendation = primaryRecommendation,
+      alternativeRecommendations = alternativeRecommendations,
+      showNextEpisode = upNextDecision?.primaryKind == UpNextKind.NextEpisode,
+      nextEpisodeLabel = nextEpisodeLabel,
+      nextEpisodeArtwork = nextEpisodeArtwork,
+      upNextCountdown = upNextCountdown,
       currentTitle = session.title,
-      onQueueRecommendation = { item ->
-        queuedRecommendation = item
-        queuedNextEpisode = false
-      },
-      onQueueNextEpisode = {
-        queuedNextEpisode = true
-        queuedRecommendation = null
-      },
-      onDismissRecommendation = {
-        recommendationVisible = false
-        recommendationDismissed = true
-        queuedRecommendation = null
-        queuedNextEpisode = false
-      },
-      onRecommendationTimeout = {
-        recommendationVisible = false
-        recommendationDismissed = true
+      watchlistIds = recommendationWatchlistIds,
+      onPlayNextEpisode = { claimTransition(onNextEpisodeAtEnding) },
+      onPlayRecommendation = { item -> claimTransition { onRecommendedPlaybackEnded(item) } },
+      onAddToWatchlist = onAddRecommendationToWatchlist,
+      onDismissUpNext = {
+        upNextCountdown = null
+        endOfPlaybackPhase = EndOfPlaybackPhase.Dismissed
       },
       onTogglePause = {
         val nextPaused = !isPaused
@@ -4032,56 +4067,49 @@ LaunchedEffect(session.url, isPaused, duration, session.isLive) {
  * alone declares a dozen lambdas, and each is memoised in whichever composable declares it.
  */
 @Composable
-private fun RecommendationPanel(
-  recommendations: List<MediaItem>,
+private fun UpNextPanel(
+  primaryRecommendation: MediaItem?,
+  alternativeRecommendations: List<MediaItem>,
   showNextEpisode: Boolean,
-  queuedRecommendationId: String?,
-  nextEpisodeQueued: Boolean,
+  nextEpisodeLabel: String?,
+  nextEpisodeArtwork: String?,
+  countdown: Int?,
   currentTitle: String,
-  onQueueRecommendation: (MediaItem) -> Unit,
-  onQueueNextEpisode: () -> Unit,
+  watchlistIds: Set<String>,
+  onPlayNextEpisode: () -> Unit,
+  onPlayRecommendation: (MediaItem) -> Unit,
+  onAddToWatchlist: (MediaItem) -> Unit,
   onDismiss: () -> Unit,
-  onTimeout: () -> Unit,
 ) {
-  val visibleItems = recommendations.take(2)
-  var secondsRemaining by remember { mutableIntStateOf(45) }
-  LaunchedEffect(Unit) {
-    while (secondsRemaining > 0) {
-      delay(1_000)
-      secondsRemaining -= 1
-    }
-    onTimeout()
-  }
+  val primary = primaryRecommendation
   Surface(
-    modifier = Modifier.widthIn(max = 720.dp),
+    modifier = Modifier.widthIn(min = 320.dp, max = 400.dp),
     color = Color(0xF214171C),
     shape = RoundedCornerShape(18.dp),
     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
     tonalElevation = 10.dp,
   ) {
-    BoxWithConstraints {
-      val useColumns = !showNextEpisode && visibleItems.size == 2 && maxWidth >= 700.dp
-      Column(Modifier.padding(horizontal = 14.dp, vertical = 11.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(stringResource(R.string.player_recommended_for_you), color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+    Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Text("Up Next", color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
         if (showNextEpisode) {
-          RecommendationChoice(null, "Continue when this episode finishes", nextEpisodeQueued, onQueueNextEpisode)
-        } else if (useColumns) {
-          Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            visibleItems.forEach { item ->
-              RecommendationChoice(item, "Because you watched $currentTitle", queuedRecommendationId == item.id, { onQueueRecommendation(item) }, Modifier.weight(1f))
-            }
-          }
-        } else {
+          RecommendationChoice(null, nextEpisodeLabel ?: "Next Episode", nextEpisodeArtwork, "Continue watching", false, null, onPlayNextEpisode)
+        } else if (primary != null) {
+          RecommendationChoice(primary, primary.title, null, "Because you watched $currentTitle", primary.id in watchlistIds, { onAddToWatchlist(primary) }, { onPlayRecommendation(primary) })
+        }
+        if (alternativeRecommendations.isNotEmpty()) {
+          Text("You might also like", color = Color.White.copy(alpha = 0.58f), style = MaterialTheme.typography.labelSmall)
           Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-            visibleItems.forEach { item ->
-              RecommendationChoice(item, "Because you watched $currentTitle", queuedRecommendationId == item.id, { onQueueRecommendation(item) })
+            alternativeRecommendations.forEach { item ->
+              RecommendationChoice(item, item.title, null, null, item.id in watchlistIds, { onAddToWatchlist(item) }, { onPlayRecommendation(item) })
             }
           }
         }
-        TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End).height(38.dp)) {
-          Text(stringResource(R.string.player_dismiss_countdown, secondsRemaining), color = Color.White.copy(alpha = 0.72f), style = MaterialTheme.typography.labelMedium)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+          countdown?.let { Text("Starting in $it…", color = Color.White.copy(alpha = 0.68f), style = MaterialTheme.typography.labelMedium) }
+          TextButton(onClick = onDismiss, modifier = Modifier.height(38.dp)) {
+            Text(if (countdown != null) "Stay" else stringResource(R.string.action_dismiss), color = Color.White.copy(alpha = 0.72f), style = MaterialTheme.typography.labelMedium)
+          }
         }
-      }
     }
   }
 }
@@ -4089,18 +4117,21 @@ private fun RecommendationPanel(
 @Composable
 private fun RecommendationChoice(
   item: MediaItem?,
+  title: String,
+  artworkOverride: String?,
   reason: String?,
-  queued: Boolean,
+  saved: Boolean,
+  onAddToWatchlist: (() -> Unit)?,
   onClick: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   Row(
-    modifier = modifier.widthIn(min = 280.dp, max = 350.dp).background(Color.White.copy(alpha = 0.035f), RoundedCornerShape(12.dp)).padding(8.dp),
+    modifier = modifier.fillMaxWidth().background(Color.White.copy(alpha = 0.035f), RoundedCornerShape(12.dp)).padding(8.dp),
     horizontalArrangement = Arrangement.spacedBy(10.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
-    val artwork = item?.backdrop ?: item?.poster
-    Box(Modifier.width(92.dp).height(56.dp).clip(RoundedCornerShape(9.dp)).background(Color(0xFF272C35)), contentAlignment = Alignment.Center) {
+    val artwork = artworkOverride ?: item?.backdrop ?: item?.poster
+    Box(Modifier.width(84.dp).height(52.dp).clip(RoundedCornerShape(9.dp)).background(Color(0xFF272C35)), contentAlignment = Alignment.Center) {
       if (!artwork.isNullOrBlank()) {
         AsyncImage(model = artwork, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
       } else {
@@ -4108,16 +4139,28 @@ private fun RecommendationChoice(
       }
     }
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-      Text(item?.title ?: "Next Episode", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+      Text(title, color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
       reason?.takeIf { it.isNotBlank() }?.let {
         Text(it, color = Color.White.copy(alpha = 0.55f), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
       }
-      Button(
-        onClick = onClick,
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-        modifier = Modifier.height(38.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = if (queued) Color.White.copy(alpha = 0.12f) else Color(0xFFF0BA66), contentColor = if (queued) Color.White else Color(0xFF171A20)),
-      ) { Text(if (queued) "Selected - Queued next" else "Watch after this", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold) }
+      Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Button(
+          onClick = onClick,
+          contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 11.dp, vertical = 4.dp),
+          modifier = Modifier.height(34.dp),
+          colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF0BA66), contentColor = Color(0xFF171A20)),
+        ) { Text("Play Now", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold) }
+        onAddToWatchlist?.let { add ->
+          TextButton(
+            onClick = add,
+            enabled = !saved,
+            modifier = Modifier.height(34.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+          ) {
+            Text(if (saved) "In Watchlist" else "Add to Watchlist", style = MaterialTheme.typography.labelSmall)
+          }
+        }
+      }
     }
   }
 }
@@ -4154,16 +4197,19 @@ private fun BoxScope.PlayerSurfaceOverlays(
   progressPercent: () -> Double,
   onSelectStream: (AddonStream, Double) -> Unit,
   onNextEpisodeAtEnding: () -> Unit,
-  recommendationVisible: Boolean,
-  recommendations: List<MediaItem>,
-  showNextEpisodeRecommendation: Boolean,
-  queuedRecommendationId: String?,
-  nextEpisodeQueued: Boolean,
+  upNextVisible: Boolean,
+  primaryRecommendation: MediaItem?,
+  alternativeRecommendations: List<MediaItem>,
+  showNextEpisode: Boolean,
+  nextEpisodeLabel: String?,
+  nextEpisodeArtwork: String?,
+  upNextCountdown: Int?,
   currentTitle: String,
-  onQueueRecommendation: (MediaItem) -> Unit,
-  onQueueNextEpisode: () -> Unit,
-  onDismissRecommendation: () -> Unit,
-  onRecommendationTimeout: () -> Unit,
+  watchlistIds: Set<String>,
+  onPlayNextEpisode: () -> Unit,
+  onPlayRecommendation: (MediaItem) -> Unit,
+  onAddToWatchlist: (MediaItem) -> Unit,
+  onDismissUpNext: () -> Unit,
   onTogglePause: () -> Unit,
 ) {
   // Re-bound so the bodies below read and write exactly as they did in the screen.
@@ -4275,7 +4321,7 @@ private fun BoxScope.PlayerSurfaceOverlays(
     }
   }
 
-  if (recommendationVisible && !isLoading && activePanel == PlayerPanel.None) {
+  if (upNextVisible && !isLoading && activePanel == PlayerPanel.None) {
     // The recommendation surface is modal to touch. A transparent hit target above the video
     // consumes taps and drags, while the panel itself remains above it and fully interactive.
     Box(
@@ -4293,26 +4339,29 @@ private fun BoxScope.PlayerSurfaceOverlays(
   }
 
   AnimatedVisibility(
-    visible = recommendationVisible && !isLoading && activePanel == PlayerPanel.None,
+    visible = upNextVisible && !isLoading && activePanel == PlayerPanel.None,
     modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(horizontal = 24.dp, vertical = 28.dp).zIndex(6f),
     enter = fadeIn(animationSpec = StreamDekMotion.enterSpec()) + slideInVertically(initialOffsetY = { it / 3 }, animationSpec = StreamDekMotion.enterSpec()),
     exit = fadeOut(animationSpec = StreamDekMotion.exitSpec()) + slideOutVertically(targetOffsetY = { it / 4 }, animationSpec = StreamDekMotion.exitSpec()),
   ) {
-    RecommendationPanel(
-      recommendations = recommendations,
-      showNextEpisode = showNextEpisodeRecommendation,
-      queuedRecommendationId = queuedRecommendationId,
-      nextEpisodeQueued = nextEpisodeQueued,
+    UpNextPanel(
+      primaryRecommendation = primaryRecommendation,
+      alternativeRecommendations = alternativeRecommendations,
+      showNextEpisode = showNextEpisode,
+      nextEpisodeLabel = nextEpisodeLabel,
+      nextEpisodeArtwork = nextEpisodeArtwork,
+      countdown = upNextCountdown,
       currentTitle = currentTitle,
-      onQueueRecommendation = onQueueRecommendation,
-      onQueueNextEpisode = onQueueNextEpisode,
-      onDismiss = onDismissRecommendation,
-      onTimeout = onRecommendationTimeout,
+      watchlistIds = watchlistIds,
+      onPlayNextEpisode = onPlayNextEpisode,
+      onPlayRecommendation = onPlayRecommendation,
+      onAddToWatchlist = onAddToWatchlist,
+      onDismiss = onDismissUpNext,
     )
   }
 
   AnimatedVisibility(
-    visible = !isLoading && activePanel == PlayerPanel.None && activeSkipSegment != null,
+    visible = !upNextVisible && !isLoading && activePanel == PlayerPanel.None && activeSkipSegment != null,
     modifier = Modifier.align(Alignment.BottomEnd).padding(end = 24.dp, bottom = 118.dp).zIndex(4f),
     enter = fadeIn(animationSpec = tween(180)),
     exit = fadeOut(animationSpec = tween(140)),

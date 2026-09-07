@@ -16,6 +16,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import net.streamdek.mobile.nativeapp.StreamDekNativeApp
 import net.streamdek.mobile.nativeapp.normalizeAddonManifestUrl
+import net.streamdek.mobile.nativeapp.normalizeSetupDestination
 import net.streamdek.mobile.nativeapp.localizedAppContext
 import net.streamdek.mobile.nativeapp.themedAppContext
 import net.streamdek.mobile.nativeapp.EpisodeNotificationSystem
@@ -30,6 +31,7 @@ class MainActivity : ComponentActivity() {
   }
 
   private val pendingAddonManifestUrl = mutableStateOf<String?>(null)
+  private val pendingSetupDestination = mutableStateOf<String?>(null)
   private val pendingEpisodeNotification = mutableStateOf<EpisodeNotificationTarget?>(null)
 
   companion object {
@@ -99,6 +101,8 @@ class MainActivity : ComponentActivity() {
     setContent {
       net.streamdek.mobile.nativeapp.Perf.startupMark("activity.firstComposition")
       StreamDekNativeApp(
+        pendingSetupDestination = pendingSetupDestination.value,
+        onSetupDestinationConsumed = { pendingSetupDestination.value = null },
         pendingAddonManifestUrl = pendingAddonManifestUrl.value,
         onAddonManifestConsumed = { pendingAddonManifestUrl.value = null },
         pendingEpisodeNotification = pendingEpisodeNotification.value,
@@ -124,6 +128,10 @@ class MainActivity : ComponentActivity() {
     }
     if (intent?.action != Intent.ACTION_VIEW) return
     val link = intent.dataString ?: return
+    normalizeSetupDestination(link)?.let { destination ->
+      pendingSetupDestination.value = destination
+      return
+    }
     pendingAddonManifestUrl.value = normalizeAddonManifestUrl(link)
   }
 }

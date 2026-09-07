@@ -25492,13 +25492,16 @@ private fun DetailScreen(
       }
     }
 
-    GlassCircleButton(
-      modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 26.dp, top = 18.dp),
-      hazeState = detailHazeState,
-      navigationHazeStyle = true,
+    IconButton(
+      modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 26.dp, top = 18.dp).size(52.dp),
       onClick = onBack,
     ) {
-      Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.action_back), tint = Color.White)
+      Icon(
+        Icons.AutoMirrored.Rounded.ArrowBack,
+        contentDescription = stringResource(R.string.action_back),
+        tint = Color.White,
+        modifier = Modifier.size(28.dp),
+      )
     }
 
     if (uiState.personLoading) {
@@ -25517,13 +25520,15 @@ private fun DetailScreen(
       )
     }
     trailerPopupUrl?.let { url ->
+      val kinocheckTrailer = rememberKinocheckTrailer(detail)
       TrailerDialog(
         title = detail.title,
         url = url,
         backdropUrl = detail.backdrop ?: detail.poster,
         maxHeight = uiState.heroTrailerResolution,
         alternateUrls = detail.trailerCandidateUrls(),
-        preferredUrl = rememberKinocheckTrailerUrl(detail),
+        preferredUrl = kinocheckTrailer.url,
+        preferredLookupComplete = kinocheckTrailer.complete,
         onDismiss = { trailerPopupUrl = null },
         onOpenExternal = { openTrailer(context, url) },
       )
@@ -25613,19 +25618,25 @@ private fun MediaDetail.trailerCandidateUrls(): List<String> =
 /**
  * KinoCheck's trailer for this title, once it has answered.
  *
- * Null until then and null if they do not carry it, and the trailer path treats null as "use the
- * metadata service's list" — so the lookup never delays or blocks playback. It is a composable
- * rather than a call at each site because three screens raise trailers and they should all ask the
- * same question.
+ * The completion flag distinguishes "still looking" from a genuine miss. Trailer resolution waits
+ * for that answer, ensuring the metadata list cannot start merely because it won a network race;
+ * a genuine KinoCheck miss immediately releases the existing metadata fallback. It is a composable
+ * because three screens raise trailers and they should all ask the same question.
  */
+private data class KinocheckTrailerLookup(val url: String? = null, val complete: Boolean = false)
+
 @Composable
-private fun rememberKinocheckTrailerUrl(detail: MediaDetail): String? {
+private fun rememberKinocheckTrailer(detail: MediaDetail): KinocheckTrailerLookup {
   val context = LocalContext.current
   val resetToken = TrailerResetSignal.current()
-  val key by produceState<String?>(null, detail.id, detail.type, resetToken) {
-    value = kinocheckTrailerKey(detail.id, detail.type, context)
+  val lookup by produceState(KinocheckTrailerLookup(), detail.id, detail.type, resetToken) {
+    val key = kinocheckTrailerKey(detail.id, detail.type, context)
+    value = KinocheckTrailerLookup(
+      url = key?.let { "https://www.youtube.com/watch?v=$it" },
+      complete = true,
+    )
   }
-  return key?.let { "https://www.youtube.com/watch?v=$it" }
+  return lookup
 }
 
 private fun vimeoTrailerKey(url: String): String? {
@@ -25725,7 +25736,7 @@ private fun trailerEmbedHtml(url: String, autoPlay: Boolean, muted: Boolean): St
   """.trimIndent()
 }
 @Composable
-private fun TrailerDialog(title: String, url: String, backdropUrl: String?, maxHeight: Int = 720, alternateUrls: List<String> = emptyList(), preferredUrl: String? = null, onDismiss: () -> Unit, onOpenExternal: () -> Unit) {
+private fun TrailerDialog(title: String, url: String, backdropUrl: String?, maxHeight: Int = 720, alternateUrls: List<String> = emptyList(), preferredUrl: String? = null, preferredLookupComplete: Boolean = true, onDismiss: () -> Unit, onOpenExternal: () -> Unit) {
   var trailerReady by remember(url) { mutableStateOf(false) }
   var trailerFailed by remember(url) { mutableStateOf(false) }
   Dialog(
@@ -25762,6 +25773,7 @@ private fun TrailerDialog(title: String, url: String, backdropUrl: String?, maxH
             preferWebEmbed = false,
             alternateUrls = alternateUrls,
             preferredUrl = preferredUrl,
+            preferredLookupComplete = preferredLookupComplete,
             onReadyChanged = { ready -> trailerReady = ready; if (ready) trailerFailed = false },
             onLoadFailed = { trailerFailed = true },
             onEnded = onDismiss,
@@ -25796,6 +25808,8 @@ private fun TrailerPlaybackView(
   alternateUrls: List<String> = emptyList(),
   /** KinoCheck's pick, tried ahead of the metadata service's list. See [resolveTrailerPlaybackSource]. */
   preferredUrl: String? = null,
+  /** False while KinoCheck is still being asked, so metadata cannot win merely by answering first. */
+  preferredLookupComplete: Boolean = true,
   onReadyChanged: (Boolean) -> Unit = {},
   onLoadFailed: () -> Unit = {},
   onEnded: () -> Unit = {},
@@ -25810,7 +25824,7 @@ private fun TrailerPlaybackView(
   var resolution by remember(url, maxHeight, trailerResetToken) { mutableStateOf<TrailerPlaybackResolution?>(null) }
   var resolved by remember(url, maxHeight, trailerResetToken) { mutableStateOf(false) }
 
-  if (!isYoutubeTrailer && isVimeoTrailer && preferWebEmbed) {
+  if (preferredLookupComplete && preferredUrl == null && !isYoutubeTrailer && isVimeoTrailer && preferWebEmbed) {
     LaunchedEffect(url, autoPlay, muted) { onReadyChanged(false) }
     TrailerWebView(
       url = url,
@@ -25833,11 +25847,12 @@ private fun TrailerPlaybackView(
   // before giving up on native playback and dropping to the iframe embed.
   var freshSourceAttempted by rememberSaveable(url, maxHeight) { mutableStateOf(false) }
 
-  // Keyed on the preferred URL as well, so a trailer already showing from the metadata service's
-  // list is replaced once KinoCheck answers with the real one.
-  LaunchedEffect(url, maxHeight, nativeRetryKey, preferredUrl) {
+  // Wait for the KinoCheck lookup to finish before resolving anything else. Keying on both the
+  // result and completion state also re-runs cleanly after trailer cache resets.
+  LaunchedEffect(url, maxHeight, nativeRetryKey, preferredUrl, preferredLookupComplete) {
     onReadyChanged(false)
     resolved = false
+    if (!preferredLookupComplete) return@LaunchedEffect
     // Deliberately never the viewer's cookies.
     //
     // These were read out of the WebView the iframe fallback runs in — cookies this app creates
@@ -25861,7 +25876,8 @@ private fun TrailerPlaybackView(
   // it keeps playing no matter what happens to the extraction path. A video the player API
   // reported as needing sign-in lands here too: the embed plays age-gated and bot-walled
   // trailers the API refused, and it is the reason nothing is asked of the viewer.
-  val useYoutubeWebFallback = isYoutubeTrailer && resolved && (nativePlaybackFailed || source == null)
+  val hasYoutubeCandidate = isYoutubeTrailer || youtubeTrailerKey(preferredUrl.orEmpty()) != null || alternateUrls.any { youtubeTrailerKey(it) != null }
+  val useYoutubeWebFallback = hasYoutubeCandidate && resolved && (nativePlaybackFailed || source == null)
   if (useYoutubeWebFallback) {
     // KinoCheck's pick, when there is one, rather than the metadata service's first entry.
     //
@@ -26396,6 +26412,7 @@ private fun ClassicDetailHero(
           )
           if (trailerPlaying && !detail.trailerUrl.isNullOrBlank()) {
             key(trailerPlaybackKey) {
+              val kinocheckTrailer = rememberKinocheckTrailer(detail)
               // Drifts with the backdrop so the page scrolls over the trailer rather than shoving
               // it up the screen — the same 0.42 factor the still image uses, so swapping between
               // them mid-scroll does not change how the hero moves.
@@ -26416,7 +26433,8 @@ private fun ClassicDetailHero(
                 muted = trailerMuted,
                 maxHeight = trailerResolution,
                 alternateUrls = detail.trailerCandidateUrls(),
-                preferredUrl = rememberKinocheckTrailerUrl(detail),
+                preferredUrl = kinocheckTrailer.url,
+                preferredLookupComplete = kinocheckTrailer.complete,
                 onReadyChanged = { trailerReady = it },
                 onLoadFailed = { trailerFailed = true; trailerPlaying = false; trailerAutoplayUsed = true },
                 onEnded = { trailerPlaying = false; trailerReady = false; trailerAutoplayUsed = true },
@@ -26784,6 +26802,7 @@ private fun DetailHero(
           exit = fadeOut(animationSpec = StreamDekMotion.crossfadeSpec((MotionDuration.crossfade * 2.4f).toInt())),
         ) {
           key(trailerPlaybackKey) {
+            val kinocheckTrailer = rememberKinocheckTrailer(detail)
             TrailerPlaybackView(
               url = detail.trailerUrl.orEmpty(),
               modifier = Modifier.fillMaxSize(),
@@ -26791,7 +26810,8 @@ private fun DetailHero(
               muted = trailerMuted,
               maxHeight = trailerResolution,
               alternateUrls = detail.trailerCandidateUrls(),
-              preferredUrl = rememberKinocheckTrailerUrl(detail),
+              preferredUrl = kinocheckTrailer.url,
+              preferredLookupComplete = kinocheckTrailer.complete,
               onReadyChanged = { trailerReady = it },
               onLoadFailed = { trailerFailed = true; trailerPlaying = false; trailerAutoplayUsed = true },
               onEnded = { trailerPlaying = false; trailerReady = false; trailerAutoplayUsed = true },
@@ -29778,14 +29798,16 @@ private fun EpisodeStreamsPage(
         }
         }
       }
-      AmbientCircleButton(
+      IconButton(
         modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 14.dp, top = 12.dp).zIndex(5f),
-        hazeState = episodeHazeState,
-        scrim = heroScrim,
-        label = stringResource(R.string.action_back),
         onClick = onBack,
       ) {
-        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = null, tint = heroInk, modifier = Modifier.size(20.dp))
+        Icon(
+          Icons.AutoMirrored.Rounded.ArrowBack,
+          contentDescription = stringResource(R.string.action_back),
+          tint = heroInk,
+          modifier = Modifier.size(28.dp),
+        )
       }
       AmbientCircleButton(
         modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(end = 14.dp, top = 12.dp).zIndex(5f),

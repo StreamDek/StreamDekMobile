@@ -67,6 +67,7 @@ data class TrailerPlaybackResolution(val source: TrailerPlaybackSource? = null, 
 
 /** How many of a title's videos are worth looking at. Beyond this the list is archive material. */
 private const val TRAILER_CANDIDATE_LIMIT = 14
+private const val KINOCHECK_PRIORITY_TIMEOUT_MS = 8_000L
 
 /** Metadata probes are small, but a dozen at once on a phone is not worth the contention. */
 private val trailerProbeGate = Semaphore(6)
@@ -88,11 +89,9 @@ suspend fun resolveTrailerPlaybackSource(
   /**
    * A trailer somebody has already identified as the right one — today, KinoCheck's pick.
    *
-   * The last thing tried, not the first. The ranked search over [url] and [alternates] reads each
-   * candidate's running time and picks the real trailer out of the adverts, and that judgement is
-   * better than a third party's for the titles it can see — it is working from the videos the
-   * studio actually published. KinoCheck is the answer for the titles it cannot: nothing readable
-   * in the list, every candidate walled, or no candidates at all.
+   * The first choice. KinoCheck supplies one curated trailer for the title, while [url] and
+   * [alternates] can contain the studio's full promotional run. The existing ranked metadata search
+   * remains the fallback when KinoCheck has no answer or its chosen video cannot be resolved.
    *
    * It is still kept out of the ranking rather than thrown in with the others. A curated answer
    * should not have to win a competition scored on running time; it either gets used whole, sting
@@ -135,14 +134,23 @@ suspend fun resolveTrailerPlaybackSource(
       }
     }
 
-    // A trailer served as a plain file needs none of this, and is unambiguous — no ranking, no
-    // client ladder, no third party. First, because it is both the cheapest and the most certain.
+    // KinoCheck first, with its own ceiling so a blocked YouTube client cannot consume the entire
+    // resolve window and prevent the existing metadata path from acting as fallback.
+    val preferredResolution = withTimeoutOrNull(KINOCHECK_PRIORITY_TIMEOUT_MS) {
+      trailerClientLadder.forEach { client ->
+        attemptPreferred(listOf(client))?.let { return@withTimeoutOrNull it }
+      }
+      null
+    }
+    if (preferredResolution != null) return@withTimeoutOrNull preferredResolution
+
+    // A trailer served as a plain file needs no ranking or client ladder and is the first fallback.
     if (trimmed.isNotBlank() && isNativePlayableTrailerUrl(trimmed)) {
       return@withTimeoutOrNull TrailerPlaybackResolution(source = TrailerPlaybackSource(trimmed))
     }
     if (preferredKey == null && candidateKeys.isEmpty()) return@withTimeoutOrNull TrailerPlaybackResolution()
 
-    // Then the ranked search, one client at a time all the way down. Running time is what tells a
+    // Then the existing ranked search, one client at a time all the way down. Running time tells a
     // two-minute trailer from a fifteen-second ticket advert, and no marketing language changes
     // that — see [trailerCandidateScore]. Each client gets a full pass over the candidates before
     // the next one is tried, so a title whose videos are all walled on the first client is still
@@ -153,13 +161,6 @@ suspend fun resolveTrailerPlaybackSource(
         loginRequired = loginRequired || resolved.youtubeLoginRequired
         if (resolved.source != null) return@withTimeoutOrNull resolved
       }
-    }
-
-    // KinoCheck last. By here the title's own videos could not be read or played on any client, so
-    // a curated pick is the difference between a trailer and a blank hero. It gets the same
-    // one-client-at-a-time treatment rather than being abandoned on a single refusal.
-    trailerClientLadder.forEach { client ->
-      attemptPreferred(listOf(client))?.let { return@withTimeoutOrNull it }
     }
 
     TrailerPlaybackResolution(youtubeLoginRequired = loginRequired)

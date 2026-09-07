@@ -29,6 +29,16 @@ class PlayerInteractionPolicyTest {
   }
 
   @Test
+  fun `seek recovery buffering is not counted as a playback stall`() {
+    val seekAt = 10_000L
+
+    assertFalse(shouldReportPlaybackBuffering(isBuffering = true, seekIssuedAtMs = seekAt, nowMs = seekAt + 1_000L))
+    assertTrue(shouldReportPlaybackBuffering(isBuffering = true, seekIssuedAtMs = seekAt, nowMs = seekAt + PLAYBACK_SEEK_BUFFERING_GRACE_MS))
+    assertTrue(shouldReportPlaybackBuffering(isBuffering = true, seekIssuedAtMs = 0L, nowMs = seekAt))
+    assertFalse(shouldReportPlaybackBuffering(isBuffering = false, seekIssuedAtMs = 0L, nowMs = seekAt))
+  }
+
+  @Test
   fun `source favourite identity ignores expiring urls and headers`() {
     val first = AddonStream(
       addonId = "Example.Addon",

@@ -19285,10 +19285,17 @@ private fun SettingsTab(
     }
     if (route != null) {
 
-      GlassCircleButton(
+      IconButton(
         modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 22.dp, top = 18.dp).zIndex(5f),
         onClick = onBack,
-      ) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.action_back), tint = MaterialTheme.colorScheme.onSurface) }
+      ) {
+        Icon(
+          Icons.AutoMirrored.Rounded.ArrowBack,
+          contentDescription = stringResource(R.string.action_back),
+          tint = MaterialTheme.colorScheme.onSurface,
+          modifier = Modifier.size(28.dp),
+        )
+      }
     }
   }
 
@@ -29657,10 +29664,12 @@ private fun EpisodeStreamsPage(
           heroImage = heroImage,
           height = heroHeight,
           watched = watched,
+          restartAvailable = restartAvailable,
           pageColor = episodeBackground,
           scrimColor = heroScrim,
           ink = heroInk,
           hazeState = episodeHazeState,
+          onRestart = onRestart,
         )
         // Everything below the artwork reads against a settled wash of the page's own colour rather
         // than against the artwork itself. In Normal and Dominant modes this is the page colour
@@ -29691,13 +29700,11 @@ private fun EpisodeStreamsPage(
         ) {
         EpisodeActionRow(
           watched = watched,
-          restartAvailable = restartAvailable,
           showPreviousAction = hasEarlierEpisodes,
           markingPrevious = markingPrevious,
           foreground = streamsPageForeground,
           accent = ambientAccent,
           onToggleWatched = onToggleWatched,
-          onRestart = onRestart,
           onMarkPreviousWatched = {
             if (!markingPrevious) {
               previousRequest = uiState.watchedEpisodeRevision to uiState.infoMessage
@@ -29817,10 +29824,12 @@ private fun EpisodeStreamsHeader(
   heroImage: String?,
   height: Dp,
   watched: Boolean,
+  restartAvailable: Boolean,
   pageColor: Color,
   scrimColor: Color,
   ink: Color,
   hazeState: HazeState,
+  onRestart: () -> Unit,
 ) {
   Box(modifier = Modifier.fillMaxWidth().height(height).clip(RectangleShape).hazeSource(hazeState)) {
     AsyncImage(
@@ -29892,14 +29901,45 @@ private fun EpisodeStreamsHeader(
           )
         }
       }
-      Text(
-        episode.name,
-        color = ink,
-        style = MaterialTheme.typography.headlineSmall,
-        fontWeight = FontWeight.Black,
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis,
-      )
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Text(
+          episode.name,
+          color = ink,
+          style = MaterialTheme.typography.headlineSmall,
+          fontWeight = FontWeight.Black,
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis,
+          modifier = Modifier.weight(1f),
+        )
+        if (restartAvailable) {
+          TextButton(
+            onClick = onRestart,
+            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+          ) {
+            Row(
+              modifier = Modifier
+                .clip(StreamDekRadius.pill)
+                .background(ink.copy(alpha = 0.12f))
+                .padding(horizontal = 10.dp, vertical = 10.dp),
+              horizontalArrangement = Arrangement.spacedBy(5.dp),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Icon(Icons.Rounded.Replay, contentDescription = null, tint = ink, modifier = Modifier.size(15.dp))
+              Text(
+                stringResource(R.string.action_restart_episode),
+                color = ink,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+              )
+            }
+          }
+        }
+      }
       Text(
         detail.title,
         color = ink.copy(alpha = 0.68f),
@@ -29918,22 +29958,19 @@ private fun EpisodeStreamsHeader(
  * Below the artwork rather than on it: the labels are long, and text reflowing over a photograph is
  * where a header stops looking deliberate.
  *
- * One row, always - the two actions belong to the same decision and reading one above the other
- * made the second look like a separate section. They share the width evenly and a label too long
- * for its half wraps inside its own button rather than being cut off or pushed onto a second row,
- * which is what keeps "Mark All Prior Watched" readable at a large accessibility text size.
- * The row takes its height from the taller of the two so they stay a matched pair.
+ * One row, always - watched state and the optional prior-episode batch action belong to the same
+ * decision. They share the width evenly and a label too long for its half wraps inside its own
+ * button rather than being cut off or pushed onto a second row, which is what keeps "Mark All Prior
+ * Watched" readable at a large accessibility text size. Restart belongs to the title row above.
  */
 @Composable
 private fun EpisodeActionRow(
   watched: Boolean,
-  restartAvailable: Boolean,
   showPreviousAction: Boolean,
   markingPrevious: Boolean,
   foreground: Color,
   accent: Color,
   onToggleWatched: () -> Unit,
-  onRestart: () -> Unit,
   onMarkPreviousWatched: () -> Unit,
 ) {
   val watchedGreen = Color(0xFF22C55E)
@@ -29954,17 +29991,6 @@ private fun EpisodeActionRow(
       filled = watched,
       onClick = onToggleWatched,
     )
-    if (restartAvailable) {
-      EpisodeActionButton(
-        modifier = Modifier.weight(1f).fillMaxHeight(),
-        label = stringResource(R.string.action_restart_episode),
-        icon = Icons.Rounded.Replay,
-        tint = foreground,
-        foreground = foreground,
-        filled = false,
-        onClick = onRestart,
-      )
-    }
     if (showPreviousAction) {
       EpisodeActionButton(
         modifier = Modifier.weight(1f).fillMaxHeight(),

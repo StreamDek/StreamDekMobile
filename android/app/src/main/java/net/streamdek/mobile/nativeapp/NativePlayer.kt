@@ -220,6 +220,16 @@ internal fun adjustedPlayerLevel(initial: Float, totalDragY: Float, playerHeight
 /** How many sources the player's Sources panel lists. The playing source is hoisted above this
  *  cut, so it is always listed however far down the unsorted list it started. */
 private const val MAX_PLAYER_SOURCE_ROWS = 30
+private const val UP_NEXT_COUNTDOWN_SECONDS = 20
+internal const val PLAYBACK_SEEK_BUFFERING_GRACE_MS = 8_000L
+
+/** A seek-driven cache refill is expected and must not count as a playback stall. */
+internal fun shouldReportPlaybackBuffering(
+  isBuffering: Boolean,
+  seekIssuedAtMs: Long,
+  nowMs: Long,
+): Boolean = isBuffering &&
+  (seekIssuedAtMs <= 0L || nowMs - seekIssuedAtMs >= PLAYBACK_SEEK_BUFFERING_GRACE_MS)
 
 internal enum class ActivePlaybackEngine { Media3, MPV }
 internal fun initialPlaybackEngine(preference: String): ActivePlaybackEngine =
@@ -394,6 +404,7 @@ fun NativePlayerScreen(
   var pausedForAudioFocus by playback.pausedForAudioFocus
   var currentTime by playback.currentTime
   var duration by playback.duration
+  var seekIssuedAtMs by playback.seekIssuedAtMs
   var error by source.error
   var hasLoaded by playback.hasLoaded
   var playerView by remember(liveEngineKey) { mutableStateOf<MPVView?>(null) }
@@ -412,7 +423,10 @@ fun NativePlayerScreen(
   fun activeAddSubtitle(path: String, language: String?) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.addSubtitleFile(path, language) else playerView?.addSubtitleFile(path, language) }
   fun activeReload() { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.reloadSource() else playerView?.reloadSource() }
   fun activeSetPaused(paused: Boolean) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setPaused(paused) else playerView?.setPaused(paused) }
-  fun activeSeekTo(seconds: Double) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.seekTo(seconds) else playerView?.seekTo(seconds) }
+  fun activeSeekTo(seconds: Double) {
+    seekIssuedAtMs = android.os.SystemClock.elapsedRealtime()
+    if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.seekTo(seconds) else playerView?.seekTo(seconds)
+  }
   fun activeSetAudioTrack(id: Int) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setAudioTrack(id) else playerView?.setAudioTrack(id) }
   fun activeDisableSubtitleTrack() { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.disableSubtitleTrack() else playerView?.disableSubtitleTrack() }
   fun activeSetSubtitleTrack(id: Int) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleTrack(id) else playerView?.setSubtitleTrack(id) }
@@ -752,7 +766,7 @@ fun NativePlayerScreen(
     val allowed = upNextDecision?.primaryKind == UpNextKind.NextEpisode || session.endOfPlaybackRecommendationsEnabled
     if (allowed && upNextDecision != null && AdaptiveEndOfPlaybackTrigger.isReached(currentTime, meaningfulEnd)) {
       if (endOfPlaybackPhase == EndOfPlaybackPhase.Idle || endOfPlaybackPhase == EndOfPlaybackPhase.Armed) {
-        upNextCountdown = if (upNextDecision.primaryKind == UpNextKind.NextEpisode && session.autoPlayNextEpisode) 10 else null
+        upNextCountdown = if (upNextDecision.primaryKind == UpNextKind.NextEpisode && session.autoPlayNextEpisode) UP_NEXT_COUNTDOWN_SECONDS else null
         endOfPlaybackPhase = if (upNextCountdown != null) EndOfPlaybackPhase.Countdown else EndOfPlaybackPhase.Presented
       }
       showControls = false
@@ -1018,11 +1032,12 @@ fun NativePlayerScreen(
       finishPlayback()
     }
   }
-  val playerStallCallback: (Boolean) -> Unit = { stalled ->
+  val playerStallCallback: (Boolean) -> Unit = playerStallCallback@{ stalled ->
     if (session.isLive) {
       liveStalled = stalled
-    } else if (stalled) {
+    } else {
       val now = android.os.SystemClock.elapsedRealtime()
+      if (!shouldReportPlaybackBuffering(stalled, seekIssuedAtMs, now)) return@playerStallCallback
       recentPlaybackStalls = (recentPlaybackStalls + now).filter { now - it <= 120_000L }
       if (recentPlaybackStalls.size >= 3 && now >= smartSwitchCooldownUntil && smartSwitchCandidate == null) {
         session.currentStream?.let { current ->
@@ -3068,6 +3083,7 @@ private class PlayerPlaybackState {
   val pausedForAudioFocus = mutableStateOf(false)
   val currentTime = mutableDoubleStateOf(0.0)
   val duration = mutableDoubleStateOf(0.0)
+  val seekIssuedAtMs = mutableStateOf(0L)
   val hasLoaded = mutableStateOf(false)
   val autoSkippedSegments = mutableStateOf(emptySet<String>())
   val autoSkipNotice = mutableStateOf<String?>(null)

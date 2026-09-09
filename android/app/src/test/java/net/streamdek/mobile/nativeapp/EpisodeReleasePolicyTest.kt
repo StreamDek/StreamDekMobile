@@ -60,6 +60,18 @@ class EpisodeReleasePolicyTest {
     assertEquals(3, candidates.map { it.key }.distinct().size)
   }
 
+  @Test fun `watched episode is excluded from new episodes`() {
+    val watched = episode(number = 1)
+    val unwatched = episode(number = 2)
+    val result = EpisodeReleasePolicy.releasedUnwatchedWithin(
+      statuses = listOf(status(watched, unwatched)),
+      today = java.time.LocalDate.parse("2026-08-24"),
+      days = 8,
+      watchedEpisodeKeys = setOf(EpisodeReleasePolicy.watchKey(100, watched)!!),
+    )
+    assertEquals(listOf(2), result.map { it.second.episode })
+  }
+
   @Test fun `date-only release waits for local nine at timezone boundary`() {
     val settings = EpisodeNotificationSettings(availableEnabled = true)
     val before = EpisodeReleasePolicy.candidates(listOf(status(episode())), settings, emptySet(), clock("2026-08-24T07:59:59Z"))

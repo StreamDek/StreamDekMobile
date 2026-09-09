@@ -4,8 +4,18 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.LocalDate
 
 class EndOfPlaybackRecommendationsTest {
+  @Test fun `next episode availability is metadata driven and unknown fails safely`() {
+    val today = LocalDate.of(2026, 9, 9)
+    assertEquals(NextEpisodeAvailability.None, NextEpisodeAvailabilityPolicy.classify(false, "2026-09-08", today))
+    assertEquals(NextEpisodeAvailability.Aired, NextEpisodeAvailabilityPolicy.classify(true, "2026-09-09", today))
+    assertEquals(NextEpisodeAvailability.Unaired, NextEpisodeAvailabilityPolicy.classify(true, "2026-09-10", today))
+    assertEquals(NextEpisodeAvailability.Unknown, NextEpisodeAvailabilityPolicy.classify(true, null, today))
+    assertEquals(NextEpisodeAvailability.Unknown, NextEpisodeAvailabilityPolicy.classify(true, "not-a-date", today))
+  }
+
   @Test fun `credits metadata wins over IntroDB structure`() {
     val result = AdaptiveEndOfPlaybackTrigger.estimate(3600.0, RecommendationTiming.Standard, 3300.0, 3200.0)!!
     assertEquals(MeaningfulEndSignal.CreditsMetadata, result.signal)
@@ -13,9 +23,11 @@ class EndOfPlaybackRecommendationsTest {
   }
 
   @Test fun `IntroDB outro is used when valid`() {
-    val result = AdaptiveEndOfPlaybackTrigger.estimate(3120.0, RecommendationTiming.Standard, structuralOutroStartSec = 2900.0)!!
+    val result = AdaptiveEndOfPlaybackTrigger.estimate(3120.0, RecommendationTiming.Standard, structuralOutroStartSec = 2900.0, structuralOutroEndSec = 3030.0)!!
     assertEquals(MeaningfulEndSignal.StructuralMetadata, result.signal)
     assertTrue(AdaptiveEndOfPlaybackTrigger.isReached(2900.0, result))
+    assertEquals(130, AdaptiveEndOfPlaybackTrigger.countdownSeconds(2900.0, result))
+    assertTrue(AdaptiveEndOfPlaybackTrigger.isIntendedEndReached(3030.0, result))
   }
 
   @Test fun `stale structure falls back and short trailers are ineligible`() {

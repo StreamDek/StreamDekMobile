@@ -1054,7 +1054,7 @@ private data class AppUiState(
   val showProfilePicker: Boolean = false,
   /** Device-local startup preference; profile identity itself remains account/profile scoped. */
   val rememberLastProfileAtStartup: Boolean = false,
-  val appAppearance: AppAppearance = AppAppearance.System,
+  val appAppearance: AppAppearance = AppAppearance.Dark,
   /**
    * How fast the app animates, for this installation.
    *
@@ -1065,9 +1065,9 @@ private data class AppUiState(
   val animationSpeed: AnimationSpeed = AnimationSpeed.Default,
   /** Either [AppLanguage.SystemSelection] or a supported language tag. */
   val appLanguage: String = AppLanguage.DefaultSelection,
-  val themePreset: AppThemePreset = AppThemePreset.Monochrome,
+  val themePreset: AppThemePreset = AppThemePreset.White,
   val headerStyle: HeaderStyle = HeaderStyle.Classic,
-  val pictureInPictureEnabled: Boolean = false,
+  val pictureInPictureEnabled: Boolean = true,
   val decoderMode: String = "HW+",
   val renderSurface: String = "Standard",
   val playerEngine: String = "Auto",
@@ -1092,11 +1092,11 @@ private data class AppUiState(
   val collapsibleNavigationEnabled: Boolean = false,
   val navigationAutoCollapseSeconds: Int = 5,
   val showStreamsList: Boolean = true,
-  val heroTrailerAutoplay: Boolean = true,
+  val heroTrailerAutoplay: Boolean = false,
   // 2160p by default: the resolver gates format selection on this value, so a lower default
   // silently discards the 4K renditions YouTube publishes for some trailers. The adaptive picker
   // takes the tallest rendition at or under it, so this is a ceiling rather than a demand.
-  val heroTrailerResolution: Int = 2160,
+  val heroTrailerResolution: Int = 1080,
   /**
    * How long a title page is left alone before its trailer starts, in seconds.
    *
@@ -1114,9 +1114,9 @@ private data class AppUiState(
   val heroTrailerMuted: Boolean = true,
   /** Off by default, matching the TV app: the spotlight reads better as artwork and title alone. */
   val showHeroSynopsis: Boolean = false,
-  val continueWatchingStyle: ContinueWatchingStyle = ContinueWatchingStyle.Glass,
+  val continueWatchingStyle: ContinueWatchingStyle = ContinueWatchingStyle.Mini,
   val homeCardTextMode: HomeCardTextMode = HomeCardTextMode.Default,
-  val networkCardStyle: NetworkCardStyle = NetworkCardStyle.Branded,
+  val networkCardStyle: NetworkCardStyle = NetworkCardStyle.Classic,
   val liveLandscapeCards: Boolean = true,
   /**
    * Wide cards showing the episode's own still, rather than posters of the series.
@@ -1175,8 +1175,8 @@ private data class AppUiState(
   val doubleTapPlayPauseEnabled: Boolean = true,
   val showPlayerControlLabels: Boolean = true,
   val playerControlLayout: String = "Normal",
-  val fullscreenStatusBar: String = "Automatic",
-  val playerTitleDisplay: String = "Single line",
+  val fullscreenStatusBar: String = "Hide in fullscreen",
+  val playerTitleDisplay: String = "Scrolling",
   /** Swipe the left of the video for brightness, the right for volume. */
   val playerLevelGesturesEnabled: Boolean = true,
   val skipIntroEnabled: Boolean = true,
@@ -1230,7 +1230,7 @@ private data class AppUiState(
    * disabled state, nothing until the notice arrived seconds later.
    */
   val peerStorageClearing: Boolean = false,
-  val ratingsEnabled: Boolean = true,
+  val ratingsEnabled: Boolean = false,
   val externalRatingsEnabled: Boolean = true,
   val enabledRatingProviders: Set<String> = DEFAULT_RATING_PROVIDER_IDS,
   /**
@@ -1271,8 +1271,8 @@ private data class AppUiState(
    * and, worse, the home slider was enabled by the *title* page's mode, so turning Cinematic on for
    * title pages unlocked a slider on a home screen that was not blurred at all.
    */
-  val ambientTintPercent: Int = 100,
-  val detailAmbientTintPercent: Int = 100,
+  val ambientTintPercent: Int = 50,
+  val detailAmbientTintPercent: Int = 50,
   val defaultAppCatalogsEnabled: Boolean = true,
   val homeCatalogRows: List<HomeCatalogRow> = emptyList(),
   /** The default catalogs the backend offers, in its preferred order. */
@@ -1993,12 +1993,12 @@ private class AppSettingsStore(context: Context) {
   fun applyTo(state: AppUiState): AppUiState = state.copy(
     rememberLastProfileAtStartup = prefs.getBoolean("remember_last_profile_at_startup", false),
     showProfilePicker = state.showProfilePicker && !prefs.getBoolean("remember_last_profile_at_startup", false),
-    appAppearance = runCatching { AppAppearance.valueOf(prefs.getString("app_appearance", AppAppearance.System.name) ?: AppAppearance.System.name) }.getOrDefault(AppAppearance.System),
+    appAppearance = runCatching { AppAppearance.valueOf(prefs.getString("app_appearance", AppAppearance.Dark.name) ?: AppAppearance.Dark.name) }.getOrDefault(AppAppearance.Dark),
     animationSpeed = AnimationSpeed.fromKey(prefs.getString(ANIMATION_SPEED_PREFERENCE, null)),
     appLanguage = normalizeAppLanguageSelection(prefs.getString(APP_LANGUAGE_PREFERENCE, null)),
-    themePreset = runCatching { AppThemePreset.valueOf(prefs.getString("theme_preset", AppThemePreset.Monochrome.name) ?: AppThemePreset.Monochrome.name) }.getOrDefault(AppThemePreset.Monochrome),
+    themePreset = runCatching { AppThemePreset.valueOf(prefs.getString("theme_preset", AppThemePreset.White.name) ?: AppThemePreset.White.name) }.getOrDefault(AppThemePreset.White),
     headerStyle = runCatching { HeaderStyle.valueOf(prefs.getString("header_style", HeaderStyle.Classic.name) ?: HeaderStyle.Classic.name) }.getOrDefault(HeaderStyle.Classic),
-    pictureInPictureEnabled = prefs.getBoolean("pip_enabled", false),
+    pictureInPictureEnabled = prefs.getBoolean("pip_enabled", true),
     decoderMode = normalizeDecoderModeSetting(prefs.getString("decoder_mode", "HW+") ?: "HW+"),
     renderSurface = normalizeRenderSurfaceSetting(prefs.getString("render_surface", "Standard") ?: "Standard"),
     playerEngine = normalizePlayerEngineSetting(prefs.getString("player_engine", "Auto") ?: "Auto"),
@@ -2019,16 +2019,16 @@ private class AppSettingsStore(context: Context) {
     tunneledPlayback = prefs.getBoolean("tunneled_playback", false),
     navigationAutoCollapseSeconds = prefs.getInt("navigation_auto_collapse_seconds", 5).coerceIn(2, 15),
     showStreamsList = profilePrefs.getBoolean("show_streams_list", true),
-    heroTrailerAutoplay = profilePrefs.getBoolean("hero_trailer_autoplay", true),
-    heroTrailerResolution = profilePrefs.getInt("hero_trailer_resolution", 2160).coerceIn(360, 2160),
+    heroTrailerAutoplay = profilePrefs.getBoolean("hero_trailer_autoplay", false),
+    heroTrailerResolution = profilePrefs.getInt("hero_trailer_resolution", 1080).coerceIn(360, 2160),
     heroTrailerDelaySeconds = profilePrefs.getInt("hero_trailer_delay_seconds", DEFAULT_TRAILER_DELAY_SECONDS)
       .coerceIn(0, MAX_TRAILER_DELAY_SECONDS),
     heroTrailerMuted = profilePrefs.getBoolean("hero_trailer_muted", true),
     debridCloudSync = prefs.getBoolean("debrid_cloud_sync", true),
     showHeroSynopsis = profilePrefs.getBoolean("show_hero_synopsis", false),
-    continueWatchingStyle = runCatching { ContinueWatchingStyle.valueOf(profilePrefs.getString("continue_watching_style", ContinueWatchingStyle.Glass.name) ?: ContinueWatchingStyle.Glass.name) }.getOrDefault(ContinueWatchingStyle.Glass),
+    continueWatchingStyle = runCatching { ContinueWatchingStyle.valueOf(profilePrefs.getString("continue_watching_style", ContinueWatchingStyle.Mini.name) ?: ContinueWatchingStyle.Mini.name) }.getOrDefault(ContinueWatchingStyle.Mini),
     homeCardTextMode = HomeCardTextMode.fromKey(profilePrefs.getString("home_card_text_mode", null)),
-    networkCardStyle = runCatching { NetworkCardStyle.valueOf(profilePrefs.getString("network_card_style", NetworkCardStyle.Branded.name) ?: NetworkCardStyle.Branded.name) }.getOrDefault(NetworkCardStyle.Branded),
+    networkCardStyle = runCatching { NetworkCardStyle.valueOf(profilePrefs.getString("network_card_style", NetworkCardStyle.Classic.name) ?: NetworkCardStyle.Classic.name) }.getOrDefault(NetworkCardStyle.Classic),
     liveLandscapeCards = profilePrefs.getBoolean("live_landscape_cards", true),
     newEpisodesLandscape = profilePrefs.getBoolean("new_episodes_landscape", true),
     liveCategoriesEnabled = profilePrefs.getBoolean("live_categories_enabled", true),
@@ -2047,8 +2047,8 @@ private class AppSettingsStore(context: Context) {
     showPlayerControlLabels = prefs.getBoolean("show_player_control_labels", true),
     // Compact was retired; profiles carrying the old value transparently return to Normal.
     playerControlLayout = prefs.getString("player_control_layout", "Normal").takeIf { it in setOf("Normal", "Minimal") } ?: "Normal",
-    fullscreenStatusBar = prefs.getString("fullscreen_status_bar", "Automatic").takeIf { it in setOf("Always show", "Hide in fullscreen", "Automatic") } ?: "Automatic",
-    playerTitleDisplay = prefs.getString("player_title_display", "Single line").takeIf { it in setOf("Single line", "Scrolling", "Hidden") } ?: "Single line",
+    fullscreenStatusBar = prefs.getString("fullscreen_status_bar", "Hide in fullscreen").takeIf { it in setOf("Always show", "Hide in fullscreen", "Automatic") } ?: "Hide in fullscreen",
+    playerTitleDisplay = prefs.getString("player_title_display", "Scrolling").takeIf { it in setOf("Single line", "Scrolling", "Hidden") } ?: "Scrolling",
     // Defaults on, which is what the player has always done, so nobody's gestures change because
     // the switch arrived.
     playerLevelGesturesEnabled = prefs.getBoolean("player_level_gestures_enabled", true),
@@ -2087,7 +2087,7 @@ private class AppSettingsStore(context: Context) {
       port = prefs.getInt("torrent_port", 11100),
       runAsForegroundService = prefs.getBoolean("torrent_run_foreground", false),
     ),
-    ratingsEnabled = profilePrefs.getBoolean("ratings_enabled", true),
+    ratingsEnabled = profilePrefs.getBoolean("ratings_enabled", false),
     externalRatingsEnabled = profilePrefs.getBoolean("external_ratings_enabled", true),
     enabledRatingProviders = parseRatingProviderIds(profilePrefs.getString("enabled_rating_providers", null)),
     vividAmbient = profilePrefs.getBoolean("vivid_ambient", true),
@@ -2109,12 +2109,12 @@ private class AppSettingsStore(context: Context) {
     // particular screen is held, which is not something the account can answer for the television.
     homeDensity = HomeDensity.fromKey(prefs.getString(HOME_DENSITY_PREFERENCE, null)),
     trailerCacheClearHours = profilePrefs.getInt("trailer_cache_clear_hours", DEFAULT_TRAILER_CACHE_CLEAR_HOURS),
-    ambientTintPercent = profilePrefs.getInt("ambient_tint_percent", 100).coerceIn(20, 100),
+    ambientTintPercent = profilePrefs.getInt("ambient_tint_percent", 50).coerceIn(20, 100),
     // Seeded from the single value the two pages used to share, so an account that had already
     // chosen a strength keeps it on both pages rather than snapping back to full on one of them.
     detailAmbientTintPercent = profilePrefs.getInt(
       "detail_ambient_tint_percent",
-      profilePrefs.getInt("ambient_tint_percent", 100),
+      profilePrefs.getInt("ambient_tint_percent", 50),
     ).coerceIn(20, 100),
     defaultAppCatalogsEnabled = profilePrefs.getBoolean("default_app_catalogs_enabled", true),
     homeCatalogRows = parseHomeCatalogRows(profilePrefs.getString("home_catalog_rows", null)),
@@ -3578,6 +3578,17 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
    * which is the one thing tapping Continue Watching was meant to save them.
    */
   private var pendingDirectContinueEpisode: EpisodeItem? = null
+  private data class PreparedNextEpisode(val episode: EpisodeItem, val stream: AddonStream, val streams: List<AddonStream>)
+  private var preparedNextEpisode: PreparedNextEpisode? = null
+  private var preparingNextEpisode = false
+  private var nextEpisodePreparationJob: Job? = null
+
+  private fun clearPreparedNextEpisode() {
+    nextEpisodePreparationJob?.cancel()
+    nextEpisodePreparationJob = null
+    preparedNextEpisode = null
+    preparingNextEpisode = false
+  }
   private val pendingHomeHeroLogoKeys = mutableSetOf<String>()
   private val pendingAddonRatingKeys = mutableSetOf<String>()
   private var trackingArtworkJob: Job? = null
@@ -3874,6 +3885,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   fun dismissPlayer(progressPercent: Double? = null) {
     invalidatePendingPlaybackRequest()
+    clearPreparedNextEpisode()
     liveChannelSwitchSnapshot = null
     progressPercent?.let {
       saveCurrentPlaybackSnapshot(it)
@@ -4067,11 +4079,15 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val loadedNextEpisode = uiState.selectedSeasonEpisodes
       .filter { it.seasonNumber == currentEpisode.seasonNumber && it.episodeNumber > currentEpisode.episodeNumber }
       .minByOrNull { it.episodeNumber }
-    val nextSeasonNumber = detail.seasons
-      .map { it.seasonNumber }
-      .filter { it > currentEpisode.seasonNumber }
-      .minOrNull()
-    if (loadedNextEpisode == null && nextSeasonNumber == null) {
+    val nextSeason = detail.seasons
+      .filter { it.seasonNumber > currentEpisode.seasonNumber && it.episodeCount > 0 }
+      .minByOrNull { it.seasonNumber }
+    val nextSeasonNumber = nextSeason?.seasonNumber
+    val nextAvailability = NextEpisodeAvailabilityPolicy.classify(
+      exists = loadedNextEpisode != null || nextSeason != null,
+      airDate = loadedNextEpisode?.airDate ?: nextSeason?.airDate,
+    )
+    if (nextAvailability != NextEpisodeAvailability.Aired) {
       dismissPlayer(100.0)
       return
     }
@@ -4114,6 +4130,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val detail = uiState.detail ?: return
     val current = uiState.selectedEpisode ?: return
     if (detail.type != "tv" || direction == 0) return
+    clearPreparedNextEpisode()
     val sameSeason = uiState.selectedSeasonEpisodes
       .filter { it.seasonNumber == current.seasonNumber }
       .sortedBy { it.episodeNumber }
@@ -4171,7 +4188,65 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     saveCurrentPlaybackSnapshot(100.0)
     scrobbleCurrentPlayer("stop", 100.0)
     Log.i("StreamDekPlayback", "[EpisodeTransition] from=S${player.seasonNumber}E${player.episodeNumber} previousEpisodeCompleted=true")
-    playAdjacentEpisode(1)
+    val prepared = preparedNextEpisode
+    preparedNextEpisode = null
+    if (prepared != null) {
+      uiState = uiState.copy(selectedEpisode = prepared.episode, availableStreams = prepared.streams)
+      playStream(prepared.stream, prepared.episode)
+    } else {
+      playAdjacentEpisode(1)
+    }
+  }
+
+  /** Completes the current episode without attempting playback of a known unaired successor. */
+  fun finishCurrentEpisodeFromEnding() {
+    val player = uiState.playerSession ?: return
+    if (player.mediaType == "tv" && player.seasonNumber != null && player.episodeNumber != null) {
+      val ownerKey = watchedOwnerKey(uiState.session, uiState.activeProfileId)
+      val watchedKey = watchedEpisodeKey(player.mediaId, player.seasonNumber, player.episodeNumber)
+      val existing = watchedEpisodeStore.load(ownerKey, player.mediaId)
+      if (watchedKey !in existing) {
+        watchedEpisodeStore.save(ownerKey, player.mediaId, completedEpisodeWatchedIds(existing, watchedKey))
+        uiState = uiState.copy(watchedEpisodeRevision = uiState.watchedEpisodeRevision + 1)
+      }
+    }
+    if (lastPlaybackDurationSec > 0.0) lastPlaybackPositionSec = lastPlaybackDurationSec
+    saveCurrentPlaybackSnapshot(100.0)
+    scrobbleCurrentPlayer("stop", 100.0)
+    Log.i("StreamDekPlayback", "[EpisodeTransition] unairedNext=true currentEpisodeCompleted=true")
+    dismissPlayer()
+  }
+
+  /** Starts source discovery behind the end card, independently of autoplay/countdown timing. */
+  fun prepareNextEpisodeFromEnding() {
+    if (preparingNextEpisode || preparedNextEpisode != null) return
+    val player = uiState.playerSession ?: return
+    val detail = uiState.detail ?: return
+    val current = uiState.selectedEpisode ?: return
+    if (player.mediaType != "tv" || detail.type != "tv") return
+    val loadedTarget = uiState.selectedSeasonEpisodes
+      .filter { it.seasonNumber == current.seasonNumber && it.episodeNumber > current.episodeNumber }
+      .minByOrNull { it.episodeNumber }
+    val nextSeason = detail.seasons.map { it.seasonNumber }.filter { it > current.seasonNumber }.minOrNull()
+    if (loadedTarget == null && nextSeason == null) return
+    val currentStream = player.currentStream
+    preparingNextEpisode = true
+    nextEpisodePreparationJob = viewModelScope.launch {
+      runCatching {
+        val target = loadedTarget ?: apiClient.fetchSeason(detail.id, nextSeason!!).getOrThrow().minByOrNull { it.episodeNumber }
+          ?: error("The next season has no playable episodes.")
+        val ids = streamLookupIds(detail).distinct().map { "$it:${target.seasonNumber}:${target.episodeNumber}" }
+        val ranked = rankedProfileStreams(mediaStreamsOnly(fetchStreamsForPlayback("series", ids).getOrThrow(), detail))
+        val binge = currentStream?.bingeGroup?.takeIf { it.isNotBlank() }?.let { group -> ranked.firstOrNull { it.bingeGroup == group } }
+        val matching = currentStream?.let { source -> ranked.firstOrNull { it.addonId == source.addonId && it.quality == source.quality } }
+        val selected = (if (player.preferBingeGroup) binge ?: matching ?: ranked.firstOrNull() else ranked.firstOrNull())
+          ?: error("No source was found for the next episode.")
+        PreparedNextEpisode(target, selected, ranked)
+      }.onSuccess { prepared ->
+        if (uiState.playerSession?.mediaId == player.mediaId && uiState.selectedEpisode == current) preparedNextEpisode = prepared
+      }.onFailure { Log.w("StreamDekPlayback", "Background next-episode sourcing failed", it) }
+      preparingNextEpisode = false
+    }
   }
 
   fun scrobblePlayer(action: String, progressPercent: Double) { scrobbleCurrentPlayer(action, progressPercent) }
@@ -6712,7 +6787,20 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   private fun buildNewEpisodeItems(statuses: List<SeriesEpisodeStatus>): List<MediaItem> {
     val today = java.time.LocalDate.now()
-    return EpisodeReleasePolicy.releasedWithin(statuses, today, newEpisodeWindowDays).map { (entry, episode) ->
+    val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
+    val locallyWatched = statuses.flatMap { entry -> watchedEpisodeStore.load(ownerKey, entry.tmdbId.toString()) }.toSet()
+    val latestRemote = uiState.playbackProgressRecords
+      .filter { it.entityType.equals("tv", true) && it.seasonNumber != null && it.episodeNumber != null }
+      .groupBy { record -> Triple(record.tmdbId ?: record.entityId.toIntOrNull(), record.seasonNumber, record.episodeNumber) }
+      .mapNotNull { (identity, records) ->
+        val seriesId = identity.first ?: return@mapNotNull null
+        val latest = records.maxByOrNull { it.updatedAt } ?: return@mapNotNull null
+        EpisodeReleasePolicy.watchKey(seriesId, AiringEpisode(null, null, identity.second, identity.third, "", null))?.let { it to latest }
+      }
+    val remotelyWatched = latestRemote.filter { (_, record) -> record.completed && !record.unwatched }.map { it.first }.toSet()
+    val explicitlyUnwatched = latestRemote.filter { (_, record) -> record.unwatched }.map { it.first }.toSet()
+    val watched = (locallyWatched + remotelyWatched) - explicitlyUnwatched
+    return EpisodeReleasePolicy.releasedUnwatchedWithin(statuses, today, newEpisodeWindowDays, watched).map { (entry, episode) ->
       val airDate = runCatching { java.time.LocalDate.parse(episode.airDate.trim()) }.getOrNull()
         ?: today
       MediaItem(
@@ -11015,11 +11103,18 @@ private fun StreamDekNativeAppContent(
                     .filter { it.seasonNumber == current.seasonNumber && it.episodeNumber > current.episodeNumber }
                     .minByOrNull { it.episodeNumber }
                 }
-                val nextSeasonNumber = currentPlayerEpisode?.let { current ->
-                  uiState.detail?.seasons?.map { it.seasonNumber }?.filter { it > current.seasonNumber }?.minOrNull()
+                val nextSeasonPreview = currentPlayerEpisode?.let { current ->
+                  uiState.detail?.seasons
+                    ?.filter { it.seasonNumber > current.seasonNumber && it.episodeCount > 0 }
+                    ?.minByOrNull { it.seasonNumber }
                 }
+                val nextSeasonNumber = nextSeasonPreview?.seasonNumber
                 val nextEpisodeAvailable = rootPlayerSession.mediaType == "tv" &&
                   currentPlayerEpisode != null && (nextEpisodePreview != null || nextSeasonNumber != null)
+                val nextEpisodeAvailability = NextEpisodeAvailabilityPolicy.classify(
+                  exists = nextEpisodeAvailable,
+                  airDate = nextEpisodePreview?.airDate ?: nextSeasonPreview?.airDate,
+                )
                 NativePlayerScreen(
                 session = rootPlayerSession,
                 resolving = uiState.playerSession == null,
@@ -11042,7 +11137,7 @@ private fun StreamDekNativeAppContent(
                 onRecommendedPlaybackEnded = viewModel::playRecommendedFromEnding,
                 recommendationWatchlistIds = uiState.mergedWatchlist.mapTo(linkedSetOf()) { it.id },
                 onAddRecommendationToWatchlist = viewModel::toggleWatchlist,
-                nextEpisodeAvailable = nextEpisodeAvailable,
+                nextEpisodeAvailability = nextEpisodeAvailability,
                 nextEpisodeLabel = nextEpisodePreview?.let {
                   buildString {
                     append("S${it.seasonNumber.toString().padStart(2, '0')} E${it.episodeNumber.toString().padStart(2, '0')}")
@@ -11054,7 +11149,9 @@ private fun StreamDekNativeAppContent(
                 nextEpisodeLoadingLabel = uiState.nextEpisodeLoadingLabel,
                 onPreviousEpisode = { viewModel.playAdjacentEpisode(-1) },
                 onNextEpisode = { viewModel.playAdjacentEpisode(1) },
+                onPrepareNextEpisodeAtEnding = viewModel::prepareNextEpisodeFromEnding,
                 onNextEpisodeAtEnding = viewModel::playNextEpisodeFromEnding,
+                onUnairedEpisodeAtEnding = viewModel::finishCurrentEpisodeFromEnding,
                 isFavourite = uiState.favouriteChannels.any { it.id == (uiState.playerSession ?: uiState.playerLaunchSession)?.mediaId },
                 onToggleFavourite = viewModel::toggleFavouriteChannelForCurrentSession,
                 liveChannels = uiState.playerLiveChannels,
@@ -15430,7 +15527,7 @@ private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, cont
         } else if (rowId == "streaming_networks" || (isSportsRow && liveLandscapeCards)) {
           NetworkHomeCard(item = item, sports = isSportsRow, branded = networkCardStyle == NetworkCardStyle.Branded, dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) }, onLongPress = { if (isSportsRow) { actionItem = item; onRefreshHandoffDevices() } })
         } else {
-          PosterCard(item = item, textMode = homeCardTextMode, dimmed = disabled, landscape = rowId == "new-episodes" && newEpisodesLandscape, onClick = { handleOpen(item) }, onLongPress = { actionItem = item; if (isSportsRow) onRefreshHandoffDevices() })
+          PosterCard(item = item, textMode = if (rowId == "new-episodes") HomeCardTextMode.ShowFull else homeCardTextMode, dimmed = disabled, landscape = rowId == "new-episodes" && newEpisodesLandscape, onClick = { handleOpen(item) }, onLongPress = { actionItem = item; if (isSportsRow) onRefreshHandoffDevices() })
         }
       }
     }

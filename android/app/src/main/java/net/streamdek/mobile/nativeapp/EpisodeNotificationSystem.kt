@@ -53,6 +53,12 @@ data class EpisodeNotificationCandidate(
 
 /** Pure release policy shared by the Home row and background notification checks. */
 object EpisodeReleasePolicy {
+  fun watchKey(seriesId: Int, episode: AiringEpisode): String? {
+    val season = episode.season ?: return null
+    val number = episode.episode ?: return null
+    return "episode:$seriesId:$season:$number"
+  }
+
   fun episodes(status: SeriesEpisodeStatus): List<AiringEpisode> =
     (status.episodes + listOfNotNull(status.lastEpisode, status.nextEpisode))
       .distinctBy { listOf(it.id, it.season, it.episode, it.airDate).joinToString(":") }
@@ -64,6 +70,16 @@ object EpisodeReleasePolicy {
         !date.isAfter(today) && !date.isBefore(today.minusDays(days))
       }
       .sortedByDescending { (_, episode) -> parseDate(episode.airDate) }
+
+  fun releasedUnwatchedWithin(
+    statuses: List<SeriesEpisodeStatus>,
+    today: LocalDate,
+    days: Long,
+    watchedEpisodeKeys: Set<String>,
+  ): List<Pair<SeriesEpisodeStatus, AiringEpisode>> =
+    releasedWithin(statuses, today, days).filterNot { (status, episode) ->
+      watchKey(status.tmdbId, episode) in watchedEpisodeKeys
+    }
 
   fun candidates(
     statuses: List<SeriesEpisodeStatus>,

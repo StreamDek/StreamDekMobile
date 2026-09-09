@@ -220,7 +220,6 @@ internal fun adjustedPlayerLevel(initial: Float, totalDragY: Float, playerHeight
 /** How many sources the player's Sources panel lists. The playing source is hoisted above this
  *  cut, so it is always listed however far down the unsorted list it started. */
 private const val MAX_PLAYER_SOURCE_ROWS = 30
-private const val UP_NEXT_COUNTDOWN_SECONDS = 20
 internal const val PLAYBACK_SEEK_BUFFERING_GRACE_MS = 8_000L
 
 /** A seek-driven cache refill is expected and must not count as a playback stall. */
@@ -322,14 +321,16 @@ fun NativePlayerScreen(
   onRecommendedPlaybackEnded: (MediaItem) -> Unit = { onPlaybackEnded() },
   recommendationWatchlistIds: Set<String> = emptySet(),
   onAddRecommendationToWatchlist: (MediaItem) -> Unit = {},
-  nextEpisodeAvailable: Boolean = false,
+  nextEpisodeAvailability: NextEpisodeAvailability = NextEpisodeAvailability.None,
   nextEpisodeLabel: String? = null,
   nextEpisodeArtwork: String? = null,
   nextEpisodeLoading: Boolean = false,
   nextEpisodeLoadingLabel: String? = null,
   onPreviousEpisode: () -> Unit = {},
   onNextEpisode: () -> Unit = {},
+  onPrepareNextEpisodeAtEnding: () -> Unit = {},
   onNextEpisodeAtEnding: () -> Unit = onNextEpisode,
+  onUnairedEpisodeAtEnding: () -> Unit = {},
   isFavourite: Boolean = false,
   onToggleFavourite: () -> Unit = {},
   liveChannels: List<MediaItem> = emptyList(),
@@ -630,6 +631,7 @@ fun NativePlayerScreen(
   var completionDispatched by playback.completionDispatched
   var endOfPlaybackPhase by remember(playbackIdentity) { mutableStateOf(EndOfPlaybackPhase.Idle) }
   var upNextCountdown by remember(playbackIdentity) { mutableStateOf<Int?>(null) }
+  var nextEpisodePreparationRequested by remember(playbackIdentity) { mutableStateOf(false) }
   var transitionClaimed by remember(playbackIdentity) { mutableStateOf(false) }
   var liveReconnectVersion by source.liveReconnectVersion
   var liveStalled by source.liveStalled
@@ -746,11 +748,14 @@ fun NativePlayerScreen(
     durationSec = duration,
     timing = RecommendationTiming.fromKey(session.recommendationTiming),
     structuralOutroStartSec = structuralOutro?.startSeconds,
+    structuralOutroEndSec = structuralOutro?.endSeconds,
   )
+  val nextEpisodeExists = nextEpisodeAvailability != NextEpisodeAvailability.None
+  val confirmedAiredNextEpisode = nextEpisodeAvailability == NextEpisodeAvailability.Aired
   val upNextDecision = EndOfPlaybackCoordinator.decide(
-    nextEpisodeId = if (nextEpisodeAvailable) nextEpisodeLabel ?: "next-episode" else null,
+    nextEpisodeId = if (nextEpisodeExists) nextEpisodeLabel ?: "next-episode" else null,
     currentMediaId = session.mediaId,
-    recommendationIds = session.recommendations
+    recommendationIds = (if (session.mediaType == "tv" && nextEpisodeAvailability != NextEpisodeAvailability.Unaired) emptyList() else session.recommendations)
       .filterNot { it.title.trim().equals(session.title.trim(), ignoreCase = true) }
       .map { it.id },
     recommendationLimit = session.recommendationItemCount,
@@ -758,7 +763,7 @@ fun NativePlayerScreen(
   val recommendationById = remember(session.recommendations) { session.recommendations.associateBy { it.id } }
   val primaryRecommendation = upNextDecision?.takeIf { it.primaryKind == UpNextKind.Recommendation }?.primaryId?.let(recommendationById::get)
   val alternativeRecommendations = upNextDecision?.alternativeIds.orEmpty().mapNotNull(recommendationById::get)
-  val nextEpisodeActionAvailable = activeSkipSegment?.type == "outro" && nextEpisodeAvailable &&
+  val nextEpisodeActionAvailable = activeSkipSegment?.type == "outro" && confirmedAiredNextEpisode &&
     AdaptiveEndOfPlaybackTrigger.isReached(currentTime, meaningfulEnd)
 
   LaunchedEffect(currentTime, meaningfulEnd, upNextDecision, session.endOfPlaybackRecommendationsEnabled, isLoading) {
@@ -766,7 +771,13 @@ fun NativePlayerScreen(
     val allowed = upNextDecision?.primaryKind == UpNextKind.NextEpisode || session.endOfPlaybackRecommendationsEnabled
     if (allowed && upNextDecision != null && AdaptiveEndOfPlaybackTrigger.isReached(currentTime, meaningfulEnd)) {
       if (endOfPlaybackPhase == EndOfPlaybackPhase.Idle || endOfPlaybackPhase == EndOfPlaybackPhase.Armed) {
-        upNextCountdown = if (upNextDecision.primaryKind == UpNextKind.NextEpisode && session.autoPlayNextEpisode) UP_NEXT_COUNTDOWN_SECONDS else null
+        upNextCountdown = if (upNextDecision.primaryKind == UpNextKind.NextEpisode && confirmedAiredNextEpisode && session.autoPlayNextEpisode) {
+          AdaptiveEndOfPlaybackTrigger.countdownSeconds(currentTime, meaningfulEnd)
+        } else null
+        if (upNextDecision.primaryKind == UpNextKind.NextEpisode && confirmedAiredNextEpisode && !nextEpisodePreparationRequested) {
+          nextEpisodePreparationRequested = true
+          onPrepareNextEpisodeAtEnding()
+        }
         endOfPlaybackPhase = if (upNextCountdown != null) EndOfPlaybackPhase.Countdown else EndOfPlaybackPhase.Presented
       }
       showControls = false
@@ -780,6 +791,7 @@ fun NativePlayerScreen(
       endOfPlaybackPhase in setOf(EndOfPlaybackPhase.Presented, EndOfPlaybackPhase.Countdown, EndOfPlaybackPhase.Dismissed)
     ) {
       upNextCountdown = null
+      nextEpisodePreparationRequested = false
       endOfPlaybackPhase = EndOfPlaybackPhase.Armed
     }
   }
@@ -794,11 +806,13 @@ fun NativePlayerScreen(
     block()
   }
 
-  LaunchedEffect(endOfPlaybackPhase, upNextCountdown) {
-    val remaining = upNextCountdown ?: return@LaunchedEffect
-    if (endOfPlaybackPhase != EndOfPlaybackPhase.Countdown || remaining <= 0) return@LaunchedEffect
-    delay(1_000)
-    if (remaining == 1) claimTransition(onNextEpisodeAtEnding) else upNextCountdown = remaining - 1
+  LaunchedEffect(currentTime, meaningfulEnd, endOfPlaybackPhase, session.autoPlayNextEpisode, nextEpisodeAvailability) {
+    if (endOfPlaybackPhase != EndOfPlaybackPhase.Countdown || !session.autoPlayNextEpisode || !confirmedAiredNextEpisode) return@LaunchedEffect
+    val remaining = AdaptiveEndOfPlaybackTrigger.countdownSeconds(currentTime, meaningfulEnd) ?: return@LaunchedEffect
+    upNextCountdown = remaining
+    if (remaining == 0 && AdaptiveEndOfPlaybackTrigger.isIntendedEndReached(currentTime, meaningfulEnd)) {
+      claimTransition(onNextEpisodeAtEnding)
+    }
   }
 
   fun closePlayer() = onBack(progressPercent())
@@ -809,7 +823,7 @@ fun NativePlayerScreen(
     isPaused = true
     onScrobble("stop", 100.0)
     if (transitionClaimed) return
-    if (nextEpisodeAvailable && session.autoPlayNextEpisode) {
+    if (confirmedAiredNextEpisode && session.autoPlayNextEpisode) {
       claimTransition(onNextEpisodeAtEnding)
       return
     }
@@ -1234,12 +1248,16 @@ fun NativePlayerScreen(
       primaryRecommendation = primaryRecommendation,
       alternativeRecommendations = alternativeRecommendations,
       showNextEpisode = upNextDecision?.primaryKind == UpNextKind.NextEpisode,
+      nextEpisodeAvailability = nextEpisodeAvailability,
       nextEpisodeLabel = nextEpisodeLabel,
       nextEpisodeArtwork = nextEpisodeArtwork,
       upNextCountdown = upNextCountdown,
       currentTitle = session.title,
       watchlistIds = recommendationWatchlistIds,
-      onPlayNextEpisode = { claimTransition(onNextEpisodeAtEnding) },
+      onPlayNextEpisode = {
+        if (nextEpisodeAvailability == NextEpisodeAvailability.Unaired) claimTransition(onUnairedEpisodeAtEnding)
+        else claimTransition(onNextEpisodeAtEnding)
+      },
       onPlayRecommendation = { item -> claimTransition { onRecommendedPlaybackEnded(item) } },
       onAddToWatchlist = onAddRecommendationToWatchlist,
       onDismissUpNext = {
@@ -4087,6 +4105,7 @@ private fun UpNextPanel(
   primaryRecommendation: MediaItem?,
   alternativeRecommendations: List<MediaItem>,
   showNextEpisode: Boolean,
+  nextEpisodeAvailability: NextEpisodeAvailability,
   nextEpisodeLabel: String?,
   nextEpisodeArtwork: String?,
   countdown: Int?,
@@ -4108,7 +4127,14 @@ private fun UpNextPanel(
     Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
         Text("Up Next", color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
         if (showNextEpisode) {
-          RecommendationChoice(null, nextEpisodeLabel ?: "Next Episode", nextEpisodeArtwork, "Continue watching", false, null, onPlayNextEpisode)
+          val description = when {
+            nextEpisodeAvailability == NextEpisodeAvailability.Unaired -> "The next episode has not aired yet. Skip this episode's ending now or dismiss to keep watching"
+            nextEpisodeAvailability == NextEpisodeAvailability.Unknown -> "The next episode's release date is unavailable. Select Next Episode to try it now."
+            countdown != null -> "Starts automatically when this episode ends. Select Next Episode to start now."
+            else -> "Select Next Episode to start immediately."
+          }
+          val actionLabel = if (nextEpisodeAvailability == NextEpisodeAvailability.Unaired) "Skip Ending" else "Next Episode"
+          RecommendationChoice(null, nextEpisodeLabel ?: "Next Episode", nextEpisodeArtwork, description, false, null, onPlayNextEpisode, actionLabel)
         } else if (primary != null) {
           RecommendationChoice(primary, primary.title, null, "Because you watched $currentTitle", primary.id in watchlistIds, { onAddToWatchlist(primary) }, { onPlayRecommendation(primary) })
         }
@@ -4121,7 +4147,7 @@ private fun UpNextPanel(
           }
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-          countdown?.let { Text("Starting in $it…", color = Color.White.copy(alpha = 0.68f), style = MaterialTheme.typography.labelMedium) }
+          countdown?.let { Text("Next episode starts in $it…", color = Color.White.copy(alpha = 0.68f), style = MaterialTheme.typography.labelMedium) }
           TextButton(onClick = onDismiss, modifier = Modifier.height(38.dp)) {
             Text(if (countdown != null) "Stay" else stringResource(R.string.action_dismiss), color = Color.White.copy(alpha = 0.72f), style = MaterialTheme.typography.labelMedium)
           }
@@ -4139,6 +4165,7 @@ private fun RecommendationChoice(
   saved: Boolean,
   onAddToWatchlist: (() -> Unit)?,
   onClick: () -> Unit,
+  actionLabel: String = "Play Now",
   modifier: Modifier = Modifier,
 ) {
   Row(
@@ -4157,7 +4184,14 @@ private fun RecommendationChoice(
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
       Text(title, color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
       reason?.takeIf { it.isNotBlank() }?.let {
-        Text(it, color = Color.White.copy(alpha = 0.55f), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(
+          text = it,
+          modifier = Modifier.fillMaxWidth().basicMarquee(iterations = Int.MAX_VALUE),
+          color = Color.White.copy(alpha = 0.55f),
+          style = MaterialTheme.typography.bodySmall,
+          maxLines = 1,
+          overflow = TextOverflow.Clip,
+        )
       }
       Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Button(
@@ -4165,7 +4199,7 @@ private fun RecommendationChoice(
           contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 11.dp, vertical = 4.dp),
           modifier = Modifier.height(34.dp),
           colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF0BA66), contentColor = Color(0xFF171A20)),
-        ) { Text("Play Now", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold) }
+        ) { Text(actionLabel, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold) }
         onAddToWatchlist?.let { add ->
           TextButton(
             onClick = add,
@@ -4217,6 +4251,7 @@ private fun BoxScope.PlayerSurfaceOverlays(
   primaryRecommendation: MediaItem?,
   alternativeRecommendations: List<MediaItem>,
   showNextEpisode: Boolean,
+  nextEpisodeAvailability: NextEpisodeAvailability,
   nextEpisodeLabel: String?,
   nextEpisodeArtwork: String?,
   upNextCountdown: Int?,
@@ -4364,6 +4399,7 @@ private fun BoxScope.PlayerSurfaceOverlays(
       primaryRecommendation = primaryRecommendation,
       alternativeRecommendations = alternativeRecommendations,
       showNextEpisode = showNextEpisode,
+      nextEpisodeAvailability = nextEpisodeAvailability,
       nextEpisodeLabel = nextEpisodeLabel,
       nextEpisodeArtwork = nextEpisodeArtwork,
       countdown = upNextCountdown,

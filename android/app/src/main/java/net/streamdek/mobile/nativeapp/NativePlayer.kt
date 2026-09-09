@@ -4125,21 +4125,25 @@ private fun UpNextPanel(
     tonalElevation = 10.dp,
   ) {
     Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        Text("Up Next", color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+        Text(stringResource(R.string.player_up_next_heading), color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
         if (showNextEpisode) {
           val description = when {
-            nextEpisodeAvailability == NextEpisodeAvailability.Unaired -> "The next episode has not aired yet. Skip this episode's ending now or dismiss to keep watching"
-            nextEpisodeAvailability == NextEpisodeAvailability.Unknown -> "The next episode's release date is unavailable. Select Next Episode to try it now."
-            countdown != null -> "Starts automatically when this episode ends. Select Next Episode to start now."
-            else -> "Select Next Episode to start immediately."
+            nextEpisodeAvailability == NextEpisodeAvailability.Unaired -> stringResource(R.string.player_next_episode_unaired_description)
+            nextEpisodeAvailability == NextEpisodeAvailability.Unknown -> stringResource(R.string.player_next_episode_unknown_release_description)
+            countdown != null -> stringResource(R.string.player_next_episode_autoplay_description)
+            else -> stringResource(R.string.player_next_episode_manual_description)
           }
-          val actionLabel = if (nextEpisodeAvailability == NextEpisodeAvailability.Unaired) "Skip Ending" else "Next Episode"
-          RecommendationChoice(null, nextEpisodeLabel ?: "Next Episode", nextEpisodeArtwork, description, false, null, onPlayNextEpisode, actionLabel)
+          val actionLabel = if (nextEpisodeAvailability == NextEpisodeAvailability.Unaired) {
+            stringResource(R.string.action_skip_ending)
+          } else {
+            stringResource(R.string.action_next_episode)
+          }
+          RecommendationChoice(null, nextEpisodeLabel ?: stringResource(R.string.action_next_episode), nextEpisodeArtwork, description, false, null, onPlayNextEpisode, actionLabel)
         } else if (primary != null) {
-          RecommendationChoice(primary, primary.title, null, "Because you watched $currentTitle", primary.id in watchlistIds, { onAddToWatchlist(primary) }, { onPlayRecommendation(primary) })
+          RecommendationChoice(primary, primary.title, null, stringResource(R.string.player_because_you_watched, currentTitle), primary.id in watchlistIds, { onAddToWatchlist(primary) }, { onPlayRecommendation(primary) })
         }
         if (alternativeRecommendations.isNotEmpty()) {
-          Text("You might also like", color = Color.White.copy(alpha = 0.58f), style = MaterialTheme.typography.labelSmall)
+          Text(stringResource(R.string.player_you_might_also_like), color = Color.White.copy(alpha = 0.58f), style = MaterialTheme.typography.labelSmall)
           Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
             alternativeRecommendations.forEach { item ->
               RecommendationChoice(item, item.title, null, null, item.id in watchlistIds, { onAddToWatchlist(item) }, { onPlayRecommendation(item) })
@@ -4147,9 +4151,9 @@ private fun UpNextPanel(
           }
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-          countdown?.let { Text("Next episode starts in $it…", color = Color.White.copy(alpha = 0.68f), style = MaterialTheme.typography.labelMedium) }
+          countdown?.let { Text(stringResource(R.string.player_next_episode_starts_in, it), color = Color.White.copy(alpha = 0.68f), style = MaterialTheme.typography.labelMedium) }
           TextButton(onClick = onDismiss, modifier = Modifier.height(38.dp)) {
-            Text(if (countdown != null) "Stay" else stringResource(R.string.action_dismiss), color = Color.White.copy(alpha = 0.72f), style = MaterialTheme.typography.labelMedium)
+            Text(if (countdown != null) stringResource(R.string.action_stay) else stringResource(R.string.action_dismiss), color = Color.White.copy(alpha = 0.72f), style = MaterialTheme.typography.labelMedium)
           }
         }
     }

@@ -21910,8 +21910,15 @@ private fun CatalogHomeLayoutSettings(
     }.getOrDefault(emptyMap())
   }
   val groups = remember(localRows, uiState.addons, uiState.defaultAppCatalogsEnabled, orphanGroupTitle, fallbackAddonName, cloudStreamGroups) {
+    // A CloudStream row is offered only while its source is loaded. Switched off, in a collection
+    // that is switched off, or failing to load, it has nothing to put on Home, so it is left out of
+    // the list — but kept in the saved layout, so turning the source back on brings its rows back
+    // exactly as they were. Moving rows still works on the full layout, so their places hold too.
+    val offeredRows = localRows.filter { row ->
+      !isCloudStreamHomeRowId(row.id) || homeCatalogRowAddonId(row.id) in cloudStreamGroups
+    }
     buildHomeRowGroups(
-      localRows,
+      offeredRows,
       uiState.addons,
       uiState.defaultAppCatalogsEnabled,
       orphanGroupTitle = orphanGroupTitle,
@@ -25608,6 +25615,11 @@ private fun DetailScreen(
         DetailHero(
           detail = detail,
           backdrop = backdrop,
+          // Artwork from outside the catalogue — live channels, CloudStream plugin items, add-on and
+          // playlist entries — can be any shape, so it adapts to its own. Catalogue titles do not.
+          adaptiveArtwork = uiState.detailIsLive ||
+            isCloudStreamMediaId(detail.id) ||
+            uiState.detailFallbackItem?.sourceAddonId != null,
           pageBackground = dominant,
           metadataLine = metadataLine,
           style = uiState.detailPageStyle,
@@ -26890,6 +26902,8 @@ private fun ClassicDetailHero(
   trailerAutoplayPending: Boolean = false,
   /** The dominant-colour page background, when one is in use. Null keeps the theme's. */
   pageBackground: Color? = null,
+  /** Live channels, playlists, plugin and add-on items: let the artwork adapt to its own shape. */
+  adaptiveArtwork: Boolean = false,
 ) {
   BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
     val artworkHeight = (maxWidth * 1.18f).coerceIn(440.dp, 670.dp)
@@ -26932,17 +26946,34 @@ private fun ClassicDetailHero(
       // supposed to hide. The content below is pulled up by the same amount, so nothing moves.
       Box(modifier = Modifier.fillMaxWidth().height(artworkHeight * 1.5f)) {
         Box(modifier = Modifier.fillMaxWidth().height(artworkHeight).align(Alignment.TopCenter).clip(RectangleShape)) {
-          AsyncImage(
-            model = backdrop,
-            contentDescription = detail.title,
-            modifier = Modifier.fillMaxSize().graphicsLayer {
-              translationY = scrollOffset().toFloat() * 0.42f
-              scaleX = 1.04f
-              scaleY = 1.04f
-            },
-            contentScale = ContentScale.Crop,
-            alignment = Alignment.TopCenter,
-          )
+          val artworkParallax = Modifier.fillMaxSize().graphicsLayer {
+            translationY = scrollOffset().toFloat() * 0.42f
+            scaleX = 1.04f
+            scaleY = 1.04f
+          }
+          if (adaptiveArtwork) {
+            // A wide event card or channel banner in this tall frame is shown whole, over a blurred
+            // copy of itself, rather than cropped down to its middle.
+            AdaptiveArtwork(
+              model = backdrop,
+              contentDescription = detail.title,
+              modifier = artworkParallax,
+              // Asked of the poster, not the backdrop: a source-described item copies its poster into the
+              // backdrop field, so "is it the backdrop" said yes to a wide card and cropped it.
+              cropTolerance = if (backdrop == detail.poster) ArtworkCropTolerance.POSTER else ArtworkCropTolerance.BACKDROP,
+              cropAlignment = Alignment.TopCenter,
+              fitScale = 0.6f,
+              fitShape = StreamDekRadius.cardShape,
+            )
+          } else {
+            AsyncImage(
+              model = backdrop,
+              contentDescription = detail.title,
+              modifier = artworkParallax,
+              contentScale = ContentScale.Crop,
+              alignment = Alignment.TopCenter,
+            )
+          }
           if (trailerPlaying && !detail.trailerUrl.isNullOrBlank()) {
             key(trailerPlaybackKey) {
               val kinocheckTrailer = rememberKinocheckTrailer(detail)
@@ -27130,12 +27161,23 @@ private fun ClassicDetailHero(
           verticalAlignment = Alignment.Bottom,
         ) {
           if (!detail.poster.isNullOrBlank()) {
-            AsyncImage(
-              model = detail.poster,
-              contentDescription = stringResource(R.string.a11y_poster_for, detail.title),
-              modifier = Modifier.width(112.dp).height(168.dp).clip(StreamDekRadius.cardShape).border(1.dp, Color.White.copy(alpha = 0.24f), StreamDekRadius.cardShape),
-              contentScale = ContentScale.Crop,
-            )
+            val posterFrame = Modifier.width(112.dp).height(168.dp).clip(StreamDekRadius.cardShape).border(1.dp, Color.White.copy(alpha = 0.24f), StreamDekRadius.cardShape)
+            if (adaptiveArtwork) {
+              // A wide card in this portrait slot is shown whole rather than cut down to its middle.
+              AdaptiveArtwork(
+                model = detail.poster,
+                contentDescription = stringResource(R.string.a11y_poster_for, detail.title),
+                modifier = posterFrame,
+                cropTolerance = ArtworkCropTolerance.POSTER,
+              )
+            } else {
+              AsyncImage(
+                model = detail.poster,
+                contentDescription = stringResource(R.string.a11y_poster_for, detail.title),
+                modifier = posterFrame,
+                contentScale = ContentScale.Crop,
+              )
+            }
           }
           Column(
             // Light mode has no bottom fade on the hero, so anchor the title block to the
@@ -27246,6 +27288,8 @@ private fun DetailHero(
   trailerAutoplayPending: Boolean = false,
   /** The dominant-colour page background, when one is in use. */
   pageBackground: Color? = null,
+  /** Live channels, playlists, plugin and add-on items: let the artwork adapt to its own shape. */
+  adaptiveArtwork: Boolean = false,
 ) {
   if (style == DetailPageStyle.Classic) {
     ClassicDetailHero(
@@ -27254,6 +27298,7 @@ private fun DetailHero(
       trailerMuted = trailerMuted, onTrailerMutedChange = onTrailerMutedChange,
       trailerAutoplayPending = trailerAutoplayPending,
       pageBackground = pageBackground,
+      adaptiveArtwork = adaptiveArtwork,
     )
     return
   }
@@ -27302,19 +27347,33 @@ private fun DetailHero(
           .height(heroHeight)
           .clip(RectangleShape),
       ) {
-        AsyncImage(
-          model = backdrop,
-          contentDescription = detail.title,
-          modifier = Modifier
-            .fillMaxSize()
-            .graphicsLayer {
-              translationY = scrollOffset().toFloat() * 0.5f
-              scaleX = 1.08f
-              scaleY = 1.08f
-            },
-          contentScale = ContentScale.Crop,
-          alignment = Alignment.Center,
-        )
+        val artworkParallax = Modifier
+          .fillMaxSize()
+          .graphicsLayer {
+            translationY = scrollOffset().toFloat() * 0.5f
+            scaleX = 1.08f
+            scaleY = 1.08f
+          }
+        if (adaptiveArtwork) {
+          AdaptiveArtwork(
+            model = backdrop,
+            contentDescription = detail.title,
+            modifier = artworkParallax,
+            // Asked of the poster, not the backdrop: a source-described item copies its poster into the
+              // backdrop field, so "is it the backdrop" said yes to a wide card and cropped it.
+              cropTolerance = if (backdrop == detail.poster) ArtworkCropTolerance.POSTER else ArtworkCropTolerance.BACKDROP,
+              fitScale = 0.6f,
+              fitShape = StreamDekRadius.cardShape,
+          )
+        } else {
+          AsyncImage(
+            model = backdrop,
+            contentDescription = detail.title,
+            modifier = artworkParallax,
+            contentScale = ContentScale.Crop,
+            alignment = Alignment.Center,
+          )
+        }
         androidx.compose.animation.AnimatedVisibility(
           visible = trailerPlaying && !detail.trailerUrl.isNullOrBlank(),
           // Same parallax as the static hero image, so scrolling glides the page content over the

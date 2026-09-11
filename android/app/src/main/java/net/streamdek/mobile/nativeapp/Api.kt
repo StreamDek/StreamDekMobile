@@ -692,6 +692,11 @@ class StreamDekApiClient(context: Context? = null) {
           builder.header("x-client-platform", "android")
           builder.header("x-app-version", BuildConfig.VERSION_NAME)
         }
+        // Compatibility metadata is independent of authentication/device registration and must
+        // be present even on bootstrap calls made before a client identity has been established.
+        builder.header("X-StreamDek-Platform", "android-mobile")
+        builder.header("X-StreamDek-Version", BuildConfig.VERSION_NAME)
+        builder.header("X-StreamDek-Build", BuildConfig.VERSION_CODE.toString())
         // Which language this phone would like its *metadata* in - synopses, genres, certification
         // labels - for the backend to pass on to TMDB. Interface text does not come from here; it
         // comes from the app's own resources. Read per request rather than captured, so it is
@@ -738,6 +743,9 @@ class StreamDekApiClient(context: Context? = null) {
       val started = System.currentTimeMillis()
       try {
         chain.proceed(request).also { response ->
+          if (response.code == 426) {
+            AppVersionPolicyRuntime.acceptUnsupportedResponse(response.peekBody(64 * 1024L).string())
+          }
           if (!response.isSuccessful) {
             android.util.Log.w(
               "StreamDekApi",
@@ -4015,6 +4023,9 @@ class StreamDekApiClient(context: Context? = null) {
       builder.add("x-device-type", "phone")
       identity.previousDeviceId?.let { builder.add("x-previous-device-id", it) }
       builder.add("x-app-version", BuildConfig.VERSION_NAME)
+      builder.add("X-StreamDek-Platform", "android-mobile")
+      builder.add("X-StreamDek-Version", BuildConfig.VERSION_NAME)
+      builder.add("X-StreamDek-Build", BuildConfig.VERSION_CODE.toString())
     }
     return builder.build()
   }

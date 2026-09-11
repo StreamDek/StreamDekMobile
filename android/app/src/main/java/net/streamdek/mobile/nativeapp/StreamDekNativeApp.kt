@@ -218,6 +218,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -9086,13 +9087,16 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   fun checkForUpdates(manual: Boolean = true) {
     if (uiState.updateChecking) return
+    val gate = AppVersionPolicyRuntime.state.value as? AppVersionGateState.Ready
+    if (!manual && gate?.effectiveMode == AppUpdateMode.NONE) return
     launchWork(
       onStart = { uiState = uiState.copy(updateChecking = true, updateErrorMessage = null, updateStatusMessage = if (manual) UpdateMessage(R.string.update_checking_for_updates) else null) },
       block = { apiClient.fetchLatestMobileUpdate() },
       onSuccess = { release ->
         val available = release.versionCode > BuildConfig.VERSION_CODE
         val mandatory = release.required || (release.minSupportedVersionCode?.let { BuildConfig.VERSION_CODE < it } == true)
-        uiState = uiState.copy(updateChecking = false, availableUpdate = release.takeIf { available }, updatePromptVisible = available && (manual || uiState.autoUpdateChecksEnabled || mandatory), updateStatusMessage = if (available) UpdateMessage(R.string.update_version_available, release.versionName) else if (manual) UpdateMessage(R.string.update_already_latest) else null, updateErrorMessage = null)
+        val recommended = gate?.effectiveMode == AppUpdateMode.RECOMMENDED
+        uiState = uiState.copy(updateChecking = false, availableUpdate = release.takeIf { available }, updatePromptVisible = available && (manual || uiState.autoUpdateChecksEnabled || mandatory || recommended), updateStatusMessage = if (available) UpdateMessage(R.string.update_version_available, release.versionName) else if (manual) UpdateMessage(R.string.update_already_latest) else null, updateErrorMessage = null)
       },
       onFailure = { message -> uiState = uiState.copy(updateChecking = false, updateStatusMessage = null, updateErrorMessage = message) },
     )
@@ -10965,6 +10969,11 @@ private fun StreamDekNativeAppContent(
   val context = androidx.compose.ui.platform.LocalContext.current.applicationContext as Application
   val viewModel = viewModel<NativeAppViewModel>(factory = NativeAppViewModelFactory(context))
   val uiState = viewModel.uiState
+  val appVersionGate by AppVersionPolicyRuntime.state.collectAsState()
+  LaunchedEffect(appVersionGate) {
+    val ready = appVersionGate as? AppVersionGateState.Ready ?: return@LaunchedEffect
+    if (ready.effectiveMode == AppUpdateMode.RECOMMENDED) viewModel.checkForUpdates(manual = false)
+  }
   LaunchedEffect(uiState.playerSession?.url, uiState.session?.user?.uid) {
     if (uiState.playerSession != null) viewModel.refreshHandoffDevices()
   }
@@ -12108,7 +12117,12 @@ private fun MainScene(
   }
 
   if (delayedUpdatePromptVisible && uiState.updatePromptVisible && uiState.availableUpdate != null) {
-    UpdatePromptDialog(uiState = uiState, onUpdate = viewModel::startUpdate, onDismiss = viewModel::dismissUpdatePrompt)
+    UpdatePromptDialog(
+      uiState = uiState,
+      policy = (AppVersionPolicyRuntime.state.value as? AppVersionGateState.Ready)?.policy,
+      onUpdate = viewModel::startUpdate,
+      onDismiss = viewModel::dismissUpdatePrompt,
+    )
   }
 
   if (uiState.pendingGuestMerge != null && !uiState.profilesLoading) {
@@ -12575,7 +12589,7 @@ private fun MainScene(
 
 
 @Composable
-private fun UpdatePromptDialog(uiState: AppUiState, onUpdate: () -> Unit, onDismiss: () -> Unit) {
+private fun UpdatePromptDialog(uiState: AppUiState, policy: AppVersionPolicy? = null, onUpdate: () -> Unit, onDismiss: () -> Unit) {
   val release = uiState.availableUpdate ?: return
   val mandatory = release.required || (release.minSupportedVersionCode?.let { BuildConfig.VERSION_CODE < it } == true)
   AlertDialog(
@@ -12585,11 +12599,12 @@ private fun UpdatePromptDialog(uiState: AppUiState, onUpdate: () -> Unit, onDism
         Box(modifier = Modifier.clip(StreamDekRadius.pill).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)).padding(horizontal = 12.dp, vertical = 7.dp)) {
           Text(if (mandatory) "Required update" else "Update available", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Black)
         }
-        Text(stringResource(R.string.update_version_named, release.versionName), fontWeight = FontWeight.Black)
+        Text(policy?.title ?: stringResource(R.string.update_version_named, release.versionName), fontWeight = FontWeight.Black)
       }
     },
     text = {
       Column(modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        policy?.message?.takeIf(String::isNotBlank)?.let { Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f)) }
         release.requiredReason?.let { Text(it, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold) }
         if (release.releaseNotes.isNotBlank()) {
           Text(stringResource(R.string.update_whats_new), fontWeight = FontWeight.Black)

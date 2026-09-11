@@ -1562,4 +1562,7 @@
   <string name="subtitle_tab_addons">Addons</string>
   <string name="subtitle_tab_style">Style</string>
   <string name="subtitle_none">None</string>
+  <string name="app_version_brand" translatable="false">StreamDek</string>
+  <string name="app_version_retry">Retry</string>
+  <string name="app_version_installed_required">Installed: %1$s   Required: %2$s+</string>
 </resources>

@@ -15,6 +15,7 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import net.streamdek.mobile.nativeapp.StreamDekNativeApp
+import net.streamdek.mobile.nativeapp.AppVersionGate
 import net.streamdek.mobile.nativeapp.normalizeAddonManifestUrl
 import net.streamdek.mobile.nativeapp.normalizeSetupDestination
 import net.streamdek.mobile.nativeapp.localizedAppContext
@@ -100,14 +101,16 @@ class MainActivity : ComponentActivity() {
     handleDeepLink(intent)
     setContent {
       net.streamdek.mobile.nativeapp.Perf.startupMark("activity.firstComposition")
-      StreamDekNativeApp(
-        pendingSetupDestination = pendingSetupDestination.value,
-        onSetupDestinationConsumed = { pendingSetupDestination.value = null },
-        pendingAddonManifestUrl = pendingAddonManifestUrl.value,
-        onAddonManifestConsumed = { pendingAddonManifestUrl.value = null },
-        pendingEpisodeNotification = pendingEpisodeNotification.value,
-        onEpisodeNotificationConsumed = { pendingEpisodeNotification.value = null },
-      )
+      AppVersionGate {
+        StreamDekNativeApp(
+          pendingSetupDestination = pendingSetupDestination.value,
+          onSetupDestinationConsumed = { pendingSetupDestination.value = null },
+          pendingAddonManifestUrl = pendingAddonManifestUrl.value,
+          onAddonManifestConsumed = { pendingAddonManifestUrl.value = null },
+          pendingEpisodeNotification = pendingEpisodeNotification.value,
+          onEpisodeNotificationConsumed = { pendingEpisodeNotification.value = null },
+        )
+      }
     }
   }
 

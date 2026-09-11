@@ -65,6 +65,16 @@
   <string name="player_skip_recap">Skip recap</string>
   <string name="player_skip_credits">Skip credits</string>
   <string name="player_up_next">Up next</string>
+  <string name="player_up_next_heading">Up Next</string>
+  <string name="player_next_episode_unaired_description">The next episode has not aired yet. Skip this episode\'s ending now or dismiss to keep watching</string>
+  <string name="player_next_episode_unknown_release_description">The next episode\'s release date is unavailable. Select Next Episode to try it now.</string>
+  <string name="player_next_episode_autoplay_description">Starts automatically when this episode ends. Select Next Episode to start now.</string>
+  <string name="player_next_episode_manual_description">Select Next Episode to start immediately.</string>
+  <string name="action_skip_ending">Skip Ending</string>
+  <string name="action_next_episode">Next Episode</string>
+  <string name="player_because_you_watched">Because you watched %1$s</string>
+  <string name="player_you_might_also_like">You might also like</string>
+  <string name="player_next_episode_starts_in">Next episode starts in %1$d…</string>
   <string name="player_buffering">Buffering…</string>
   <string name="player_loading_stream">Loading stream…</string>
   <string name="player_playback_failed">Playback failed</string>

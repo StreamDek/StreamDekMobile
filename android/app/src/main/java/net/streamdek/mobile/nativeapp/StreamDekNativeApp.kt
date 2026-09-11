@@ -2593,6 +2593,23 @@ private fun appColorScheme(theme: AppThemePreset, darkMode: Boolean) = themeAcce
   }
 }
 
+/**
+ * The saved Theme and Appearance, read straight from preferences, for screens composed before there
+ * is a view model — the version gate — so they look like the app they are standing in front of.
+ *
+ * The defaults mirror [AppSettingsStore]: an install that has never touched Appearance is Dark.
+ */
+internal fun savedAppColorScheme(context: Context, systemDarkMode: Boolean) =
+  context.getSharedPreferences(APP_SETTINGS_PREFERENCES, Context.MODE_PRIVATE).let { prefs ->
+    val preset = runCatching { AppThemePreset.valueOf(prefs.getString("theme_preset", null) ?: "") }.getOrDefault(AppThemePreset.White)
+    val darkMode = when (prefs.getString(APP_APPEARANCE_PREFERENCE, null)) {
+      AppAppearance.Light.name -> false
+      AppAppearance.System.name -> systemDarkMode
+      else -> true
+    }
+    appColorScheme(preset, darkMode)
+  }
+
 private class WatchedEpisodeStore(context: Context) {
   private val prefs = context.getSharedPreferences("streamdek_native_watched_episodes", Context.MODE_PRIVATE)
 
@@ -13593,6 +13610,12 @@ private fun NetworkBrowseScreen(network: MediaItem, headerStyle: HeaderStyle, on
   var columns by rememberSaveable(network.id) { mutableStateOf(3) }
   var genres by remember(network.id) { mutableStateOf<List<DiscoverGenre>>(emptyList()) }
   var catalogItems by remember(network.id) { mutableStateOf<List<MediaItem>>(emptyList()) }
+  // Search results are kept apart from the catalogue. Clearing the search box used to throw the
+  // results away and refetch the catalogue, leaving the page empty until that answered — and empty
+  // for good when it failed, which the burst of page requests a search makes invited.
+  var searchResults by remember(network.id) { mutableStateOf<List<MediaItem>?>(null) }
+  // The filters catalogItems was loaded under, so returning from a search knows it can reuse it.
+  var catalogFilters by remember(network.id) { mutableStateOf<String?>(null) }
   var loading by remember(network.id) { mutableStateOf(true) }
   var page by remember(network.id) { mutableStateOf(1) }
   var totalPages by remember(network.id) { mutableStateOf(1) }
@@ -13603,16 +13626,21 @@ private fun NetworkBrowseScreen(network: MediaItem, headerStyle: HeaderStyle, on
   val modernHeader = headerStyle == HeaderStyle.Modern
   val headerHazeState = rememberHazeState()
 
+  fun currentFilters(): String = listOf(type, genreId, year, sort).joinToString(":")
+
   fun load(targetPage: Int, append: Boolean) {
     val requestedQuery = query.trim()
-    val requestToken = listOf(network.id, targetPage, type, genreId, year, sort, requestedQuery, System.nanoTime()).joinToString(":")
+    val filters = currentFilters()
+    val requestToken = listOf(network.id, targetPage, filters, requestedQuery, System.nanoTime()).joinToString(":")
     activeRequestToken = requestToken
     loading = true
     scope.launch {
       val firstPage = api.fetchNetworkCatalog(network.id, targetPage, type, genreId, year, sort, "")
         .getOrElse {
           if (activeRequestToken == requestToken) {
-            if (!append) catalogItems = emptyList()
+            // A failed search leaves the catalogue alone, so clearing the box still has it to show.
+            if (requestedQuery.isNotBlank()) searchResults = emptyList()
+            else if (!append) { catalogItems = emptyList(); catalogFilters = null }
             loading = false
           }
           return@launch
@@ -13634,16 +13662,15 @@ private fun NetworkBrowseScreen(network: MediaItem, headerStyle: HeaderStyle, on
           }
         }
         val queryTokens = requestedQuery.lowercase().split(Regex("\\s+")).filter(String::isNotBlank)
-        catalogItems = collected
+        searchResults = collected
           .distinctBy { item -> "${item.type}:${item.id}" }
           .filter { item ->
             val searchText = listOf(item.title, item.year, item.description).joinToString(" ").lowercase()
             queryTokens.all(searchText::contains)
           }
-        page = 1
-        totalPages = 1
       } else {
         catalogItems = if (append) (catalogItems + firstPage.items).distinctBy { item -> "${item.type}:${item.id}" } else firstPage.items
+        catalogFilters = filters
         page = firstPage.page
         totalPages = firstPage.totalPages
       }
@@ -13657,6 +13684,16 @@ private fun NetworkBrowseScreen(network: MediaItem, headerStyle: HeaderStyle, on
     api.fetchDiscoverGenres(genreType).onSuccess { genres = it }
   }
   LaunchedEffect(network.id, type, sort, genreId, year, query) {
+    if (query.isBlank()) {
+      searchResults = null
+      if (catalogFilters == currentFilters()) {
+        // Back from a search onto a catalogue already loaded for these filters: show it as it was,
+        // and drop whatever the search still had in flight.
+        activeRequestToken = ""
+        loading = false
+        return@LaunchedEffect
+      }
+    }
     delay(if (query.isBlank()) 0 else 350)
     load(1, false)
   }
@@ -13705,22 +13742,24 @@ private fun NetworkBrowseScreen(network: MediaItem, headerStyle: HeaderStyle, on
       horizontalArrangement = Arrangement.spacedBy(12.dp),
       verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
+      // Until a search has answered, the catalogue stays on screen under the spinner.
+      val shownItems = if (query.isBlank()) catalogItems else searchResults ?: catalogItems
       when {
-        loading && catalogItems.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
+        loading && shownItems.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
           Box(Modifier.fillMaxWidth().height(220.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         }
-        catalogItems.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
+        shownItems.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
           LibraryEmptyState(
             icon = { Icon(Icons.Rounded.Search, null, modifier = Modifier.size(48.dp)) },
             title = stringResource(R.string.browse_no_matching_titles),
             subtitle = stringResource(R.string.browse_change_search_or_filters),
           )
         }
-        else -> gridItems(catalogItems, key = { item -> "${item.type}:${item.id}" }) { item ->
+        else -> gridItems(shownItems, key = { item -> "${item.type}:${item.id}" }) { item ->
           LibraryPosterTile(item = item, modifier = Modifier.fillMaxWidth(), showMeta = false, onClick = { onOpen(item) })
         }
       }
-      if (loading && catalogItems.isNotEmpty()) {
+      if (loading && shownItems.isNotEmpty()) {
         item(span = { GridItemSpan(maxLineSpan) }) {
           Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(modifier = Modifier.size(24.dp)) }
         }

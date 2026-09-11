@@ -14,8 +14,8 @@ import okhttp3.Request
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -23,23 +23,31 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -208,46 +216,88 @@ fun AppVersionGate(content: @Composable () -> Unit) {
 
   when (val current = state) {
     AppVersionGateState.Checking -> GateTheme {
-      Box(Modifier.fillMaxSize().background(Color(0xFF080A0F)), contentAlignment = Alignment.Center) {
-        CircularProgressIndicator(color = Color(0xFF22D3EE))
+      Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Box(contentAlignment = Alignment.Center) { CircularProgressIndicator() }
       }
     }
     is AppVersionGateState.Required -> GateTheme {
       BackHandler(enabled = true) { }
-      Surface(Modifier.fillMaxSize(), color = Color(0xFF080A0F)) {
-        Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
-          Column(
-            modifier = Modifier.fillMaxWidth().background(Color(0xFF141821), RoundedCornerShape(28.dp)).padding(28.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-          ) {
-            Text(stringResource(R.string.app_version_brand), color = Color(0xFF22D3EE), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
-            Spacer(Modifier.height(2.dp))
-            Text(current.policy.requiredTitle, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black, textAlign = TextAlign.Center)
-            Text(current.policy.requiredMessage, color = Color.White.copy(alpha = 0.76f), textAlign = TextAlign.Center)
-            Button(
-              onClick = { AppVersionPolicyRuntime.openUpdate(context, current.policy) },
-              enabled = current.policy.updateUrl.isNotBlank(),
-              colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22D3EE), contentColor = Color(0xFF061014)),
-              modifier = Modifier.fillMaxWidth(),
-            ) { Text(stringResource(R.string.update_now), fontWeight = FontWeight.Black) }
-            OutlinedButton(
-              onClick = { scope.launch { AppVersionPolicyRuntime.refresh(context) } },
-              modifier = Modifier.fillMaxWidth(),
-            ) { Text(stringResource(R.string.app_version_retry)) }
-            Text(
-              stringResource(R.string.app_version_installed_required, BuildConfig.VERSION_NAME, current.policy.minimumSupportedVersion),
-              color = Color.White.copy(alpha = 0.52f), style = MaterialTheme.typography.bodySmall,
-            )
-          }
-        }
-      }
+      UpdateRequiredScreen(
+        policy = current.policy,
+        onUpdate = { AppVersionPolicyRuntime.openUpdate(context, current.policy) },
+        onRetry = { scope.launch { AppVersionPolicyRuntime.refresh(context) } },
+      )
     }
     else -> content() // A lookup outage fails open; any protected API can still answer with 426.
   }
 }
 
 @Composable
+private fun UpdateRequiredScreen(policy: AppVersionPolicy, onUpdate: () -> Unit, onRetry: () -> Unit) {
+  val colors = MaterialTheme.colorScheme
+  Surface(Modifier.fillMaxSize(), color = colors.background) {
+    Box(Modifier.fillMaxSize().systemBarsPadding().padding(24.dp), contentAlignment = Alignment.Center) {
+      Surface(
+        modifier = Modifier.widthIn(max = 440.dp).fillMaxWidth(),
+        shape = RoundedCornerShape(28.dp),
+        color = colors.surface,
+        border = BorderStroke(1.dp, colors.onSurface.copy(alpha = 0.08f)),
+      ) {
+        Column(
+          modifier = Modifier.padding(horizontal = 24.dp, vertical = 32.dp),
+          horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+          Image(
+            painter = painterResource(R.drawable.streamdek_logo_transparent),
+            contentDescription = stringResource(R.string.app_version_brand),
+            modifier = Modifier.size(76.dp),
+          )
+          Spacer(Modifier.height(24.dp))
+          Text(policy.requiredTitle, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+          Spacer(Modifier.height(10.dp))
+          Text(
+            policy.requiredMessage,
+            color = colors.onSurface.copy(alpha = 0.72f),
+            style = MaterialTheme.typography.bodyLarge,
+            textAlign = TextAlign.Center,
+          )
+          Spacer(Modifier.height(28.dp))
+          Button(
+            onClick = onUpdate,
+            enabled = policy.updateUrl.isNotBlank(),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+          ) {
+            Icon(Icons.Rounded.SystemUpdate, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(10.dp))
+            Text(stringResource(R.string.update_now), fontWeight = FontWeight.Bold)
+          }
+          Spacer(Modifier.height(10.dp))
+          OutlinedButton(
+            onClick = onRetry,
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, colors.onSurface.copy(alpha = 0.16f)),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.onSurface),
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+          ) { Text(stringResource(R.string.app_version_retry), fontWeight = FontWeight.SemiBold) }
+          Spacer(Modifier.height(20.dp))
+          Text(
+            stringResource(R.string.app_version_installed_required, BuildConfig.VERSION_NAME, policy.minimumSupportedVersion),
+            color = colors.onSurface.copy(alpha = 0.5f),
+            style = MaterialTheme.typography.bodySmall,
+            textAlign = TextAlign.Center,
+          )
+        }
+      }
+    }
+  }
+}
+
+/** The saved Theme and Appearance, so the gate matches the app it is standing in front of. */
+@Composable
 private fun GateTheme(content: @Composable () -> Unit) {
-  MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFF22D3EE)), content = content)
+  val context = LocalContext.current.applicationContext
+  val systemDarkMode = deviceInDarkTheme()
+  val colorScheme = remember(context, systemDarkMode) { savedAppColorScheme(context, systemDarkMode) }
+  MaterialTheme(colorScheme = colorScheme, content = content)
 }

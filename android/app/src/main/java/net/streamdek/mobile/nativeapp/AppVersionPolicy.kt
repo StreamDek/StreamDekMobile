@@ -127,8 +127,9 @@ object AppVersionPolicyRuntime {
         updateMode = AppUpdateMode.REQUIRED,
         title = current?.title ?: "Update required",
         message = current?.message ?: "",
-        requiredTitle = "Update required",
-        requiredMessage = json.optString("message", "This version of StreamDek is no longer supported. Update to continue."),
+        // Left blank when the server does not say, so the gate shows its own translated wording.
+        requiredTitle = "",
+        requiredMessage = json.optString("message"),
         updateUrl = json.optString("updateUrl", current?.updateUrl ?: ""),
         releaseNotesUrl = current?.releaseNotesUrl,
       ),
@@ -156,8 +157,9 @@ object AppVersionPolicyRuntime {
       updateMode = AppUpdateMode.valueOf(json.optString("updateMode", "OPTIONAL").uppercase()),
       title = json.optString("title", "Update available"),
       message = json.optString("message", "A newer version of StreamDek is available."),
-      requiredTitle = json.optString("requiredTitle", "Update required"),
-      requiredMessage = json.optString("requiredMessage", "This version is no longer supported. Update to continue."),
+      // Blank when absent: the gate falls back to its own translated title and message.
+      requiredTitle = json.optString("requiredTitle"),
+      requiredMessage = json.optString("requiredMessage"),
       updateUrl = json.optString("updateUrl"),
       releaseNotesUrl = json.optString("releaseNotesUrl").takeIf(String::isNotBlank),
     ).also { require(compareAppVersions(it.minimumSupportedVersion, it.latestVersion)?.let { order -> order <= 0 } == true) }
@@ -253,10 +255,16 @@ private fun UpdateRequiredScreen(policy: AppVersionPolicy, onUpdate: () -> Unit,
             modifier = Modifier.size(76.dp),
           )
           Spacer(Modifier.height(24.dp))
-          Text(policy.requiredTitle, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+          // The server's own wording when it sent some; otherwise the app's, in the viewer's language.
+          Text(
+            policy.requiredTitle.ifBlank { stringResource(R.string.app_version_required_title) },
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+          )
           Spacer(Modifier.height(10.dp))
           Text(
-            policy.requiredMessage,
+            policy.requiredMessage.ifBlank { stringResource(R.string.app_version_required_message) },
             color = colors.onSurface.copy(alpha = 0.72f),
             style = MaterialTheme.typography.bodyLarge,
             textAlign = TextAlign.Center,

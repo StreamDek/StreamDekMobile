@@ -27,18 +27,22 @@ fun streamOriginLabel(stream: AddonStream?, addonFallback: String): String? = st
   StreamDekPlugins.manager.state,
   if (CloudStreamPlugins.isInitialized) CloudStreamPlugins.manager.state else CsPluginState(),
   addonFallback,
+  if (CloudStreamPlugins.isInitialized) CloudStreamPluginLoader.providerFiles() else emptyMap(),
 )
 
 /**
  * @param addonFallback what to call a stream that came from a plain add-on rather than a plugin or
  * CloudStream collection. Passed in rather than written here because it is a word on the screen,
  * and this file has no composition to read a resource from.
+ * @param cloudStreamProviderFiles the plugin file each loaded CloudStream provider came from, by
+ * provider name — see [CloudStreamPluginLoader.providerFiles].
  */
 fun streamOriginLabel(
   stream: AddonStream?,
   plugins: PluginState,
   cloudStream: CsPluginState,
   addonFallback: String,
+  cloudStreamProviderFiles: Map<String, String> = emptyMap(),
 ): String? {
   val addonId = stream?.addonId?.trim().orEmpty()
   if (addonId.isEmpty()) return null
@@ -47,20 +51,60 @@ fun streamOriginLabel(
     addonId.startsWith(PLUGIN_ADDON_ID_PREFIX) -> {
       val providerId = addonId.removePrefix(PLUGIN_ADDON_ID_PREFIX)
       val repoUrl = plugins.providers.firstOrNull { it.id == providerId }?.repoUrl.orEmpty()
-      pluginOriginLabel(plugins.repos.firstOrNull { it.url == repoUrl }?.name, repoUrl)
+      collectionOriginLabel(PLUGIN_ORIGIN, plugins.repos.firstOrNull { it.url == repoUrl }?.name, repoUrl)
     }
     addonId.startsWith(CLOUDSTREAM_ADDON_ID_PREFIX) -> {
       val providerName = addonId.removePrefix(CLOUDSTREAM_ADDON_ID_PREFIX)
-      val repoUrl = cloudStream.providers.firstOrNull { it.name == providerName }?.repoUrl.orEmpty()
-      pluginOriginLabel(cloudStream.repos.firstOrNull { it.url == repoUrl }?.name, repoUrl)
+      // Matching the provider's name against the collection's plugin names alone used to miss —
+      // a plugin registers its sources under names of their own — which left these results saying
+      // only "Plugin", indistinguishable from the other plugin system. The loaded file is the
+      // reliable link; the name match stays as the fallback.
+      val entry = cloudStreamProviderFiles[providerName]
+        ?.let { path -> cloudStream.providers.firstOrNull { it.installedFilePath == path } }
+        ?: cloudStream.providers.firstOrNull { it.name == providerName }
+      val repoUrl = entry?.repoUrl.orEmpty()
+      collectionOriginLabel(CLOUDSTREAM_ORIGIN, cloudStream.repos.firstOrNull { it.url == repoUrl }?.name, repoUrl)
     }
     else -> addonFallback
   }
 }
 
-private fun pluginOriginLabel(repoName: String?, repoUrl: String): String {
+/**
+ * "CloudStream · <collection>" for a loaded CloudStream provider, by name — the same words its
+ * streams carry, so a Home row and the sources it leads to read as coming from the same place.
+ * Null when CloudStream is not running or the provider is not one it has loaded.
+ */
+fun cloudStreamProviderOriginLabel(providerName: String): String? {
+  if (!CloudStreamPlugins.isInitialized) return null
+  return streamOriginLabel(
+    stream = AddonStream(
+      addonId = CLOUDSTREAM_ADDON_ID_PREFIX + providerName,
+      addonName = providerName,
+      name = null,
+      title = null,
+      description = null,
+      url = null,
+      infoHash = null,
+      fileIdx = null,
+      filename = null,
+      quality = null,
+      size = null,
+      cachedBy = emptyList(),
+    ),
+    plugins = StreamDekPlugins.manager.state,
+    cloudStream = CloudStreamPlugins.manager.state,
+    addonFallback = "",
+    cloudStreamProviderFiles = CloudStreamPluginLoader.providerFiles(),
+  )
+}
+
+private const val PLUGIN_ORIGIN = "Plugin"
+private const val CLOUDSTREAM_ORIGIN = "CloudStream"
+
+/** "Plugin · Collection" or "CloudStream · Repo": which system, then which collection within it. */
+private fun collectionOriginLabel(kind: String, repoName: String?, repoUrl: String): String {
   val collection = repoName?.takeIf { it.isNotBlank() } ?: pluginRepoShortLabel(repoUrl)
-  return listOfNotNull("Plugin", collection).joinToString(" · ")
+  return listOfNotNull(kind, collection).joinToString(" · ")
 }
 
 /** A collection with no name still has a URL; its host is enough to tell two of them apart. */

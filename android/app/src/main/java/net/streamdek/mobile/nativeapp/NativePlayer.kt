@@ -84,6 +84,8 @@ import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
+import androidx.compose.material.icons.rounded.UnfoldLess
+import androidx.compose.material.icons.rounded.UnfoldMore
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.DeleteSweep
@@ -352,6 +354,8 @@ fun NativePlayerScreen(
   onSubtitleVerticalOffsetChange: (Int) -> Unit = {},
   onSubtitleSourceChange: (String) -> Unit = {},
   onToggleSourceFavourite: (String) -> Unit = {},
+  /** Normal or Minimal, switched from the player's header and kept as the Settings choice. */
+  onPlayerControlLayoutChange: (String) -> Unit = {},
 ) {
   // Hoisted above the provisional/real-session split so the last swarm reading survives the URL
   // handoff instead of disappearing for one polling interval. Polling stops at the first frame.
@@ -1279,7 +1283,12 @@ fun NativePlayerScreen(
       },
     )
 
+    // Seeded from the session, then owned here, so switching from the header takes effect at once
+    // rather than on the next session built from the saved setting.
+    val controlLayoutState = rememberSaveable { mutableStateOf(session.playerControlLayout) }
     PlayerOverlays(
+      controlLayoutState = controlLayoutState,
+      onControlLayoutChange = onPlayerControlLayoutChange,
       session = session,
       source = source,
       playback = playback,
@@ -2222,6 +2231,9 @@ private fun androidx.compose.foundation.layout.BoxScope.PlayerTopHeader(
   onToggleFavourite: () -> Unit = {},
   onHandoff: () -> Unit = {},
   onLock: () -> Unit = {},
+  /** The live layout, which can differ from the session's once switched from here. */
+  layout: String = session.playerControlLayout,
+  onToggleLayout: () -> Unit = {},
 ) {
   var fullTitleVisible by remember(session.title) { mutableStateOf(false) }
   val reducedMotion = LocalReducedMotion.current
@@ -2241,7 +2253,7 @@ private fun androidx.compose.foundation.layout.BoxScope.PlayerTopHeader(
     horizontalArrangement = Arrangement.spacedBy(14.dp),
     verticalAlignment = Alignment.Top,
   ) {
-    val minimal = session.playerControlLayout == "Minimal"
+    val minimal = layout == "Minimal"
     Box(
       modifier = Modifier.size(if (minimal) 48.dp else 44.dp).clip(CircleShape)
         .then(if (minimal) Modifier else Modifier.background(Color.White.copy(alpha = 0.10f)).border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape))
@@ -2284,6 +2296,24 @@ private fun androidx.compose.foundation.layout.BoxScope.PlayerTopHeader(
           Text(text = detailLine, color = Color.White.copy(alpha = 0.72f), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
       }
+    }
+    // The layout switch lives in this header because the header is the one part of the controls
+    // that both layouts share: in the dock it would sit inside the thing it changes, and someone in
+    // Minimal could lose the way back. The icon says which way a tap goes — fewer controls or more.
+    Box(
+      modifier = Modifier
+        .size(44.dp)
+        .clip(CircleShape)
+        .background(Color.White.copy(alpha = 0.10f))
+        .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+        .clickable(onClick = onToggleLayout),
+      contentAlignment = Alignment.Center,
+    ) {
+      Icon(
+        if (minimal) Icons.Rounded.UnfoldMore else Icons.Rounded.UnfoldLess,
+        contentDescription = stringResource(if (minimal) R.string.player_switch_to_normal_controls else R.string.player_switch_to_minimal_controls),
+        tint = Color.White,
+      )
     }
     // Lock sits beside handoff rather than in the bottom dock, which is where the info control
     // now is. Both are one-tap actions on the session rather than settings, so they belong to the
@@ -3067,8 +3097,18 @@ private suspend fun fetchSkipSegments(session: PlayerSession): List<SkipSegment>
 }
 private fun streamsRepresentSameSource(candidate: AddonStream, current: AddonStream?): Boolean {
   current ?: return false
-  return addonStreamPlaybackIdentity(candidate) == addonStreamPlaybackIdentity(current)
+  if (addonStreamPlaybackIdentity(candidate) == addonStreamPlaybackIdentity(current)) return true
+  // The address alone is not enough: the stream being played can carry a different URL from the
+  // row it was chosen from — a debrid link, a proxied or re-signed address — and on that mismatch
+  // the playing source was neither pinned to the top nor marked as playing. Same add-on, and the
+  // same description of itself, is the same listing.
+  return candidate.addonId.isNotBlank() && candidate.addonId == current.addonId &&
+    streamListingIdentity(candidate) == streamListingIdentity(current)
 }
+
+private fun streamListingIdentity(stream: AddonStream): String =
+  listOf(stream.infoHash, stream.fileIdx?.toString(), stream.bingeGroup, stream.filename, stream.name, stream.title, stream.quality, stream.size)
+    .joinToString("|") { it.orEmpty().trim().lowercase() }
 
 
 /**
@@ -3446,38 +3486,45 @@ private fun PlayerPanels(
         }
       }
     }
-    PlayerPanel.Sources -> PlayerModalPanel(title = stringResource(R.string.player_sources), onClose = { activePanel = PlayerPanel.None }, trailing = {
-      TextButton(onClick = onReloadStreams, colors = ButtonDefaults.textButtonColors(contentColor = Color.White)) { Text(stringResource(R.string.player_reload)) }
-    }) {
-      // The source being played is hoisted to the top, with everything else keeping its order.
-      // Hoisting before the cap also guarantees it is listed at all — a source further down a
-      // long list would otherwise be cut off by take(), leaving nothing marked as playing.
-      val orderedStreams = remember(availableStreams, session.currentStream) {
-        val distinct = availableStreams.distinctBy(::addonStreamPlaybackIdentity)
-        val current = session.currentStream
-        val ordered = if (current == null) {
-          distinct
-        } else {
-          val (playing, rest) = distinct.partition { streamsRepresentSameSource(it, current) }
-          playing + rest
-        }
-        ordered.take(MAX_PLAYER_SOURCE_ROWS)
+    PlayerPanel.Sources -> {
+      // The source being played leads the list and scrolls with it; everything else keeps its order.
+      // When the playing stream is not among the loaded results at all, it leads as it is, so the
+      // top of the list always says what is playing.
+      val currentStream = session.currentStream
+      val distinctStreams = remember(availableStreams) { availableStreams.distinctBy(::addonStreamPlaybackIdentity) }
+      val playingStream = remember(distinctStreams, currentStream) {
+        currentStream?.let { current -> distinctStreams.firstOrNull { streamsRepresentSameSource(it, current) } ?: current }
       }
-      Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-        orderedStreams.forEach { stream ->
-            PlayerSourceCard(
-              stream = stream,
-              active = streamsRepresentSameSource(stream, session.currentStream),
-              onClick = {
-                activePanel = PlayerPanel.None
-                onSelectStream(stream, currentProgressPercent)
-              },
-              showDownload = downloadsEnabled && !session.isLive && stream.infoHash.isNullOrBlank() && !stream.url.isNullOrBlank(),
-              onDownload = { onDownloadStream(stream) },
-            )
+      val otherStreams = remember(distinctStreams, playingStream) {
+        distinctStreams
+          .filterNot { playingStream != null && streamsRepresentSameSource(it, playingStream) }
+          .take(MAX_PLAYER_SOURCE_ROWS - if (playingStream != null) 1 else 0)
+      }
+      val sourceRow: @Composable (AddonStream, Boolean) -> Unit = { stream, active ->
+        PlayerSourceCard(
+          stream = stream,
+          active = active,
+          onClick = {
+            activePanel = PlayerPanel.None
+            onSelectStream(stream, currentProgressPercent)
+          },
+          showDownload = downloadsEnabled && !session.isLive && stream.infoHash.isNullOrBlank() && !stream.url.isNullOrBlank(),
+          onDownload = { onDownloadStream(stream) },
+        )
+      }
+      PlayerModalPanel(
+        title = stringResource(R.string.player_sources),
+        onClose = { activePanel = PlayerPanel.None },
+        trailing = {
+          TextButton(onClick = onReloadStreams, colors = ButtonDefaults.textButtonColors(contentColor = Color.White)) { Text(stringResource(R.string.player_reload)) }
+        },
+      ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+          playingStream?.let { stream -> sourceRow(stream, true) }
+          otherStreams.forEach { stream -> sourceRow(stream, false) }
+          if (availableStreams.isEmpty() && playingStream == null) {
+            Text(stringResource(R.string.player_no_loaded_sources), color = Color.White.copy(alpha = 0.66f))
           }
-        if (availableStreams.isEmpty()) {
-          Text(stringResource(R.string.player_no_loaded_sources), color = Color.White.copy(alpha = 0.66f))
         }
       }
     }
@@ -3562,8 +3609,11 @@ private fun BoxScope.PlayerOverlays(
   onHandoff: suspend (LinkedTvDevice, Double) -> Result<PlaybackHandoffReceipt>,
   onNextEpisode: () -> Unit,
   onPreviousEpisode: () -> Unit,
+  controlLayoutState: MutableState<String>,
+  onControlLayoutChange: (String) -> Unit,
 ) {
   // Re-bound so the overlay bodies below read and write exactly as they did in the screen.
+  var controlLayout by controlLayoutState
   var activePanel by activePanelState
   var playbackSpeed by playbackSpeedState
   var controlsLocked by controlsLockedState
@@ -3725,6 +3775,13 @@ private fun BoxScope.PlayerOverlays(
   ) {
     PlayerTopHeader(
       session = session,
+      layout = controlLayout,
+      onToggleLayout = {
+        val next = if (controlLayout == "Minimal") "Normal" else "Minimal"
+        controlLayout = next
+        onControlLayoutChange(next)
+        keepControlsVisible()
+      },
       onBack = { closePlayer() },
       isFavourite = isFavourite,
       onToggleFavourite = onToggleFavourite,
@@ -3773,7 +3830,7 @@ private fun BoxScope.PlayerOverlays(
       // A live source showing a seekable bar is one the double-tap gestures can move too;
       // without a bar (or without a seekable window) there is nothing for them to act on.
       showSeeking = !session.isLive || (showLiveProgress && duration > 0.0),
-      layout = session.playerControlLayout,
+      layout = controlLayout,
     )
   }
 
@@ -3812,7 +3869,7 @@ private fun BoxScope.PlayerOverlays(
       onEngine = { keepControlsVisible(); activePanel = PlayerPanel.Engine },
       onInfo = { keepControlsVisible(); activePanel = PlayerPanel.Info },
       showLabels = session.showPlayerControlLabels,
-      layout = session.playerControlLayout,
+      layout = controlLayout,
     )
   }
 }

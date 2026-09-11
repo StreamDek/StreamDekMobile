@@ -6,6 +6,11 @@ import android.content.res.Resources
 import android.util.Log
 import com.lagradost.cloudstream3.APIHolder
 import com.lagradost.cloudstream3.MainAPI
+import android.os.Handler
+import android.os.Looper
+import androidx.appcompat.app.AppCompatActivity
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import com.lagradost.cloudstream3.plugins.BasePlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import dalvik.system.PathClassLoader
@@ -49,6 +54,14 @@ object CloudStreamPluginLoader {
   /** Every provider currently registered by a loaded plugin, in load order. */
   fun allProviders(): List<MainAPI> = loadedPlugins().flatMap { it.providers }
 
+  /**
+   * The plugin file each provider was registered by, keyed by provider name. A provider's name need
+   * not match its plugin's, and one plugin can register several, so the file is the dependable way
+   * back to the collection a stream result came from.
+   */
+  fun providerFiles(): Map<String, String> =
+    loadedPlugins().flatMap { plugin -> plugin.providers.map { provider -> provider.name to plugin.filePath } }.toMap()
+
   fun load(context: Context, file: File): Result<LoadedCsPlugin> = runCatching {
     val filePath = file.absolutePath
     synchronized(loaded) { loaded[filePath] }?.let { return@runCatching it }
@@ -89,7 +102,8 @@ object CloudStreamPluginLoader {
     // plugin's filename), so diffing that list around load() is how we find out which providers
     // belong to this particular plugin.
     val before = APIHolder.allProviders.toList()
-    if (instance is Plugin) instance.load(context) else instance.load()
+    // An AppCompatActivity, as CloudStream itself hands over; see CloudStreamRuntime.pluginHost.
+    if (instance is Plugin) instance.load(CloudStreamRuntime.pluginHost(context)) else instance.load()
     val registered = APIHolder.allProviders.toList().filter { candidate -> before.none { it === candidate } }
 
     val record = LoadedCsPlugin(filePath, name, version, instance, registered)
@@ -134,5 +148,55 @@ object CloudStreamRuntime {
       }.onFailure { Log.w(TAG, "Could not attach an application context to the CloudStream runtime", it) }
       initialized = true
     }
+  }
+
+  @Volatile private var host: Context? = null
+
+  /**
+   * The Context a plugin's `load()` is handed.
+   *
+   * Inside CloudStream that is its main activity, an AppCompatActivity, and many extensions cast it
+   * to one on the spot to keep for their settings screen — CNCVerse's SKTechProvider, CNC Verse and
+   * CNC Verse Mobile among them. Handed the application instead, that cast threw ("MainApplication
+   * cannot be cast to AppCompatActivity") partway through loading, and the source never turned on.
+   *
+   * StreamDek's own activity is not an AppCompatActivity, and making it one would change how the app
+   * applies its language and night mode. So plugins get a stand-in: a real AppCompatActivity that is
+   * never started or shown, whose Context is the application. Anything a plugin does with it as a
+   * Context behaves exactly as before. What it keeps it for — its own settings screen, or a donation
+   * dialog — StreamDek never opens, and a plugin that tries anyway fails inside its own error
+   * handling, since there is no window behind it.
+   *
+   * An Activity must be constructed on the main thread (its lifecycle insists), while plugins load on
+   * an IO thread; so it is built there once and shared. Should that ever fail, plugins get the
+   * application, which is what they had before.
+   */
+  fun pluginHost(context: Context): Context {
+    host?.let { return it }
+    synchronized(this) {
+      host?.let { return it }
+      val created = onMainThread { CloudStreamPluginHost(context.applicationContext) }
+      host = created
+      return created ?: context.applicationContext
+    }
+  }
+
+  private fun <T : Any> onMainThread(block: () -> T): T? {
+    val main = Looper.getMainLooper()
+    if (Looper.myLooper() == main) return runCatching(block).onFailure { Log.w(TAG, "Could not create the plugin host", it) }.getOrNull()
+    var result: T? = null
+    val done = CountDownLatch(1)
+    Handler(main).post {
+      result = runCatching(block).onFailure { Log.w(TAG, "Could not create the plugin host", it) }.getOrNull()
+      done.countDown()
+    }
+    return if (done.await(5, TimeUnit.SECONDS)) result else null
+  }
+}
+
+/** The stand-in activity described at [CloudStreamRuntime.pluginHost]. Never started, never shown. */
+private class CloudStreamPluginHost(base: Context) : AppCompatActivity() {
+  init {
+    attachBaseContext(base)
   }
 }

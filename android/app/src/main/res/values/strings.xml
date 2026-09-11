@@ -18,6 +18,23 @@
   <string name="app_name" translatable="false">StreamDek</string>
   <string name="download_channel_name">Downloads</string>
   <string name="download_channel_description">Shows progress while StreamDek downloads a title for offline playback.</string>
+  <string name="download_status_downloading_percent">Downloading — %1$d%%</string>
+  <string name="download_speed">%1$s/s</string>
+  <string name="download_size_progress">%1$s / %2$s</string>
+  <string name="download_size_progress_estimated">%1$s / ~%2$s</string>
+  <string name="download_eta_about">About %1$s remaining</string>
+  <string name="download_eta_under_minute">Less than a minute remaining</string>
+  <string name="download_eta_calculating">Working out time remaining…</string>
+  <string name="download_title_episode">%1$s — Episode %2$d</string>
+  <string name="download_title_season_episode">%1$s — S%2$d E%3$d</string>
+  <string name="download_notification_waiting">Waiting to download</string>
+  <string name="download_status_completed_size">Downloaded · %1$s</string>
+  <string name="error_cloudstream_source_off">%1$s is turned off. Turn it on to open this title.</string>
+  <string name="error_cloudstream_title_unavailable">This title could not be opened from its source.</string>
+  <plurals name="download_notification_multiple">
+    <item quantity="one">Downloading %d title</item>
+    <item quantity="other">Downloading %d titles</item>
+  </plurals>
 
   <string name="settings_language">Language</string>
   <string name="settings_language_description">Choose the language used for the StreamDek interface.</string>
@@ -1168,6 +1185,8 @@
   <string name="settings_opt_notify_one_week">1 week</string>
   <string name="settings_opt_controls_normal">Normal</string>
   <string name="settings_opt_controls_minimal">Minimal</string>
+  <string name="player_switch_to_minimal_controls">Switch to minimal controls</string>
+  <string name="player_switch_to_normal_controls">Switch to normal controls</string>
   <string name="settings_opt_status_always">Always show</string>
   <string name="settings_opt_status_hide">Hide in fullscreen</string>
   <string name="settings_opt_status_automatic">Automatic</string>
@@ -1565,4 +1584,6 @@
   <string name="app_version_brand" translatable="false">StreamDek</string>
   <string name="app_version_retry">Retry</string>
   <string name="app_version_installed_required">Installed: %1$s   Required: %2$s+</string>
+  <string name="app_version_required_title">Update required</string>
+  <string name="app_version_required_message">This version of StreamDek is no longer supported. Update to continue.</string>
 </resources>

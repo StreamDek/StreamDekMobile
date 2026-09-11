@@ -1,7 +1,9 @@
 package net.streamdek.mobile.nativeapp
 
 import android.app.Notification
+import android.app.PendingIntent
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.ExoDatabaseProvider
@@ -14,7 +16,6 @@ import androidx.media3.exoplayer.offline.DefaultDownloadIndex
 import androidx.media3.exoplayer.offline.DefaultDownloaderFactory
 import androidx.media3.exoplayer.offline.Download
 import androidx.media3.exoplayer.offline.DownloadManager
-import androidx.media3.exoplayer.offline.DownloadNotificationHelper
 import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import androidx.media3.exoplayer.offline.Downloader
@@ -66,6 +67,11 @@ data class DownloadEntry(
   val percentDownloaded: Float,
   val startTimeMs: Long,
   val media: DownloadMedia,
+  val bytesDownloaded: Long = 0L,
+  /** The server's stated length, or a non-positive value when it gave none (HLS never does). */
+  val contentLength: Long = -1L,
+  /** Measured while downloading; null until there have been two readings to compare. */
+  val bytesPerSecond: Double? = null,
 )
 
 /**
@@ -114,7 +120,19 @@ object StreamDekDownloads {
     }
   }.getOrNull().orEmpty()
 
-  fun currentDownloadEntries(): List<DownloadEntry> = currentDownloads().map { it.toEntry() }
+  /**
+   * Every download, with live progress for the ones in flight.
+   *
+   * The index is the complete list, but the manager only writes progress into it every few seconds
+   * — too coarse to measure a speed from. Its in-memory list carries the same downloads with the
+   * byte count as of now, so those take precedence.
+   */
+  fun currentDownloadEntries(): List<DownloadEntry> {
+    val live = runCatching { manager?.currentDownloads.orEmpty() }.getOrDefault(emptyList()).associateBy { it.request.id }
+    return currentDownloads().map { (live[it.request.id] ?: it).toEntry() }
+  }
+
+  internal fun entryOf(download: Download): DownloadEntry = download.toEntry()
 
   fun startDownload(id: String, url: String, media: DownloadMedia, mimeType: String?) {
     val request = DownloadRequest.Builder(id, android.net.Uri.parse(url))
@@ -125,6 +143,7 @@ object StreamDekDownloads {
   }
 
   fun removeDownload(id: String) {
+    DownloadRateSampler.forget(id)
     DownloadService.sendRemoveDownload(appContext, StreamDekDownloadService::class.java, id, false)
   }
 
@@ -168,6 +187,13 @@ object StreamDekDownloads {
 
   private fun Download.toEntry(): DownloadEntry {
     val media = decodeMedia(this)
+    val downloading = state == Download.STATE_DOWNLOADING
+    val rate = if (downloading) {
+      DownloadRateSampler.sample(request.id, bytesDownloaded, SystemClock.elapsedRealtime())
+    } else {
+      DownloadRateSampler.forget(request.id)
+      null
+    }
     return DownloadEntry(
       id = request.id,
       title = media.title,
@@ -183,6 +209,9 @@ object StreamDekDownloads {
       percentDownloaded = percentDownloaded,
       startTimeMs = startTimeMs,
       media = media,
+      bytesDownloaded = bytesDownloaded,
+      contentLength = contentLength,
+      bytesPerSecond = rate,
     )
   }
 
@@ -265,7 +294,12 @@ class StreamDekDownloadService : DownloadService(
   R.string.download_channel_name,
   R.string.download_channel_description,
 ) {
-  private val notificationHelper by lazy { DownloadNotificationHelper(this, CHANNEL_ID) }
+  /** Tapping the notification opens the app, as every other StreamDek notification does. */
+  private val contentIntent by lazy {
+    packageManager.getLaunchIntentForPackage(packageName)?.let { launch ->
+      PendingIntent.getActivity(this, NOTIFICATION_ID, launch, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+    }
+  }
 
   override fun getDownloadManager(): DownloadManager {
     StreamDekDownloads.initialize(applicationContext)
@@ -274,8 +308,15 @@ class StreamDekDownloadService : DownloadService(
 
   override fun getScheduler(): Scheduler? = null
 
+  // Rebuilt by DownloadService every second while anything is running, which is also what keeps
+  // the speed reading current when the app itself is closed.
   override fun getForegroundNotification(downloads: MutableList<Download>, notMetRequirements: Int): Notification =
-    notificationHelper.buildProgressNotification(this, R.drawable.ic_stat_streamdek, null, null, downloads, notMetRequirements)
+    buildDownloadNotification(
+      context = localizedAppContext(this),
+      channelId = CHANNEL_ID,
+      downloads = downloads.map(StreamDekDownloads::entryOf),
+      contentIntent = contentIntent,
+    )
 
   companion object {
     private const val NOTIFICATION_ID = 21001

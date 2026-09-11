@@ -170,6 +170,8 @@ import androidx.compose.material.icons.rounded.SportsSoccer
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material.icons.rounded.Storage
+import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.Theaters
@@ -3172,6 +3174,70 @@ internal fun addonHomeCatalogCandidates(addons: List<InstalledAddon>): List<Home
 }
 
 /**
+ * Home rows offered by CloudStream providers' main pages.
+ *
+ * A CloudStream provider is a catalogue as well as a scraper: its main page is a list of named rows
+ * ("Trending", "Latest", a studio, a live-events list), which the CloudStream app shows on its Home
+ * screen. The ids follow the add-on row shape — `addon:<source>:<type>:<row>:<index>` — with the
+ * source written `cloudstream.<provider>`, so ordering, persistence and matching treat them exactly
+ * like add-on catalogues. They start switched off: one collection can bring dozens of providers,
+ * each with several rows, and turning all of them on would bury Home.
+ */
+internal fun cloudStreamHomeCatalogCandidates(providers: List<com.lagradost.cloudstream3.MainAPI>): List<HomeCatalogRow> =
+  providers.distinctBy { it.name }.flatMap { provider ->
+    CloudStreamProviderBridge.mainPageRows(provider).map { row ->
+      HomeCatalogRow(
+        id = cloudStreamHomeRowId(provider, row.index, row.page.name),
+        title = row.page.name.ifBlank { provider.name },
+        subtitleRes = R.string.home_row_from_addon,
+        subtitleArg = provider.name,
+        builtin = false,
+        enabled = false,
+      )
+    }
+  }
+
+internal const val CLOUDSTREAM_ROW_SOURCE_PREFIX = "cloudstream."
+
+/** How many of a CloudStream row's titles Home shows; a main page can return hundreds. */
+internal const val CLOUDSTREAM_ROW_MAX_ITEMS = 40
+
+private fun cloudStreamRowSlug(value: String, fallback: String): String =
+  value.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').ifBlank { fallback }
+
+/** The row-id source segment for a provider. Colon-free, since row ids are colon-separated. */
+internal fun cloudStreamRowSourceId(providerName: String): String =
+  CLOUDSTREAM_ROW_SOURCE_PREFIX + cloudStreamRowSlug(providerName, "provider")
+
+private fun cloudStreamHomeRowId(provider: com.lagradost.cloudstream3.MainAPI, index: Int, name: String): String {
+  val types = runCatching { provider.supportedTypes }.getOrDefault(emptySet())
+  val movieTypes = setOf(com.lagradost.cloudstream3.TvType.Movie, com.lagradost.cloudstream3.TvType.AnimeMovie, com.lagradost.cloudstream3.TvType.Documentary)
+  // "live" places a new row beside the other live rows, below Streaming Networks.
+  val type = when {
+    types.isNotEmpty() && types.all { it == com.lagradost.cloudstream3.TvType.Live } -> "live"
+    types.isNotEmpty() && types.all { it in movieTypes } -> "movie"
+    else -> "series"
+  }
+  return "addon:${cloudStreamRowSourceId(provider.name)}:$type:${cloudStreamRowSlug(name, "row")}:$index"
+}
+
+internal fun isCloudStreamHomeRowId(id: String): Boolean =
+  homeCatalogRowAddonId(id)?.startsWith(CLOUDSTREAM_ROW_SOURCE_PREFIX) == true
+
+/** The provider and main-page entry a CloudStream row id names, among the providers loaded now. */
+internal fun resolveCloudStreamHomeRow(
+  id: String,
+  providers: List<com.lagradost.cloudstream3.MainAPI>,
+): CloudStreamProviderBridge.MainPageRow? {
+  val parts = id.split(":")
+  if (parts.size < 5) return null
+  val provider = providers.firstOrNull { cloudStreamRowSourceId(it.name) == parts[1] } ?: return null
+  val rows = CloudStreamProviderBridge.mainPageRows(provider)
+  // By name first, so a provider that reorders its rows still fills the one the viewer chose.
+  return rows.firstOrNull { cloudStreamRowSlug(it.page.name, "row") == parts[3] } ?: rows.getOrNull(parts[4].toIntOrNull() ?: -1)
+}
+
+/**
  * The part of a row id that names the catalogue rather than where it sat in a manifest.
  *
  * Add-on row ids are `addon:<addonId>:<type>:<catalogId>:<index>`, and that trailing index is the
@@ -3200,13 +3266,17 @@ internal fun mergeHomeCatalogRows(
   existing: List<HomeCatalogRow>,
   addons: List<InstalledAddon>,
   definitions: List<CatalogDefinition> = fallbackCatalogDefinitions,
+  /** Rows from sources other than add-ons — CloudStream providers' main pages; see [cloudStreamHomeCatalogCandidates]. */
+  extraCandidates: List<HomeCatalogRow> = emptyList(),
 ): List<HomeCatalogRow> {
   val builtins = builtinHomeCatalogCandidates(definitions)
-  val candidates = (builtins + addonHomeCatalogCandidates(addons)).associateBy { it.id }
+  val candidates = (builtins + addonHomeCatalogCandidates(addons) + extraCandidates).associateBy { it.id }
   val candidatesByMatchKey = candidates.values.associateBy { homeCatalogRowMatchKey(it.id) }
   // Which sources have actually reported in. An add-on list that has not loaded yet says nothing
-  // about whether a catalogue still exists, and neither does an empty registry.
-  val liveAddonIds = addons.filter { it.enabled }.map { it.id }.toSet()
+  // about whether a catalogue still exists, and neither does an empty registry. A CloudStream
+  // provider reports in by being loaded, which is when it offers candidates at all.
+  val liveAddonIds = addons.filter { it.enabled }.map { it.id }.toSet() +
+    extraCandidates.mapNotNull { homeCatalogRowAddonId(it.id) }
   val registryKnown = definitions.isNotEmpty()
 
   /**
@@ -4437,12 +4507,51 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
   }
 
+  private fun loadedCloudStreamProviders(): List<com.lagradost.cloudstream3.MainAPI> =
+    if (!CloudStreamPlugins.isInitialized) emptyList()
+    else runCatching { CloudStreamPlugins.manager.activeProviders() }.getOrDefault(emptyList())
+
+  /**
+   * The CloudStream rows the viewer has switched on, each asked of the provider that offers it.
+   *
+   * Only switched-on rows are fetched — unlike an add-on's catalogues, which one request returns
+   * together, every row here is its own scrape of someone else's site. A row whose provider has not
+   * loaded, or which fails or comes back empty, is simply absent this time.
+   */
+  private suspend fun fetchCloudStreamHomeSections(
+    rows: List<HomeCatalogRow>,
+    providers: List<com.lagradost.cloudstream3.MainAPI>,
+  ): List<MediaSection> {
+    val wanted = rows.filter { it.enabled && isCloudStreamHomeRowId(it.id) }
+    if (wanted.isEmpty() || providers.isEmpty()) return emptyList()
+    val gate = Semaphore(4)
+    return supervisorScope {
+      wanted.map { row ->
+        async(Dispatchers.IO) {
+          gate.withPermit {
+            val target = resolveCloudStreamHomeRow(row.id, providers) ?: return@withPermit null
+            runCatching { CloudStreamProviderBridge.mainPageItems(target.provider, target.page) }
+              .onSuccess { Log.i("StreamDekCloudStream", "Home row '${target.page.name}' from ${target.provider.name}: ${it.size} item(s)") }
+              .onFailure { Log.w("StreamDekCloudStream", "Home row '${target.page.name}' from ${target.provider.name} failed", it) }
+              .getOrNull()
+              ?.takeIf { it.isNotEmpty() }
+              ?.let { items -> MediaSection(id = row.id, title = row.title, items = items.take(CLOUDSTREAM_ROW_MAX_ITEMS)) }
+          }
+        }
+      }.awaitAll().filterNotNull()
+    }
+  }
+
   private fun publishHomeSections(
     sections: List<MediaSection>,
     definitions: List<CatalogDefinition>,
     rows: List<HomeCatalogRow>,
   ) {
-    val mergedRows = if (definitions.isEmpty()) rows else mergeHomeCatalogRows(uiState.homeCatalogRows, uiState.addons, definitions)
+    val mergedRows = if (definitions.isEmpty()) {
+      rows
+    } else {
+      mergeHomeCatalogRows(uiState.homeCatalogRows, uiState.addons, definitions, cloudStreamHomeCatalogCandidates(loadedCloudStreamProviders()))
+    }
     // homeLoading is cleared either way: a silent load never set it, and clearing a flag that
     // is already false costs nothing and keeps the two paths from drifting apart.
     uiState = uiState.copy(
@@ -4489,7 +4598,16 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           android.util.Log.w("StreamDekCatalogs", "catalog manifest unavailable, using built-in defaults", error)
           emptyList()
         }
-        val rows = mergeHomeCatalogRows(uiState.homeCatalogRows, uiState.addons, definitions.ifEmpty { uiState.catalogDefinitions })
+        val cloudStreamProviders = loadedCloudStreamProviders()
+        val rows = mergeHomeCatalogRows(
+          uiState.homeCatalogRows,
+          uiState.addons,
+          definitions.ifEmpty { uiState.catalogDefinitions },
+          cloudStreamHomeCatalogCandidates(cloudStreamProviders),
+        )
+        // CloudStream rows come from the providers on this device, not the backend, so they are
+        // fetched beside the home request rather than after it.
+        val cloudStreamSections = viewModelScope.async(Dispatchers.IO) { fetchCloudStreamHomeSections(rows, cloudStreamProviders) }
         val visibleIds = if (!uiState.defaultAppCatalogsEnabled) emptyList() else rows
           .filter { it.builtin && it.enabled && it.id !in streamDekFeatureRowIds }
           .map { it.id }
@@ -4531,7 +4649,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
             },
           )
           .also { perf.mark("sections", "count=${it.getOrNull()?.size ?: -1}") }
-          .map { sections -> Triple(sections, definitions, rows) }
+          .let { result ->
+            val cloudStream = cloudStreamSections.await()
+            result.map { sections -> Triple(sections + cloudStream, definitions, rows) }
+          }
           .also { perf.end("loaded") }
       },
       onSuccess = { (sections, definitions, rows) ->
@@ -4892,6 +5013,119 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     return true
   }
 
+  /**
+   * The CloudStream provider and link a detail page was opened from, when it came from one of that
+   * provider's Home rows. [exclusive] when the title could not be matched to a catalogue entry: the
+   * page was built from the provider's own description, so that provider is the only source asked.
+   */
+  private data class CloudStreamOrigin(
+    val provider: com.lagradost.cloudstream3.MainAPI,
+    val url: String,
+    val exclusive: Boolean,
+  )
+  private var detailCloudStreamOrigin: CloudStreamOrigin? = null
+
+  /**
+   * Opens a title from a CloudStream provider's row.
+   *
+   * The provider is asked to describe it first. When that description carries an IMDb or TMDB id, or
+   * its title and year match a catalogue entry exactly, the page is StreamDek's ordinary one for that
+   * title — artwork, seasons, tracking and every source — with the provider's own link added as a
+   * source. Otherwise the page is built from the provider's description, its episodes included, and
+   * the provider is the source: nothing else can know what an unmatched title is.
+   */
+  private fun loadCloudStreamDetail(type: String, id: String, fallbackItem: MediaItem?) {
+    val decoded = decodeCloudStreamMediaId(id)
+    val provider = decoded?.let { (name, _) -> loadedCloudStreamProviders().firstOrNull { it.name == name } }
+    if (decoded == null || provider == null) {
+      uiState = uiState.copy(detailLoading = false, errorMessage = strings.getString(R.string.error_cloudstream_source_off, decoded?.first ?: CLOUDSTREAM_SOURCE_LABEL))
+      return
+    }
+    val url = decoded.second
+    val item = fallbackItem ?: MediaItem(id = id, type = type, title = "", year = null, poster = null, backdrop = null, rating = null, description = "")
+    val detailGeneration = ++detailRequestGeneration
+    detailSettleJob?.cancel()
+    detailSourceAddonId = null
+    detailSourceCatalogType = null
+    detailLocalStreamId = null
+    detailAddonMetaId = null
+    detailLocalEpisodes = emptyList()
+    detailDirectStream = null
+    launchWork(
+      onStart = { uiState = uiState.copy(detailLoading = true, detail = null, detailIsLive = false, detailFallbackItem = item, selectedPerson = null, personLoading = false, selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null, detailSelectedTab = null, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = false, availableStreams = emptyList(), errorMessage = null) },
+      block = {
+        val loaded = CloudStreamProviderBridge.loadItem(provider, url)
+          ?: return@launchWork Result.failure(IllegalStateException(strings.getString(R.string.error_cloudstream_title_unavailable)))
+        val meta = CloudStreamProviderBridge.toLocalMeta(id, loaded) { number -> strings.getString(R.string.detail_episode_number, number) }
+        // An id the provider recorded is the surest match; failing that, an empty id sends
+        // fetchDetails straight to its exact title-and-year search.
+        val lookupId = CloudStreamProviderBridge.tmdbId(loaded) ?: meta.imdbId.orEmpty()
+        val guesses = if (meta.episodes.isNotEmpty() || normalizedMediaType(type) == "tv") listOf("tv", "movie") else listOf("movie", "tv")
+        val enriched = if (meta.title.isBlank()) null else guesses.firstNotNullOfOrNull { guess ->
+          apiClient.fetchDetails(guess, lookupId, meta.title, meta.year).getOrNull()
+        }
+        Result.success(meta to enriched)
+      },
+      onSuccess = { (meta, enriched) ->
+        if (detailGeneration != detailRequestGeneration) return@launchWork
+        detailCloudStreamOrigin = CloudStreamOrigin(provider, url, exclusive = enriched == null)
+        detailLocalEpisodes = if (enriched == null) meta.episodes else emptyList()
+        val resolvedDetail = (enriched ?: meta.toFallbackDetail(item)).withCatalogFallback(item)
+        val unreleasedMovie = resolvedDetail.type == "movie" && isFutureReleaseDate(resolvedDetail.releaseDate)
+        uiState = uiState.copy(
+          detailLoading = false,
+          detail = resolvedDetail,
+          detailIsLive = false,
+          streamLoading = false,
+          pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = false,
+          errorMessage = null,
+          availableStreams = if (unreleasedMovie) emptyList() else uiState.availableStreams,
+        )
+        if (enriched != null) {
+          refreshExternalRatings(resolvedDetail)
+          refreshTraktComments(resolvedDetail)
+        }
+        if (resolvedDetail.type == "tv" && resolvedDetail.seasons.isNotEmpty()) {
+          loadResumeAwareSeries(
+            resolvedDetail,
+            item.resumeSeasonNumber,
+            item.resumeEpisodeNumber,
+            resumeKnownSource = pendingDirectContinueEntry != null,
+          )
+        } else if (!unreleasedMovie) {
+          if (!playPendingContinue(resolvedDetail, continueFallbackEpisode(item))) loadStreamsAfterDetailSettles(null)
+        }
+      },
+      onFailure = { message ->
+        if (detailGeneration != detailRequestGeneration) return@launchWork
+        // The provider could not describe it, but its card is enough to ask it for streams.
+        detailCloudStreamOrigin = CloudStreamOrigin(provider, url, exclusive = true)
+        val fallback = item.toFallbackDetail()
+        uiState = uiState.copy(detailLoading = false, detail = fallback, detailIsLive = false, errorMessage = message)
+        if (fallback.type != "tv") loadStreamsAfterDetailSettles(null)
+      },
+    )
+  }
+
+  /** CloudStream providers came or went: offer their rows, and fetch any the viewer has switched on. */
+  private fun onCloudStreamProvidersChanged() {
+    val candidates = cloudStreamHomeCatalogCandidates(loadedCloudStreamProviders())
+    val merged = mergeHomeCatalogRows(uiState.homeCatalogRows, uiState.addons, uiState.catalogDefinitions, candidates)
+    if (merged != uiState.homeCatalogRows) {
+      uiState = uiState.copy(
+        homeCatalogRows = merged,
+        homeSections = applyHomeCatalogLayout(uiState.allHomeSections, merged, uiState.defaultAppCatalogsEnabled),
+      )
+      appSettingsStore.saveHomeCatalogRows(merged)
+    }
+    if (merged.any { it.enabled && isCloudStreamHomeRowId(it.id) }) loadHome(force = true, silent = uiState.homeSections.isNotEmpty())
+  }
+
+  private fun listenForCloudStreamProviders() {
+    if (!CloudStreamPlugins.isInitialized) return
+    CloudStreamPlugins.manager.onProvidersChanged = { viewModelScope.launch(Dispatchers.Main) { onCloudStreamProvidersChanged() } }
+  }
+
   fun loadDetail(type: String, id: String, fallbackItem: MediaItem? = null, preservePendingContinue: Boolean = false) {
     // A download id has no catalogue entry behind it. Looking one up returned whatever the id
     // happened to match, which is how tapping a downloaded title opened a different one.
@@ -4908,6 +5142,14 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     // A fresh correlation id per title opened; every stage that follows carries it.
     detailCorrelationId = Telemetry.newCorrelationId()
     Telemetry.contentOpened(mediaId = id, mediaType = type, title = fallbackItem?.title)
+    detailCloudStreamOrigin = null
+    // A title from a CloudStream provider's row is described by that provider rather than by a
+    // catalogue, and must be routed before the live check: provider names like "Live Events" would
+    // otherwise send it down the live-channel path, which only asks add-ons for streams.
+    if (isCloudStreamMediaId(id)) {
+      loadCloudStreamDetail(type, id, fallbackItem)
+      return
+    }
     val detailIsLive = fallbackItem?.isLiveCatalogItem() == true
     detailSourceAddonId = fallbackItem?.sourceAddonId
     detailSourceCatalogType = fallbackItem?.sourceCatalogType
@@ -5210,6 +5452,36 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       uiState = uiState.copy(streamLoading = false, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = true, availableStreams = listOf(stream), selectedEpisode = episode, errorMessage = null)
       return
     }
+    // A page built from a CloudStream provider's own description: nothing but that provider knows
+    // what the title is, so it is the one source asked — by the title's own link.
+    detailCloudStreamOrigin?.takeIf { it.exclusive }?.let { origin ->
+      if (detail.type == "tv" && episode == null) {
+        uiState = uiState.copy(streamLoading = false, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = true, errorMessage = strings.getString(R.string.error_choose_episode_first))
+        return
+      }
+      val generation = ++streamRequestGeneration
+      val label = origin.provider.name
+      uiState = uiState.copy(streamLoading = true, pendingStreamSources = 1, totalStreamSources = 1, searchingStreamSources = listOf(label), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = true, availableStreams = emptyList(), selectedEpisode = episode, errorMessage = null, streamsUnavailableReason = null)
+      viewModelScope.launch {
+        val outcome = runCatching {
+          withContext(Dispatchers.IO) {
+            CloudStreamProviderBridge.originStreams(origin.provider, origin.url, episode?.seasonNumber, episode?.episodeNumber)
+          }
+        }.onFailure { Log.w("StreamDekCloudStream", "$label streams failed for ${detail.title}", it) }
+        if (generation != streamRequestGeneration) return@launch
+        val streams = outcome.getOrDefault(emptyList())
+        uiState = uiState.copy(
+          streamLoading = false,
+          pendingStreamSources = 0,
+          totalStreamSources = 1,
+          searchingStreamSources = emptyList(),
+          failedStreamSources = if (streams.isEmpty()) listOf(label) else emptyList(),
+          availableStreams = rankedProfileStreams(streams),
+          selectedEpisode = episode,
+        )
+      }
+      return
+    }
     val type: String
     val ids: List<String>
     when {
@@ -5398,7 +5670,25 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
             season = episode?.seasonNumber,
             episode = episode?.episodeNumber,
           )
+          // The provider this title was opened from, when it came from one of its Home rows.
+          val origin = detailCloudStreamOrigin?.takeIf { !it.exclusive }
           val outcome = runCatching {
+            // That provider is asked by the title's own link, beside the title search, so its
+            // sources are offered even when it names the title differently from the catalogue.
+            val originJob = origin?.let { source ->
+              async(Dispatchers.IO) {
+                val found = runCatching {
+                  CloudStreamProviderBridge.originStreams(source.provider, source.url, episode?.seasonNumber, episode?.episodeNumber)
+                }.onFailure { Log.w("StreamDekCloudStream", "${source.provider.name} streams failed for $cloudStreamTitle", it) }
+                  .getOrDefault(emptyList())
+                withContext(Dispatchers.Main.immediate) {
+                  if (generation == streamRequestGeneration) {
+                    found.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) }
+                    publish()
+                  }
+                }
+              }
+            }
             // Each provider publishes as it finishes rather than waiting for the slowest one,
             // matching how the add-on and JS plugin sources fill the list in.
             CloudStreamProviderBridge.streams(cloudStreamProviders, request) { providerStreams ->
@@ -5409,6 +5699,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
                 }
               }
             }.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) }
+            originJob?.await()
           }.onFailure { Log.w("StreamDekCloudStream", "CloudStream providers failed for $cloudStreamTitle", it) }
           endSource(CLOUDSTREAM_SOURCE_LABEL, outcome.isFailure)
           publish()
@@ -6357,7 +6648,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       },
       onSuccess = { addons ->
         val merged = mergeWithLocalAddons(addons)
-        val mergedRows = mergeHomeCatalogRows(uiState.homeCatalogRows, merged, uiState.catalogDefinitions)
+        val mergedRows = mergeHomeCatalogRows(uiState.homeCatalogRows, merged, uiState.catalogDefinitions, cloudStreamHomeCatalogCandidates(loadedCloudStreamProviders()))
         uiState = uiState.copy(
           addonsLoading = false,
           addons = merged,
@@ -10168,6 +10459,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     // of time — a .sky is read from disk when it is asked for a stream, not held in the process.
     if (SkyStreamPlugins.isInitialized) SkyStreamPlugins.manager.selectProfileStorage(ownerKey)
     if (!CloudStreamPlugins.isInitialized) return
+    // Registered before the load it is waiting to hear about.
+    listenForCloudStreamProviders()
     CloudStreamPlugins.manager.selectProfileStorage(ownerKey)
     cloudStreamLoadJob?.cancel()
     cloudStreamLoadJob = viewModelScope.launch(Dispatchers.IO) {
@@ -11154,6 +11447,7 @@ private fun StreamDekNativeAppContent(
                 onSubtitleVerticalOffsetChange = viewModel::setSubtitleVerticalOffset,
                 onSubtitleSourceChange = viewModel::setSubtitleDefaultSource,
                 onToggleSourceFavourite = viewModel::toggleFavoriteSource,
+                onPlayerControlLayoutChange = viewModel::setPlayerControlLayout,
                 onBack = viewModel::dismissPlayer,
                 onScrobble = viewModel::scrobblePlayer,
                 onProgressCheckpoint = viewModel::savePlayerProgressCheckpoint,
@@ -14317,8 +14611,11 @@ private fun LiveChannelsBrowseScreen(
       // this the header scrolls up underneath the clock instead of starting below it.
       modifier = Modifier.fillMaxSize().statusBarsPadding(),
       // No horizontal padding here: the pinned block needs to paint edge to edge, so the 20dp
-      // margin is applied per item instead.
-      contentPadding = PaddingValues(top = 20.dp, bottom = 126.dp),
+      // margin is applied per item instead. No top padding either: a sticky header pins to the
+      // very top of the list and ignores contentPadding, so a 20dp top padding here had the header
+      // start 20dp down and then jump up to meet the top the moment the list scrolled. The gap
+      // lives inside the header instead, where it never moves.
+      contentPadding = PaddingValues(bottom = 126.dp),
       verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
       // Everything above the channel list is pinned: back/title/count, the search box, the
@@ -14330,10 +14627,10 @@ private fun LiveChannelsBrowseScreen(
           modifier = Modifier
             .fillMaxWidth()
             // Opaque, and drawn outside the list padding, so channels passing underneath do
-            // not show through at the margins.
+            // not show through at the margins -- including the top gap, which is part of it.
             .background(MaterialTheme.colorScheme.background)
             .padding(horizontal = 20.dp)
-            .padding(bottom = 12.dp),
+            .padding(top = 20.dp, bottom = 12.dp),
           verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
           Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -21585,13 +21882,41 @@ private fun CatalogHomeLayoutSettings(
   LaunchedEffect(uiState.homeCatalogRows) {
     localRows = uiState.homeCatalogRows
   }
-  val groups = remember(localRows, uiState.addons, uiState.defaultAppCatalogsEnabled, orphanGroupTitle, fallbackAddonName) {
+  // Each loaded CloudStream provider's rows go under the plugin that registered it. Worked out on
+  // every pass rather than inside the remember below: plugins load after this screen can first be
+  // composed, and a map remembered from before they had would leave every provider in a group of
+  // its own for as long as the rows themselves did not change.
+  val cloudStreamGroups = if (!CloudStreamPlugins.isInitialized) {
+    emptyMap()
+  } else {
+    runCatching {
+      CloudStreamPluginLoader.loadedPlugins().flatMap { plugin ->
+        plugin.providers.map { provider -> cloudStreamRowSourceId(provider.name) to ("cloudstream-plugin:${plugin.filePath}" to plugin.name) }
+      }.toMap()
+    }.getOrDefault(emptyMap())
+  }
+  // Where each CloudStream plugin comes from ("CloudStream · CNC Repo"), for its group's header.
+  // Every provider a plugin registers shares its collection, so any one of them answers for it.
+  val cloudStreamGroupLabels = if (!CloudStreamPlugins.isInitialized) {
+    emptyMap()
+  } else {
+    runCatching {
+      CloudStreamPluginLoader.loadedPlugins().mapNotNull { plugin ->
+        plugin.providers.firstOrNull()
+          ?.let { provider -> cloudStreamProviderOriginLabel(provider.name) }
+          ?.takeIf { it.isNotBlank() }
+          ?.let { label -> "cloudstream-plugin:${plugin.filePath}" to label }
+      }.toMap()
+    }.getOrDefault(emptyMap())
+  }
+  val groups = remember(localRows, uiState.addons, uiState.defaultAppCatalogsEnabled, orphanGroupTitle, fallbackAddonName, cloudStreamGroups) {
     buildHomeRowGroups(
       localRows,
       uiState.addons,
       uiState.defaultAppCatalogsEnabled,
       orphanGroupTitle = orphanGroupTitle,
       fallbackAddonName = fallbackAddonName,
+      cloudStreamGroups = cloudStreamGroups,
     )
   }
   var expandedGroups by rememberSaveable { mutableStateOf(emptySet<String>()) }
@@ -21640,6 +21965,7 @@ private fun CatalogHomeLayoutSettings(
             enabledCount = group.rows.count { it.enabled },
             expanded = expanded,
             gatedNote = group.gatedNoteRes?.let { stringResource(it) },
+            sourceLabel = cloudStreamGroupLabels[group.key],
             onClear = if (group.key == ORPHAN_ROW_GROUP_KEY && group.rows.isNotEmpty()) {
               { confirmClearCount = group.rows.size }
             } else {
@@ -21728,8 +22054,16 @@ internal fun buildHomeRowGroups(
   orphanGroupTitle: String,
   /** What to call an add-on whose manifest gives no name. */
   fallbackAddonName: String,
+  /**
+   * The group a CloudStream row belongs in, keyed by its row-id source (one provider), as a group
+   * key and title. One plugin can register several providers — CNC Verse registers Netflix, Prime
+   * Video and more — and their rows belong together under the plugin, the way an add-on's
+   * catalogues sit under the add-on. A provider missing here keeps a group of its own.
+   */
+  cloudStreamGroups: Map<String, Pair<String, String>> = emptyMap(),
 ): List<HomeRowGroup> {
   val addonsById = addons.associateBy { it.id }
+  val cloudStreamGroupTitles = cloudStreamGroups.values.associate { (key, title) -> key to title }
   // Until the add-on list has arrived there is nothing to say a row is orphaned, and routing every
   // add-on row into "no longer installed" for the second the list takes to load would be alarming
   // and wrong. While it is empty, rows keep their own add-on's group and simply go unnamed.
@@ -21740,6 +22074,9 @@ internal fun buildHomeRowGroups(
       when {
         row.builtin -> STREAMDEK_ROW_GROUP_KEY
         addonId == null -> ORPHAN_ROW_GROUP_KEY
+        // A CloudStream provider is not an add-on, so the add-on list cannot vouch for it; its rows
+        // are grouped under the provider rather than as "no longer installed".
+        isCloudStreamHomeRowId(row.id) -> cloudStreamGroups[addonId]?.first ?: addonId
         addonsKnown && addonId !in addonsById -> ORPHAN_ROW_GROUP_KEY
         else -> addonId
       }
@@ -21749,11 +22086,14 @@ internal fun buildHomeRowGroups(
       val title = when {
         key == STREAMDEK_ROW_GROUP_KEY -> "StreamDek"
         key == ORPHAN_ROW_GROUP_KEY -> orphanGroupTitle
-        else -> addon?.manifest?.name?.trim()?.takeIf { it.isNotEmpty() }
+        else -> cloudStreamGroupTitles[key]?.trim()?.takeIf { it.isNotEmpty() }
+          ?: addon?.manifest?.name?.trim()?.takeIf { it.isNotEmpty() }
           // The add-on's own name, read from the row that carries it. This used to strip "From "
           // off the front of the subtitle, which recovered the right answer only for as long as
           // that subtitle was English.
           ?: groupRows.firstNotNullOfOrNull { row -> row.subtitleArg?.trim()?.takeIf { it.isNotEmpty() } }
+          // A saved CloudStream row whose provider has not loaded yet carries no name; its slug does.
+          ?: key.takeIf { it.startsWith(CLOUDSTREAM_ROW_SOURCE_PREFIX) }?.removePrefix(CLOUDSTREAM_ROW_SOURCE_PREFIX)
           ?: fallbackAddonName
       }
       val gatedNoteRes = when {
@@ -21784,6 +22124,11 @@ private fun HomeRowGroupHeader(
   enabledCount: Int,
   expanded: Boolean,
   gatedNote: String?,
+  /**
+   * Where the source itself comes from — "CloudStream · CNC Repo" for a CloudStream plugin — shown
+   * beside its name. It belongs to the source, so it is said once here rather than on every row.
+   */
+  sourceLabel: String? = null,
   onClear: (() -> Unit)? = null,
   onToggle: () -> Unit,
 ) {
@@ -21810,6 +22155,16 @@ private fun HomeRowGroupHeader(
         style = MaterialTheme.typography.bodyLarge,
         fontWeight = FontWeight.SemiBold,
       )
+      // On its own line under the name, so the name keeps the full width rather than sharing it.
+      sourceLabel?.let {
+        Text(
+          it,
+          color = MaterialTheme.colorScheme.onBackground.copy(alpha = contentAlpha * 0.48f),
+          style = MaterialTheme.typography.labelSmall,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+      }
       Text(
         if (gatedNote != null) {
           stringResource(
@@ -23783,10 +24138,11 @@ private fun DownloadsSettingsSummary(
   onPlay: (DownloadEntry) -> Unit,
   onOpenDetails: (DownloadEntry) -> Unit,
 ) {
+  // Once a second, so the speed and time left move like a live reading rather than in jumps.
   LaunchedEffect(Unit) {
     while (true) {
       onRefresh()
-      delay(2_000)
+      delay(1_000)
     }
   }
   val downloads = uiState.downloads.sortedByDescending { it.startTimeMs }
@@ -23852,18 +24208,20 @@ private fun DownloadsSettingsSummary(
             ) {
               Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                  Text(download.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                  Text(DownloadProgressText.title(context, download.media), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                   Text(
                     when (download.state) {
-                      DownloadState.COMPLETED -> "Downloaded"
+                      DownloadState.COMPLETED -> DownloadProgressText.completedSize(context, download)
+                        ?.let { stringResource(R.string.download_status_completed_size, it) } ?: "Downloaded"
                       DownloadState.FAILED -> "Failed"
                       DownloadState.REMOVING -> "Removing…"
                       DownloadState.QUEUED -> "Queued"
                       DownloadState.PAUSED -> "Paused"
-                      DownloadState.DOWNLOADING -> "Downloading ${download.percentDownloaded.toInt()}%"
+                      DownloadState.DOWNLOADING -> DownloadProgressText.status(context, download)
                     },
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.60f),
+                    color = if (download.state == DownloadState.DOWNLOADING) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.60f),
                     style = MaterialTheme.typography.bodySmall,
+                    fontWeight = if (download.state == DownloadState.DOWNLOADING) FontWeight.SemiBold else null,
                   )
                 }
                 if (download.state == DownloadState.COMPLETED) {
@@ -23874,8 +24232,32 @@ private fun DownloadsSettingsSummary(
               if (download.state == DownloadState.DOWNLOADING) {
                 LinearProgressIndicator(
                   progress = { (download.percentDownloaded / 100f).coerceIn(0f, 1f) },
-                  modifier = Modifier.fillMaxWidth().height(4.dp).clip(StreamDekRadius.pill),
+                  modifier = Modifier.fillMaxWidth().height(6.dp).clip(StreamDekRadius.pill),
                 )
+              }
+              // Speed, size and time left, one per line as in the notification's detail. A paused
+              // download keeps its size so it is still clear how much of it is already here.
+              if (download.state == DownloadState.DOWNLOADING || download.state == DownloadState.PAUSED) {
+                val downloading = download.state == DownloadState.DOWNLOADING
+                val details = listOfNotNull(
+                  DownloadProgressText.speed(context, download)?.takeIf { downloading }?.let { Icons.Rounded.Speed to it },
+                  DownloadProgressText.size(context, download)?.let { Icons.Rounded.Storage to it },
+                  if (downloading) {
+                    Icons.Rounded.Schedule to (DownloadProgressText.eta(context, download) ?: stringResource(R.string.download_eta_calculating))
+                  } else {
+                    null
+                  },
+                )
+                if (details.isNotEmpty()) {
+                  Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    details.forEach { (icon, text) ->
+                      Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f), modifier = Modifier.size(16.dp))
+                        Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                      }
+                    }
+                  }
+                }
               }
             }
           }

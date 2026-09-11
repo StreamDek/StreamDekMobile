@@ -79,6 +79,30 @@
   </plurals>
   <string name="download_channel_name">Descargas</string>
   <string name="download_channel_description">Muestra el progreso mientras StreamDek descarga un título para verlo sin conexión.</string>
+  <string name="download_status_downloading_percent">Descargando — %1$d %%</string>
+  <string name="download_speed">%1$s/s</string>
+  <string name="download_size_progress">%1$s / %2$s</string>
+  <string name="download_size_progress_estimated">%1$s / ~%2$s</string>
+  <string name="download_eta_about">Quedan unos %1$s</string>
+  <string name="download_eta_under_minute">Queda menos de un minuto</string>
+  <string name="download_eta_calculating">Calculando el tiempo restante…</string>
+  <string name="download_title_episode">%1$s — Episodio %2$d</string>
+  <string name="download_title_season_episode">%1$s — T%2$d E%3$d</string>
+  <string name="download_notification_waiting">En espera para descargar</string>
+  <string name="download_status_completed_size">Descargado · %1$s</string>
+  <string name="error_cloudstream_source_off">%1$s está desactivado. Actívalo para abrir este título.</string>
+  <string name="error_cloudstream_title_unavailable">No se pudo abrir este título desde su fuente.</string>
+  <string name="action_restart_episode">Reiniciar episodio</string>
+  <string name="action_restart_movie">Reiniciar película</string>
+  <string name="restart_episode_prompt">¿Volver a empezar T%1$d E%2$d desde el principio?</string>
+  <string name="app_version_retry">Reintentar</string>
+  <string name="app_version_installed_required">Instalada: %1$s   Necesaria: %2$s+</string>
+  <string name="app_version_required_title">Actualización necesaria</string>
+  <string name="app_version_required_message">Esta versión de StreamDek ya no es compatible. Actualiza para continuar.</string>
+  <plurals name="download_notification_multiple">
+    <item quantity="one">Descargando %d título</item>
+    <item quantity="other">Descargando %d títulos</item>
+  </plurals>
   <string name="player_progress">Progreso</string>
   <string name="player_engine">Motor</string>
   <string name="player_engine_media3_description">Motor de reproducción Media3</string>
@@ -1166,6 +1190,8 @@
   <string name="settings_opt_notify_one_week">1 semana</string>
   <string name="settings_opt_controls_normal">Normales</string>
   <string name="settings_opt_controls_minimal">Mínimos</string>
+  <string name="player_switch_to_minimal_controls">Cambiar a controles mínimos</string>
+  <string name="player_switch_to_normal_controls">Cambiar a controles normales</string>
   <string name="settings_opt_status_always">Mostrar siempre</string>
   <string name="settings_opt_status_hide">Ocultar a pantalla completa</string>
   <string name="settings_opt_status_automatic">Automático</string>

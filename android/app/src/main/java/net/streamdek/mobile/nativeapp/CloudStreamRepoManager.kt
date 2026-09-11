@@ -253,7 +253,17 @@ class CloudStreamRepoManager(private val context: Context) {
         },
       )
       save()
-    }
+    }.also { notifyProvidersChanged() }
+  }
+
+  /**
+   * Told whenever the set of loaded providers may have changed — sources switched on or off, or the
+   * enabled ones brought up. The Home layout listens, since each provider can offer Home rows.
+   */
+  @Volatile var onProvidersChanged: (() -> Unit)? = null
+
+  private fun notifyProvidersChanged() {
+    runCatching { onProvidersChanged?.invoke() }.onFailure { Log.w(TAG, "Provider change listener failed", it) }
   }
 
   /**
@@ -290,6 +300,7 @@ class CloudStreamRepoManager(private val context: Context) {
       save()
     }
     Log.i(TAG, "CloudStream sources ready: ${activeProviders().size} provider(s) from ${wanted.size} enabled source(s)")
+    notifyProvidersChanged()
   }
 
   /**

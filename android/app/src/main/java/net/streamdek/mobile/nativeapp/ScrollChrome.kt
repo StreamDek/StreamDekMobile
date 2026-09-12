@@ -290,6 +290,7 @@ class ScrollAwareHeaderScope internal constructor() {
   internal var totalHeight by mutableIntStateOf(0)
   internal var anchorTop by mutableIntStateOf(0)
   internal var marginPx = 0
+  internal var stopAtCompact = false
   internal var fraction: () -> Float = { 0f }
 
   /** Fades out over the first half of the collapse, as the header compacts. */
@@ -305,8 +306,10 @@ class ScrollAwareHeaderScope internal constructor() {
   }
 
   internal fun offsetFor(value: Float): Int {
-    val hidden = totalHeight
-    val compact = (anchorTop - marginPx).coerceIn(0, hidden)
+    val compact = (anchorTop - marginPx).coerceIn(0, totalHeight)
+    // A header that keeps its anchor treats "hidden" as compact: the rest of the page still gets out
+    // of the way, but the part the viewer came to the page for never leaves.
+    val hidden = if (stopAtCompact) compact else totalHeight
     val offset = if (value <= ScrollChromeMachine.COMPACT) {
       compact * (value / ScrollChromeMachine.COMPACT)
     } else {
@@ -331,15 +334,21 @@ class ScrollAwareHeaderScope internal constructor() {
  *
  * [enabled] false keeps the header fixed — a header laid out as a side column on a tablet takes no
  * vertical room, so it has nothing to give back.
+ *
+ * [keepAnchorVisible] stops the header at its compact state: scrolling further tucks away everything
+ * above the [ScrollAwareHeaderScope.compactAnchor] and nothing more, so a search field stays pinned
+ * to the top of a page whose whole purpose is searching.
  */
 @Composable
 internal fun ScrollAwareHeader(
   modifier: Modifier = Modifier,
   enabled: Boolean = true,
+  keepAnchorVisible: Boolean = false,
   content: @Composable ScrollAwareHeaderScope.() -> Unit,
 ) {
   val chrome = LocalScrollChrome.current
   val headerScope = remember { ScrollAwareHeaderScope() }
+  headerScope.stopAtCompact = keepAnchorVisible
   headerScope.marginPx = with(LocalDensity.current) { 8.dp.roundToPx() }
   val active = enabled && chrome != null
   headerScope.fraction = if (active) ({ chrome!!.collapseFraction }) else ({ 0f })

@@ -14234,7 +14234,7 @@ private fun NetworkBrowseScreen(network: MediaItem, headerStyle: HeaderStyle, on
       }
     } else {
       Column(modifier = Modifier.align(Alignment.TopCenter).zIndex(2f).fillMaxWidth()) {
-        Spacer(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background.copy(alpha = 0.98f)).windowInsetsTopHeight(WindowInsets.statusBars))
+        Spacer(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).windowInsetsTopHeight(WindowInsets.statusBars))
         ScrollAwareHeader(modifier = Modifier.fillMaxWidth()) {
           NetworkCatalogHeaderContent(
             network = network,
@@ -14247,7 +14247,7 @@ private fun NetworkBrowseScreen(network: MediaItem, headerStyle: HeaderStyle, on
             genreId = genreId,
             year = year,
             onOpenFilter = { selectionSheet = it },
-            modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background.copy(alpha = 0.98f)).padding(horizontal = 16.dp, vertical = 12.dp),
+            modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).padding(horizontal = 16.dp, vertical = 12.dp),
           )
         }
       }
@@ -15625,12 +15625,12 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
       }
     } else {
       Column(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f).fillMaxWidth()) {
-      Spacer(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background.copy(alpha = 0.98f)).windowInsetsTopHeight(WindowInsets.statusBars))
+      Spacer(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).windowInsetsTopHeight(WindowInsets.statusBars))
       ScrollAwareHeader(modifier = Modifier.fillMaxWidth()) {
       Box(
         modifier = Modifier
           .fillMaxWidth()
-          .background(MaterialTheme.colorScheme.background.copy(alpha = 0.98f))
+          .background(MaterialTheme.colorScheme.background)
           .padding(horizontal = 20.dp, vertical = 12.dp),
       ) {
         BrowseSectionHeaderContent(
@@ -17504,9 +17504,12 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
         // The status-bar strip keeps its ground while the header slides up beneath it, so the clock
         // and battery never end up sitting on a poster.
         Column(modifier = Modifier.fillMaxWidth()) {
-          Spacer(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background.copy(alpha = 0.94f)).windowInsetsTopHeight(WindowInsets.statusBars))
-          ScrollAwareHeader(modifier = Modifier.fillMaxWidth()) {
-            Box(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background.copy(alpha = 0.94f)).padding(horizontal = 16.dp, vertical = 10.dp)) {
+          // Fully opaque, unlike the glass of the Modern header. This style has no blur to soften what
+          // passes underneath, so once the header compacts even a few percent of transparency lets
+          // the page's own headings show through right against the search field.
+          Spacer(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).windowInsetsTopHeight(WindowInsets.statusBars))
+          ScrollAwareHeader(modifier = Modifier.fillMaxWidth(), keepAnchorVisible = true) {
+            Box(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).padding(horizontal = 16.dp, vertical = 10.dp)) {
               SearchHeader(
                 query = query,
                 columns = columns,
@@ -17738,7 +17741,8 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
   if (modernHeader) {
     val lightHeader = MaterialTheme.colorScheme.background.luminance() > 0.5f
     ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f))
-    ScrollAwareHeader(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f).fillMaxWidth().statusBarsPadding()) {
+    // Search is what this page is for, so its field stays pinned; only the title above it tucks away.
+    ScrollAwareHeader(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f).fillMaxWidth().statusBarsPadding(), keepAnchorVisible = true) {
       Box(modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 12.dp, bottom = 6.dp)) {
         FrostedGlassSurface(
           modifier = Modifier.fillMaxWidth().height(166.dp),

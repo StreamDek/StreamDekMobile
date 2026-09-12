@@ -26184,21 +26184,17 @@ private fun isDirectTrailerUrl(url: String): Boolean {
   return lower.endsWith(".mp4") || lower.endsWith(".m3u8") || lower.endsWith(".webm") || lower.contains("/trailers/")
 }
 
-private fun youtubeTrailerKey(url: String): String? {
-  val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
-  val host = uri.host.orEmpty().lowercase()
-  val segments = uri.pathSegments
-  return when {
-    "youtu.be" in host -> uri.lastPathSegment
-    "youtube.com" in host -> when {
-      uri.getQueryParameter("v") != null -> uri.getQueryParameter("v")
-      segments.firstOrNull().equals("embed", ignoreCase = true) -> segments.getOrNull(1)
-      segments.firstOrNull().equals("shorts", ignoreCase = true) -> segments.getOrNull(1)
-      else -> segments.lastOrNull()
-    }
-    else -> null
-  }?.substringBefore('?')?.substringBefore('&')?.ifBlank { null }
-}
+/**
+ * The YouTube id behind a trailer URL, for the embed fallback and the "is this YouTube at all"
+ * checks on this screen.
+ *
+ * Delegates to the resolver's parser rather than keeping a second one. The two used to disagree:
+ * this one accepted the last path segment of any youtube.com URL as an id and knew nothing about
+ * `/live/` or `youtube-nocookie.com`, so a premiere URL the resolver handled fine was reported here
+ * as "not a YouTube trailer" — which took the embed fallback away from exactly the videos most
+ * likely to need it.
+ */
+private fun youtubeTrailerKey(url: String): String? = extractYoutubeTrailerKey(url)
 
 /**
  * The title's other videos, for the resolver to choose between.
@@ -26513,6 +26509,7 @@ private fun TrailerPlaybackView(
     playWhenReady = autoPlay,
     muted = muted,
     audioUrl = source.audioUrl,
+    kind = source.kind,
     requestHeaders = source.requestHeaders,
     maxHeight = source.height ?: maxHeight,
     startPositionMs = source.startPositionMs,
@@ -26697,6 +26694,8 @@ private fun Media3TextureTrailerPlayer(
   playWhenReady: Boolean,
   muted: Boolean,
   audioUrl: String?,
+  /** What the resolver produced, so this does not have to infer it from the URL. */
+  kind: TrailerSourceKind,
   requestHeaders: Map<String, String>,
   maxHeight: Int,
   /** Where to begin, for sources that carry a lead-in worth skipping. */
@@ -26714,7 +26713,7 @@ private fun Media3TextureTrailerPlayer(
   val latestOnEnded = rememberUpdatedState(onEnded)
   var attachedContainer by remember(url) { mutableStateOf<TrailerTextureContainer?>(null) }
 
-  val player = remember(url, audioUrl, requestHeaders, maxHeight) {
+  val player = remember(url, audioUrl, kind, requestHeaders, maxHeight) {
     val trackSelector = DefaultTrackSelector(context).apply {
       parameters = buildUponParameters()
         .setMaxVideoSize(Int.MAX_VALUE, maxHeight.coerceAtLeast(360))
@@ -26729,20 +26728,21 @@ private fun Media3TextureTrailerPlayer(
     val dataSourceFactory = trailerDataSourceFactory(context, requestHeaders)
     ExoPlayer.Builder(context).setTrackSelector(trackSelector).setLoadControl(loadControl).build().apply {
       val factory = ProgressiveMediaSource.Factory(dataSourceFactory)
-      // YouTube HLS manifests come from manifest.googlevideo.com without a .m3u8
-      // extension, so detect HLS explicitly — a progressive source cannot parse them.
-      val looksLikeHls = url.contains(".m3u8", ignoreCase = true) ||
-        url.contains("/hls_", ignoreCase = true) ||
-        url.contains("api/manifest/hls", ignoreCase = true)
-      when {
-        !audioUrl.isNullOrBlank() -> setMediaSource(
+      // Which source to build is stated by the resolver rather than guessed at from the URL.
+      // Guessing was unreliable in the one case it existed for: YouTube's HLS manifests come from
+      // manifest.googlevideo.com with no `.m3u8` anywhere in them, so the sniffing had to be taught
+      // each new shape by hand and a variant playlist URL it had not seen went to the progressive
+      // source, which cannot parse one.
+      when (kind) {
+        TrailerSourceKind.HLS ->
+          setMediaSource(HlsMediaSource.Factory(dataSourceFactory).createMediaSource(ExoMediaItem.fromUri(url)))
+        TrailerSourceKind.ADAPTIVE -> setMediaSource(
           MergingMediaSource(
             factory.createMediaSource(ExoMediaItem.fromUri(url)),
-            factory.createMediaSource(ExoMediaItem.fromUri(audioUrl)),
+            factory.createMediaSource(ExoMediaItem.fromUri(audioUrl.orEmpty())),
           ),
         )
-        looksLikeHls -> setMediaSource(HlsMediaSource.Factory(dataSourceFactory).createMediaSource(ExoMediaItem.fromUri(url)))
-        else -> setMediaSource(factory.createMediaSource(ExoMediaItem.fromUri(url)))
+        TrailerSourceKind.PROGRESSIVE -> setMediaSource(factory.createMediaSource(ExoMediaItem.fromUri(url)))
       }
       repeatMode = Player.REPEAT_MODE_OFF
       volume = if (muted) 0f else 1f

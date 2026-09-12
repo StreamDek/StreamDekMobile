@@ -4684,12 +4684,24 @@ private fun trailerUrlFor(site: String?, key: String?): String? {
   }
 }
 
-private fun parseTrailerKeys(json: JSONObject): List<String> {
+/**
+ * The title's videos, with what the service said about each one kept.
+ *
+ * The type, the official flag, the publication date and the name used to be read and thrown away —
+ * only the bare keys survived, in arrival order. Everything downstream then had to work out which
+ * video was the trailer by fetching each one's running time from YouTube, a network request per
+ * candidate for an answer that was right here. See [MediaTrailer] and [orderTrailerCandidates].
+ *
+ * Both shapes are read: TMDB's `videos.results`, and the flat `trailerKeys` array an add-on or the
+ * app's own backend may supply instead. The flat form carries no description at all, which is why
+ * the running-time ranking in TrailerResolver is still the fallback rather than being removed.
+ */
+private fun parseTrailers(json: JSONObject): List<MediaTrailer> {
   val directKeys = json.optJSONArray("trailerKeys")
   if (directKeys != null && directKeys.length() > 0) {
     return buildList {
       for (index in 0 until directKeys.length()) {
-        directKeys.optString(index).ifBlank { null }?.let(::add)
+        directKeys.optString(index).ifBlank { null }?.let { add(MediaTrailer(key = it)) }
       }
     }
   }
@@ -4697,11 +4709,28 @@ private fun parseTrailerKeys(json: JSONObject): List<String> {
   return buildList {
     for (index in 0 until videos.length()) {
       val video = videos.optJSONObject(index) ?: continue
-      if (!video.optString("site").equals("YouTube", ignoreCase = true)) continue
-      video.optString("key").ifBlank { null }?.let(::add)
+      val key = video.optString("key").ifBlank { video.optString("id") }.ifBlank { null } ?: continue
+      // Absent means "not stated", not "not YouTube" — an add-on that supplies only keys is
+      // describing YouTube ids, and filtering it out here would empty the list.
+      val site = video.optString("site").ifBlank { null }
+      add(
+        MediaTrailer(
+          key = key,
+          site = site,
+          type = video.optString("type").ifBlank { null },
+          name = video.optString("name").ifBlank { video.optString("title").ifBlank { null } },
+          official = video.optBoolean("official", false),
+          publishedAt = video.optString("published_at").ifBlank { video.optString("publishedAt").ifBlank { null } },
+          sizeHeight = video.optInt("size", 0).takeIf { it > 0 },
+          seasonNumber = video.opt("season_number")?.toString()?.toIntOrNull()
+            ?: video.opt("seasonNumber")?.toString()?.toIntOrNull(),
+        ),
+      )
     }
   }
 }
+
+private fun parseTrailerKeys(json: JSONObject): List<String> = orderTrailerCandidates(parseTrailers(json))
 
 private fun parseTrailerUrl(json: JSONObject): String? {
   json.optString("trailerUrl").ifBlank { null }?.let { return it }
@@ -4831,6 +4860,7 @@ private fun parseMediaDetail(json: JSONObject): MediaDetail {
     backdrop = json.optString("backdrop").ifBlank { tmdbImageUrl(json.optString("backdrop_path"), "w780") },
     trailerUrl = parseTrailerUrl(json),
     trailerSite = json.optString("trailerSite").ifBlank { null },
+    trailers = orderTrailers(parseTrailers(json)),
     trailerKeys = parseTrailerKeys(json),
     rating = parseRatingValue(json),
     imdbRating = parseImdbRatingValue(json) ?: parseRatingValue(json),

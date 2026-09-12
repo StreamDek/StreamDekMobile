@@ -2,10 +2,12 @@ package net.streamdek.mobile.nativeapp
 
 import android.net.Uri
 import android.util.Log
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -17,6 +19,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.security.MessageDigest
 
 /**
@@ -40,19 +43,39 @@ private val trailerHttpClient = OkHttpClient.Builder()
 private val trailerJsonMediaType = "application/json; charset=utf-8".toMediaType()
 private const val trailerResolverTag = "TrailerResolver"
 
+/**
+ * What kind of thing a resolved URL is, so the player does not have to guess from the string.
+ *
+ * It used to guess, and YouTube gave it nothing to guess from: HLS manifests are served from
+ * `manifest.googlevideo.com/api/manifest/...` with no `.m3u8` anywhere in them, so the sniffing had
+ * to be taught each new shape by hand. The resolver already knows which branch produced the URL,
+ * and stating it costs one field.
+ */
+enum class TrailerSourceKind {
+  /** A manifest or variant playlist. Played through Media3's HLS source. */
+  HLS,
+
+  /** One file carrying both picture and sound. */
+  PROGRESSIVE,
+
+  /** Separate video and audio streams, merged at playback. [TrailerPlaybackSource.audioUrl] is set. */
+  ADAPTIVE,
+}
+
 data class TrailerPlaybackSource(
   val url: String,
   val audioUrl: String? = null,
   val height: Int? = null,
+  val kind: TrailerSourceKind = TrailerSourceKind.PROGRESSIVE,
   val requestHeaders: Map<String, String> = emptyMap(),
   /** Where playback should begin. Only ever non-zero when [seekable]. */
   val startPositionMs: Long = 0L,
   /**
    * Whether this URL will serve a span that does not start at byte zero.
    *
-   * The player reads these files through googlevideo's own `&range=` query parameter, and the
-   * gated client's URLs answer 403 to any range that starts mid-file — so for those, playback can
-   * only ever run from the beginning. The headset client's URLs have no such limit.
+   * The player reads these files through googlevideo's own `&range=` query parameter, and a
+   * range-capped client's URLs answer 403 to any range that starts mid-file — so for those,
+   * playback can only ever run from the beginning. See [YoutubeClient.rangeCapped].
    */
   val seekable: Boolean = true,
   /**
@@ -106,7 +129,7 @@ suspend fun resolveTrailerPlaybackSource(
    */
   allowShortForm: Boolean = true,
 ): TrailerPlaybackResolution = withContext(Dispatchers.IO) {
-  withTimeoutOrNull(20_000) {
+  val resolution = withTimeoutOrNull(20_000) {
     val trimmed = url.trim()
     val preferredKey = preferredUrl?.trim()?.takeIf { it.isNotBlank() }?.let(::extractYoutubeTrailerKey)
     val candidateKeys = (listOfNotNull(extractYoutubeTrailerKey(trimmed)) + alternates.mapNotNull(::extractYoutubeTrailerKey))
@@ -165,7 +188,95 @@ suspend fun resolveTrailerPlaybackSource(
 
     TrailerPlaybackResolution(youtubeLoginRequired = loginRequired)
   } ?: TrailerPlaybackResolution()
+
+  // One last check that the URL about to be handed to the player is one this device can actually
+  // fetch. See [reachableGoogleVideoUrl].
+  val source = resolution.source ?: return@withContext resolution
+  val reachable = reachableGoogleVideoUrl(source.url) ?: return@withContext run {
+    Log.w(trailerResolverTag, "chosen source unreachable, reporting no trailer: ${source.kind}")
+    TrailerPlaybackResolution(youtubeLoginRequired = resolution.youtubeLoginRequired)
+  }
+  val reachableAudio = source.audioUrl?.let { reachableGoogleVideoUrl(it) ?: it }
+  resolution.copy(source = source.copy(url = reachable, audioUrl = reachableAudio))
 }
+
+/**
+ * Confirms a googlevideo URL answers, moving it to a sibling CDN node if it does not.
+ *
+ * These URLs are issued against one edge server and the answer is not always yes: a node that is
+ * shedding load, or that this network reaches badly, refuses the very first request and the trailer
+ * dies before its first frame with nothing in the log but a Media3 source error. YouTube names the
+ * alternates itself, in the `mn` parameter — two server names for the same file — and the host
+ * carries one of them, so the other can be substituted and tried.
+ *
+ * Probed through the `&range=` query parameter rather than an HTTP `Range` header, because that is
+ * how ChunkedGoogleVideoDataSource reads these files; a header probe answers for a request the
+ * player will never make. The candidates are raced and the first to answer wins, under a short
+ * ceiling — this sits in front of every trailer, so it has to be cheap or not be here at all.
+ *
+ * Non-googlevideo URLs, and HLS manifests, are returned untouched: nothing above serves them and
+ * an HLS manifest's segments are fetched separately anyway.
+ */
+private suspend fun reachableGoogleVideoUrl(url: String): String? {
+  if (!url.contains("googlevideo.com", ignoreCase = true)) return url
+  val parameters = trailerQueryParameters(url)
+  if (parameters["clen"] == null) return url // A manifest or a segment, not a whole-file media URL.
+  val host = url.substringAfter("://", missingDelimiterValue = "").substringBefore('/')
+  val alternates = parameters["mn"].orEmpty().split(',')
+    .map { it.trim() }
+    .filter { it.isNotEmpty() }
+    .mapNotNull { server ->
+      val swapped = host.replaceFirst(Regex("sn-[a-z0-9-]+"), server)
+      url.replace(host, swapped).takeIf { swapped != host }
+    }
+  val candidates = (listOf(url) + alternates).distinct()
+
+  val winner = withTimeoutOrNull(TRAILER_REACHABILITY_TIMEOUT_MS) {
+    coroutineScope {
+      // A genuine race rather than a walk down the list: awaiting each in turn would let the
+      // slowest node set the pace even when a sibling had already answered. The deferred completes
+      // on the first success, or with null once every probe has failed, so a URL that is simply
+      // dead costs one round trip rather than the whole ceiling.
+      val firstReachable = CompletableDeferred<String?>()
+      val outstanding = AtomicInteger(candidates.size)
+      candidates.forEach { candidate ->
+        launch {
+          if (servesOpeningBytes(candidate)) {
+            firstReachable.complete(candidate)
+          } else if (outstanding.decrementAndGet() == 0) {
+            firstReachable.complete(null)
+          }
+        }
+      }
+      firstReachable.await()
+    }
+  }
+  if (winner == null) Log.w(trailerResolverTag, "no reachable node among ${candidates.size} candidates")
+  return winner
+}
+
+private const val TRAILER_REACHABILITY_TIMEOUT_MS = 2_500L
+
+/**
+ * A separate client for the probes, with its own short ceiling.
+ *
+ * The probes are raced, and a blocking OkHttp call does not stop when its coroutine is cancelled —
+ * so the only thing that actually bounds a losing probe is its own timeout. Two seconds, safely
+ * inside [TRAILER_REACHABILITY_TIMEOUT_MS], means a stuck node cannot hold the whole resolve open
+ * after the race has already been won.
+ */
+private val trailerProbeHttpClient = trailerHttpClient.newBuilder()
+  .connectTimeout(1500, TimeUnit.MILLISECONDS)
+  .readTimeout(1500, TimeUnit.MILLISECONDS)
+  .callTimeout(2, TimeUnit.SECONDS)
+  .build()
+
+/** Whether googlevideo will serve the first bytes of [url] the way the player will ask for them. */
+private fun servesOpeningBytes(url: String): Boolean = runCatching {
+  val separator = if ('?' in url) "&" else "?"
+  val request = Request.Builder().url("$url${separator}range=0-1").build()
+  trailerProbeHttpClient.newCall(request).execute().use { response -> response.isSuccessful }
+}.getOrDefault(false)
 
 private suspend fun resolveTrailerCandidates(
   keys: List<String>,
@@ -343,48 +454,86 @@ private fun cacheTrailerChoice(keys: List<String>, chosen: String) {
 
 internal fun normalizeTrailerMaxHeight(maxHeight: Int): Int = maxHeight.coerceIn(360, 2160)
 
-private fun isNativePlayableTrailerUrl(url: String): Boolean {
-  val lower = url.lowercase()
-  return lower.endsWith(".mp4") || lower.endsWith(".m4v") || lower.endsWith(".webm") || lower.contains(".m3u8") || lower.contains(".mpd")
-}
-
-private fun extractYoutubeTrailerKey(url: String): String? {
-  val raw = url.trim()
-  if (raw.matches(Regex("^[A-Za-z0-9_-]{11}$"))) return raw
-  return runCatching {
-    val uri = Uri.parse(raw)
-    when {
-      uri.host?.contains("youtu.be", ignoreCase = true) == true -> uri.lastPathSegment
-      uri.host?.contains("youtube", ignoreCase = true) == true && uri.path?.startsWith("/shorts/") == true -> uri.pathSegments.getOrNull(1)
-      uri.host?.contains("youtube", ignoreCase = true) == true && uri.path?.startsWith("/embed/") == true -> uri.pathSegments.getOrNull(1)
-      uri.host?.contains("youtube", ignoreCase = true) == true -> uri.getQueryParameter("v")
-      else -> null
-    }
-  }.getOrNull()?.takeIf { it.matches(Regex("^[A-Za-z0-9_-]{11}$")) }
-}
-
-// Client selection matters: WEB/ANDROID clients are gated behind YouTube's proof-of-origin (PO)
-// token and return the "confirm you're not a bot" wall even with valid sign-in cookies, so they are
-// intentionally excluded.
+// Client selection is the whole ball game. The WEB and TVHTML5 clients sit behind YouTube's
+// proof-of-origin (PO) token check and answer the "confirm you're not a bot" wall even with valid
+// sign-in cookies, so they are intentionally absent: that wall is about proving which player is
+// asking, not who, and no amount of signing in answers it.
 //
-// IOS is tried first because at the time of writing it is the only one of the three that answers at
-// all — ANDROID_VR and TVHTML5 both come back "Sign in to confirm you're not a bot" anonymously.
-// The other two stay in the list because which client YouTube is currently serving moves around,
-// and an unattended fallback is the difference between a missing trailer and a working one.
-//
-// Note that the media URLs IOS hands back have to be fetched in bounded spans; see
-// ChunkedGoogleVideoDataSource. Requesting one of them the ordinary way answers 403.
+// Of the clients that do answer, the one that matters is whether its media URLs are *range-capped*.
+// See [YoutubeClient.rangeCapped] — it is the difference between a 1080p trailer and a 360p one.
+
 /**
- * The headset client, and the one that actually works.
+ * The headset client, and the first that is tried.
  *
- * Every field here is load-bearing, which is why it looks over-specified. The previous version of
- * this client differed in small ways — `osVersion` of "12L" rather than "12", no `platform`, a
- * user agent missing the locale and device fields — and YouTube answered it with the
- * "Sign in to confirm you're not a bot" wall. Corrected, it answers OK anonymously.
+ * The reason it leads is [rangeCapped]: alone among the clients here, the URLs it hands back serve
+ * a span anywhere in the file, so a two-minute 1080p trailer can be played to its last frame. Every
+ * other client returns a response that looks identical and whose URLs refuse any request past the
+ * first few megabytes, which is what forced [SERVABLE_TRAILER_BYTES] and, with it, 360p.
  *
- * It is first because it is the only client whose media URLs are served in full. The IOS client
- * below returns a playable-looking response whose URLs stop at roughly 8 MiB, which is what made
- * trailers play for half a minute and then die mid-scene.
+ * Measured against the live service on 12 Sep 2026 across four videos: VISIONOS answered `OK` every
+ * time, offered renditions to 2160p and an HLS manifest, and served a `&range=` request at the very
+ * end of a 1.3 GB file. On the same videos and in the same session, IOS and ANDROID answered `OK`
+ * with the same rendition list but answered 403 to the identical tail request, and ANDROID_VR
+ * answered `LOGIN_REQUIRED`.
+ *
+ * Every field is load-bearing: the client identity, version, device model and user agent are all
+ * checked against each other, and a mismatch between the payload and the headers is exactly what a
+ * scraper looks like. Note the absence of `platform` — this client is refused when it is sent.
+ */
+private val visionOsClient = YoutubeClient(
+  "VISIONOS",
+  "1.02",
+  osName = "visionOS",
+  osVersion = "26.5.23O471",
+  deviceMake = "Apple",
+  deviceModel = "RealityDevice17,1",
+  userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+  clientId = "101",
+)
+
+/**
+ * The first fallback. Answers reliably; its URLs are capped, so quality drops when it is used.
+ */
+private val iosClient = YoutubeClient(
+  "IOS",
+  "20.10.4",
+  osName = "iOS",
+  osVersion = "18.3.2.22D82",
+  deviceMake = "Apple",
+  deviceModel = "iPhone16,2",
+  userAgent = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
+  clientId = "5",
+  rangeCapped = true,
+)
+
+/**
+ * The second fallback, and the only one that publishes a muxed progressive rendition.
+ *
+ * Capped like IOS, but it is worth having behind it: the two are walled independently, and a
+ * progressive stream needs no merging, so on a device whose decoder struggles with two sources it
+ * is the one that plays.
+ */
+private val androidClient = YoutubeClient(
+  "ANDROID",
+  "20.10.35",
+  osName = "Android",
+  osVersion = "14",
+  deviceMake = "Google",
+  deviceModel = "Pixel 8",
+  userAgent = "com.google.android.youtube/20.10.35 (Linux; U; Android 14; en_US) gzip",
+  androidSdkVersion = 34,
+  clientId = "3",
+  platform = "MOBILE",
+  rangeCapped = true,
+)
+
+/**
+ * Last, and usually walled — but uncapped on the days it answers, so it is worth asking.
+ *
+ * Every field here is load-bearing too. An earlier version differed in small ways — `osVersion` of
+ * "12L" rather than "12", no `platform`, a user agent missing the locale and device fields — and
+ * YouTube answered it with the bot wall unconditionally. Corrected, it answers when it is not
+ * being walled for other reasons.
  */
 private val androidVrClient = YoutubeClient(
   "ANDROID_VR",
@@ -400,37 +549,27 @@ private val androidVrClient = YoutubeClient(
 )
 
 /**
- * The client that currently answers when the headset one is refused, and the reason trailers play
- * at all on a bot-walled network.
- *
- * Its URLs used to be gated a few megabytes in, which is what [SERVABLE_TRAILER_BYTES] is for. That
- * gate has lifted — see the constant — so the budget is now a wide safety margin rather than the
- * thing deciding picture quality.
- */
-private val iosClient = YoutubeClient("IOS", "20.10.4", osName = "iOS", osVersion = "18.3.2.22D82", deviceMake = "Apple", deviceModel = "iPhone16,2", userAgent = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)", clientId = "5", servableBytes = SERVABLE_TRAILER_BYTES)
-
-/**
  * The clients, in the order a trailer is attempted through them.
  *
- * Both are anonymous. TVHTML5 used to be in here, and when a YouTube cookie existed it was tried
- * ahead of IOS. That position is worse than useless: it answers `status=OK` and hands back a 360p
+ * All four are anonymous. TVHTML5 used to be in here, and when a YouTube cookie existed it was
+ * tried first. That position is worse than useless: it answers `status=OK` and hands back a 360p
  * URL that then answers 403 when the player fetches it, so resolution reported success, playback
  * died a few seconds later, and the client that would have worked was never reached. The cookie
  * that triggered it is one this app creates itself — the iframe fallback runs in a WebView with
  * cookies enabled — so using that fallback once poisoned every trailer after it.
  *
- * Measured against the live service on 21 Aug 2026, over three trailers, sending the same
- * `visitorData` this resolver scrapes: ANDROID_VR answered `LOGIN_REQUIRED` — "sign in to confirm
- * you're not a bot" — every single time, while IOS answered OK every time with 1080p renditions
- * and the title and running time the candidate ranking needs. TVHTML5 was walled too, and WEB
- * reported the video simply unavailable.
+ * The order is uncapped clients first, because a capped one produces a source that *looks* fine
+ * and is quietly limited to whatever fits in [SERVABLE_TRAILER_BYTES]. Putting the capped IOS
+ * client at the head is what held trailers at 360p: it answered, so nothing below it was ever
+ * asked, and the budget then threw away every rendition above 360p as unfinishable.
  *
- * That wall is a proof-of-origin check rather than an identity one, so signing in does not answer
- * it; only a client YouTube does not gate does. Hence IOS first. ANDROID_VR stays behind it rather
- * than being deleted: which client is gated moves around, and when it does answer it is the better
- * of the two — its URLs are uncapped and seekable, which is what the KinoCheck sting-skip needs.
+ * A ladder rather than a fan-out across all four. Pooling every client's formats would buy a
+ * slightly wider choice at the cost of three extra round trips on every attempt — and this runs
+ * once per candidate video while ranking a title's list, so it is three extra requests multiplied
+ * by up to [TRAILER_CANDIDATE_LIMIT]. The first client answers almost always; paying for the other
+ * three against that is not a trade worth making on a phone.
  */
-private val trailerClientLadder = listOf(iosClient, androidVrClient)
+private val trailerClientLadder = listOf(visionOsClient, iosClient, androidClient, androidVrClient)
 
 private fun resolveYoutubePlaybackSource(
   videoId: String,
@@ -504,11 +643,18 @@ private data class YoutubeClient(
   val clientId: String? = null,
   val platform: String? = null,
   /**
-   * How many bytes of this client's media URLs can be fetched, or null for no limit.
+   * Whether this client's media URLs refuse a span that does not start near the beginning.
    *
-   * Only the IOS client is capped; see [SERVABLE_TRAILER_BYTES].
+   * The single most consequential property of a client, and one nothing in the player response
+   * announces — a capped client's `streamingData` is indistinguishable from an uncapped one's,
+   * right down to the 2160p renditions it lists. Ask for a `&range=` near the end of one of its
+   * files and the answer is 403.
+   *
+   * Two things follow. A capped client's renditions are held to [SERVABLE_TRAILER_BYTES], since
+   * anything larger stops mid-scene; and its sources are marked not [TrailerPlaybackSource.seekable],
+   * since a mid-file start is refused outright rather than merely being slow.
    */
-  val servableBytes: Long? = null,
+  val rangeCapped: Boolean = false,
 )
 
 private const val youtubeOrigin = "https://www.youtube.com"
@@ -608,42 +754,54 @@ private fun requestYoutubePlayer(videoId: String, session: YoutubeSession, clien
         put("User-Agent", client.userAgent)
         put("Referer", "$youtubeOrigin/")
       }
-      val hlsManifest = streamingData.optString("hlsManifestUrl")
-      if (maxHeight > 360 && hlsManifest.isNotBlank()) {
-        return@use YoutubePlayerProbe(
-          TrailerPlaybackResolution(source = TrailerPlaybackSource(hlsManifest, height = maxHeight, requestHeaders = playbackHeaders)),
-          title,
-          durationSeconds,
-        )
-      }
       // Only a client whose URLs stop partway needs its rendition sized to fit; the rest are free
       // to take the best picture available.
-      val adaptiveVideo = selectAdaptiveVideo(adaptiveFormats, maxHeight, client.servableBytes ?: Long.MAX_VALUE)
+      val byteBudget = if (client.rangeCapped) SERVABLE_TRAILER_BYTES else Long.MAX_VALUE
+      val adaptiveVideo = selectAdaptiveVideo(adaptiveFormats, maxHeight, byteBudget)
       val adaptiveAudio = selectAdaptiveAudio(adaptiveFormats)
       val progressive = selectProgressiveTrailer(formats, maxHeight)
       val adaptivePair = if (adaptiveVideo != null && adaptiveAudio != null) {
-        TrailerPlaybackSource(adaptiveVideo.first, adaptiveAudio, adaptiveVideo.second)
+        TrailerPlaybackSource(
+          url = adaptiveVideo.first,
+          audioUrl = adaptiveAudio.url,
+          height = adaptiveVideo.second,
+          kind = TrailerSourceKind.ADAPTIVE,
+        )
       } else {
         null
       }
-      // Whichever is actually taller, rather than a fixed preference. A muxed progressive stream is
-      // simpler to play, but the only one YouTube still publishes is 360p — and preferring it on
-      // sight meant a client offering 1080p adaptive was answered with 360p, ignoring the viewer's
-      // quality setting entirely.
-      val source = listOfNotNull(progressive, adaptivePair).maxByOrNull { it.height ?: 0 }
-        ?: hlsManifest.takeIf { it.isNotBlank() }?.let { TrailerPlaybackSource(it) }
+      // HLS is judged rather than taken on sight.
+      //
+      // Previously any non-blank `hlsManifestUrl` short-circuited everything below it, on the
+      // theory that HLS is the easy path. It is, but a master manifest states nothing about what is
+      // inside it, so the resolution ceiling was applied by writing `maxHeight` into the result and
+      // hoping — and a manifest whose variants topped out at 360p still beat a 1080p adaptive pair
+      // that was right there. See [resolveHlsTrailerSource] for what reading it settles.
+      val hls = resolveHlsTrailerSource(
+        streamingData.optString("hlsManifestUrl"),
+        maxHeight,
+        hasMultipleAudioTracks(adaptiveFormats),
+        playbackHeaders,
+      )
+
+      // Ranked on height first, then on kind. Height first because no preference between shapes is
+      // worth a visibly softer picture — preferring progressive on sight is what answered a client
+      // offering 1080p adaptive with its lone 360p muxed stream. Kind second, in the order
+      // HLS, progressive, adaptive: at equal quality a single adaptive-bitrate stream is steadier
+      // than a single file, and a single file is steadier than two streams merged at playback.
+      val source = listOfNotNull(hls, progressive, adaptivePair)
+        .maxWithOrNull(compareBy({ it.height ?: 0 }, { -trailerSourceKindRank(it.kind) }))
       // Says which rendition actually won, so "is this really playing in 4K" is answerable from a
       // log line rather than by guessing at which decoder the device happened to spin up.
       Log.d(
         trailerResolverTag,
-        "${client.name}: selected height=${source?.height ?: -1} cap=$maxHeight " +
-          "bestAdaptive=${adaptiveVideo?.second ?: -1} separateAudio=${source?.audioUrl != null}",
+        "${client.name}: selected kind=${source?.kind} height=${source?.height ?: -1} cap=$maxHeight " +
+          "capped=${client.rangeCapped} bestAdaptive=${adaptiveVideo?.second ?: -1} " +
+          "audioDefaultTrack=${adaptiveAudio?.isDefaultTrack} separateAudio=${source?.audioUrl != null}",
       )
       YoutubePlayerProbe(
         TrailerPlaybackResolution(
-          // Only the capped client's URLs refuse a mid-file span, and `servableBytes` is exactly
-          // the flag for "this client's URLs are gated" — so it answers both questions.
-          source = source?.copy(requestHeaders = playbackHeaders, seekable = client.servableBytes == null),
+          source = source?.copy(requestHeaders = playbackHeaders, seekable = !client.rangeCapped),
         ),
         title,
         durationSeconds,
@@ -663,9 +821,168 @@ internal fun selectProgressiveTrailer(formats: JSONArray?, maxHeight: Int): Trai
     val hasAudio = item.optString("audioQuality").isNotBlank() || item.optInt("audioChannels", 0) > 0
     if (url.isBlank() || !hasAudio || !mime.contains("avc1", true) || height > maxHeight || height <= selectedHeight) continue
     selectedHeight = height
-    selected = TrailerPlaybackSource(url, height = height)
+    selected = TrailerPlaybackSource(url, height = height, kind = TrailerSourceKind.PROGRESSIVE)
   }
   return selected
+}
+
+/**
+ * Which shape of source is preferred when two are the same height. Lower wins.
+ *
+ * Only ever a tiebreak — see the selection in [requestYoutubePlayer]. Nothing here is worth taking
+ * a shorter rendition for.
+ */
+internal fun trailerSourceKindRank(kind: TrailerSourceKind): Int = when (kind) {
+  TrailerSourceKind.HLS -> 0
+  TrailerSourceKind.PROGRESSIVE -> 1
+  TrailerSourceKind.ADAPTIVE -> 2
+}
+
+/**
+ * The HLS manifest as a playable source, or null if HLS is not the right shape for this video.
+ *
+ * Two things are settled here, both of them measured against live manifests rather than assumed.
+ *
+ * **The master is what gets played, never a variant.** YouTube's manifests come from
+ * `manifest.googlevideo.com/api/manifest/hls_variant/...`, and in them the audio is not inside the
+ * video variants: it sits in separate `#EXT-X-MEDIA:TYPE=AUDIO` renditions that each
+ * `#EXT-X-STREAM-INF` refers to by an `AUDIO="234"` group id. Resolving down to a variant playlist
+ * and handing that over — the obvious thing to do, and what a naive reading of the manifest invites —
+ * produces a trailer that plays in silence. So the master is passed through whole and Media3 wires
+ * the renditions together; the manifest is read here only to learn what is actually inside it.
+ *
+ * **A video with dubs does not go down this path at all.** On a multi-language upload every
+ * language is a rendition in the same audio group and *not one of them* is marked `DEFAULT=YES` —
+ * measured on a trailer with eight: all eight said `DEFAULT=NO,AUTOSELECT=YES`. Media3 then falls
+ * back to picking by device locale, and on a device whose language is not among them it takes
+ * whichever rendition came first, which is alphabetical rather than original. The adaptive path has
+ * an unambiguous answer for this — `audioTrack.audioIsDefault`, see [selectAdaptiveAudio] — so
+ * multi-language videos are left to it.
+ *
+ * A failure to read the manifest is not a failure of the trailer: null drops HLS out of the running
+ * and the progressive and adaptive candidates answer instead. That matters because this fetch is
+ * the one part of resolution whose host differs from the player API's, and a network that blocks it
+ * should not cost the viewer a trailer.
+ */
+internal fun resolveHlsTrailerSource(
+  manifestUrl: String?,
+  maxHeight: Int,
+  hasMultipleAudioTracks: Boolean,
+  playbackHeaders: Map<String, String>,
+): TrailerPlaybackSource? {
+  if (!isHlsTrailerCandidate(manifestUrl, hasMultipleAudioTracks)) return null
+  val manifest = manifestUrl.orEmpty()
+  val body = runCatching {
+    val request = Request.Builder().url(manifest).apply {
+      playbackHeaders.forEach { (name, value) -> header(name, value) }
+    }.build()
+    trailerHttpClient.newCall(request).execute().use { response ->
+      if (response.isSuccessful) response.body?.string().orEmpty() else ""
+    }
+  }.onFailure { Log.w(trailerResolverTag, "hls manifest: ${it.message}") }.getOrDefault("")
+  // The variant is found only to read its height, which is what lets HLS be compared honestly
+  // against the other candidates instead of being assumed to be whatever the ceiling was.
+  val height = pickHlsVariant(body, manifest, maxHeight)?.second
+  if (height == null) {
+    Log.d(trailerResolverTag, "hls manifest: unreadable, leaving HLS out of the running")
+    return null
+  }
+  return TrailerPlaybackSource(manifest, height = height, kind = TrailerSourceKind.HLS)
+}
+
+/**
+ * Whether HLS is worth reading for this video at all — the decision half of
+ * [resolveHlsTrailerSource], kept apart from the fetching half so it can be tested directly.
+ */
+internal fun isHlsTrailerCandidate(manifestUrl: String?, hasMultipleAudioTracks: Boolean): Boolean =
+  !manifestUrl.isNullOrBlank() && !hasMultipleAudioTracks
+
+/**
+ * Whether this response offers the same audio in more than one language.
+ *
+ * A dubbed upload gives every language its own `adaptiveFormats` entry carrying an `audioTrack`.
+ * One track, or none at all, means there is no language to get wrong.
+ */
+internal fun hasMultipleAudioTracks(formats: JSONArray?): Boolean {
+  if (formats == null) return false
+  val tracks = HashSet<String>()
+  for (index in 0 until formats.length()) {
+    val item = formats.optJSONObject(index) ?: continue
+    if (!item.optString("mimeType").startsWith("audio/", true)) continue
+    val track = item.optJSONObject("audioTrack") ?: continue
+    tracks += track.optString("id").ifBlank { track.optString("displayName") }
+    if (tracks.size > 1) return true
+  }
+  return false
+}
+
+/**
+ * The tallest variant at or below [maxHeight], as (url, height).
+ *
+ * Falls back to the *shortest* variant when every one of them exceeds the ceiling, rather than to
+ * nothing: a viewer who set 360p and is offered only 720p should see a trailer.
+ */
+internal fun pickHlsVariant(manifestBody: String, manifestUrl: String, maxHeight: Int): Pair<String, Int>? {
+  if (manifestBody.isBlank()) return null
+  val lines = manifestBody.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+  var best: Pair<String, Int>? = null
+  var bestBandwidth = -1L
+  var smallest: Pair<String, Int>? = null
+  for (index in lines.indices) {
+    val line = lines[index]
+    if (!line.startsWith("#EXT-X-STREAM-INF:")) continue
+    val target = lines.getOrNull(index + 1)?.takeIf { !it.startsWith("#") } ?: continue
+    val attributes = parseHlsAttributes(line)
+    val height = attributes["RESOLUTION"]?.substringAfter('x', "")?.toIntOrNull() ?: 0
+    val bandwidth = attributes["BANDWIDTH"]?.toLongOrNull() ?: 0L
+    val url = absolutizeHlsUrl(manifestUrl, target)
+    if (smallest == null || height < smallest.second) smallest = url to height
+    if (height > maxHeight) continue
+    val better = best == null || height > best.second || (height == best.second && bandwidth > bestBandwidth)
+    if (!better) continue
+    best = url to height
+    bestBandwidth = bandwidth
+  }
+  return best ?: smallest
+}
+
+/** `KEY=value` pairs off an `#EXT-X-` line, with quoted values kept whole so commas survive. */
+internal fun parseHlsAttributes(line: String): Map<String, String> {
+  val raw = line.substringAfter(':', missingDelimiterValue = "")
+  if (raw.isEmpty()) return emptyMap()
+  val attributes = LinkedHashMap<String, String>()
+  val current = StringBuilder()
+  var name: String? = null
+  var quoted = false
+  fun flush() {
+    val key = name?.trim()
+    if (!key.isNullOrEmpty()) attributes[key] = current.toString().trim()
+    name = null
+    current.setLength(0)
+  }
+  raw.forEach { ch ->
+    when {
+      ch == '"' -> quoted = !quoted
+      ch == '=' && name == null && !quoted -> {
+        name = current.toString()
+        current.setLength(0)
+      }
+      ch == ',' && !quoted -> flush()
+      else -> current.append(ch)
+    }
+  }
+  flush()
+  return attributes
+}
+
+private fun absolutizeHlsUrl(manifestUrl: String, target: String): String = when {
+  target.startsWith("http://") || target.startsWith("https://") -> target
+  target.startsWith("/") -> {
+    val scheme = manifestUrl.substringBefore("://", missingDelimiterValue = "https")
+    val host = manifestUrl.substringAfter("://", missingDelimiterValue = "").substringBefore('/')
+    if (host.isNotEmpty()) "$scheme://$host$target" else target
+  }
+  else -> manifestUrl.substringBeforeLast('/', missingDelimiterValue = manifestUrl) + "/" + target
 }
 
 /**
@@ -687,20 +1004,23 @@ internal fun trailerCodecRank(mime: String): Int = when {
 /**
  * How much of one of these URLs googlevideo will actually serve.
  *
- * Applies to the IOS client alone, and it is still 7 MiB. Bounded requests inside the first few
- * megabytes are answered and everything past roughly 8 MiB is refused, which is why trailers taken
- * from that client used to play for half a minute and stop mid-scene.
+ * Applies only to the clients marked [YoutubeClient.rangeCapped], and it is still 7 MiB. Bounded
+ * requests inside the first few megabytes are answered and everything past roughly 8 MiB is
+ * refused, which is why trailers taken from those clients used to play for half a minute and stop
+ * mid-scene.
  *
  * Raised to 64 MiB on 15 Aug 2026 on the strength of a measurement showing deep offsets being
  * served, and put back the same evening: that measurement used HTTP `Range` headers, and the player
  * does not read these URLs that way. ChunkedGoogleVideoDataSource asks through googlevideo's own
  * `&range=` query parameter, and through *that* the old ceiling is very much still there. The
  * larger budget let the selector choose a 1440p rendition, whose second chunk was refused, so every
- * trailer resolved through IOS died a few seconds in.
+ * trailer resolved through IOS died a few seconds in. Seven rather than eight because the exact
+ * ceiling drifts between requests, and a trailer that stops early is worse than one that starts
+ * smaller.
  *
- * It costs nothing when the headset client answers, since that one is uncapped — the budget is only
- * consulted for the client whose URLs are gated. Seven rather than eight because the exact ceiling
- * drifts between requests, and a trailer that stops early is worse than one that starts smaller.
+ * This is a floor on quality, not a feature, and the reason the ladder leads with an uncapped
+ * client: a 148-second trailer at 1080p is about 50 MB, so a capped client can offer nothing above
+ * 360p for it. Whenever VISIONOS answers, this constant is not consulted at all.
  */
 private const val SERVABLE_TRAILER_BYTES = 7L * 1024 * 1024
 
@@ -720,6 +1040,7 @@ internal fun selectAdaptiveVideo(formats: JSONArray?, maxHeight: Int, byteBudget
   var selected: Pair<String, Int>? = null
   var selectedRank = 0
   var selectedFits = false
+  var selectedThrottled = false
   for (index in 0 until formats.length()) {
     val item = formats.optJSONObject(index) ?: continue
     val url = item.optString("url")
@@ -730,34 +1051,73 @@ internal fun selectAdaptiveVideo(formats: JSONArray?, maxHeight: Int, byteBudget
     if (rank == 0) continue
     val contentLength = item.optString("contentLength").toLongOrNull()
     val fits = contentLength != null && contentLength <= byteBudget
+    val throttled = isThrottledGoogleVideoUrl(url)
     val current = selected
     val better = when {
       current == null -> true
       // Anything playable to the end beats anything that would cut out partway.
       fits != selectedFits -> fits
       height != current.second -> height > current.second
+      // An untouched URL beats a throttled one at the same height. See [isThrottledGoogleVideoUrl].
+      throttled != selectedThrottled -> !throttled
       else -> rank > selectedRank
     }
     if (!better) continue
     selected = url to height
     selectedRank = rank
     selectedFits = fits
+    selectedThrottled = throttled
   }
   return selected
 }
 
 /**
+ * Whether googlevideo will rate-limit this URL until its `n` parameter is deciphered.
+ *
+ * YouTube puts a short ciphertext in `n` on some of the URLs it issues and throttles any request
+ * carrying it to a fraction of real speed unless the value has been transformed by a function in
+ * the player's own JavaScript. Running that JavaScript is not something this app does, so a URL
+ * with an `n` is one that will very likely stall — and a stalled trailer looks broken rather than
+ * slow.
+ *
+ * It is a tiebreak rather than a filter: the clients in use here mostly issue URLs without one,
+ * and refusing every `n`-bearing URL outright would turn a probably-slow trailer into no trailer.
+ */
+internal fun isThrottledGoogleVideoUrl(url: String): Boolean =
+  trailerQueryParameters(url)["n"]?.isNotBlank() == true
+
+/**
+ * The audio track chosen to pair with an adaptive video rendition.
+ *
+ * [isDefaultTrack] is carried out so it can be logged. Whether the right language was picked is
+ * otherwise invisible until somebody watches a trailer and hears German.
+ */
+internal data class TrailerAudioChoice(
+  val url: String,
+  val isDefaultTrack: Boolean,
+  val isMp4: Boolean,
+  val bitrate: Int,
+)
+
+/**
  * Best audio track to pair with the chosen video.
  *
- * m4a is preferred, but Opus in WebM is accepted as a fallback: now that video selection can pick
- * a VP9 rendition, a response whose only audio is WebM would otherwise leave the pair incomplete
- * and drop the whole result. The player merges the two streams regardless of container.
+ * The original-language track wins above everything else. A major studio's trailer is uploaded with
+ * its dubs attached — eight of them is ordinary — and each one appears as its own entry in
+ * `adaptiveFormats`, distinguished only by an `audioTrack` object carrying `audioIsDefault`. Picking
+ * purely on bitrate, as this used to, therefore picked a language at random: measured against a
+ * live trailer with eight tracks, the German dub was encoded at 130557 bps and the English original
+ * at 130515, so the dub won by 42 bps and the trailer played in German. An entry with no
+ * `audioTrack` at all is the only audio the video has, so it counts as the default.
+ *
+ * Past language, m4a is preferred, but Opus in WebM is accepted as a fallback: now that video
+ * selection can pick a VP9 rendition, a response whose only audio is WebM would otherwise leave the
+ * pair incomplete and drop the whole result. The player merges the two streams regardless of
+ * container.
  */
-internal fun selectAdaptiveAudio(formats: JSONArray?): String? {
+internal fun selectAdaptiveAudio(formats: JSONArray?): TrailerAudioChoice? {
   if (formats == null) return null
-  var selectedUrl: String? = null
-  var selectedBitrate = -1
-  var selectedIsMp4 = false
+  var selected: TrailerAudioChoice? = null
   for (index in 0 until formats.length()) {
     val item = formats.optJSONObject(index) ?: continue
     val url = item.optString("url")
@@ -766,12 +1126,18 @@ internal fun selectAdaptiveAudio(formats: JSONArray?): String? {
     if (url.isBlank() || !mime.startsWith("audio/", true)) continue
     val isMp4 = mime.contains("audio/mp4", true)
     if (!isMp4 && !mime.contains("audio/webm", true)) continue
-    // An m4a track always beats a WebM one; past that, take the highest bitrate.
-    val better = selectedUrl == null || (isMp4 && !selectedIsMp4) || (isMp4 == selectedIsMp4 && bitrate > selectedBitrate)
+    val audioTrack = item.optJSONObject("audioTrack")
+    val isDefaultTrack = audioTrack == null || audioTrack.optBoolean("audioIsDefault", false)
+    val current = selected
+    val better = when {
+      current == null -> true
+      // The video's own language, whatever it costs in bitrate or container.
+      isDefaultTrack != current.isDefaultTrack -> isDefaultTrack
+      isMp4 != current.isMp4 -> isMp4
+      else -> bitrate > current.bitrate
+    }
     if (!better) continue
-    selectedUrl = url
-    selectedBitrate = bitrate
-    selectedIsMp4 = isMp4
+    selected = TrailerAudioChoice(url, isDefaultTrack, isMp4, bitrate)
   }
-  return selectedUrl
+  return selected
 }

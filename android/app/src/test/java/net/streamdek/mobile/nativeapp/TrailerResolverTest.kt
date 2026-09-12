@@ -144,7 +144,7 @@ class TrailerResolverTest {
 
   @Test
   fun `falls back to webm audio so a vp9 pick still has sound`() {
-    assertEquals("opus", selectAdaptiveAudio(audio("opus" to ("audio/webm; codecs=\"opus\"" to 160000))))
+    assertEquals("opus", selectAdaptiveAudio(audio("opus" to ("audio/webm; codecs=\"opus\"" to 160000)))?.url)
   }
 
   @Test
@@ -209,7 +209,7 @@ class TrailerResolverTest {
       "opus" to ("audio/webm; codecs=\"opus\"" to 160000),
       "m4a" to ("audio/mp4; codecs=\"mp4a.40.2\"" to 128000),
     )
-    assertEquals("m4a", selectAdaptiveAudio(available))
+    assertEquals("m4a", selectAdaptiveAudio(available)?.url)
   }
 
   @Test

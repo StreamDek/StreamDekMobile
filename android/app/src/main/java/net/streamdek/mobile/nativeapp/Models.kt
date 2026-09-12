@@ -223,6 +223,13 @@ data class MediaDetail(
   val backdrop: String?,
   val trailerUrl: String?,
   val trailerSite: String? = null,
+  /**
+   * The title's videos as the metadata service described them, best trailer first.
+   *
+   * Ordered by [orderTrailerCandidates] at parse time rather than left in arrival order, which is
+   * roughly newest first and therefore, around a release, a wall of ticket adverts.
+   */
+  val trailers: List<MediaTrailer> = emptyList(),
   val trailerKeys: List<String> = emptyList(),
   val rating: Double?,
   val imdbRating: Double?,

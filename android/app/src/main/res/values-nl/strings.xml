@@ -1584,7 +1584,7 @@
   <string name="action_play_again">Opnieuw afspelen</string>
   <string name="settings_navigation_behaviour">Navigatiegedrag</string>
   <string name="settings_navigation_behaviour_description">Kies wanneer de zwevende navigatie in je profielknop wegschuift.</string>
-  <string name="navigation_behaviour_always_expanded">Altijd uitgevouwen</string>
+  <string name="navigation_behaviour_always_expanded">Uitgevouwen</string>
   <string name="navigation_behaviour_always_expanded_description">Alle paginaknoppen blijven zichtbaar.</string>
   <string name="navigation_behaviour_after_delay">Invouwen na vertraging</string>
   <string name="navigation_behaviour_after_delay_description">Schuift een paar seconden nadat je een pagina kiest weg.</string>

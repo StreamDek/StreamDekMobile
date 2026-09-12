@@ -501,7 +501,7 @@ internal fun ProfilePickerScreen(
                 scaleX = scale
                 scaleY = scale
               }
-              .hazeSource(profileHazeState),
+              .glassSource(profileHazeState),
             contentScale = ContentScale.Crop,
             onSuccess = { heroArtworkVisible = true; heroArtworkSettled = true },
             onError = { heroArtworkSettled = true },
@@ -513,6 +513,7 @@ internal fun ProfilePickerScreen(
             // holds the text where it was and simply extends the glass further down the image.
             modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(240.dp),
             hazeState = profileHazeState,
+            artworkBands = rememberArtworkBands(currentHero.backdrop ?: currentHero.poster),
           ) {
             Text(
               stringResource(R.string.home_trending_now),
@@ -658,8 +659,18 @@ internal fun ProfilePickerScreen(
 private fun ProfileHeroGlassPane(
   modifier: Modifier = Modifier,
   hazeState: HazeState,
+  /** The hero's own brightness, once sampled. A bright still earns a deeper gradient under the text. */
+  artworkBands: ArtworkBands? = null,
   content: @Composable ColumnScope.() -> Unit,
 ) {
+  // The type on this pane is white in every theme, so only bright artwork needs help — and only as
+  // much as it actually is bright. Dark stills keep the light gradient that lets the image show.
+  // Without live blur the pane has no frosting to soften fine texture either, so it leans a little
+  // further toward the scrim.
+  val liveBlur = LocalVisualEffects.current.liveBlur
+  val need = (artworkBands?.let { GlassContrastPolicy.artworkNeed(it.bottomLuminance, it.detail, lightTheme = false) } ?: 0f) +
+    if (liveBlur) 0f else 0.25f
+  val protection = need.coerceIn(0f, 1f)
   FrostedGlassSurface(
     modifier = modifier,
     shape = RectangleShape,
@@ -684,10 +695,10 @@ private fun ProfileHeroGlassPane(
               // Still darkening downward, because the title and synopsis are white and sit on
               // whatever the backdrop happens to be - but far less of it, so the blurred artwork
               // stays visible through the pane instead of being buried.
-              0.00f to Color.Black.copy(alpha = 0.06f),
-              0.45f to Color.Black.copy(alpha = 0.24f),
-              0.80f to Color.Black.copy(alpha = 0.58f),
-              1.00f to Color.Black.copy(alpha = 0.88f),
+              0.00f to Color.Black.copy(alpha = 0.06f + 0.18f * protection),
+              0.45f to Color.Black.copy(alpha = 0.24f + 0.22f * protection),
+              0.80f to Color.Black.copy(alpha = 0.58f + 0.16f * protection),
+              1.00f to Color.Black.copy(alpha = 0.88f + 0.06f * protection),
             ),
           ),
         ),

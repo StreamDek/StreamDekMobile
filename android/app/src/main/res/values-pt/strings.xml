@@ -1598,7 +1598,7 @@
   <string name="action_play_again">Reproduzir novamente</string>
   <string name="settings_navigation_behaviour">Comportamento da navegação</string>
   <string name="settings_navigation_behaviour_description">Escolha quando a navegação flutuante se recolhe no botão do perfil.</string>
-  <string name="navigation_behaviour_always_expanded">Sempre expandida</string>
+  <string name="navigation_behaviour_always_expanded">Expandida</string>
   <string name="navigation_behaviour_always_expanded_description">Todos os botões de página ficam visíveis.</string>
   <string name="navigation_behaviour_after_delay">Recolher após um atraso</string>
   <string name="navigation_behaviour_after_delay_description">Recolhe-se alguns segundos depois de escolher uma página.</string>

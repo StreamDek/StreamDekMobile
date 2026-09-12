@@ -1598,7 +1598,7 @@
   <string name="action_play_again">Play Again</string>
   <string name="settings_navigation_behaviour">Navigation Behaviour</string>
   <string name="settings_navigation_behaviour_description">Choose when the floating navigation tucks into your profile button.</string>
-  <string name="navigation_behaviour_always_expanded">Always Expanded</string>
+  <string name="navigation_behaviour_always_expanded">Expanded</string>
   <string name="navigation_behaviour_always_expanded_description">Every page button stays visible.</string>
   <string name="navigation_behaviour_after_delay">Collapse After a Delay</string>
   <string name="navigation_behaviour_after_delay_description">Tucks away a few seconds after you choose a page.</string>

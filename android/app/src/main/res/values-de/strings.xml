@@ -1584,7 +1584,7 @@
   <string name="action_play_again">Erneut abspielen</string>
   <string name="settings_navigation_behaviour">Navigationsverhalten</string>
   <string name="settings_navigation_behaviour_description">Wähle, wann sich die schwebende Navigation in deine Profiltaste zurückzieht.</string>
-  <string name="navigation_behaviour_always_expanded">Immer ausgeklappt</string>
+  <string name="navigation_behaviour_always_expanded">Ausgeklappt</string>
   <string name="navigation_behaviour_always_expanded_description">Alle Seitentasten bleiben sichtbar.</string>
   <string name="navigation_behaviour_after_delay">Nach Verzögerung einklappen</string>
   <string name="navigation_behaviour_after_delay_description">Zieht sich einige Sekunden nach der Seitenauswahl zurück.</string>

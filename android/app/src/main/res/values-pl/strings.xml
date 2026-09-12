@@ -1684,7 +1684,7 @@
   <string name="action_play_again">Odtwórz ponownie</string>
   <string name="settings_navigation_behaviour">Zachowanie nawigacji</string>
   <string name="settings_navigation_behaviour_description">Wybierz, kiedy pływająca nawigacja chowa się do przycisku profilu.</string>
-  <string name="navigation_behaviour_always_expanded">Zawsze rozwinięta</string>
+  <string name="navigation_behaviour_always_expanded">Rozwinięta</string>
   <string name="navigation_behaviour_always_expanded_description">Wszystkie przyciski stron pozostają widoczne.</string>
   <string name="navigation_behaviour_after_delay">Zwiń po opóźnieniu</string>
   <string name="navigation_behaviour_after_delay_description">Chowa się kilka sekund po wybraniu strony.</string>

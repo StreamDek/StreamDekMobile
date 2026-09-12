@@ -1598,7 +1598,7 @@
   <string name="action_play_again">Riproduci di nuovo</string>
   <string name="settings_navigation_behaviour">Comportamento della navigazione</string>
   <string name="settings_navigation_behaviour_description">Scegli quando la navigazione fluttuante si ritira nel pulsante del profilo.</string>
-  <string name="navigation_behaviour_always_expanded">Sempre espansa</string>
+  <string name="navigation_behaviour_always_expanded">Espansa</string>
   <string name="navigation_behaviour_always_expanded_description">Tutti i pulsanti delle pagine restano visibili.</string>
   <string name="navigation_behaviour_after_delay">Comprimi dopo un ritardo</string>
   <string name="navigation_behaviour_after_delay_description">Si ritira qualche secondo dopo aver scelto una pagina.</string>

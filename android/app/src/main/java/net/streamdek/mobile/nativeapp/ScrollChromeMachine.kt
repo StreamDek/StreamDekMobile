@@ -104,6 +104,8 @@ internal class ScrollChromeMachine(private val density: Float) {
 
   val nearTop: Boolean get() = distanceFromTop < nearTopPx
 
+  /** Whether any scrolling has been seen since [reset], which makes [distanceFromTop] trustworthy. */
+  private var measured = false
   private var pendingSign = 0
   private var pendingTravel = 0f
   private var lastEventMs = -1L
@@ -118,9 +120,11 @@ internal class ScrollChromeMachine(private val density: Float) {
    *   at the very start of it.
    */
   fun onScroll(deltaPx: Float, blockedAtTop: Boolean, timeMs: Long) {
+    if (deltaPx != 0f) measured = true
     distanceFromTop = (distanceFromTop + deltaPx).coerceAtLeast(0f)
     if (blockedAtTop) distanceFromTop = 0f
     if (deltaPx == 0f) {
+      if (!interacting) fraction = fraction.coerceAtMost(topCap())
       refreshPhase()
       updateNavigation()
       return
@@ -153,11 +157,18 @@ internal class ScrollChromeMachine(private val density: Float) {
     updateNavigation()
   }
 
-  /** A page that knows its real scroll position corrects the delta-built estimate. */
+  /**
+   * A page that knows its real scroll position corrects the delta-built estimate.
+   *
+   * "Not at the top" only moves the estimate when nothing has been scrolled since the page appeared —
+   * a page restored halfway down. Once deltas have been seen they are the better measure, and bumping
+   * the estimate the moment a list leaves its first pixel would let the chrome hide within a thumb's
+   * width of the top.
+   */
   fun reportAtTop(atTop: Boolean) {
     distanceFromTop = when {
       atTop -> 0f
-      distanceFromTop < nearTopPx -> nearTopPx
+      !measured && distanceFromTop < nearTopPx -> nearTopPx
       else -> distanceFromTop
     }
     if (!interacting) fraction = fraction.coerceAtMost(topCap())
@@ -224,6 +235,7 @@ internal class ScrollChromeMachine(private val density: Float) {
     pendingTravel = 0f
     lastEventMs = -1L
     speedPxPerMs = 0f
+    measured = false
     navigationCollapsed = false
     refreshPhase()
   }

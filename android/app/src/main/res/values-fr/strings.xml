@@ -1633,7 +1633,7 @@
   <string name="action_play_again">Rejouer</string>
   <string name="settings_navigation_behaviour">Comportement de la navigation</string>
   <string name="settings_navigation_behaviour_description">Choisissez quand la navigation flottante se replie dans votre bouton de profil.</string>
-  <string name="navigation_behaviour_always_expanded">Toujours déployée</string>
+  <string name="navigation_behaviour_always_expanded">Déployée</string>
   <string name="navigation_behaviour_always_expanded_description">Tous les boutons de page restent visibles.</string>
   <string name="navigation_behaviour_after_delay">Replier après un délai</string>
   <string name="navigation_behaviour_after_delay_description">Se replie quelques secondes après avoir choisi une page.</string>

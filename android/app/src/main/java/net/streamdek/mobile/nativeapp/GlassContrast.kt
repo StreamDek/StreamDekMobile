@@ -18,8 +18,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsTopHeight
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import coil.imageLoader
 import coil.request.ImageRequest
@@ -254,4 +265,39 @@ fun ReportGlassBackdrop(artworkUrl: String?) {
     contrast.backdrop = bands
     onDispose { if (contrast.backdrop == bands) contrast.backdrop = null }
   }
+}
+
+/**
+ * Keeps the status bar's clock and icons readable once a floating header has slid away.
+ *
+ * A Modern header floats over the page, so when it tucks away the page scrolls straight under the
+ * status bar. This fades in a soft gradient behind it, driven by the same animated top-chrome
+ * protection as the glass — so it arrives as content passes under and leaves at the top of the
+ * page, and costs a redraw of one gradient rather than any recomposition.
+ */
+@Composable
+fun ChromeStatusBarScrim(modifier: Modifier = Modifier) {
+  val contrast = LocalGlassContrast.current ?: return
+  val lightTheme = MaterialTheme.colorScheme.background.luminance() > 0.5f
+  val ground = if (lightTheme) MaterialTheme.colorScheme.background else Color.Black
+  Box(
+    modifier = modifier
+      .fillMaxWidth()
+      .drawBehind {
+        val strength = (contrast.protection(GlassContrastZone.TopChrome) / GlassContrastPolicy.SCROLLED_TOP).coerceIn(0f, 1f)
+        if (strength <= 0.01f) return@drawBehind
+        val barBottom = (size.height - 14.dp.toPx()).coerceAtLeast(1f)
+        drawRect(
+          Brush.verticalGradient(
+            0f to ground.copy(alpha = 0.86f * strength),
+            (barBottom / size.height) to ground.copy(alpha = 0.58f * strength),
+            1f to Color.Transparent,
+          ),
+        )
+      }
+      // Feathered past the bar itself so the scrim has no edge of its own to notice. Drawn outside
+      // both, so the gradient covers the bar and the feather together.
+      .padding(bottom = 14.dp)
+      .windowInsetsTopHeight(WindowInsets.statusBars),
+  )
 }

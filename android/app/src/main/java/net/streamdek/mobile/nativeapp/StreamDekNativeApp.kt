@@ -1,5 +1,7 @@
 package net.streamdek.mobile.nativeapp
 
+import kotlinx.coroutines.ensureActive
+
 import android.app.Activity
 import android.app.Application
 import android.content.Context
@@ -6309,7 +6311,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
       loadPlaybackMemoryEntry(detail, episode)?.let { playbackResumeStore.save(ownerKey, it.copy(stream = null), touch = false) }
       uiState = uiState.copy(localResumeEntries = loadResumeEntries())
-      playBestStream(episode)
+      playBestStream(episode, resumePercentOverride = resumePercent)
       return true
     }
     return false
@@ -8962,6 +8964,16 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
     if (item.type == "movie") {
       watchedMovieStore.save(ownerKey, (watchedMovieStore.load(ownerKey) + item.id).distinct())
+      val completed = PlaybackProgressRecord(
+        entityType = "movie", entityId = item.id, episodeKey = null, seasonNumber = null, episodeNumber = null,
+        title = item.title, poster = item.poster, backdrop = item.backdrop, year = item.year,
+        positionSec = 0.0, durationSec = 0.0, progress = 0.0, completed = true,
+        updatedAt = System.currentTimeMillis(), lastDevice = "StreamDek Mobile", lastPlatform = "mobile",
+      )
+      uiState = uiState.copy(playbackProgressRecords = uiState.playbackProgressRecords.filterNot {
+        it.entityType.equals("movie", true) && it.entityId == item.id
+      } + completed, watchedEpisodeRevision = uiState.watchedEpisodeRevision + 1)
+
     }
 
     pushWatchedProgress(item, seasonNumber, episodeNumber)
@@ -9001,6 +9013,39 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         }
         refreshTraktData()
       }
+    }
+  }
+
+  fun setMovieWatched(detail: MediaDetail, watched: Boolean) {
+    if (detail.type != "movie") return
+    val ownerKey = activeOwnerKey() ?: return
+    val existing = watchedMovieStore.load(ownerKey)
+    watchedMovieStore.save(ownerKey, if (watched) (existing + detail.id).distinct() else existing.filterNot { it == detail.id })
+    playbackResumeStore.removeTitle(ownerKey, detail.id, "movie")
+    val record = PlaybackProgressRecord(
+      entityType = "movie", entityId = detail.id, episodeKey = null,
+      seasonNumber = null, episodeNumber = null, title = detail.title, poster = detail.poster,
+      backdrop = detail.backdrop, year = detail.year, positionSec = 0.0, durationSec = 0.0,
+      progress = 0.0, completed = watched, unwatched = !watched, updatedAt = System.currentTimeMillis(),
+      lastDevice = "StreamDek Mobile", lastPlatform = "mobile",
+    )
+    uiState = uiState.copy(
+      playbackProgressRecords = uiState.playbackProgressRecords.filterNot {
+        it.entityType.equals("movie", true) && it.entityId == detail.id
+      } + record,
+      localResumeEntries = loadResumeEntries(), localContinueWatching = loadLocalContinueWatching(),
+      watchedEpisodeRevision = uiState.watchedEpisodeRevision + 1,
+    )
+    val session = uiState.session ?: return
+    val profileId = uiState.activeProfileId ?: return
+    viewModelScope.launch {
+      apiClient.putPlaybackProgress(
+        session = session, profileId = profileId, entityType = "movie", entityId = detail.id,
+        episodeKey = null, positionSec = 0.0, durationSec = 0.0, title = detail.title,
+        poster = detail.poster, backdrop = detail.backdrop, year = detail.year,
+        completed = watched, unwatched = !watched,
+      )
+      if (watched && uiState.traktStatus.connected) apiClient.syncWatchedMovie(session, profileId, detail)
     }
   }
 
@@ -10774,8 +10819,16 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
         val key = listOf(normalizedMediaType(type), record.entityId, record.seasonNumber?.toString().orEmpty(), record.episodeNumber?.toString().orEmpty()).joinToString(":")
         seen += key
         val existing = local[key]
+        if (type == "movie" && uiState.playbackProgressRecords.any {
+            it.entityType.equals("movie", true) && it.entityId == record.entityId && it.updatedAt > record.updatedAt
+          }) return@forEach
         if (existing != null && (existing.updatedAt ?: 0L) >= record.updatedAt) return@forEach
         changed = true
+        if (type == "movie" && (record.completed || record.unwatched)) {
+          val watched = watchedMovieStore.load(ownerKey)
+          watchedMovieStore.save(ownerKey, if (record.unwatched) watched.filterNot { it == record.entityId }
+            else (watched + record.entityId).distinct())
+        }
         if (record.unwatched) {
           if (record.seasonNumber != null && record.episodeNumber != null) {
             val watchedKey = watchedEpisodeKey(record.entityId, record.seasonNumber, record.episodeNumber)
@@ -10855,7 +10908,11 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
         }
       }
 
-      uiState = uiState.copy(playbackProgressRecords = remote)
+      // A pull started before a local movie checkpoint must not resurrect its old completion/position.
+      val recentMovies = uiState.playbackProgressRecords.filter { it.entityType.equals("movie", true) }
+      val mergedRecords = (remote + recentMovies).groupBy { listOf(it.entityType, it.entityId, it.episodeKey) }
+        .map { (_, records) -> records.maxBy { it.updatedAt } }
+      uiState = uiState.copy(playbackProgressRecords = mergedRecords)
       if (changed) {
         uiState = uiState.copy(
           localContinueWatching = loadLocalContinueWatching(),
@@ -10990,6 +11047,22 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       }
       uiState = uiState.copy(localContinueWatching = loadLocalContinueWatching(), localResumeEntries = loadResumeEntries())
       return
+    }
+    if (normalizedMediaType(player.mediaType) == "movie") {
+      if (normalizedProgress >= 95.0) {
+        watchedMovieStore.save(ownerKey, (watchedMovieStore.load(ownerKey) + player.mediaId).distinct())
+      }
+      val current = PlaybackProgressRecord(
+        entityType = "movie", entityId = player.mediaId, episodeKey = null,
+        seasonNumber = null, episodeNumber = null, title = player.title,
+        poster = player.poster, backdrop = player.backdrop, year = player.year?.toString(),
+        positionSec = lastPlaybackPositionSec, durationSec = lastPlaybackDurationSec,
+        progress = normalizedProgress, completed = normalizedProgress >= 95.0,
+        updatedAt = System.currentTimeMillis(), lastDevice = "StreamDek Mobile", lastPlatform = "mobile",
+      )
+      uiState = uiState.copy(playbackProgressRecords = uiState.playbackProgressRecords.filterNot {
+        it.entityType.equals("movie", true) && it.entityId == player.mediaId
+      } + current, watchedEpisodeRevision = uiState.watchedEpisodeRevision + 1)
     }
     pushPlaybackProgress(player, normalizedProgress)
     if (normalizedProgress >= 95.0 || normalizedProgress <= 1.0) {
@@ -12868,6 +12941,7 @@ private fun MainScene(
           onLoadSeason = viewModel::loadSeason,
           onToggleWatchlist = viewModel::toggleWatchlist,
           onToggleEpisodeWatched = viewModel::toggleEpisodeWatched,
+          onSetMovieWatched = viewModel::setMovieWatched,
           onMarkPreviousEpisodesWatched = viewModel::markPreviousEpisodesWatched,
           onSetSeasonWatched = viewModel::setSeasonWatched,
           onSeasonTabStyleChange = viewModel::setSeasonTabStyle,
@@ -13903,98 +13977,78 @@ private fun NetworkBrowseScreen(network: MediaItem, headerStyle: HeaderStyle, on
   var selectionSheet by rememberSaveable(network.id) { mutableStateOf<String?>(null) }
   var columns by rememberSaveable(network.id) { mutableStateOf(3) }
   var genres by remember(network.id) { mutableStateOf<List<DiscoverGenre>>(emptyList()) }
-  var catalogItems by remember(network.id) { mutableStateOf<List<MediaItem>>(emptyList()) }
-  // Search results are kept apart from the catalogue. Clearing the search box used to throw the
-  // results away and refetch the catalogue, leaving the page empty until that answered — and empty
-  // for good when it failed, which the burst of page requests a search makes invited.
-  var searchResults by remember(network.id) { mutableStateOf<List<MediaItem>?>(null) }
-  // The filters catalogItems was loaded under, so returning from a search knows it can reuse it.
+  var catalogue by remember(network.id) { mutableStateOf(NetworkCatalogPages()) }
+  var searchResults by remember(network.id) { mutableStateOf(NetworkCatalogPages()) }
   var catalogFilters by remember(network.id) { mutableStateOf<String?>(null) }
+  var searchKey by remember(network.id) { mutableStateOf<String?>(null) }
   var loading by remember(network.id) { mutableStateOf(true) }
-  var page by remember(network.id) { mutableStateOf(1) }
-  var totalPages by remember(network.id) { mutableStateOf(1) }
-  var activeRequestToken by remember(network.id) { mutableStateOf("") }
+  var loadFailed by remember(network.id) { mutableStateOf(false) }
+  var retry by remember(network.id) { mutableStateOf(0) }
+  var handledRetry by remember(network.id) { mutableStateOf(0) }
   val listState = rememberLazyGridState()
   val years: List<String> = remember { (java.time.Year.now().value downTo 1980).map(Int::toString) }
-  val scope = rememberCoroutineScope()
   val modernHeader = headerStyle == HeaderStyle.Modern
   val headerHazeState = rememberHazeState()
-
-  fun currentFilters(): String = listOf(type, genreId, year, sort).joinToString(":")
-
-  fun load(targetPage: Int, append: Boolean) {
-    val requestedQuery = query.trim()
-    val filters = currentFilters()
-    val requestToken = listOf(network.id, targetPage, filters, requestedQuery, System.nanoTime()).joinToString(":")
-    activeRequestToken = requestToken
-    loading = true
-    scope.launch {
-      val firstPage = api.fetchNetworkCatalog(network.id, targetPage, type, genreId, year, sort, "")
-        .getOrElse {
-          if (activeRequestToken == requestToken) {
-            // A failed search leaves the catalogue alone, so clearing the box still has it to show.
-            if (requestedQuery.isNotBlank()) searchResults = emptyList()
-            else if (!append) { catalogItems = emptyList(); catalogFilters = null }
-            loading = false
-          }
-          return@launch
-        }
-      if (activeRequestToken != requestToken) return@launch
-
-      if (requestedQuery.isNotBlank() && !append) {
-        val collected = firstPage.items.toMutableList()
-        val lastSearchPage = minOf(firstPage.totalPages, 20)
-        if (lastSearchPage > 1) {
-          (2..lastSearchPage).chunked(4).forEach { pageChunk ->
-            val chunkItems = coroutineScope {
-              pageChunk.map { searchPage ->
-                async { api.fetchNetworkCatalog(network.id, searchPage, type, genreId, year, sort, "").getOrNull()?.items.orEmpty() }
-              }.awaitAll()
-            }
-            if (activeRequestToken != requestToken) return@launch
-            chunkItems.forEach(collected::addAll)
-          }
-        }
-        val queryTokens = requestedQuery.lowercase().split(Regex("\\s+")).filter(String::isNotBlank)
-        searchResults = collected
-          .distinctBy { item -> "${item.type}:${item.id}" }
-          .filter { item ->
-            val searchText = listOf(item.title, item.year, item.description).joinToString(" ").lowercase()
-            queryTokens.all(searchText::contains)
-          }
-      } else {
-        catalogItems = if (append) (catalogItems + firstPage.items).distinctBy { item -> "${item.type}:${item.id}" } else firstPage.items
-        catalogFilters = filters
-        page = firstPage.page
-        totalPages = firstPage.totalPages
-      }
-      if (activeRequestToken != requestToken) return@launch
-      loading = false
-    }
+  val filters = listOf(type, genreId, year, sort).joinToString(":")
+  val normalizedQuery = query.trim()
+  val currentSearchKey = "$filters:$normalizedQuery"
+  val shownItems = if (normalizedQuery.isEmpty()) {
+    if (catalogFilters == filters) catalogue.items else emptyList()
+  } else {
+    if (searchKey == currentSearchKey) searchResults.items else emptyList()
   }
 
-  LaunchedEffect(type) {
+  LaunchedEffect(network.id, type) {
     val genreType = if (type == "tv") "tv" else "movie"
     api.fetchDiscoverGenres(genreType).onSuccess { genres = it }
   }
-  LaunchedEffect(network.id, type, sort, genreId, year, query) {
-    if (query.isBlank()) {
-      searchResults = null
-      if (catalogFilters == currentFilters()) {
-        // Back from a search onto a catalogue already loaded for these filters: show it as it was,
-        // and drop whatever the search still had in flight.
-        activeRequestToken = ""
-        loading = false
-        return@LaunchedEffect
+  // Each query owns its requests; cancelling this effect prevents obsolete results from landing.
+  // The browse catalogue and its pagination survive searches, failures, and clearing the field.
+  LaunchedEffect(network.id, filters, normalizedQuery, retry) {
+    val retrying = retry != handledRetry
+    handledRetry = retry
+    loadFailed = false
+    val searching = normalizedQuery.isNotEmpty()
+    if (catalogFilters != filters) {
+      catalogue = NetworkCatalogPages()
+      catalogFilters = filters
+    }
+    if (searchKey != currentSearchKey) {
+      searchResults = NetworkCatalogPages()
+      searchKey = currentSearchKey
+    }
+    fun currentPages() = if (searching) searchResults else catalogue
+    loading = currentPages().page == 0
+    listState.scrollToItem(0)
+    if (searching) delay(350)
+
+    suspend fun loadNext(): Boolean {
+      loading = true
+      loadFailed = false
+      try {
+        do {
+          val previous = currentPages()
+          val result = api.fetchNetworkCatalog(network.id, previous.page + 1, type, genreId, year, sort, normalizedQuery)
+          // The API wraps cancellation in Result, so check before writing Compose state.
+          kotlinx.coroutines.currentCoroutineContext().ensureActive()
+          val next = result.getOrNull() ?: run { loadFailed = true; return false }
+          val updated = previous.append(next)
+          if (searching) searchResults = updated else catalogue = updated
+          if (next.items.isNotEmpty() || !updated.hasMore) return true
+          // Membership filtering can leave an empty search-index page before later matches.
+          delay(150)
+        } while (true)
+      } finally {
+        // A cancelled request must not hide the replacement query's loading indicator.
+        if (kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]?.isActive == true) loading = false
       }
     }
-    delay(if (query.isBlank()) 0 else 350)
-    load(1, false)
-  }
-  LaunchedEffect(listState, page, totalPages, loading, query) {
-    snapshotFlow { listState.canScrollForward }.collect { canScrollForward ->
-      if (query.isBlank() && !canScrollForward && !loading && page < totalPages) load(page + 1, true)
-    }
+
+    if ((currentPages().page == 0 || retrying && currentPages().hasMore) && !loadNext()) return@LaunchedEffect
+    snapshotFlow { listState.canScrollForward to listState.layoutInfo.totalItemsCount }
+      .collect { (canScrollForward, _) ->
+        if (!canScrollForward && !loadFailed && currentPages().hasMore) loadNext()
+      }
   }
 
   // Resolved outside the remember: a calculation block is not a composition. Keying on them also
@@ -14036,13 +14090,11 @@ private fun NetworkBrowseScreen(network: MediaItem, headerStyle: HeaderStyle, on
       horizontalArrangement = Arrangement.spacedBy(12.dp),
       verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
-      // Until a search has answered, the catalogue stays on screen under the spinner.
-      val shownItems = if (query.isBlank()) catalogItems else searchResults ?: catalogItems
       when {
         loading && shownItems.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
           Box(Modifier.fillMaxWidth().height(220.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         }
-        shownItems.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
+        shownItems.isEmpty() && !loadFailed -> item(span = { GridItemSpan(maxLineSpan) }) {
           LibraryEmptyState(
             icon = { Icon(Icons.Rounded.Search, null, modifier = Modifier.size(48.dp)) },
             title = stringResource(R.string.browse_no_matching_titles),
@@ -14051,6 +14103,15 @@ private fun NetworkBrowseScreen(network: MediaItem, headerStyle: HeaderStyle, on
         }
         else -> gridItems(shownItems, key = { item -> "${item.type}:${item.id}" }) { item ->
           LibraryPosterTile(item = item, modifier = Modifier.fillMaxWidth(), showMeta = false, onClick = { onOpen(item) })
+        }
+      }
+      if (loadFailed) {
+        item(span = { GridItemSpan(maxLineSpan) }) {
+          Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(stringResource(R.string.network_load_failed, network.title))
+            Text(stringResource(R.string.network_load_failed_detail))
+            TextButton(onClick = { retry += 1 }) { Text(stringResource(R.string.action_retry)) }
+          }
         }
       }
       if (loading && shownItems.isNotEmpty()) {
@@ -25335,6 +25396,7 @@ private fun DetailScreen(
   onClearPlayerReturnTarget: () -> Unit,
   onPlayBestStream: (EpisodeItem?) -> Unit,
   onRestartBestStream: (EpisodeItem?, Boolean) -> Unit,
+  onSetMovieWatched: (MediaDetail, Boolean) -> Unit,
   onLoadSeason: (String, Int) -> Unit,
   onToggleWatchlist: (MediaItem) -> Unit,
   onToggleEpisodeWatched: (MediaDetail, EpisodeItem, Boolean) -> Unit,
@@ -25393,8 +25455,10 @@ private fun DetailScreen(
       onRefreshPlaybackProgress()
     }
   }
-  val detailScope = rememberCoroutineScope()
-  var watchedMovieIds by rememberSaveable(watchedOwnerKey) { mutableStateOf(watchedMovieStore.load(watchedOwnerKey)) }
+  var watchedMovieIds by remember(watchedOwnerKey, detail.id) { mutableStateOf(watchedMovieStore.load(watchedOwnerKey)) }
+  LaunchedEffect(detail.id, watchedOwnerKey, uiState.watchedEpisodeRevision, uiState.playbackProgressRecords) {
+    watchedMovieIds = watchedMovieStore.load(watchedOwnerKey)
+  }
   val movieWatched = detail.type == "movie" && detail.id in watchedMovieIds
   fun episodeCanRestart(episode: EpisodeItem): Boolean {
     val watched = watchedEpisodeKey(detail.id, episode.seasonNumber, episode.episodeNumber) in watchedEpisodeIds
@@ -25409,19 +25473,6 @@ private fun DetailScreen(
         !it.unwatched && !it.dismissed && (it.positionSec > 0.0 || it.completed)
     }
     return watched || localProgress || syncedProgress
-  }
-  fun persistMovieWatched(watched: Boolean) {
-    val updated = if (watched) (watchedMovieIds + detail.id).distinct() else watchedMovieIds.filterNot { it == detail.id }
-    watchedMovieIds = updated
-    watchedMovieStore.save(watchedOwnerKey, updated)
-    if (watched) {
-      val session = uiState.session
-      val profileId = uiState.activeProfileId
-      if (session != null && profileId != null && uiState.traktStatus.connected) {
-        val apiClient = StreamDekApiClient()
-        detailScope.launch { apiClient.syncWatchedMovie(session, profileId, detail) }
-      }
-    }
   }
   val episodePage = episodePageId?.let { id -> uiState.selectedSeasonEpisodes.firstOrNull { it.id == id } ?: selectedEpisode?.takeIf { it.id == id } }
   val watchlistItem = MediaItem(
@@ -25467,18 +25518,24 @@ private fun DetailScreen(
       .filter { it.mediaId == detail.id && it.mediaType == mediaType && !it.isLive && it.progressPercent in 3.0..94.9 }
       .maxByOrNull { it.updatedAt }
   }
-  val movieRestartAvailable = detail.type == "movie" && (
-    movieWatched ||
-      uiState.localResumeEntries.any {
-        it.mediaId == detail.id && normalizedMediaType(it.mediaType) == "movie" && (it.positionSeconds ?: 0.0) > 0.0
-      } ||
-      uiState.playbackProgressRecords.any {
-        it.entityType.equals("movie", true) && it.entityId == detail.id &&
-          !it.unwatched && !it.dismissed && (it.positionSec > 0.0 || it.completed)
-      }
-    )
+  val movieRecord = uiState.playbackProgressRecords.filter {
+    it.entityType.equals("movie", true) && it.entityId == detail.id
+  }.maxByOrNull { it.updatedAt }
+  val movieLocal = uiState.localResumeEntries.filter {
+    it.mediaId == detail.id && normalizedMediaType(it.mediaType) == "movie" && !it.isLive
+  }.maxByOrNull { it.updatedAt ?: 0L }
+  val movieUsesLocal = movieLocal != null && (movieRecord == null || (movieLocal.updatedAt ?: 0L) > movieRecord.updatedAt)
+  val movieAction = moviePlaybackAction(
+    watched = movieWatched,
+    progressPercent = if (movieUsesLocal) movieLocal!!.progressPercent else movieRecord?.progress ?: 0.0,
+    positionSec = if (movieUsesLocal) movieLocal!!.positionSeconds ?: 0.0 else movieRecord?.positionSec ?: 0.0,
+    completed = !movieUsesLocal && movieRecord?.completed == true,
+    unwatched = !movieUsesLocal && movieRecord?.unwatched == true,
+  )
   val primaryPlayLabel = when {
     isUnreleasedMovie -> stringResource(R.string.detail_unreleased)
+    detail.type == "movie" && movieAction == MoviePlaybackAction.PlayAgain -> stringResource(R.string.action_play_again)
+    detail.type == "movie" && movieAction == MoviePlaybackAction.Play -> stringResource(R.string.action_play)
     // Resume state comes from the local store, so surface it instantly — stream
     // discovery keeps running in the background and never blocks this label.
     // Whole sentences rather than pieces glued together: which of the three is used depends on how
@@ -25498,6 +25555,7 @@ private fun DetailScreen(
     }
     // Streams publish progressively — the button is ready as soon as the first
     // source lands, while remaining sources keep loading in the background.
+    detail.type == "movie" && movieAction == MoviePlaybackAction.Resume -> stringResource(R.string.detail_continue)
     uiState.streamLoading && uiState.availableStreams.isEmpty() -> stringResource(R.string.detail_loading)
     else -> stringResource(R.string.action_play)
   }
@@ -25649,7 +25707,10 @@ private fun DetailScreen(
           primaryPlayLabel = primaryPlayLabel,
           showWatchedAction = detail.type == "movie" && !uiState.detailIsLive,
           watched = movieWatched,
-          onPlay = { onPlayBestStream(selectedEpisode) },
+          onPlay = {
+            if (detail.type == "movie" && movieAction != MoviePlaybackAction.Resume) onRestartBestStream(null, false)
+            else onPlayBestStream(selectedEpisode)
+          },
           onTrailer = { if (!detail.trailerUrl.isNullOrBlank()) trailerPopupUrl = detail.trailerUrl },
           onAbout = { selectedTab = DetailTab.About.name; onDetailTabChange(DetailTab.About.name) },
           onStreams = {
@@ -25661,7 +25722,7 @@ private fun DetailScreen(
           onEpisodes = { selectedTab = DetailTab.Episodes.name; onDetailTabChange(DetailTab.Episodes.name) },
           onSave = { onToggleWatchlist(watchlistItem) },
           onToggleFavourite = onToggleFavourite,
-          onToggleWatched = { persistMovieWatched(!movieWatched) },
+          onToggleWatched = { onSetMovieWatched(detail, !movieWatched) },
         )
     }
     val detailSections: androidx.compose.foundation.lazy.LazyListScope.() -> Unit = {
@@ -25926,16 +25987,6 @@ private fun DetailScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                   ) {
                     Text(stringResource(R.string.detail_sources), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black, color = streamsForeground, modifier = Modifier.weight(1f))
-                    if (movieRestartAvailable) {
-                      EpisodeActionButton(
-                        label = stringResource(R.string.action_restart_movie),
-                        icon = Icons.Rounded.Replay,
-                        tint = streamsForeground,
-                        foreground = streamsForeground,
-                        filled = false,
-                        onClick = { onRestartBestStream(null, false) },
-                      )
-                    }
                     StreamsRefreshControl(
                       loading = searching,
                       foreground = streamsForeground,

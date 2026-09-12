@@ -99,7 +99,6 @@
   <string name="error_cloudstream_source_off">Źródło %1$s jest wyłączone. Włącz je, aby otworzyć ten tytuł.</string>
   <string name="error_cloudstream_title_unavailable">Nie udało się otworzyć tego tytułu z jego źródła.</string>
   <string name="action_restart_episode">Uruchom odcinek od nowa</string>
-  <string name="action_restart_movie">Uruchom film od nowa</string>
   <string name="restart_episode_prompt">Rozpocząć S%1$d O%2$d od początku?</string>
   <string name="app_version_retry">Spróbuj ponownie</string>
   <string name="app_version_installed_required">Zainstalowana: %1$s   Wymagana: %2$s+</string>
@@ -1682,4 +1681,5 @@
   <string name="subtitle_tab_addons">Dodatki</string>
   <string name="subtitle_tab_style">Styl</string>
   <string name="subtitle_none">Brak</string>
+  <string name="action_play_again">Odtwórz ponownie</string>
 </resources>

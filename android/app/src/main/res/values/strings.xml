@@ -12,7 +12,6 @@
 -->
 <resources>
     <string name="action_restart_episode">Restart Episode</string>
-    <string name="action_restart_movie">Restart Movie</string>
     <string name="restart_episode_prompt">Start S%1$d E%2$d again from the beginning?</string>
   <!-- The product name. Never translated: a brand reads the same in every language. -->
   <string name="app_name" translatable="false">StreamDek</string>
@@ -1596,4 +1595,5 @@
   <string name="app_version_installed_required">Installed: %1$s   Required: %2$s+</string>
   <string name="app_version_required_title">Update required</string>
   <string name="app_version_required_message">This version of StreamDek is no longer supported. Update to continue.</string>
+  <string name="action_play_again">Play Again</string>
 </resources>

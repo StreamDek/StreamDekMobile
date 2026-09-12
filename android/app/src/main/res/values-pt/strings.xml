@@ -93,7 +93,6 @@
   <string name="error_cloudstream_source_off">%1$s está desativado. Ative-o para abrir este título.</string>
   <string name="error_cloudstream_title_unavailable">Não foi possível abrir este título a partir da sua fonte.</string>
   <string name="action_restart_episode">Recomeçar episódio</string>
-  <string name="action_restart_movie">Recomeçar filme</string>
   <string name="restart_episode_prompt">Recomeçar T%1$d E%2$d desde o início?</string>
   <string name="app_version_retry">Tentar novamente</string>
   <string name="app_version_installed_required">Instalada: %1$s   Necessária: %2$s+</string>
@@ -1596,4 +1595,5 @@
   <string name="subtitle_tab_addons">Add-ons</string>
   <string name="subtitle_tab_style">Estilo</string>
   <string name="subtitle_none">Nenhuma</string>
+  <string name="action_play_again">Reproduzir novamente</string>
 </resources>

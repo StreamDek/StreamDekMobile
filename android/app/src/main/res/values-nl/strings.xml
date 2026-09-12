@@ -93,7 +93,6 @@
   <string name="error_cloudstream_source_off">%1$s staat uit. Zet het aan om deze titel te openen.</string>
   <string name="error_cloudstream_title_unavailable">Deze titel kon niet worden geopend vanuit de bron.</string>
   <string name="action_restart_episode">Aflevering opnieuw starten</string>
-  <string name="action_restart_movie">Film opnieuw starten</string>
   <string name="restart_episode_prompt">S%1$d A%2$d opnieuw vanaf het begin starten?</string>
   <string name="app_version_retry">Opnieuw proberen</string>
   <string name="app_version_installed_required">Geïnstalleerd: %1$s   Vereist: %2$s+</string>
@@ -1582,4 +1581,5 @@
   <string name="subtitle_tab_addons">Add-ons</string>
   <string name="subtitle_tab_style">Stijl</string>
   <string name="subtitle_none">Geen</string>
+  <string name="action_play_again">Opnieuw afspelen</string>
 </resources>

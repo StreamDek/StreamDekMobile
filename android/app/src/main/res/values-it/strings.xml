@@ -1596,4 +1596,24 @@
   <string name="subtitle_tab_style">Stile</string>
   <string name="subtitle_none">Nessuno</string>
   <string name="action_play_again">Riproduci di nuovo</string>
+  <string name="settings_navigation_behaviour">Comportamento della navigazione</string>
+  <string name="settings_navigation_behaviour_description">Scegli quando la navigazione fluttuante si ritira nel pulsante del profilo.</string>
+  <string name="navigation_behaviour_always_expanded">Sempre espansa</string>
+  <string name="navigation_behaviour_always_expanded_description">Tutti i pulsanti delle pagine restano visibili.</string>
+  <string name="navigation_behaviour_after_delay">Comprimi dopo un ritardo</string>
+  <string name="navigation_behaviour_after_delay_description">Si ritira qualche secondo dopo aver scelto una pagina.</string>
+  <string name="navigation_behaviour_while_scrolling">Comprimi durante lo scorrimento</string>
+  <string name="navigation_behaviour_while_scrolling_description">Si ritira quando scorri verso il basso e torna quando scorri verso l\'alto.</string>
+  <string name="settings_visual_effects">Effetti visivi</string>
+  <string name="settings_visual_effects_description">Bilancia gli effetti vetro con uno scorrimento fluido. Salvato solo su questo dispositivo.</string>
+  <string name="visual_effects_automatic">Automatico</string>
+  <string name="visual_effects_automatic_description">Consigliato. Usa l\'aspetto più ricco che questo dispositivo può mantenere fluido.</string>
+  <string name="visual_effects_full">Completi</string>
+  <string name="visual_effects_full_description">Sfocatura vetro e superfici traslucide ovunque questo dispositivo le supporti.</string>
+  <string name="visual_effects_reduced">Ridotti</string>
+  <string name="visual_effects_reduced_description">Mantiene l\'aspetto traslucido con vetro colorato invece della sfocatura in tempo reale, per uno scorrimento più fluido.</string>
+  <string name="visual_effects_note_battery_saver">Effetti ridotti mentre il risparmio energetico è attivo.</string>
+  <string name="visual_effects_note_device">Automatico usa effetti ridotti per mantenere fluido questo dispositivo.</string>
+  <string name="visual_effects_note_performance">Automatico è passato agli effetti ridotti perché lo scorrimento rallentava.</string>
+  <string name="visual_effects_note_unsupported">Questa versione di Android non supporta la sfocatura, quindi il vetro usa superfici colorate.</string>
 </resources>

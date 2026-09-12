@@ -1582,4 +1582,24 @@
   <string name="subtitle_tab_style">Stijl</string>
   <string name="subtitle_none">Geen</string>
   <string name="action_play_again">Opnieuw afspelen</string>
+  <string name="settings_navigation_behaviour">Navigatiegedrag</string>
+  <string name="settings_navigation_behaviour_description">Kies wanneer de zwevende navigatie in je profielknop wegschuift.</string>
+  <string name="navigation_behaviour_always_expanded">Altijd uitgevouwen</string>
+  <string name="navigation_behaviour_always_expanded_description">Alle paginaknoppen blijven zichtbaar.</string>
+  <string name="navigation_behaviour_after_delay">Invouwen na vertraging</string>
+  <string name="navigation_behaviour_after_delay_description">Schuift een paar seconden nadat je een pagina kiest weg.</string>
+  <string name="navigation_behaviour_while_scrolling">Invouwen tijdens scrollen</string>
+  <string name="navigation_behaviour_while_scrolling_description">Schuift weg als je omlaag scrolt en komt terug als je omhoog scrolt.</string>
+  <string name="settings_visual_effects">Visuele effecten</string>
+  <string name="settings_visual_effects_description">Balans tussen glaseffecten en soepel scrollen. Alleen op dit apparaat opgeslagen.</string>
+  <string name="visual_effects_automatic">Automatisch</string>
+  <string name="visual_effects_automatic_description">Aanbevolen. Gebruikt de rijkste weergave die dit apparaat soepel kan houden.</string>
+  <string name="visual_effects_full">Volledig</string>
+  <string name="visual_effects_full_description">Glasvervaging en doorschijnende vlakken overal waar dit apparaat ze ondersteunt.</string>
+  <string name="visual_effects_reduced">Beperkt</string>
+  <string name="visual_effects_reduced_description">Behoudt de doorschijnende look met getint glas in plaats van live vervaging, voor soepeler scrollen.</string>
+  <string name="visual_effects_note_battery_saver">Beperkte effecten zolang Batterijbesparing aan staat.</string>
+  <string name="visual_effects_note_device">Automatisch gebruikt beperkte effecten om dit apparaat soepel te houden.</string>
+  <string name="visual_effects_note_performance">Automatisch is overgeschakeld naar beperkte effecten omdat scrollen trager werd.</string>
+  <string name="visual_effects_note_unsupported">Deze Android-versie kan niet vervagen, dus glas gebruikt getinte vlakken.</string>
 </resources>

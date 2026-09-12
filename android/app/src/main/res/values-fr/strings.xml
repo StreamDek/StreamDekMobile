@@ -1631,4 +1631,24 @@
   <string name="subtitle_tab_style">Style</string>
   <string name="subtitle_none">Aucun</string>
   <string name="action_play_again">Rejouer</string>
+  <string name="settings_navigation_behaviour">Comportement de la navigation</string>
+  <string name="settings_navigation_behaviour_description">Choisissez quand la navigation flottante se replie dans votre bouton de profil.</string>
+  <string name="navigation_behaviour_always_expanded">Toujours déployée</string>
+  <string name="navigation_behaviour_always_expanded_description">Tous les boutons de page restent visibles.</string>
+  <string name="navigation_behaviour_after_delay">Replier après un délai</string>
+  <string name="navigation_behaviour_after_delay_description">Se replie quelques secondes après avoir choisi une page.</string>
+  <string name="navigation_behaviour_while_scrolling">Replier pendant le défilement</string>
+  <string name="navigation_behaviour_while_scrolling_description">Se replie quand vous faites défiler vers le bas et revient quand vous remontez.</string>
+  <string name="settings_visual_effects">Effets visuels</string>
+  <string name="settings_visual_effects_description">Équilibrez les effets de verre et la fluidité du défilement. Enregistré sur cet appareil uniquement.</string>
+  <string name="visual_effects_automatic">Automatique</string>
+  <string name="visual_effects_automatic_description">Recommandé. Utilise le rendu le plus riche que cet appareil peut garder fluide.</string>
+  <string name="visual_effects_full">Complets</string>
+  <string name="visual_effects_full_description">Flou de verre et surfaces translucides partout où cet appareil les prend en charge.</string>
+  <string name="visual_effects_reduced">Réduits</string>
+  <string name="visual_effects_reduced_description">Garde l\'aspect translucide avec un verre teinté au lieu du flou en temps réel, pour un défilement plus fluide.</string>
+  <string name="visual_effects_note_battery_saver">Effets réduits tant que l\'économiseur de batterie est activé.</string>
+  <string name="visual_effects_note_device">Automatique utilise des effets réduits pour garder cet appareil fluide.</string>
+  <string name="visual_effects_note_performance">Automatique est passé aux effets réduits car le défilement ralentissait.</string>
+  <string name="visual_effects_note_unsupported">Cette version d\'Android ne peut pas flouter, le verre utilise donc des surfaces teintées.</string>
 </resources>

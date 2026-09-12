@@ -1596,4 +1596,24 @@
   <string name="app_version_required_title">Update required</string>
   <string name="app_version_required_message">This version of StreamDek is no longer supported. Update to continue.</string>
   <string name="action_play_again">Play Again</string>
+  <string name="settings_navigation_behaviour">Navigation Behaviour</string>
+  <string name="settings_navigation_behaviour_description">Choose when the floating navigation tucks into your profile button.</string>
+  <string name="navigation_behaviour_always_expanded">Always Expanded</string>
+  <string name="navigation_behaviour_always_expanded_description">Every page button stays visible.</string>
+  <string name="navigation_behaviour_after_delay">Collapse After a Delay</string>
+  <string name="navigation_behaviour_after_delay_description">Tucks away a few seconds after you choose a page.</string>
+  <string name="navigation_behaviour_while_scrolling">Collapse While Scrolling</string>
+  <string name="navigation_behaviour_while_scrolling_description">Tucks away as you scroll down and comes back as you scroll up.</string>
+  <string name="settings_visual_effects">Visual Effects</string>
+  <string name="settings_visual_effects_description">Balance glass effects with smooth scrolling. Saved on this device only.</string>
+  <string name="visual_effects_automatic">Automatic</string>
+  <string name="visual_effects_automatic_description">Recommended. Uses the richest look this device can keep smooth.</string>
+  <string name="visual_effects_full">Full</string>
+  <string name="visual_effects_full_description">Glass blur and translucent surfaces wherever this device supports them.</string>
+  <string name="visual_effects_reduced">Reduced</string>
+  <string name="visual_effects_reduced_description">Keeps the translucent look with tinted glass instead of live blur, for smoother scrolling.</string>
+  <string name="visual_effects_note_battery_saver">Using Reduced effects while Battery Saver is on.</string>
+  <string name="visual_effects_note_device">Automatic is using Reduced effects to keep this device smooth.</string>
+  <string name="visual_effects_note_performance">Automatic switched to Reduced effects after scrolling slowed down.</string>
+  <string name="visual_effects_note_unsupported">This version of Android can\'t blur, so glass uses tinted surfaces.</string>
 </resources>

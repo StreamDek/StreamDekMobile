@@ -1582,4 +1582,24 @@
   <string name="subtitle_tab_style">Stil</string>
   <string name="subtitle_none">Keine</string>
   <string name="action_play_again">Erneut abspielen</string>
+  <string name="settings_navigation_behaviour">Navigationsverhalten</string>
+  <string name="settings_navigation_behaviour_description">Wähle, wann sich die schwebende Navigation in deine Profiltaste zurückzieht.</string>
+  <string name="navigation_behaviour_always_expanded">Immer ausgeklappt</string>
+  <string name="navigation_behaviour_always_expanded_description">Alle Seitentasten bleiben sichtbar.</string>
+  <string name="navigation_behaviour_after_delay">Nach Verzögerung einklappen</string>
+  <string name="navigation_behaviour_after_delay_description">Zieht sich einige Sekunden nach der Seitenauswahl zurück.</string>
+  <string name="navigation_behaviour_while_scrolling">Beim Scrollen einklappen</string>
+  <string name="navigation_behaviour_while_scrolling_description">Zieht sich beim Herunterscrollen zurück und kehrt beim Hochscrollen wieder.</string>
+  <string name="settings_visual_effects">Visuelle Effekte</string>
+  <string name="settings_visual_effects_description">Glaseffekte und flüssiges Scrollen abwägen. Nur auf diesem Gerät gespeichert.</string>
+  <string name="visual_effects_automatic">Automatisch</string>
+  <string name="visual_effects_automatic_description">Empfohlen. Nutzt den reichsten Look, den dieses Gerät flüssig darstellen kann.</string>
+  <string name="visual_effects_full">Vollständig</string>
+  <string name="visual_effects_full_description">Glasunschärfe und transparente Flächen, wo dieses Gerät sie unterstützt.</string>
+  <string name="visual_effects_reduced">Reduziert</string>
+  <string name="visual_effects_reduced_description">Behält den transparenten Look mit getöntem Glas statt Live-Unschärfe – für flüssigeres Scrollen.</string>
+  <string name="visual_effects_note_battery_saver">Reduzierte Effekte, solange der Energiesparmodus aktiv ist.</string>
+  <string name="visual_effects_note_device">Automatisch nutzt reduzierte Effekte, damit dieses Gerät flüssig bleibt.</string>
+  <string name="visual_effects_note_performance">Automatisch hat zu reduzierten Effekten gewechselt, weil das Scrollen langsamer wurde.</string>
+  <string name="visual_effects_note_unsupported">Diese Android-Version kann nicht weichzeichnen, daher nutzt Glas getönte Flächen.</string>
 </resources>

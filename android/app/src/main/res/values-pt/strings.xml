@@ -1596,4 +1596,24 @@
   <string name="subtitle_tab_style">Estilo</string>
   <string name="subtitle_none">Nenhuma</string>
   <string name="action_play_again">Reproduzir novamente</string>
+  <string name="settings_navigation_behaviour">Comportamento da navegação</string>
+  <string name="settings_navigation_behaviour_description">Escolha quando a navegação flutuante se recolhe no botão do perfil.</string>
+  <string name="navigation_behaviour_always_expanded">Sempre expandida</string>
+  <string name="navigation_behaviour_always_expanded_description">Todos os botões de página ficam visíveis.</string>
+  <string name="navigation_behaviour_after_delay">Recolher após um atraso</string>
+  <string name="navigation_behaviour_after_delay_description">Recolhe-se alguns segundos depois de escolher uma página.</string>
+  <string name="navigation_behaviour_while_scrolling">Recolher ao deslocar</string>
+  <string name="navigation_behaviour_while_scrolling_description">Recolhe-se ao deslocar para baixo e regressa ao deslocar para cima.</string>
+  <string name="settings_visual_effects">Efeitos visuais</string>
+  <string name="settings_visual_effects_description">Equilibre os efeitos de vidro com um deslocamento fluido. Guardado apenas neste dispositivo.</string>
+  <string name="visual_effects_automatic">Automático</string>
+  <string name="visual_effects_automatic_description">Recomendado. Usa o aspeto mais rico que este dispositivo consegue manter fluido.</string>
+  <string name="visual_effects_full">Completos</string>
+  <string name="visual_effects_full_description">Desfoque de vidro e superfícies translúcidas onde este dispositivo os suportar.</string>
+  <string name="visual_effects_reduced">Reduzidos</string>
+  <string name="visual_effects_reduced_description">Mantém o aspeto translúcido com vidro tingido em vez de desfoque em tempo real, para um deslocamento mais fluido.</string>
+  <string name="visual_effects_note_battery_saver">A usar efeitos reduzidos enquanto a poupança de bateria está ativa.</string>
+  <string name="visual_effects_note_device">O modo automático usa efeitos reduzidos para manter este dispositivo fluido.</string>
+  <string name="visual_effects_note_performance">O modo automático mudou para efeitos reduzidos porque o deslocamento ficou lento.</string>
+  <string name="visual_effects_note_unsupported">Esta versão do Android não consegue desfocar, por isso o vidro usa superfícies tingidas.</string>
 </resources>

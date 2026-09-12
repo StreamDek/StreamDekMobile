@@ -1095,7 +1095,11 @@ private data class AppUiState(
   val episodeLayout: EpisodeLayout = EpisodeLayout.Strip,
   val showNavLabels: Boolean = true,
   val collapsibleNavigationEnabled: Boolean = false,
+  /** Device-local: what triggers the collapse. See [NavigationBehaviour] for why it is a second key. */
+  val navigationCollapsesOnScroll: Boolean = false,
   val navigationAutoCollapseSeconds: Int = 5,
+  /** Device-local, like [animationSpeed]: see `VisualEffects.kt`. */
+  val visualEffectsMode: VisualEffectsMode = VisualEffectsMode.Default,
   val showStreamsList: Boolean = true,
   val heroTrailerAutoplay: Boolean = false,
   // 2160p by default: the resolver gates format selection on this value, so a lower default
@@ -1309,7 +1313,10 @@ private data class AppUiState(
   val fusionBadgeSources: Map<String, FusionBadgeSourceState> = emptyMap(),
   val errorMessage: String? = null,
   val infoMessage: String? = null,
-)
+) {
+  val navigationBehaviour: NavigationBehaviour
+    get() = NavigationBehaviour.from(collapsibleNavigationEnabled, navigationCollapsesOnScroll)
+}
 
 /**
  * A line of update status, as a resource id rather than a finished sentence.
@@ -2019,6 +2026,8 @@ private class AppSettingsStore(context: Context) {
     episodeLayout = runCatching { EpisodeLayout.valueOf(profilePrefs.getString("episode_layout", EpisodeLayout.Strip.name) ?: EpisodeLayout.Strip.name) }.getOrDefault(EpisodeLayout.Strip),
     showNavLabels = prefs.getBoolean("show_nav_labels", true),
     collapsibleNavigationEnabled = prefs.getBoolean("collapsible_navigation_enabled", false),
+    navigationCollapsesOnScroll = prefs.getString(NavigationBehaviour.TRIGGER_PREFERENCE, null) == NavigationBehaviour.TRIGGER_SCROLL,
+    visualEffectsMode = VisualEffectsMode.fromKey(prefs.getString(VISUAL_EFFECTS_PREFERENCE, null)),
     downloadsEnabled = prefs.getBoolean("downloads_enabled", false),
     dv7HevcFallback = prefs.getBoolean("dv7_hevc_fallback", false),
     tunneledPlayback = prefs.getBoolean("tunneled_playback", false),
@@ -2160,6 +2169,15 @@ private class AppSettingsStore(context: Context) {
   fun saveEpisodeLayout(value: EpisodeLayout) { profilePrefs.edit().putString("episode_layout", value.name).apply() }
   fun saveShowNavLabels(value: Boolean) { prefs.edit().putBoolean("show_nav_labels", value).apply() }
   fun saveCollapsibleNavigationEnabled(value: Boolean) { prefs.edit().putBoolean("collapsible_navigation_enabled", value).apply() }
+  /** Device prefs, never [profilePrefs] or the cloud payload: see [NavigationBehaviour]. */
+  fun saveNavigationCollapsesOnScroll(value: Boolean) {
+    prefs.edit().putString(
+      NavigationBehaviour.TRIGGER_PREFERENCE,
+      if (value) NavigationBehaviour.TRIGGER_SCROLL else NavigationBehaviour.TRIGGER_DELAY,
+    ).apply()
+  }
+  /** Device prefs: the choice describes this phone's hardware, not the account. */
+  fun saveVisualEffectsMode(value: VisualEffectsMode) { prefs.edit().putString(VISUAL_EFFECTS_PREFERENCE, value.key).apply() }
   fun saveDownloadsEnabled(value: Boolean) { prefs.edit().putBoolean("downloads_enabled", value).apply() }
   fun saveNavigationAutoCollapseSeconds(value: Int) { prefs.edit().putInt("navigation_auto_collapse_seconds", value.coerceIn(2, 15)).apply() }
   fun saveShowStreamsList(value: Boolean) { profilePrefs.edit().putBoolean("show_streams_list", value).apply() }
@@ -9662,6 +9680,25 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setEpisodeLayout(layout: EpisodeLayout) { appSettingsStore.saveEpisodeLayout(layout); uiState = uiState.copy(episodeLayout = layout); syncCloudPreferences() }
   fun setShowNavLabels(value: Boolean) { appSettingsStore.saveShowNavLabels(value); uiState = uiState.copy(showNavLabels = value); syncCloudPreferences() }
   fun setCollapsibleNavigationEnabled(value: Boolean) { appSettingsStore.saveCollapsibleNavigationEnabled(value); uiState = uiState.copy(collapsibleNavigationEnabled = value); syncCloudPreferences() }
+  /**
+   * Only the synced "collapses at all" half reaches the cloud; the trigger stays on this device.
+   *
+   * Choosing Always Expanded leaves the stored trigger alone, so switching collapsing back on — here
+   * or from another device through sync — returns to whichever trigger this phone last used.
+   */
+  fun setNavigationBehaviour(value: NavigationBehaviour) {
+    if (value != NavigationBehaviour.AlwaysExpanded) {
+      val onScroll = value == NavigationBehaviour.CollapseWhileScrolling
+      appSettingsStore.saveNavigationCollapsesOnScroll(onScroll)
+      uiState = uiState.copy(navigationCollapsesOnScroll = onScroll)
+    }
+    if (uiState.collapsibleNavigationEnabled != value.collapses) setCollapsibleNavigationEnabled(value.collapses)
+  }
+  /** Device-local like [setAnimationSpeed], so deliberately without a cloud sync. */
+  fun setVisualEffectsMode(value: VisualEffectsMode) {
+    appSettingsStore.saveVisualEffectsMode(value)
+    uiState = uiState.copy(visualEffectsMode = value)
+  }
   fun setNavigationAutoCollapseSeconds(value: Int) {
     val seconds = value.coerceIn(2, 15)
     appSettingsStore.saveNavigationAutoCollapseSeconds(seconds)
@@ -11462,6 +11499,7 @@ private fun StreamDekNativeAppContent(
   ) {
    ProvideStreamDekMotion(rememberMotionSettings(uiState.animationSpeed)) {
    CompositionLocalProvider(
+     LocalVisualEffects provides rememberVisualEffects(uiState.visualEffectsMode),
      LocalWindowSize provides windowSize,
      LocalStreamDekSpacing provides spacing,
      LocalDarkColorScheme provides darkColorScheme,
@@ -18564,7 +18602,8 @@ private fun SettingsScene(
       onSeasonTabStyleChange = viewModel::setSeasonTabStyle,
       onEpisodeLayoutChange = viewModel::setEpisodeLayout,
       onShowNavLabelsChange = viewModel::setShowNavLabels,
-      onCollapsibleNavigationEnabledChange = viewModel::setCollapsibleNavigationEnabled,
+      onNavigationBehaviourChange = viewModel::setNavigationBehaviour,
+      onVisualEffectsModeChange = viewModel::setVisualEffectsMode,
       onNavigationAutoCollapseSecondsChange = viewModel::setNavigationAutoCollapseSeconds,
       onSyncOnCellularChange = viewModel::setSyncOnCellular,
       onHoldToSpeedEnabledChange = viewModel::setHoldToSpeedEnabled,
@@ -18737,7 +18776,8 @@ private fun SettingsTab(
   onSeasonTabStyleChange: (SeasonTabStyle) -> Unit,
   onEpisodeLayoutChange: (EpisodeLayout) -> Unit,
   onShowNavLabelsChange: (Boolean) -> Unit,
-  onCollapsibleNavigationEnabledChange: (Boolean) -> Unit,
+  onNavigationBehaviourChange: (NavigationBehaviour) -> Unit,
+  onVisualEffectsModeChange: (VisualEffectsMode) -> Unit,
   onNavigationAutoCollapseSecondsChange: (Int) -> Unit,
   onSyncOnCellularChange: (Boolean) -> Unit,
   onHoldToSpeedEnabledChange: (Boolean) -> Unit,
@@ -19116,6 +19156,8 @@ private fun SettingsTab(
                 onHeaderStyleChange(if (selected == "Modern") HeaderStyle.Modern else HeaderStyle.Classic)
               }
               SettingsDivider()
+              VisualEffectsRow(selected = uiState.visualEffectsMode, onSelected = onVisualEffectsModeChange)
+              SettingsDivider()
               // The interface language, which is not the Preferred Audio or Preferred Subtitle
               // language: those describe what comes out of the speakers and appears over the
               // picture, live on the profile because they follow the person rather than the phone,
@@ -19142,13 +19184,17 @@ private fun SettingsTab(
             SettingsSection(stringResource(R.string.settings_m_navigation)) {
               SettingsSwitchRow("LBL", Color(0xFF6366F1), stringResource(R.string.settings_m_show_navigation_labels), stringResource(R.string.settings_m_show_page_names_below_the_navigation_icons), uiState.showNavLabels, onShowNavLabelsChange)
               SettingsDivider()
-              SettingsSwitchRow("NAV", Color(0xFF22D3EE), stringResource(R.string.settings_m_collapsible_floating_navigation), stringResource(R.string.settings_m_hide_the_navigation_after_you_choose_a), uiState.collapsibleNavigationEnabled, onCollapsibleNavigationEnabledChange)
-              SettingsDivider()
-              NavigationAutoCollapseDelaySlider(
-                seconds = uiState.navigationAutoCollapseSeconds,
-                enabled = uiState.collapsibleNavigationEnabled,
-                onSecondsChange = onNavigationAutoCollapseSecondsChange,
-              )
+              NavigationBehaviourRow(selected = uiState.navigationBehaviour, onSelected = onNavigationBehaviourChange)
+              // The delay only means something to the behaviour it times, so it is offered with that
+              // one alone rather than left on screen, disabled, under the other two.
+              if (uiState.navigationBehaviour == NavigationBehaviour.CollapseAfterDelay) {
+                SettingsDivider()
+                NavigationAutoCollapseDelaySlider(
+                  seconds = uiState.navigationAutoCollapseSeconds,
+                  enabled = true,
+                  onSecondsChange = onNavigationAutoCollapseSecondsChange,
+                )
+              }
             }
           }
         }
@@ -21037,6 +21083,62 @@ private fun AnimationSpeedRow(selected: AnimationSpeed, onSelected: (AnimationSp
     if (motion.overriddenBySystem) {
       Text(
         stringResource(R.string.settings_reduce_motion_override),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
+        modifier = Modifier.padding(start = 46.dp, end = 4.dp, bottom = 8.dp),
+      )
+    }
+  }
+}
+
+@Composable
+private fun NavigationBehaviourRow(selected: NavigationBehaviour, onSelected: (NavigationBehaviour) -> Unit) {
+  val labels = NavigationBehaviour.entries.associate { it.name to stringResource(it.labelRes) }
+  SettingsChoiceRow(
+    icon = "NAV",
+    iconColor = Color(0xFF22D3EE),
+    title = stringResource(R.string.settings_navigation_behaviour),
+    subtitle = stringResource(R.string.settings_navigation_behaviour_description),
+    options = NavigationBehaviour.entries.map { it.name },
+    selected = selected.name,
+    optionDescriptions = NavigationBehaviour.entries.associate { it.name to stringResource(it.descriptionRes) },
+    optionLabel = { name -> labels[name] ?: name },
+    onSelected = { name -> onSelected(NavigationBehaviour.valueOf(name)) },
+  )
+}
+
+/**
+ * Automatic, Full or Reduced — and, when what is drawn differs from what was picked, why.
+ *
+ * A viewer who chose Full on a phone that cannot blur, or left Automatic on and is looking at tinted
+ * glass, should be told the reason on the row rather than left to decide the setting is broken.
+ */
+@Composable
+private fun VisualEffectsRow(selected: VisualEffectsMode, onSelected: (VisualEffectsMode) -> Unit) {
+  val effects = LocalVisualEffects.current
+  val labels = VisualEffectsMode.entries.associate { it.name to stringResource(it.labelRes) }
+  Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    SettingsChoiceRow(
+      icon = "VFX",
+      iconColor = Color(0xFF38BDF8),
+      title = stringResource(R.string.settings_visual_effects),
+      subtitle = stringResource(R.string.settings_visual_effects_description),
+      options = VisualEffectsMode.entries.map { it.name },
+      selected = selected.name,
+      optionDescriptions = VisualEffectsMode.entries.associate { it.name to stringResource(it.descriptionRes) },
+      optionLabel = { name -> labels[name] ?: name },
+      onSelected = { name -> onSelected(VisualEffectsMode.valueOf(name)) },
+    )
+    val note = when (effects.reducedReason) {
+      ReducedEffectsReason.Unsupported -> R.string.visual_effects_note_unsupported
+      ReducedEffectsReason.BatterySaver -> R.string.visual_effects_note_battery_saver
+      ReducedEffectsReason.Device -> R.string.visual_effects_note_device
+      ReducedEffectsReason.Performance -> R.string.visual_effects_note_performance
+      ReducedEffectsReason.Chosen, null -> null
+    }
+    if (note != null) {
+      Text(
+        stringResource(note),
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
         modifier = Modifier.padding(start = 46.dp, end = 4.dp, bottom = 8.dp),

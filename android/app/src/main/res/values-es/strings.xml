@@ -1596,4 +1596,24 @@
   <string name="subtitle_tab_style">Estilo</string>
   <string name="subtitle_none">Ninguno</string>
   <string name="action_play_again">Volver a reproducir</string>
+  <string name="settings_navigation_behaviour">Comportamiento de la navegación</string>
+  <string name="settings_navigation_behaviour_description">Elige cuándo se recoge la navegación flotante en tu botón de perfil.</string>
+  <string name="navigation_behaviour_always_expanded">Siempre desplegada</string>
+  <string name="navigation_behaviour_always_expanded_description">Todos los botones de página permanecen visibles.</string>
+  <string name="navigation_behaviour_after_delay">Recoger tras un retraso</string>
+  <string name="navigation_behaviour_after_delay_description">Se recoge unos segundos después de elegir una página.</string>
+  <string name="navigation_behaviour_while_scrolling">Recoger al desplazarse</string>
+  <string name="navigation_behaviour_while_scrolling_description">Se recoge al desplazarte hacia abajo y vuelve al desplazarte hacia arriba.</string>
+  <string name="settings_visual_effects">Efectos visuales</string>
+  <string name="settings_visual_effects_description">Equilibra los efectos de cristal con un desplazamiento fluido. Solo se guarda en este dispositivo.</string>
+  <string name="visual_effects_automatic">Automático</string>
+  <string name="visual_effects_automatic_description">Recomendado. Usa el aspecto más rico que este dispositivo puede mantener fluido.</string>
+  <string name="visual_effects_full">Completo</string>
+  <string name="visual_effects_full_description">Desenfoque de cristal y superficies translúcidas donde este dispositivo lo admita.</string>
+  <string name="visual_effects_reduced">Reducido</string>
+  <string name="visual_effects_reduced_description">Mantiene el aspecto translúcido con cristal tintado en lugar de desenfoque en tiempo real, para un desplazamiento más fluido.</string>
+  <string name="visual_effects_note_battery_saver">Usando efectos reducidos mientras el ahorro de batería está activado.</string>
+  <string name="visual_effects_note_device">Automático usa efectos reducidos para que este dispositivo vaya fluido.</string>
+  <string name="visual_effects_note_performance">Automático cambió a efectos reducidos porque el desplazamiento se ralentizó.</string>
+  <string name="visual_effects_note_unsupported">Esta versión de Android no puede desenfocar, así que el cristal usa superficies tintadas.</string>
 </resources>

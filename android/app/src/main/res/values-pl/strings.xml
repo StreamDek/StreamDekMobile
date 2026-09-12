@@ -1682,4 +1682,24 @@
   <string name="subtitle_tab_style">Styl</string>
   <string name="subtitle_none">Brak</string>
   <string name="action_play_again">Odtwórz ponownie</string>
+  <string name="settings_navigation_behaviour">Zachowanie nawigacji</string>
+  <string name="settings_navigation_behaviour_description">Wybierz, kiedy pływająca nawigacja chowa się do przycisku profilu.</string>
+  <string name="navigation_behaviour_always_expanded">Zawsze rozwinięta</string>
+  <string name="navigation_behaviour_always_expanded_description">Wszystkie przyciski stron pozostają widoczne.</string>
+  <string name="navigation_behaviour_after_delay">Zwiń po opóźnieniu</string>
+  <string name="navigation_behaviour_after_delay_description">Chowa się kilka sekund po wybraniu strony.</string>
+  <string name="navigation_behaviour_while_scrolling">Zwijaj podczas przewijania</string>
+  <string name="navigation_behaviour_while_scrolling_description">Chowa się przy przewijaniu w dół i wraca przy przewijaniu w górę.</string>
+  <string name="settings_visual_effects">Efekty wizualne</string>
+  <string name="settings_visual_effects_description">Wyważ efekty szkła i płynność przewijania. Zapisywane tylko na tym urządzeniu.</string>
+  <string name="visual_effects_automatic">Automatycznie</string>
+  <string name="visual_effects_automatic_description">Zalecane. Używa najbogatszego wyglądu, który to urządzenie utrzyma płynnie.</string>
+  <string name="visual_effects_full">Pełne</string>
+  <string name="visual_effects_full_description">Rozmycie szkła i półprzezroczyste powierzchnie wszędzie, gdzie urządzenie je obsługuje.</string>
+  <string name="visual_effects_reduced">Ograniczone</string>
+  <string name="visual_effects_reduced_description">Zachowuje półprzezroczysty wygląd z barwionym szkłem zamiast rozmycia na żywo, dla płynniejszego przewijania.</string>
+  <string name="visual_effects_note_battery_saver">Ograniczone efekty, gdy oszczędzanie baterii jest włączone.</string>
+  <string name="visual_effects_note_device">Tryb automatyczny używa ograniczonych efektów, aby urządzenie działało płynnie.</string>
+  <string name="visual_effects_note_performance">Tryb automatyczny przełączył się na ograniczone efekty, bo przewijanie zwolniło.</string>
+  <string name="visual_effects_note_unsupported">Ta wersja Androida nie obsługuje rozmycia, więc szkło używa barwionych powierzchni.</string>
 </resources>

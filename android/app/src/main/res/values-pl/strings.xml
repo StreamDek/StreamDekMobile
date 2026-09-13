@@ -1689,7 +1689,7 @@
   <string name="navigation_behaviour_after_delay">Zwiń po opóźnieniu</string>
   <string name="navigation_behaviour_after_delay_description">Chowa się kilka sekund po wybraniu strony.</string>
   <string name="navigation_behaviour_while_scrolling">Zwijaj podczas przewijania</string>
-  <string name="navigation_behaviour_while_scrolling_description">Chowa się przy przewijaniu w dół i wraca przy przewijaniu w górę.</string>
+  <string name="navigation_behaviour_while_scrolling_description">Chowa się podczas przewijania i wraca, gdy przestaniesz.</string>
   <string name="settings_visual_effects">Efekty wizualne</string>
   <string name="settings_visual_effects_description">Wyważ efekty szkła i płynność przewijania. Zapisywane tylko na tym urządzeniu.</string>
   <string name="visual_effects_automatic">Automatycznie</string>

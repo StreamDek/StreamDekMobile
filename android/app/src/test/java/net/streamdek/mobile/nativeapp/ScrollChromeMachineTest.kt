@@ -10,6 +10,21 @@ class ScrollChromeMachineTest {
   private fun machine() = ScrollChromeMachine(density = 1f)
   private var clock = 0L
 
+  private fun ScrollChromeMachine.idleFor(ms: Long) {
+    clock += ms
+    onIdle(clock)
+  }
+
+  private fun ScrollChromeMachine.touchDown() {
+    clock += 16
+    onTouchDown(clock)
+  }
+
+  private fun ScrollChromeMachine.touchUp() {
+    clock += 16
+    onTouchUp(clock)
+  }
+
   /** Scrolls [totalDp] in steps of [stepDp], 16ms apart, like frames of a steady drag. */
   private fun ScrollChromeMachine.drag(totalDp: Float, stepDp: Float = 4f) {
     val steps = (kotlin.math.abs(totalDp) / stepDp).toInt()
@@ -74,7 +89,8 @@ class ScrollChromeMachineTest {
     m.drag(-60f)
     // 10dp of slop, then 50dp at the upward gain of 1.8 over a 144dp travel.
     assertTrue("returning: ${m.fraction}", m.fraction < 0.5f)
-    assertFalse(m.navigationCollapsed)
+    // The header returns on the way up; the navigation does not, because the viewer is still moving.
+    assertTrue(m.navigationCollapsed)
     assertEquals(ScrollPhase.ScrollingUp, m.phase)
   }
 
@@ -105,8 +121,11 @@ class ScrollChromeMachineTest {
     clock += 16
     m.onScroll(0f, blockedAtTop = true, timeMs = clock)
     assertEquals(0f, m.fraction)
-    assertFalse(m.navigationCollapsed)
     assertEquals(ScrollPhase.NearTop, m.phase)
+    // Arriving at the top is not stopping: the navigation waits for the viewer to be still.
+    assertTrue(m.navigationCollapsed)
+    m.idleFor(ScrollChromeMachine.NAVIGATION_RETURN_DELAY_MS)
+    assertFalse(m.navigationCollapsed)
   }
 
   @Test
@@ -126,28 +145,107 @@ class ScrollChromeMachineTest {
   }
 
   @Test
-  fun navigationWaitsForTheExpandLineOnTheWayBackUp() {
+  fun scrollingEitherWayCollapsesTheNavigation() {
+    val down = machine()
+    down.drag(20f)
+    assertTrue(down.navigationCollapsed)
+
+    val up = machine()
+    up.reportAtTop(false)
+    up.drag(-20f)
+    assertTrue(up.navigationCollapsed)
+  }
+
+  @Test
+  fun tinyMovementsDoNotCollapseTheNavigation() {
+    val m = machine()
+    m.drag(12f)
+    assertFalse(m.navigationCollapsed)
+    // Separate nudges with a real pause between them are not one journey.
+    m.idleFor(ScrollChromeMachine.NAVIGATION_RETURN_DELAY_MS + 50)
+    m.drag(12f)
+    assertFalse(m.navigationCollapsed)
+  }
+
+  @Test
+  fun reversingDirectionKeepsTheNavigationCollapsed() {
     val m = machine()
     m.reportAtTop(false)
-    m.drag(400f)
-    assertTrue(m.navigationCollapsed)
-    // Confirmed upward, but the fraction is still well above the 55% line: stays collapsed.
-    m.drag(-20f)
-    assertTrue("fraction ${m.fraction}", m.fraction > 0.55f)
+    m.drag(300f)
+    m.drag(-300f)
+    m.drag(40f)
     assertTrue(m.navigationCollapsed)
   }
 
   @Test
-  fun expandClearsTheCollapseUntilTheNextScroll() {
+  fun navigationReturnsOnlyAfterTheIdleDelay() {
+    val m = machine()
+    m.drag(100f)
+    m.idleFor(ScrollChromeMachine.NAVIGATION_RETURN_DELAY_MS - 100)
+    assertTrue("too early", m.navigationCollapsed)
+    m.idleFor(100)
+    assertFalse(m.navigationCollapsed)
+  }
+
+  @Test
+  fun momentumKeepsTheNavigationCollapsed() {
+    val m = machine()
+    m.touchDown()
+    m.drag(80f)
+    m.touchUp()
+    // A fling decelerating long after the finger lifted: every frame is activity.
+    repeat(60) { m.drag(2f, stepDp = 2f) }
+    m.idleFor(ScrollChromeMachine.NAVIGATION_RETURN_DELAY_MS - 50)
+    assertTrue(m.navigationCollapsed)
+    m.idleFor(50)
+    assertFalse(m.navigationCollapsed)
+  }
+
+  @Test
+  fun aFingerRestingOnThePageHoldsTheNavigationAway() {
+    val m = machine()
+    m.touchDown()
+    m.drag(100f)
+    // Still touching, not moving, for well over the delay.
+    m.idleFor(ScrollChromeMachine.NAVIGATION_RETURN_DELAY_MS * 3)
+    assertTrue(m.navigationCollapsed)
+    assertEquals(null, m.navigationReturnDelay(clock))
+    m.touchUp()
+    m.idleFor(ScrollChromeMachine.NAVIGATION_RETURN_DELAY_MS - 1)
+    assertTrue("the clock starts when the finger lifts", m.navigationCollapsed)
+    m.idleFor(1)
+    assertFalse(m.navigationCollapsed)
+  }
+
+  @Test
+  fun quickConsecutiveSwipesDoNotBringTheNavigationBackBetweenThem() {
+    val m = machine()
+    repeat(4) {
+      m.touchDown()
+      m.drag(120f)
+      m.touchUp()
+      m.idleFor(ScrollChromeMachine.NAVIGATION_RETURN_DELAY_MS / 2)
+      assertTrue("between swipes", m.navigationCollapsed)
+    }
+    m.idleFor(ScrollChromeMachine.NAVIGATION_RETURN_DELAY_MS)
+    assertFalse(m.navigationCollapsed)
+  }
+
+  @Test
+  fun navigationTheViewerAskedForSurvivesTheRestOfTheirFling() {
     val m = machine()
     m.reportAtTop(false)
+    m.touchDown()
     m.drag(400f)
+    m.touchUp()
     m.expand()
     m.animateTo(0f)
+    // The fling they tapped through keeps moving the page.
+    m.drag(200f)
     assertFalse(m.navigationCollapsed)
-    m.drag(8f) // under the slop
-    assertFalse(m.navigationCollapsed)
-    m.drag(120f)
+    // A new gesture is a new decision.
+    m.touchDown()
+    m.drag(40f)
     assertTrue(m.navigationCollapsed)
   }
 

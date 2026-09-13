@@ -1638,7 +1638,7 @@
   <string name="navigation_behaviour_after_delay">Replier après un délai</string>
   <string name="navigation_behaviour_after_delay_description">Se replie quelques secondes après avoir choisi une page.</string>
   <string name="navigation_behaviour_while_scrolling">Replier pendant le défilement</string>
-  <string name="navigation_behaviour_while_scrolling_description">Se replie quand vous faites défiler vers le bas et revient quand vous remontez.</string>
+  <string name="navigation_behaviour_while_scrolling_description">Se replie pendant le défilement et revient quand vous vous arrêtez.</string>
   <string name="settings_visual_effects">Effets visuels</string>
   <string name="settings_visual_effects_description">Équilibrez les effets de verre et la fluidité du défilement. Enregistré sur cet appareil uniquement.</string>
   <string name="visual_effects_automatic">Automatique</string>

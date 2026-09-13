@@ -1589,7 +1589,7 @@
   <string name="navigation_behaviour_after_delay">Nach Verzögerung einklappen</string>
   <string name="navigation_behaviour_after_delay_description">Zieht sich einige Sekunden nach der Seitenauswahl zurück.</string>
   <string name="navigation_behaviour_while_scrolling">Beim Scrollen einklappen</string>
-  <string name="navigation_behaviour_while_scrolling_description">Zieht sich beim Herunterscrollen zurück und kehrt beim Hochscrollen wieder.</string>
+  <string name="navigation_behaviour_while_scrolling_description">Zieht sich beim Scrollen zurück und kehrt zurück, sobald du anhältst.</string>
   <string name="settings_visual_effects">Visuelle Effekte</string>
   <string name="settings_visual_effects_description">Glaseffekte und flüssiges Scrollen abwägen. Nur auf diesem Gerät gespeichert.</string>
   <string name="visual_effects_automatic">Automatisch</string>

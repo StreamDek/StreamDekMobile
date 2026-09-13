@@ -1603,7 +1603,7 @@
   <string name="navigation_behaviour_after_delay">Recolher após um atraso</string>
   <string name="navigation_behaviour_after_delay_description">Recolhe-se alguns segundos depois de escolher uma página.</string>
   <string name="navigation_behaviour_while_scrolling">Recolher ao deslocar</string>
-  <string name="navigation_behaviour_while_scrolling_description">Recolhe-se ao deslocar para baixo e regressa ao deslocar para cima.</string>
+  <string name="navigation_behaviour_while_scrolling_description">Recolhe-se enquanto desloca e regressa quando para.</string>
   <string name="settings_visual_effects">Efeitos visuais</string>
   <string name="settings_visual_effects_description">Equilibre os efeitos de vidro com um deslocamento fluido. Guardado apenas neste dispositivo.</string>
   <string name="visual_effects_automatic">Automático</string>

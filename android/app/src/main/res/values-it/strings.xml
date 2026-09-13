@@ -1603,7 +1603,7 @@
   <string name="navigation_behaviour_after_delay">Comprimi dopo un ritardo</string>
   <string name="navigation_behaviour_after_delay_description">Si ritira qualche secondo dopo aver scelto una pagina.</string>
   <string name="navigation_behaviour_while_scrolling">Comprimi durante lo scorrimento</string>
-  <string name="navigation_behaviour_while_scrolling_description">Si ritira quando scorri verso il basso e torna quando scorri verso l\'alto.</string>
+  <string name="navigation_behaviour_while_scrolling_description">Si ritira mentre scorri e torna quando ti fermi.</string>
   <string name="settings_visual_effects">Effetti visivi</string>
   <string name="settings_visual_effects_description">Bilancia gli effetti vetro con uno scorrimento fluido. Salvato solo su questo dispositivo.</string>
   <string name="visual_effects_automatic">Automatico</string>

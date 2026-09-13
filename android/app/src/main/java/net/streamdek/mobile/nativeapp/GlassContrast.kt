@@ -211,6 +211,15 @@ class GlassContrastState internal constructor() {
   internal val top = Animatable(0f)
   internal val bottom = Animatable(0f)
 
+  /**
+   * How strongly the status bar is protected: 0 at the top of a page, 1 once content scrolls under it.
+   *
+   * Deliberately independent of the artwork. At rest a page's hero is meant to run up behind the
+   * status bar untouched, exactly as it did before, and only content travelling under the clock
+   * earns the scrim.
+   */
+  internal val statusBar = Animatable(0f)
+
   /** Artwork a page has reported as sitting behind its chrome, see [ReportGlassBackdrop]. */
   internal var backdrop by mutableStateOf<ArtworkBands?>(null)
 
@@ -246,6 +255,7 @@ fun rememberGlassContrastState(chrome: ScrollChromeState?): GlassContrastState {
         val spec = tween<Float>(motion.crossfade(MotionDuration.crossfade * 2))
         launch { state.top.animateTo(topTarget, spec) }
         launch { state.bottom.animateTo(bottomTarget, spec) }
+        launch { state.statusBar.animateTo(if (scrolledUnder) 1f else 0f, spec) }
       }
   }
   return state
@@ -270,10 +280,10 @@ fun ReportGlassBackdrop(artworkUrl: String?) {
 /**
  * Keeps the status bar's clock and icons readable once a floating header has slid away.
  *
- * A Modern header floats over the page, so when it tucks away the page scrolls straight under the
- * status bar. This fades in a soft gradient behind it, driven by the same animated top-chrome
- * protection as the glass — so it arrives as content passes under and leaves at the top of the
- * page, and costs a redraw of one gradient rather than any recomposition.
+ * Any page whose content runs up under the status bar — a floating Modern header that has tucked
+ * away, a hero, a detail page — needs this once it scrolls. It fades in a soft gradient as content
+ * passes under the bar and fades it out again at the top of the page, and costs a redraw of one
+ * gradient rather than any recomposition.
  */
 @Composable
 fun ChromeStatusBarScrim(modifier: Modifier = Modifier) {
@@ -284,7 +294,7 @@ fun ChromeStatusBarScrim(modifier: Modifier = Modifier) {
     modifier = modifier
       .fillMaxWidth()
       .drawBehind {
-        val strength = (contrast.protection(GlassContrastZone.TopChrome) / GlassContrastPolicy.SCROLLED_TOP).coerceIn(0f, 1f)
+        val strength = contrast.statusBar.value
         if (strength <= 0.01f) return@drawBehind
         val barBottom = (size.height - 14.dp.toPx()).coerceAtLeast(1f)
         drawRect(

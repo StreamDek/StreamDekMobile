@@ -1,6 +1,11 @@
 package net.streamdek.mobile.nativeapp
 
 import android.os.SystemClock
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.first
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.Animatable
@@ -794,6 +799,82 @@ private fun AddProfileAvatar(avatarSize: Dp = 92.dp, modifier: Modifier = Modifi
 // ---------------------------------------------------------------------------------------------
 // Shared profile chrome: avatars, the PIN pad, and the hand-off into Home
 // ---------------------------------------------------------------------------------------------
+
+/** Never cut to Home sooner than this after choosing a profile: the overlay should read as a beat. */
+private const val HandoffMinimumMs = 520L
+
+/** Never hold the overlay longer than this, however slow Home is: it becomes a wait, not a beat. */
+private const val HandoffMaximumMs = 3_500L
+
+/**
+ * The move from choosing a profile to Home, done so it does not stutter.
+ *
+ * Home is the heaviest screen in the app to build — the spotlight pager, a dozen rows, their first
+ * images — and building it used to happen in the same frame the "Preparing Home" overlay was
+ * removed, on a timer that had nothing to do with whether Home had anything to show. The overlay
+ * would vanish, the frame would hang, and Home would arrive in pieces.
+ *
+ * Now the order is:
+ *
+ * 1. The overlay crossfades in over the picker, with nothing else starting while it does.
+ * 2. Home is composed behind it, still hidden, so its expensive first frame is spent where nobody is
+ *    watching.
+ * 3. The overlay waits for the Home load to produce rows ([homeLoadGeneration] moving on), gives
+ *    them a few frames to lay out and draw, and only then fades away — onto a finished screen.
+ *
+ * Bounded both ways by [HandoffMinimumMs] and [HandoffMaximumMs], so it never flickers past and never
+ * holds a viewer up because a catalogue is slow.
+ */
+@Composable
+internal fun ProfileHomeHandoff(
+  transitioning: Boolean,
+  profile: StreamProfile?,
+  homeLoadGeneration: () -> Int,
+  onHandoffComplete: () -> Unit,
+  content: @Composable () -> Unit,
+) {
+  val motion = LocalMotionSettings.current
+  var contentComposed by remember { mutableStateOf(!transitioning) }
+  val currentGeneration by rememberUpdatedState(homeLoadGeneration)
+  val currentOnComplete by rememberUpdatedState(onHandoffComplete)
+
+  LaunchedEffect(transitioning) {
+    if (!transitioning) {
+      contentComposed = true
+      return@LaunchedEffect
+    }
+    val startedAt = SystemClock.uptimeMillis()
+    val startGeneration = currentGeneration()
+    if (!contentComposed) {
+      // Let the overlay finish fading in before the heavy screen starts building behind it.
+      delay(motion.crossfade().toLong())
+      withFrameNanos { }
+      contentComposed = true
+    }
+    val waitBudget = HandoffMaximumMs - (SystemClock.uptimeMillis() - startedAt)
+    if (waitBudget > 0) {
+      withTimeoutOrNull(waitBudget) {
+        snapshotFlow { currentGeneration() }.first { it > startGeneration }
+      }
+    }
+    // The rows that just arrived compose, lay out and draw once while still covered.
+    repeat(3) { withFrameNanos { } }
+    val remaining = HandoffMinimumMs - (SystemClock.uptimeMillis() - startedAt)
+    if (remaining > 0) delay(remaining)
+    currentOnComplete()
+  }
+
+  Box(modifier = Modifier.fillMaxSize()) {
+    if (contentComposed) content()
+    androidx.compose.animation.AnimatedVisibility(
+      visible = transitioning,
+      enter = androidx.compose.animation.EnterTransition.None,
+      exit = androidx.compose.animation.fadeOut(tween(motion.crossfade(MotionDuration.crossfade * 2))),
+    ) {
+      ProfileHomeTransitionOverlay(profile)
+    }
+  }
+}
 
 @Composable
 internal fun ProfileHomeTransitionOverlay(profile: StreamProfile?) {

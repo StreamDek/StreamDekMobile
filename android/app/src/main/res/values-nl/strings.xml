@@ -1589,7 +1589,7 @@
   <string name="navigation_behaviour_after_delay">Invouwen na vertraging</string>
   <string name="navigation_behaviour_after_delay_description">Schuift een paar seconden nadat je een pagina kiest weg.</string>
   <string name="navigation_behaviour_while_scrolling">Invouwen tijdens scrollen</string>
-  <string name="navigation_behaviour_while_scrolling_description">Schuift weg als je omlaag scrolt en komt terug als je omhoog scrolt.</string>
+  <string name="navigation_behaviour_while_scrolling_description">Schuift weg tijdens het scrollen en komt terug zodra je stopt.</string>
   <string name="settings_visual_effects">Visuele effecten</string>
   <string name="settings_visual_effects_description">Balans tussen glaseffecten en soepel scrollen. Alleen op dit apparaat opgeslagen.</string>
   <string name="visual_effects_automatic">Automatisch</string>

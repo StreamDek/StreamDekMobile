@@ -252,6 +252,7 @@ import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
@@ -4525,6 +4526,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
    */
   /** Releases the coalescing latch and runs the one reload any mid-flight caller asked for. */
   private fun finishHomeLoad() {
+    homeLoadGeneration += 1
     homeLoadInFlight = false
     if (homeReloadPending) {
       homeReloadPending = false
@@ -4577,6 +4579,14 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     } else {
       mergeHomeCatalogRows(uiState.homeCatalogRows, uiState.addons, definitions, cloudStreamHomeCatalogCandidates(loadedCloudStreamProviders()))
     }
+    homeLoadGeneration += 1
+    val layout = applyHomeCatalogLayout(sections, mergedRows, uiState.defaultAppCatalogsEnabled)
+    // A reload that brings back exactly what is on screen changes nothing a viewer can see, so it
+    // should not cost them anything either: publishing equal rows still recomposed all of Home.
+    if (sections == uiState.allHomeSections && mergedRows == uiState.homeCatalogRows && layout == uiState.homeSections) {
+      if (uiState.homeLoading) uiState = uiState.copy(homeLoading = false)
+      return
+    }
     // homeLoading is cleared either way: a silent load never set it, and clearing a flag that
     // is already false costs nothing and keeps the two paths from drifting apart.
     uiState = uiState.copy(
@@ -4585,7 +4595,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       catalogDefinitions = definitions.ifEmpty { uiState.catalogDefinitions },
       catalogNextPages = sections.mapNotNull { section -> section.nextPage?.let { section.id to it } }.toMap(),
       homeCatalogRows = mergedRows,
-      homeSections = applyHomeCatalogLayout(sections, mergedRows, uiState.defaultAppCatalogsEnabled),
+      homeSections = layout,
     )
     appSettingsStore.saveHomeCatalogRows(mergedRows)
   }
@@ -4605,8 +4615,24 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private var homeLoadInFlight = false
   private var homeReloadPending = false
 
+  /**
+   * Bumped whenever a Home load publishes rows or finishes, successfully or not.
+   *
+   * What the profile hand-off waits on: it keeps the "Preparing Home" screen up until the load it
+   * started has produced something, rather than guessing with a timer and cutting to an empty page.
+   */
+  var homeLoadGeneration by mutableIntStateOf(0)
+    private set
+
+  /** The parts of the add-on list Home's rows depend on. Anything else can change without a reload. */
+  private fun addonHomeSignature(addons: List<InstalledAddon>): String =
+    addons.filter { it.enabled }.joinToString("|") { addon ->
+      addon.id + ":" + addon.manifest.catalogs.joinToString(",") { catalog -> catalog.type + "/" + catalog.id }
+    }
+
   fun loadHome(force: Boolean = false, silent: Boolean = false) {
     if (uiState.homeSections.isNotEmpty() && !force) return
+    android.util.Log.d("TEMPHOME", "loadHome force=$force silent=$silent inFlight=$homeLoadInFlight", Throwable()) // TEMP-TRACE
     if (homeLoadInFlight) {
       if (force) homeReloadPending = true
       return
@@ -6673,6 +6699,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       },
       onSuccess = { addons ->
         val merged = mergeWithLocalAddons(addons)
+        val homeAddonsChanged = addonHomeSignature(merged) != addonHomeSignature(uiState.addons)
         val mergedRows = mergeHomeCatalogRows(uiState.homeCatalogRows, merged, uiState.catalogDefinitions, cloudStreamHomeCatalogCandidates(loadedCloudStreamProviders()))
         uiState = uiState.copy(
           addonsLoading = false,
@@ -6681,7 +6708,11 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           homeSections = applyHomeCatalogLayout(uiState.allHomeSections, mergedRows, uiState.defaultAppCatalogsEnabled),
         )
         appSettingsStore.saveHomeCatalogRows(mergedRows)
-        loadHome(force = true)
+        // Only when the add-ons behind Home's rows actually changed. This runs on every profile
+        // switch and most screen changes, and reloading regardless queued a second full Home load
+        // behind the one the switch had just started — the whole screen fetched, published and
+        // recomposed again a moment after it first appeared, identical to what was already there.
+        if (homeAddonsChanged) loadHome(force = true)
         pendingStreamLoad?.let { pending ->
           val currentDetail = uiState.detail
           if (currentDetail?.id == pending.detailId) loadStreamsForCurrentDetail(pending.episode)
@@ -10462,17 +10493,24 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
 
   fun refreshProfilePlugins(manual: Boolean = false) {
     val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
-    StreamDekPlugins.manager.selectProfileStorage(ownerKey)
     val session = uiState.session
     val profileId = uiState.activeProfileId
     if (session == null || profileId == null) {
       // Pressing refresh while signed out should say why rather than appear to do nothing.
       if (manual) uiState = uiState.copy(pluginsLoading = false, infoMessage = strings.getString(R.string.notice_sign_in_plugins))
+      // Still switched, but not here: see below.
+      viewModelScope.launch(Dispatchers.IO) { StreamDekPlugins.manager.selectProfileStorage(ownerKey) }
       return
     }
     pluginRefreshJob?.cancel()
     uiState = uiState.copy(pluginsLoading = true)
     pluginRefreshJob = viewModelScope.launch {
+      // Off the main thread. Switching reads and parses the profile's whole plugin document —
+      // every installed source's script included — and on a phone with a few collections that
+      // measured close to 400ms, all of it inside the tap on a profile, which froze the hand-off
+      // to Home before it had started.
+      withContext(Dispatchers.IO) { StreamDekPlugins.manager.selectProfileStorage(ownerKey) }
+      if (activeOwnerKey() != ownerKey) return@launch
       apiClient.fetchProfilePlugins(session, profileId).onFailure {
         if (manual) uiState = uiState.copy(errorMessage = strings.getString(R.string.error_plugin_refresh_failed))
       }.onSuccess { cloudJson ->
@@ -11524,7 +11562,7 @@ private fun StreamDekNativeAppContent(
           // The player owns its loading visuals, so a direct switch is also the intended handoff.
           val rootPlayerSession = uiState.playerSession ?: uiState.playerLaunchSession
           when {
-              uiState.booting -> SplashScene()
+              uiState.booting -> SplashScene(density = uiState.homeDensity)
               rootPlayerSession != null -> {
                 // Stable across the provisional-to-real session handoff. NativePlayerScreen's
                 // richer handler wins while composed; this catches a system-back gesture during
@@ -11750,33 +11788,132 @@ private fun GradientBackdrop(content: @Composable () -> Unit) {
   }
 }
 
+/**
+ * Home, before its rows arrive.
+ *
+ * Built from Home's own measurements rather than drawn to look roughly similar: the spotlight takes
+ * [homeHeroHeight] and runs full-bleed from the top of the screen, its title artwork, genre line,
+ * View details button and page dots sit where [HomeHeroCarousel] puts them, and each row's header,
+ * accent bar, card size and spacing come from [HomeLayoutMetrics] at the viewer's density. When the
+ * real screen arrives, every block is replaced by the thing it stood for in the same place, so the
+ * page fills in rather than rearranging itself.
+ *
+ * [showContinueWatching] opens with a row of Continue Watching's wide cards when the viewer has
+ * anything in progress, since that is what Home will actually lead with.
+ */
 @Composable
-private fun SplashScene() {
-  Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-    LazyColumn(
-      modifier = Modifier.fillMaxSize(),
-      contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 58.dp, bottom = 120.dp),
-      verticalArrangement = Arrangement.spacedBy(22.dp),
+private fun SplashScene(
+  density: HomeDensity = HomeDensity.Default,
+  showContinueWatching: Boolean = false,
+) {
+  val metrics = remember(density) { HomeLayoutMetrics.forDensity(density) }
+  val background = MaterialTheme.colorScheme.background
+  val heroHeight = homeHeroHeight()
+  val posterWidth = homeRowPosterWidth()
+  Box(modifier = Modifier.fillMaxSize().background(background)) {
+    Column(
+      modifier = Modifier.fillMaxSize().then(Modifier.clipToBounds()),
+      verticalArrangement = Arrangement.spacedBy(metrics.heroToRowGap),
     ) {
-      item { SkeletonBlock(modifier = Modifier.fillMaxWidth().height(440.dp), radius = 30.dp) }
-      item { SkeletonBlock(modifier = Modifier.fillMaxWidth().height(54.dp), radius = 999.dp) }
-      item {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-          SkeletonBlock(modifier = Modifier.weight(1f).height(44.dp), radius = 999.dp)
-          SkeletonBlock(modifier = Modifier.weight(1f).height(44.dp), radius = 999.dp)
-          SkeletonBlock(modifier = Modifier.size(44.dp), radius = 999.dp)
-          SkeletonBlock(modifier = Modifier.size(44.dp), radius = 999.dp)
+      // The spotlight: artwork, then the dots lane beneath it, exactly as the carousel stacks them.
+      Box(modifier = Modifier.fillMaxWidth().height(heroHeight + HomeHeroDotsLaneHeight)) {
+        Box(modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().height(heroHeight)) {
+          SkeletonBlock(modifier = Modifier.fillMaxSize(), radius = 0.dp)
+          // The real artwork is masked out over its lower part, into the page; so is this.
+          Box(
+            modifier = Modifier
+              .align(Alignment.BottomCenter)
+              .fillMaxWidth()
+              .height(240.dp)
+              .background(Brush.verticalGradient(listOf(Color.Transparent, background.copy(alpha = 0.78f), background))),
+          )
+          Column(
+            modifier = Modifier
+              .align(Alignment.BottomCenter)
+              .fillMaxWidth()
+              .padding(horizontal = 24.dp)
+              .padding(top = 42.dp, bottom = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+          ) {
+            Column(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+              // Title artwork, then the "Movie · Genre · Genre" line.
+              SkeletonBlock(modifier = Modifier.fillMaxWidth(0.74f).height(92.dp), radius = 18.dp)
+              SkeletonBlock(modifier = Modifier.fillMaxWidth(0.52f).height(16.dp), radius = 999.dp)
+            }
+            SkeletonBlock(modifier = Modifier.fillMaxWidth(0.68f).height(40.dp), radius = 999.dp)
+          }
+        }
+        Row(
+          modifier = Modifier.align(Alignment.BottomCenter).height(HomeHeroDotsLaneHeight),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          verticalAlignment = Alignment.Bottom,
+        ) {
+          SkeletonBlock(modifier = Modifier.width(26.dp).height(8.dp), radius = 999.dp)
+          repeat(4) { SkeletonBlock(modifier = Modifier.size(8.dp), radius = 999.dp) }
         }
       }
-      item { SkeletonBlock(modifier = Modifier.fillMaxWidth().height(88.dp), radius = 18.dp) }
-      item { SkeletonBlock(modifier = Modifier.fillMaxWidth(0.58f).height(30.dp), radius = 12.dp) }
-      item {
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-          SkeletonBlock(modifier = Modifier.weight(1f).height(82.dp), radius = 18.dp)
-          SkeletonBlock(modifier = Modifier.weight(1f).height(82.dp), radius = 18.dp)
-          SkeletonBlock(modifier = Modifier.weight(1f).height(82.dp), radius = 18.dp)
+      if (showContinueWatching) {
+        HomeSkeletonRow(metrics = metrics, accentWidth = 102.dp) {
+          repeat(3) {
+            SkeletonBlock(modifier = Modifier.width(metrics.card(292.dp)).height(metrics.card(78.dp)), radius = StreamDekRadius.card)
+          }
+        }
+        Spacer(modifier = Modifier.height(metrics.rowGap - metrics.heroToRowGap))
+      }
+      repeat(if (showContinueWatching) 2 else 3) { index ->
+        if (index > 0) Spacer(modifier = Modifier.height(metrics.rowGap - metrics.heroToRowGap))
+        HomeSkeletonRow(metrics = metrics, accentWidth = 68.dp) {
+          repeat(4) { HomeSkeletonPosterCard(metrics = metrics, width = posterWidth) }
         }
       }
+    }
+  }
+}
+
+/** One Home row's header — title, View all button, accent bar — above its cards, at Home's spacing. */
+@Composable
+private fun HomeSkeletonRow(metrics: HomeLayoutMetrics, accentWidth: Dp, cards: @Composable RowScope.() -> Unit) {
+  Column(verticalArrangement = Arrangement.spacedBy(metrics.rowHeaderGap)) {
+    Column(
+      modifier = Modifier.padding(horizontal = metrics.rowSideInset),
+      verticalArrangement = Arrangement.spacedBy(metrics.rowHeaderTitleGap),
+    ) {
+      Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        SkeletonBlock(modifier = Modifier.fillMaxWidth(0.5f).height(if (metrics.density == HomeDensity.Compact) 20.dp else 24.dp), radius = 8.dp)
+        // The View all button's touch target, with its 30dp circle in the middle of it.
+        Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+          SkeletonBlock(modifier = Modifier.size(30.dp), radius = 999.dp)
+        }
+      }
+      if (metrics.showRowAccentBar) {
+        SkeletonBlock(modifier = Modifier.width(accentWidth).height(7.dp), radius = 999.dp)
+      }
+    }
+    // Wider than the screen, as a row is; the extra cards are simply clipped at the edge.
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .horizontalScroll(rememberScrollState(), enabled = false)
+        .padding(horizontal = metrics.rowSideInset),
+      horizontalArrangement = Arrangement.spacedBy(metrics.cardGap),
+      content = cards,
+    )
+  }
+}
+
+/** A poster card: artwork at the card's size, then the two caption lines in their fixed-height block. */
+@Composable
+private fun HomeSkeletonPosterCard(metrics: HomeLayoutMetrics, width: Dp) {
+  Column(modifier = Modifier.width(metrics.card(width)), verticalArrangement = Arrangement.spacedBy(metrics.cardMetaGap)) {
+    SkeletonBlock(modifier = Modifier.fillMaxWidth().height(metrics.card(204.dp)), radius = StreamDekRadius.card)
+    Column(modifier = Modifier.height(metrics.cardMetaHeight), verticalArrangement = Arrangement.spacedBy(metrics.card(6.dp))) {
+      SkeletonBlock(modifier = Modifier.fillMaxWidth(0.82f).height(metrics.card(14.dp)), radius = 999.dp)
+      SkeletonBlock(modifier = Modifier.fillMaxWidth(0.4f).height(metrics.card(12.dp)), radius = 999.dp)
     }
   }
 }
@@ -12480,11 +12617,6 @@ private fun MainScene(
       detailReturnFromSettings = null
     }
   }
-  LaunchedEffect(uiState.profileTransitioning) {
-    if (!uiState.profileTransitioning) return@LaunchedEffect
-    delay(520)
-    viewModel.finishProfileTransition()
-  }
 
   BackHandler(enabled = uiState.playerSession == null && uiState.playerLaunchSession == null) {
     when {
@@ -12607,7 +12739,13 @@ private fun MainScene(
   Scaffold(
     containerColor = Color.Transparent,
     bottomBar = {
-      if (!showProfilePicker && !showAuth && !requireGuestProfile && !uiState.profileTransitioning && uiState.pinPromptProfileId == null) {
+      // Fades and rises in as the hand-off to Home finishes, instead of popping into place over a
+      // screen that has just faded in.
+      androidx.compose.animation.AnimatedVisibility(
+        visible = !showProfilePicker && !showAuth && !requireGuestProfile && !uiState.profileTransitioning && uiState.pinPromptProfileId == null,
+        enter = fadeIn(tween(motion.crossfade(MotionDuration.crossfade * 2))) + androidx.compose.animation.slideInVertically(tween(motion.scaled(MotionDuration.long), easing = LinearOutSlowInEasing)) { it / 3 },
+        exit = fadeOut(tween(motion.scaled(MotionDuration.short))),
+      ) {
       // The contextual nudge sits above the navigation rather than over the page: the viewer
       // came here to watch something, and a modal about API keys would be the wrong trade.
       // Hosted by a composable of its own so its Column scope stays out of the navigation
@@ -12877,6 +13015,7 @@ private fun MainScene(
         .fillMaxSize()
         .glassSource(hazeState)
         .nestedScroll(scrollChrome.nestedScrollConnection)
+        .then(scrollChrome.touchObserver)
         .drawWithContent {
           drawContent()
           if (uiState.updateDownloading) drawRect(Color.Black.copy(alpha = 0.62f))
@@ -12896,9 +13035,23 @@ private fun MainScene(
       },
       label = "detail_transition",
     ) { detail ->
-      if (uiState.profileTransitioning) {
-        ProfileHomeTransitionOverlay(uiState.profiles.firstOrNull { it.id == uiState.activeProfileId })
-      } else if (showAuth) {
+      // The picker, sign-in and the app itself crossfade rather than cutting. A profile hand-off
+      // always lands on the app layer, whatever the flags underneath still say, because that is where
+      // Home is built behind the "Preparing Home" screen.
+      val sceneLayer = when {
+        uiState.profileTransitioning -> SceneLayer.Main
+        showAuth -> SceneLayer.Auth
+        showProfilePicker -> SceneLayer.Picker
+        else -> SceneLayer.Main
+      }
+      AnimatedContent(
+        targetState = sceneLayer,
+        transitionSpec = {
+          fadeIn(tween(motion.crossfade(), easing = LinearOutSlowInEasing)) togetherWith fadeOut(tween(motion.crossfade()))
+        },
+        label = "scene_layer",
+      ) { layer ->
+      if (layer == SceneLayer.Auth) {
         AuthScene(
           viewModel = viewModel,
           initialMode = setupAuthMode,
@@ -12911,7 +13064,7 @@ private fun MainScene(
             setSettingsRoute(SettingsRoute.Profiles)
           },
         )
-      } else if (showProfilePicker) {
+      } else if (layer == SceneLayer.Picker) {
         ProfilePickerScreen(
           profiles = uiState.profiles,
           profilesLoading = uiState.profilesLoading,
@@ -12933,7 +13086,14 @@ private fun MainScene(
             setSettingsRoute(SettingsRoute.Profiles)
           },
         )
-      } else if (detail == null) {
+      } else {
+      ProfileHomeHandoff(
+        transitioning = uiState.profileTransitioning,
+        profile = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId },
+        homeLoadGeneration = { viewModel.homeLoadGeneration },
+        onHandoffComplete = viewModel::finishProfileTransition,
+      ) {
+      if (detail == null) {
         if (networkBrowse != null) {
           browseStateHolder.SaveableStateProvider("network_browse") {
             NetworkBrowseScreen(network = networkBrowse, headerStyle = uiState.headerStyle, onBack = { viewModel.setNetworkBrowseItem(null) }, onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })
@@ -13049,10 +13209,16 @@ private fun MainScene(
           },
         )
       }
+      }
+      }
+      }
     }
   }
   }
 }
+
+/** The three things the app's main area can be showing, which crossfade into one another. */
+private enum class SceneLayer { Auth, Picker, Main }
 
 
 @Composable
@@ -13314,7 +13480,10 @@ private fun mixedHeroItems(sections: List<MediaSection>, continueWatching: List<
 @Composable
 private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () -> Unit, onOpen: (MediaItem) -> Unit, onPlayContinueWatching: (MediaItem) -> Unit, onViewAll: (HomeRow) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onMarkWatched: (MediaItem) -> Unit, onMarkEarlierEpisodesWatched: (MediaItem) -> Unit, onRestartFromBeginning: (MediaItem) -> Unit, onRemoveFromContinueWatching: (MediaItem) -> Unit = {}, onResolveHeroTitleLogos: (List<MediaItem>) -> Unit, onResolveAddonRatings: (List<MediaItem>) -> Unit = {}, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onHandoffContinueWatching: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }) {
   if (uiState.homeLoading && uiState.homeSections.isEmpty()) {
-    SplashScene()
+    SplashScene(
+      density = uiState.homeDensity,
+      showContinueWatching = uiState.traktContinueWatching.isNotEmpty() || uiState.localContinueWatching.isNotEmpty(),
+    )
     return
   }
 
@@ -13456,6 +13625,7 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
   // The spotlight is full-strength artwork under the top of Home, and bright stills vary enough from
   // one title to the next that the chrome over them should know which kind it is sitting on.
   ReportGlassBackdrop(heroBackdrop?.backdrop ?: heroBackdrop?.poster)
+  ReportScrollTop { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
 
   // Track the last handled signal so re-entering composition (e.g. returning from a
   // detail page with restored scroll state) doesn't replay an old scroll-to-top.
@@ -13559,6 +13729,9 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
         }
       }
     }
+    // Rows scroll straight up under the clock once the spotlight has gone; at the top the spotlight
+    // keeps the status bar to itself.
+    ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter))
   }
   }
   }
@@ -14164,9 +14337,9 @@ private fun NetworkBrowseScreen(network: MediaItem, headerStyle: HeaderStyle, on
       columns = GridCells.Fixed(adaptiveMediaColumns(columns)),
       state = listState,
       modifier = Modifier.fillMaxSize().then(if (modernHeader) Modifier.glassSource(headerHazeState) else Modifier),
-      contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = if (modernHeader) 272.dp else 274.dp, bottom = 126.dp),
-      horizontalArrangement = Arrangement.spacedBy(12.dp),
-      verticalArrangement = Arrangement.spacedBy(18.dp),
+      contentPadding = PaddingValues(start = MediaGridSideMargin, end = MediaGridSideMargin, top = if (modernHeader) 272.dp else 274.dp, bottom = 126.dp),
+      horizontalArrangement = Arrangement.spacedBy(LocalStreamDekSpacing.current.gridGap),
+      verticalArrangement = Arrangement.spacedBy(MediaGridRowGap),
     ) {
       when {
         loading && shownItems.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
@@ -14200,55 +14373,49 @@ private fun NetworkBrowseScreen(network: MediaItem, headerStyle: HeaderStyle, on
     }
 
     if (modernHeader) {
-      val lightHeader = MaterialTheme.colorScheme.background.luminance() > 0.5f
       ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(2f))
-      ScrollAwareHeader(modifier = Modifier.align(Alignment.TopCenter).zIndex(2f).fillMaxWidth().statusBarsPadding()) {
-      Box(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp)) {
-        FrostedGlassSurface(
-          modifier = Modifier.fillMaxWidth().height(204.dp),
-          shape = StreamDekRadius.sheetShape,
-          hazeStateOverride = headerHazeState,
-          blurRadius = 68f,
-          contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-          tintAlpha = if (lightHeader) 0.14f else 0.06f,
-          borderAlpha = if (lightHeader) 0.10f else 0f,
-          baseAlpha = if (lightHeader) 0.28f else 0.08f,
-          fillColorOverride = if (lightHeader) null else Color.White,
-          showEdgeGradient = false,
-          contrastZone = GlassContrastZone.TopChrome,
-        ) {
-          NetworkCatalogHeaderContent(
-            network = network,
-            query = query,
-            onQueryChange = { query = it },
-            columns = columns,
-            onToggleColumns = { columns = if (columns == 3) 2 else 3 },
-            type = type,
-            genres = genres,
-            genreId = genreId,
-            year = year,
-            onOpenFilter = { selectionSheet = it },
-          )
-        }
-      }
+      ScrollAwareHeader(
+        surface = ScrollAwareHeaderSurface.Glass(headerHazeState),
+        modifier = Modifier.align(Alignment.TopCenter).zIndex(2f).fillMaxWidth().statusBarsPadding(),
+        keepAnchorVisible = true,
+        panelPadding = PaddingValues(start = HeaderSearchInset.modernPanel, end = HeaderSearchInset.modernPanel, top = 12.dp),
+        panelHeight = 204.dp,
+        contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = 12.dp),
+      ) {
+        NetworkCatalogHeaderContent(
+          network = network,
+          query = query,
+          onQueryChange = { query = it },
+          columns = columns,
+          onToggleColumns = { columns = if (columns == 3) 2 else 3 },
+          type = type,
+          genres = genres,
+          genreId = genreId,
+          year = year,
+          onOpenFilter = { selectionSheet = it },
+        )
       }
     } else {
       Column(modifier = Modifier.align(Alignment.TopCenter).zIndex(2f).fillMaxWidth()) {
-        Spacer(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).windowInsetsTopHeight(WindowInsets.statusBars))
-        ScrollAwareHeader(modifier = Modifier.fillMaxWidth()) {
+        DefaultHeaderStatusStrip(color = MaterialTheme.colorScheme.background, fadesWithHeader = true)
+        ScrollAwareHeader(
+          surface = ScrollAwareHeaderSurface.Solid(MaterialTheme.colorScheme.background, pillAroundAnchor = true),
+          modifier = Modifier.fillMaxWidth(),
+          keepAnchorVisible = true,
+          contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = 12.dp),
+        ) {
           NetworkCatalogHeaderContent(
-            network = network,
-            query = query,
-            onQueryChange = { query = it },
-            columns = columns,
-            onToggleColumns = { columns = if (columns == 3) 2 else 3 },
-            type = type,
-            genres = genres,
-            genreId = genreId,
-            year = year,
-            onOpenFilter = { selectionSheet = it },
-            modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).padding(horizontal = 16.dp, vertical = 12.dp),
-          )
+          network = network,
+          query = query,
+          onQueryChange = { query = it },
+          columns = columns,
+          onToggleColumns = { columns = if (columns == 3) 2 else 3 },
+          type = type,
+          genres = genres,
+          genreId = genreId,
+          year = year,
+          onOpenFilter = { selectionSheet = it },
+        )
         }
       }
     }
@@ -14291,17 +14458,12 @@ private fun ScrollAwareHeaderScope.NetworkCatalogHeaderContent(
         Icon(if (columns == 3) Icons.Rounded.ViewAgenda else Icons.Rounded.ViewModule, contentDescription = stringResource(R.string.a11y_change_grid_size), tint = MaterialTheme.colorScheme.onBackground)
       }
     }
-    OutlinedTextField(
-      value = query,
-      onValueChange = onQueryChange,
-      modifier = Modifier.fillMaxWidth().compactAnchor().holdsChromeWhileTyping(),
-      placeholder = { InputGuideText(stringResource(R.string.hint_search_within_network)) },
-      leadingIcon = { Icon(Icons.Rounded.Search, null) },
-      trailingIcon = if (query.isNotBlank()) ({ IconButton(onClick = { onQueryChange("") }) { Icon(Icons.Rounded.Close, "Clear") } }) else null,
-      singleLine = true,
-      shape = StreamDekRadius.cardShape,
+    HeaderSearchField(
+      query = query,
+      onQueryChange = onQueryChange,
+      placeholder = stringResource(R.string.hint_search_within_network),
     )
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+    Row(modifier = Modifier.fillMaxWidth().compactsAway(order = 1, belowAnchor = true), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
       SearchDiscoverField("Type", when (type) { "movie" -> "Movies"; "tv" -> "Series"; else -> "Type" }, Modifier.weight(1f)) { onOpenFilter("type") }
       SearchDiscoverField("Genre", genres.firstOrNull { it.id == genreId }?.name ?: "Genre", Modifier.weight(1f), enabled = genres.isNotEmpty()) { onOpenFilter("genre") }
       SearchDiscoverField("Year", year ?: "Year", Modifier.weight(1f)) { onOpenFilter("year") }
@@ -14771,17 +14933,22 @@ private fun LiveChannelsBrowseScreen(
       // with these scrolling away the only way back to search or the category picker was to
       // fling all the way to the top. The list scrolls underneath instead.
       stickyHeader(key = "controls") {
+        // The same header as a View all list, Search and a network page: at rest the back button,
+        // title, scope chips and count sit above the search box; scrolling condenses all of them
+        // away and leaves the search box pinned on its own, identical to the others. Scrolling back
+        // up returns the chips, so the category picker is never more than a flick away on a list
+        // that runs to tens of thousands of channels.
+        ScrollAwareHeader(
+          surface = ScrollAwareHeaderSurface.Solid(MaterialTheme.colorScheme.background, pillAroundAnchor = true),
+          modifier = Modifier.fillMaxWidth(),
+          keepAnchorVisible = true,
+          contentPadding = PaddingValues(start = HeaderSearchInset.content, end = HeaderSearchInset.content, top = 20.dp, bottom = 12.dp),
+        ) {
         Column(
-          modifier = Modifier
-            .fillMaxWidth()
-            // Opaque, and drawn outside the list padding, so channels passing underneath do
-            // not show through at the margins -- including the top gap, which is part of it.
-            .background(MaterialTheme.colorScheme.background)
-            .padding(horizontal = 20.dp)
-            .padding(top = 20.dp, bottom = 12.dp),
+          modifier = Modifier.fillMaxWidth(),
           verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-          Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+          Row(modifier = Modifier.fillMaxWidth().compactsAway(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             GlassCircleButton(borderless = true, onClick = onBack) {
               Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.action_back), tint = MaterialTheme.colorScheme.onBackground)
             }
@@ -14800,18 +14967,13 @@ private fun LiveChannelsBrowseScreen(
               }
             }
           }
-          OutlinedTextField(
-            value = query,
-            onValueChange = { query = it },
-            modifier = Modifier.fillMaxWidth(),
-            placeholder = { InputGuideText(stringResource(R.string.hint_search_channels)) },
-            leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
-            trailingIcon = if (query.isNotBlank()) ({ IconButton(onClick = { query = "" }) { Icon(Icons.Rounded.Close, "Clear") } }) else null,
-            singleLine = true,
-            shape = StreamDekRadius.cardShape,
+          HeaderSearchField(
+            query = query,
+            onQueryChange = { query = it },
+            placeholder = stringResource(R.string.hint_search_channels),
           )
           Row(
-            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).compactsAway(order = 0, belowAnchor = true),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
           ) {
             FilterChip(
@@ -14835,7 +14997,7 @@ private fun LiveChannelsBrowseScreen(
               )
             }
           }
-          Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+          Row(modifier = Modifier.fillMaxWidth().compactsAway(order = 1, belowAnchor = true), verticalAlignment = Alignment.CenterVertically) {
             Text(
               when {
                 scope == LiveChannelScope.Favourites -> "Favourites"
@@ -14856,6 +15018,7 @@ private fun LiveChannelsBrowseScreen(
               fontWeight = FontWeight.Bold,
             )
           }
+        }
         }
       }
 
@@ -15295,7 +15458,15 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
   val showsTypeFilters = hasMovies && hasSeries
   // Live TV / sports rows hold long channel lists, so they get local search. Filtering and
   // sorting run on Default rather than the UI thread so very large IPTV lists remain responsive.
-  val showSearch = isLiveRow || uniqueItems.size >= 24
+  // Also from the start on a list that pages. Such a list opens with its first page — twenty titles
+  // on a catalogue like In Theatres — so waiting for twenty-four meant the search box, and the
+  // header around it, appeared only once the viewer had scrolled far enough to fetch a second page:
+  // the page rearranged itself under their thumb. And once offered it stays: a list that turns out
+  // to end early must not take the box away again.
+  val wantsSearch = isLiveRow || uniqueItems.size >= 24 || canLoadMore || row.id in pageableRowIds
+  var searchOffered by remember(row.id) { mutableStateOf(false) }
+  if (wantsSearch && !searchOffered) androidx.compose.runtime.SideEffect { searchOffered = true }
+  val showSearch = wantsSearch || searchOffered
   var filteredItems by remember(row.id) { mutableStateOf<List<MediaItem>>(emptyList()) }
   // Grouping a 50k-channel playlist is far too much work for the main thread, so categories are
   // built on Default alongside the search/sort pass below.
@@ -15498,13 +15669,16 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
         .fillMaxSize()
         .background(MaterialTheme.colorScheme.background)
         .then(if (modernHeader) Modifier.glassSource(browseHazeState) else Modifier),
-      contentPadding = if (sideHeader) {
-        PaddingValues(start = BrowseSideHeaderWidth + 20.dp, end = 20.dp, top = 20.dp, bottom = 126.dp)
-      } else {
-        PaddingValues(start = 20.dp, end = 20.dp, top = if (modernHeader) modernContentTop else classicContentTop, bottom = 126.dp)
+      contentPadding = run {
+        val sideMargin = if (showsList) 20.dp else MediaGridSideMargin
+        if (sideHeader) {
+          PaddingValues(start = BrowseSideHeaderWidth + sideMargin, end = sideMargin, top = 20.dp, bottom = 126.dp)
+        } else {
+          PaddingValues(start = sideMargin, end = sideMargin, top = if (modernHeader) modernContentTop else classicContentTop, bottom = 126.dp)
+        }
       },
-      horizontalArrangement = Arrangement.spacedBy(12.dp),
-      verticalArrangement = Arrangement.spacedBy(if (showsList) 6.dp else 18.dp),
+      horizontalArrangement = Arrangement.spacedBy(LocalStreamDekSpacing.current.gridGap),
+      verticalArrangement = Arrangement.spacedBy(if (showsList) 6.dp else MediaGridRowGap),
     ) {
       if (showCategorizingNotice) {
         item(span = { GridItemSpan(maxLineSpan) }) {
@@ -15564,74 +15738,25 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
     }
 
     if (modernHeader) {
-      val lightHeader = MaterialTheme.colorScheme.background.luminance() > 0.5f
       if (!sideHeader) ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f))
-      // A side column gives back no vertical room by hiding, so it stays put.
+      // A side column gives back no vertical room by moving, so it stays put. As a column it also
+      // takes the height its own content needs, rather than the fixed band across the top.
       ScrollAwareHeader(
+        surface = ScrollAwareHeaderSurface.Glass(browseHazeState),
         modifier = Modifier
           .align(if (sideHeader) Alignment.TopStart else Alignment.TopCenter)
           .zIndex(4f)
           .then(if (sideHeader) Modifier.width(BrowseSideHeaderWidth) else Modifier.fillMaxWidth())
           .statusBarsPadding(),
         enabled = !sideHeader,
-      ) {
-      Box(modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 6.dp)) {
-        FrostedGlassSurface(
-          // As a side column it takes the height its own content needs, rather than the fixed band
-          // height that only makes sense across the top.
-          modifier = Modifier.fillMaxWidth().then(if (sideHeader) Modifier else Modifier.height(modernHeaderHeight)),
-          shape = StreamDekRadius.sheetShape,
-          hazeStateOverride = browseHazeState,
-          blurRadius = 68f,
-          contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
-          contrastZone = GlassContrastZone.TopChrome,
-          tintAlpha = if (lightHeader) 0.14f else 0.06f,
-          borderAlpha = if (lightHeader) 0.10f else 0f,
-          baseAlpha = if (lightHeader) 0.28f else 0.08f,
-          fillColorOverride = if (lightHeader) null else Color.White,
-          showEdgeGradient = false,
-        ) {
-          BrowseSectionHeaderContent(
-            title = headerTitle,
-            countLabel = headerCount,
-            onUpNavigate = headerUpAction,
-            showLayoutToggle = !showCategoryGrid,
-            layout = layout,
-            onCycleLayout = { layout = nextLayout() },
-            selectedFilter = filter,
-            showFilters = showHeaderFilters,
-            onFilterChange = { filter = it },
-            query = query,
-            showSearch = showSearch,
-            onQueryChange = { query = it },
-            showSort = isM3uRow && !showCategoryGrid,
-            sortLabel = when (browseSort) {
-              BrowseSort.Original -> "Playlist order"
-              BrowseSort.TitleAscending -> "A-Z"
-              BrowseSort.TitleDescending -> "Z-A"
-            },
-            onToggleSort = {
-              browseSort = when (browseSort) {
-                BrowseSort.Original -> BrowseSort.TitleAscending
-                BrowseSort.TitleAscending -> BrowseSort.TitleDescending
-                BrowseSort.TitleDescending -> BrowseSort.Original
-              }
-            },
-            onClearAll = clearFavouritesAction,
-            clearAllDescription = "Clear Live Favourites",
-          )
-        }
-      }
-      }
-    } else {
-      Column(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f).fillMaxWidth()) {
-      Spacer(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).windowInsetsTopHeight(WindowInsets.statusBars))
-      ScrollAwareHeader(modifier = Modifier.fillMaxWidth()) {
-      Box(
-        modifier = Modifier
-          .fillMaxWidth()
-          .background(MaterialTheme.colorScheme.background)
-          .padding(horizontal = 20.dp, vertical = 12.dp),
+        keepAnchorVisible = showSearch,
+        panelPadding = if (sideHeader) {
+          PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 6.dp)
+        } else {
+          PaddingValues(start = HeaderSearchInset.modernPanel, end = HeaderSearchInset.modernPanel, top = 12.dp, bottom = 6.dp)
+        },
+        panelHeight = if (sideHeader) null else modernHeaderHeight,
+        contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = 14.dp),
       ) {
         BrowseSectionHeaderContent(
           title = headerTitle,
@@ -15663,7 +15788,45 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
           clearAllDescription = "Clear Live Favourites",
         )
       }
-      }
+    } else {
+      Column(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f).fillMaxWidth()) {
+        DefaultHeaderStatusStrip(color = MaterialTheme.colorScheme.background, fadesWithHeader = true)
+        ScrollAwareHeader(
+          surface = ScrollAwareHeaderSurface.Solid(MaterialTheme.colorScheme.background, pillAroundAnchor = showSearch),
+          modifier = Modifier.fillMaxWidth(),
+          keepAnchorVisible = showSearch,
+          contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = 12.dp),
+        ) {
+          BrowseSectionHeaderContent(
+          title = headerTitle,
+          countLabel = headerCount,
+          onUpNavigate = headerUpAction,
+          showLayoutToggle = !showCategoryGrid,
+          layout = layout,
+          onCycleLayout = { layout = nextLayout() },
+          selectedFilter = filter,
+          showFilters = showHeaderFilters,
+          onFilterChange = { filter = it },
+          query = query,
+          showSearch = showSearch,
+          onQueryChange = { query = it },
+          showSort = isM3uRow && !showCategoryGrid,
+          sortLabel = when (browseSort) {
+            BrowseSort.Original -> "Playlist order"
+            BrowseSort.TitleAscending -> "A-Z"
+            BrowseSort.TitleDescending -> "Z-A"
+          },
+          onToggleSort = {
+            browseSort = when (browseSort) {
+              BrowseSort.Original -> BrowseSort.TitleAscending
+              BrowseSort.TitleAscending -> BrowseSort.TitleDescending
+              BrowseSort.TitleDescending -> BrowseSort.Original
+            }
+          },
+          onClearAll = clearFavouritesAction,
+          clearAllDescription = "Clear Live Favourites",
+        )
+        }
       }
     }
   }
@@ -15762,19 +15925,14 @@ private fun ScrollAwareHeaderScope.BrowseSectionHeaderContent(
       }
     }
     if (showSearch) {
-      OutlinedTextField(
-        value = query,
-        onValueChange = onQueryChange,
-        modifier = Modifier.fillMaxWidth().compactAnchor().holdsChromeWhileTyping(),
-        placeholder = { InputGuideText(stringResource(R.string.hint_search_this_list)) },
-        leadingIcon = { Icon(Icons.Rounded.Search, null) },
-        trailingIcon = if (query.isNotBlank()) ({ IconButton(onClick = { onQueryChange("") }) { Icon(Icons.Rounded.Close, "Clear") } }) else null,
-        singleLine = true,
-        shape = StreamDekRadius.cardShape,
+      HeaderSearchField(
+        query = query,
+        onQueryChange = onQueryChange,
+        placeholder = stringResource(R.string.hint_search_this_list),
       )
     }
     if (showFilters) {
-      Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+      Row(modifier = if (showSearch) Modifier.compactsAway(order = 1, belowAnchor = true) else Modifier, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         MediaFilter.values().forEach { option ->
           FilterChip(selected = selectedFilter == option, onClick = { onFilterChange(option) }, label = { Text(stringResource(option.labelRes)) })
         }
@@ -16633,7 +16791,7 @@ private fun MediaGrid(
   // width shows more artwork instead of inflating each poster.
   val gridColumns = adaptiveMediaColumns(columns)
   val gridGap = LocalStreamDekSpacing.current.gridGap
-  Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+  Column(modifier = Modifier.fillMaxWidth().padding(horizontal = MediaGridSideMargin), verticalArrangement = Arrangement.spacedBy(MediaGridRowGap)) {
     items.chunked(gridColumns).forEach { row ->
       Row(horizontalArrangement = Arrangement.spacedBy(gridGap), modifier = Modifier.fillMaxWidth()) {
         row.forEach { item ->
@@ -16831,6 +16989,13 @@ private fun BrowseListRow(
   }
 }
 
+/**
+ * The header of a library page — Continue Watching, the Watchlist.
+ *
+ * Collapses to its top row rather than to a search field: these pages have no search, and the row is
+ * what a viewer reaches for while browsing — the page's name, how many titles, clear all and the grid
+ * size. The filter chips beneath it condense away, and the surface closes around the row.
+ */
 @Composable
 private fun LibraryStreamDekHeader(
   title: String,
@@ -16845,9 +17010,9 @@ private fun LibraryStreamDekHeader(
   modifier: Modifier = Modifier,
   trailingAction: (@Composable () -> Unit)? = null,
 ) {
-  val content: @Composable BoxScope.() -> Unit = {
+  val content: @Composable ScrollAwareHeaderScope.() -> Unit = {
     Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-      Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+      Row(modifier = Modifier.fillMaxWidth().compactAnchor(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         // Weighted so the count and the layout button keep their room. Without it a heading that is
         // half again as long in German or Polish pushed them off the edge of the screen.
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -16864,7 +17029,7 @@ private fun LibraryStreamDekHeader(
           }
         }
       }
-      Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+      Row(modifier = Modifier.compactsAway(order = 0, belowAnchor = true), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         MediaFilter.values().forEach { value ->
           FilterChip(
             selected = selectedFilter == value,
@@ -16878,25 +17043,30 @@ private fun LibraryStreamDekHeader(
     }
   }
   if (style == HeaderStyle.Modern) {
-    val lightHeader = MaterialTheme.colorScheme.background.luminance() > 0.5f
-    Box(modifier = modifier.fillMaxWidth().statusBarsPadding().padding(start = 8.dp, end = 8.dp, top = 12.dp, bottom = 6.dp)) {
-      FrostedGlassSurface(
-        modifier = Modifier.fillMaxWidth().height(152.dp),
-        shape = StreamDekRadius.sheetShape,
-        hazeStateOverride = hazeState,
-        blurRadius = 68f,
-        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 16.dp),
-        tintAlpha = if (lightHeader) 0.14f else 0.06f,
-        borderAlpha = if (lightHeader) 0.10f else 0f,
-        baseAlpha = if (lightHeader) 0.28f else 0.08f,
-        fillColorOverride = if (lightHeader) null else Color.White,
-        showEdgeGradient = false,
-        contrastZone = GlassContrastZone.TopChrome,
+    ScrollAwareHeader(
+      surface = ScrollAwareHeaderSurface.Glass(hazeState),
+      modifier = modifier.fillMaxWidth().statusBarsPadding(),
+      keepAnchorVisible = true,
+      panelPadding = PaddingValues(start = 8.dp, end = 8.dp, top = 12.dp, bottom = 6.dp),
+      panelHeight = 152.dp,
+      contentPadding = PaddingValues(horizontal = 18.dp, vertical = 16.dp),
+      anchorPaddingHorizontal = 12.dp,
+      anchorPaddingVertical = 8.dp,
+      content = content,
+    )
+  } else {
+    Column(modifier = modifier.fillMaxWidth()) {
+      // Keeps its band — and so its strip — through the collapse: the title row is still across the
+      // full width, and the band is what it sits on.
+      DefaultHeaderStatusStrip(color = MaterialTheme.colorScheme.background, fadesWithHeader = false)
+      ScrollAwareHeader(
+        surface = ScrollAwareHeaderSurface.Solid(MaterialTheme.colorScheme.background),
+        modifier = Modifier.fillMaxWidth(),
+        keepAnchorVisible = true,
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         content = content,
       )
     }
-  } else {
-    Box(modifier = modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background.copy(alpha = 0.94f)).statusBarsPadding().padding(horizontal = 16.dp, vertical = 12.dp), content = content)
   }
 }
 
@@ -16927,6 +17097,8 @@ private fun ContinueTab(
   val items = remember(allItems, filter) { allItems.filteredBy(filter) }
   val modernHeader = uiState.headerStyle == HeaderStyle.Modern
   val headerHazeState = rememberHazeState()
+  val listState = rememberLazyListState()
+  ReportScrollTop { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
   val clearAction: (@Composable () -> Unit)? = if (allItems.isEmpty()) null else {
     {
       GlassCircleButton(borderless = true, onClick = { showClearConfirm = true }) {
@@ -16945,6 +17117,7 @@ private fun ContinueTab(
   }
   Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
+      state = listState,
       modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).then(if (modernHeader) Modifier.glassSource(headerHazeState) else Modifier),
       contentPadding = PaddingValues(top = if (modernHeader) 222.dp else 0.dp, bottom = 126.dp),
       verticalArrangement = Arrangement.spacedBy(20.dp),
@@ -16988,6 +17161,7 @@ private fun ContinueTab(
         }
       }
     }
+    ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f))
     if (modernHeader) {
       LibraryStreamDekHeader(
         title = stringResource(R.string.continue_watching),
@@ -17018,6 +17192,8 @@ private fun WatchlistTab(uiState: AppUiState, onOpen: (MediaItem) -> Unit, onTog
   }
   val modernHeader = uiState.headerStyle == HeaderStyle.Modern
   val headerHazeState = rememberHazeState()
+  val listState = rememberLazyListState()
+  ReportScrollTop { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
   val clearAction: (@Composable () -> Unit)? = if (uiState.mergedWatchlist.isEmpty()) null else {
     {
       GlassCircleButton(borderless = true, onClick = { showClearConfirm = true }) {
@@ -17036,6 +17212,7 @@ private fun WatchlistTab(uiState: AppUiState, onOpen: (MediaItem) -> Unit, onTog
   }
   Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
+      state = listState,
       modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).then(if (modernHeader) Modifier.glassSource(headerHazeState) else Modifier),
       contentPadding = PaddingValues(top = if (modernHeader) 222.dp else 0.dp, bottom = 126.dp),
       verticalArrangement = Arrangement.spacedBy(20.dp),
@@ -17062,6 +17239,7 @@ private fun WatchlistTab(uiState: AppUiState, onOpen: (MediaItem) -> Unit, onTog
         item { MediaGrid(items, onOpen, columns = columns, showMeta = false, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, includeRemoveAction = true, onMarkWatched = onMarkWatched) }
       }
     }
+    ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f))
     if (modernHeader) {
       LibraryStreamDekHeader(
         title = stringResource(R.string.nav_watchlist),
@@ -17504,22 +17682,24 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
         // The status-bar strip keeps its ground while the header slides up beneath it, so the clock
         // and battery never end up sitting on a poster.
         Column(modifier = Modifier.fillMaxWidth()) {
-          // Fully opaque, unlike the glass of the Modern header. This style has no blur to soften what
-          // passes underneath, so once the header compacts even a few percent of transparency lets
-          // the page's own headings show through right against the search field.
-          Spacer(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).windowInsetsTopHeight(WindowInsets.statusBars))
-          ScrollAwareHeader(modifier = Modifier.fillMaxWidth(), keepAnchorVisible = true) {
-            Box(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).padding(horizontal = 16.dp, vertical = 10.dp)) {
-              SearchHeader(
-                query = query,
-                columns = columns,
-                showResultsState = query.isNotBlank() && searchResults.isNotEmpty(),
-                onQueryChange = { query = it },
-                onClear = { query = "" },
-                onToggleColumns = { columns = if (columns == 3) 2 else 3 },
-                modifier = Modifier.fillMaxWidth(),
-              )
-            }
+          // The background goes as the header condenses, leaving only the search field on a pill of its
+          // own, just as the Modern glass does; the strip above follows it out.
+          DefaultHeaderStatusStrip(color = MaterialTheme.colorScheme.background, fadesWithHeader = true)
+          ScrollAwareHeader(
+            surface = ScrollAwareHeaderSurface.Solid(MaterialTheme.colorScheme.background, pillAroundAnchor = true),
+            modifier = Modifier.fillMaxWidth(),
+            keepAnchorVisible = true,
+            contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = 10.dp),
+          ) {
+            SearchHeader(
+              query = query,
+              columns = columns,
+              showResultsState = query.isNotBlank() && searchResults.isNotEmpty(),
+              onQueryChange = { query = it },
+              onClear = { query = "" },
+              onToggleColumns = { columns = if (columns == 3) 2 else 3 },
+              modifier = Modifier.fillMaxWidth(),
+            )
           }
         }
       }
@@ -17739,35 +17919,26 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
     }
   }
   if (modernHeader) {
-    val lightHeader = MaterialTheme.colorScheme.background.luminance() > 0.5f
     ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f))
-    // Search is what this page is for, so its field stays pinned; only the title above it tucks away.
-    ScrollAwareHeader(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f).fillMaxWidth().statusBarsPadding(), keepAnchorVisible = true) {
-      Box(modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 12.dp, bottom = 6.dp)) {
-        FrostedGlassSurface(
-          modifier = Modifier.fillMaxWidth().height(166.dp),
-          shape = StreamDekRadius.sheetShape,
-          hazeStateOverride = headerHazeState,
-          blurRadius = 68f,
-          contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-          tintAlpha = if (lightHeader) 0.14f else 0.06f,
-          borderAlpha = if (lightHeader) 0.10f else 0f,
-          baseAlpha = if (lightHeader) 0.28f else 0.08f,
-          fillColorOverride = if (lightHeader) null else Color.White,
-          showEdgeGradient = false,
-          contrastZone = GlassContrastZone.TopChrome,
-        ) {
-          SearchHeader(
-            query = query,
-            columns = columns,
-            showResultsState = query.isNotBlank() && searchResults.isNotEmpty(),
-            onQueryChange = { query = it },
-            onClear = { query = "" },
-            onToggleColumns = { columns = if (columns == 3) 2 else 3 },
-            modifier = Modifier.fillMaxWidth(),
-          )
-        }
-      }
+    // Search is what this page is for, so its field stays: the glass panel closes into a pill
+    // around it and floats there on its own.
+    ScrollAwareHeader(
+      surface = ScrollAwareHeaderSurface.Glass(headerHazeState),
+      modifier = Modifier.align(Alignment.TopCenter).zIndex(4f).fillMaxWidth().statusBarsPadding(),
+      keepAnchorVisible = true,
+      panelPadding = PaddingValues(start = HeaderSearchInset.modernPanel, end = HeaderSearchInset.modernPanel, top = 12.dp, bottom = 6.dp),
+      panelHeight = 166.dp,
+      contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = 12.dp),
+    ) {
+      SearchHeader(
+              query = query,
+              columns = columns,
+              showResultsState = query.isNotBlank() && searchResults.isNotEmpty(),
+              onQueryChange = { query = it },
+              onClear = { query = "" },
+              onToggleColumns = { columns = if (columns == 3) 2 else 3 },
+              modifier = Modifier.fillMaxWidth(),
+            )
     }
   }
   }
@@ -17898,7 +18069,7 @@ private fun ScrollAwareHeaderScope.SearchHeader(
   modifier: Modifier = Modifier,
 ) {
   Column(
-    modifier = modifier.fillMaxWidth().padding(start = 2.dp, end = 2.dp, top = 10.dp, bottom = 8.dp),
+    modifier = modifier.fillMaxWidth().padding(top = 10.dp, bottom = 8.dp),
     verticalArrangement = Arrangement.spacedBy(12.dp),
   ) {
     Row(modifier = Modifier.fillMaxWidth().compactsAway(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -17909,34 +18080,96 @@ private fun ScrollAwareHeaderScope.SearchHeader(
         Icon(if (columns == 3) Icons.Rounded.ViewAgenda else Icons.Rounded.ViewModule, contentDescription = null, tint = MaterialTheme.colorScheme.onBackground)
       }
     }
-    OutlinedTextField(
-      value = query,
-      onValueChange = onQueryChange,
-      modifier = Modifier.fillMaxWidth().compactAnchor().holdsChromeWhileTyping(),
-      singleLine = true,
-      placeholder = { InputGuideText(stringResource(R.string.hint_search_movies_tv_catalogs)) },
-      leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
-      trailingIcon = if (query.isNotBlank()) ({ IconButton(onClick = onClear) { Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.action_clear)) } }) else null,
-      shape = StreamDekRadius.cardShape,
-      colors = androidx.compose.material3.TextFieldDefaults.colors(
-        focusedContainerColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.07f),
-        unfocusedContainerColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.05f),
-        focusedIndicatorColor = Color.Transparent,
-        unfocusedIndicatorColor = Color.Transparent,
-        cursorColor = MaterialTheme.colorScheme.onBackground,
-        focusedTextColor = MaterialTheme.colorScheme.onBackground,
-        unfocusedTextColor = MaterialTheme.colorScheme.onBackground,
-        focusedLeadingIconColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.92f),
-        unfocusedLeadingIconColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
-        focusedPlaceholderColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.46f),
-        unfocusedPlaceholderColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.46f),
-      ),
+    HeaderSearchField(
+      query = query,
+      onQueryChange = onQueryChange,
+      placeholder = stringResource(R.string.hint_search_movies_tv_catalogs),
+      onClear = onClear,
     )
     if (showResultsState) {
-      Text(if (columns == 3) "Three-column layout" else "Two-column layout", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall)
+      Text(if (columns == 3) "Three-column layout" else "Two-column layout", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall, modifier = Modifier.compactsAway(order = 1, belowAnchor = true))
     }
   }
 }
+
+/**
+ * The look of every search field that sits in a page header: a soft filled container and no outline.
+ *
+ * One definition, so the field on Search, on a streaming network's page and on a View all list are
+ * the same field — they pin to the same place when a header condenses, and side by side any
+ * difference between them read as a different control.
+ */
+/**
+ * The search field in a page header, identical on every page that has one.
+ *
+ * Search, a streaming network's page and a View all list each used to build their own field, and
+ * they had drifted: different outlines, a clear button labelled in English on two of them, and —
+ * because each header had its own side padding — a different width and a different distance from
+ * the edge of the screen. When a header condenses, this field is all that is left of it, so any
+ * difference between the pages is the whole of what a viewer sees. Every property is fixed here.
+ *
+ * Pair it with [HeaderSearchInset] on the header around it, which is what keeps the width the same.
+ */
+@Composable
+private fun ScrollAwareHeaderScope.HeaderSearchField(
+  query: String,
+  onQueryChange: (String) -> Unit,
+  placeholder: String,
+  onClear: () -> Unit = { onQueryChange("") },
+) {
+  OutlinedTextField(
+    value = query,
+    onValueChange = onQueryChange,
+    modifier = Modifier.fillMaxWidth().compactAnchor().holdsChromeWhileTyping(),
+    singleLine = true,
+    placeholder = { InputGuideText(placeholder) },
+    leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+    trailingIcon = if (query.isNotBlank()) ({ IconButton(onClick = onClear) { Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.action_clear)) } }) else null,
+    shape = StreamDekRadius.cardShape,
+    colors = streamDekSearchFieldColors(),
+  )
+}
+
+/**
+ * How far a header's search field sits from the edges of the screen, per header style.
+ *
+ * The Search page's measurements, which every header with a search field now uses: in the Modern
+ * style an 8dp margin to the glass and 18dp inside it; in the Default style 18dp from the edge.
+ */
+private object HeaderSearchInset {
+  val modernPanel = 8.dp
+  val content = 18.dp
+}
+
+/**
+ * The margin between a poster grid and the edges of the screen, on every page that shows one.
+ *
+ * Search, Continue Watching and the Watchlist always used this. A streaming network's page and View
+ * all lists had 16dp and 20dp of their own, so the same posters sat at a different size and a
+ * different distance from the edge depending on how the viewer reached them — and, under a pinned
+ * search box that is identical everywhere, the grid below it was the one thing that visibly was not.
+ */
+internal val MediaGridSideMargin = 8.dp
+
+/** The gap between one row of posters and the next, shared by the same pages. */
+internal val MediaGridRowGap = 18.dp
+
+@Composable
+private fun streamDekSearchFieldColors() = androidx.compose.material3.TextFieldDefaults.colors(
+  focusedContainerColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.07f),
+  unfocusedContainerColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.05f),
+  focusedIndicatorColor = Color.Transparent,
+  unfocusedIndicatorColor = Color.Transparent,
+  cursorColor = MaterialTheme.colorScheme.onBackground,
+  focusedTextColor = MaterialTheme.colorScheme.onBackground,
+  unfocusedTextColor = MaterialTheme.colorScheme.onBackground,
+  focusedLeadingIconColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.92f),
+  unfocusedLeadingIconColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+  focusedTrailingIconColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+  unfocusedTrailingIconColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f),
+  focusedPlaceholderColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.46f),
+  unfocusedPlaceholderColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.46f),
+)
 
 @Composable
 private fun SearchRecentSection(recentSearches: List<String>, onSearchPress: (String) -> Unit, onRemoveSearch: (String) -> Unit) {
@@ -25770,6 +26003,7 @@ private fun DetailScreen(
     trailerReleased = true
   }
   val listState = rememberLazyListState()
+  ReportScrollTop { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
   val detailHazeState = rememberHazeState()
   LaunchedEffect(selectedTab) {
     if (selectedTab == DetailTab.Streams.name && uiState.showStreamsList) {
@@ -26262,6 +26496,8 @@ private fun DetailScreen(
       }
     }
 
+    // Drawn before the back button so the button stays on top of it.
+    ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter))
     IconButton(
       modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 26.dp, top = 18.dp).size(52.dp),
       onClick = onBack,
@@ -31769,7 +32005,10 @@ internal fun GlassCircleButton(
     Modifier.clickable(onClick = onClick)
   }
   FrostedGlassSurface(
-    modifier = modifier.size(52.dp).then(clickModifier),
+    // Clipped before the click, not only inside the glass: the press ripple is drawn by the
+    // clickable node itself, and without a clip of its own it filled the button's square bounds —
+    // a grey square flashing behind a round icon on every tap.
+    modifier = modifier.size(52.dp).clip(CircleShape).then(clickModifier),
     shape = CircleShape,
     blurRadius = if (navigationHazeStyle) 68f else 56f,
     hazeStateOverride = hazeState,

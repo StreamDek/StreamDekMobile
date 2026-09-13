@@ -776,10 +776,16 @@ class StreamDekPluginManager(context: Context) {
 
   fun selectProfileStorage(ownerKey: String, cloudJson: String? = null) {
     storageKey = "state:$ownerKey"
-    state = if (!cloudJson.isNullOrBlank() && cloudJson != "{}") parse(cloudJson) else load(storageKey)
+    val fromCloud = !cloudJson.isNullOrBlank() && cloudJson != "{}"
+    state = if (fromCloud) parse(cloudJson!!) else load(storageKey)
     // After storageKey, never before -- the settings keys are scoped by it.
-    if (!cloudJson.isNullOrBlank() && cloudJson != "{}") applyCloudSettings(cloudJson)
-    prefs.edit().putString(storageKey, serialize(state)).apply()
+    if (fromCloud) {
+      applyCloudSettings(cloudJson!!)
+      prefs.edit().putString(storageKey, serialize(state)).apply()
+    }
+    // State read from this key is already what is stored under it. Writing it straight back meant
+    // serializing every source's script and re-reading every source's settings on each profile
+    // switch, for a byte-for-byte identical result.
   }
 
   fun restoreCloudState(raw: String) {

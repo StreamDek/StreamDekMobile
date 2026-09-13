@@ -42,8 +42,10 @@ enum class ScrollPhase {
  *
  * - A direction only counts once the finger has travelled [DIRECTION_SLOP_DP] in it. A thumb resting
  *   on the glass, or the wobble at the end of a drag, changes nothing.
- * - The navigation decision has hysteresis: it collapses going down past 45% and only expands going
- *   up below 55% (or on reaching the top), so hovering around the middle cannot flicker it.
+ * - The navigation is not steered by direction at all. It gets out of the way once the viewer has
+ *   genuinely moved through content, in either direction, and only returns once they have stopped —
+ *   no finger on the glass, no momentum — for [NAVIGATION_RETURN_DELAY_MS]. A second swipe that
+ *   starts inside that window keeps it tucked away, so a run of short flicks reads as one journey.
  * - Near the top the fraction is capped by the distance from the top, so arriving at the start of a
  *   page always shows everything, however the page got there.
  *
@@ -67,6 +69,19 @@ internal class ScrollChromeMachine(private val density: Float) {
     const val UP_GAIN = 1.8f
     /** A flick hides the chrome a little faster than a read. */
     const val FAST_GAIN = 1.35f
+    /**
+     * Movement, in any direction, before the navigation believes the viewer is travelling through
+     * content rather than nudging it. A little more than the direction slop: collapsing the bar is a
+     * bigger visual event than a header starting to move, so it waits for a clearer signal.
+     */
+    const val NAVIGATION_TRAVEL_DP = 16f
+    /**
+     * How long everything must have been still before the navigation comes back.
+     *
+     * Long enough to span the gap between two quick swipes and the last slow crawl of a fling, short
+     * enough that a viewer who has stopped to look does not feel they are waiting for their controls.
+     */
+    const val NAVIGATION_RETURN_DELAY_MS = 550L
 
     const val SHOWN = 0f
     const val COMPACT = 0.5f
@@ -78,6 +93,7 @@ internal class ScrollChromeMachine(private val density: Float) {
   private val nearTopPx = NEAR_TOP_DP * density
   private val gracePx = TOP_GRACE_DP * density
   private val fastPxPerMs = FAST_DP_PER_MS * density
+  private val navigationTravelPx = NAVIGATION_TRAVEL_DP * density
 
   var fraction: Float = SHOWN
     private set
@@ -111,6 +127,21 @@ internal class ScrollChromeMachine(private val density: Float) {
   private var lastEventMs = -1L
   private var speedPxPerMs = 0f
 
+  /** Movement since the navigation was last at rest, in either direction. */
+  private var navigationTravel = 0f
+  /** The last moment anything moved or a finger left the screen: the navigation's idle clock. */
+  private var lastActivityMs = -1L
+
+  /** Whether a finger is on the page. While it is, the viewer has not stopped, however still it is. */
+  var touching: Boolean = false
+    private set
+
+  /**
+   * The viewer brought the navigation back themselves. It stays until they start a new gesture,
+   * so the tail of the fling they interrupted cannot snatch it away again under their thumb.
+   */
+  private var navigationHeld = false
+
   /**
    * One frame of scrolling.
    *
@@ -120,7 +151,14 @@ internal class ScrollChromeMachine(private val density: Float) {
    *   at the very start of it.
    */
   fun onScroll(deltaPx: Float, blockedAtTop: Boolean, timeMs: Long) {
-    if (deltaPx != 0f) measured = true
+    if (deltaPx != 0f) {
+      measured = true
+      // Travel only counts within one burst of activity. Nudges separated by pauses long enough to
+      // have brought the bar back are separate moments, and must not add up to a collapse.
+      if (!touching && lastActivityMs >= 0 && timeMs - lastActivityMs > NAVIGATION_RETURN_DELAY_MS) navigationTravel = 0f
+      lastActivityMs = timeMs
+      navigationTravel += abs(deltaPx)
+    }
     distanceFromTop = (distanceFromTop + deltaPx).coerceAtLeast(0f)
     if (blockedAtTop) distanceFromTop = 0f
     if (deltaPx == 0f) {
@@ -176,6 +214,38 @@ internal class ScrollChromeMachine(private val density: Float) {
     updateNavigation()
   }
 
+  /** A finger came down on the page. */
+  fun onTouchDown(timeMs: Long) {
+    touching = true
+    lastActivityMs = timeMs
+    // A new gesture is a new decision: whatever the viewer asked for last time no longer holds.
+    navigationHeld = false
+    navigationTravel = 0f
+  }
+
+  /** The last finger left the page. The idle clock starts now, not when the drag last moved. */
+  fun onTouchUp(timeMs: Long) {
+    touching = false
+    lastActivityMs = timeMs
+  }
+
+  /**
+   * How long until the navigation should come back, in milliseconds: zero or less means now, null
+   * means not while things stand as they are (a finger is down, or it is not collapsed at all).
+   */
+  fun navigationReturnDelay(timeMs: Long): Long? {
+    if (!navigationCollapsed || touching) return null
+    return NAVIGATION_RETURN_DELAY_MS - (timeMs - lastActivityMs)
+  }
+
+  /** The idle clock ran out: bring the navigation back if nothing has moved since. */
+  fun onIdle(timeMs: Long) {
+    val remaining = navigationReturnDelay(timeMs) ?: return
+    if (remaining > 0) return
+    navigationCollapsed = false
+    navigationTravel = 0f
+  }
+
   /**
    * Scrolling stopped. Returns the resting fraction the chrome should ease to.
    *
@@ -198,10 +268,6 @@ internal class ScrollChromeMachine(private val density: Float) {
       else -> listOf(SHOWN, COMPACT, HIDDEN).minBy { abs(it - fraction) }
     }
     phase = if (nearTop) ScrollPhase.NearTop else ScrollPhase.Settled
-    when (target) {
-      SHOWN -> navigationCollapsed = false
-      HIDDEN -> navigationCollapsed = true
-    }
     return target
   }
 
@@ -224,6 +290,8 @@ internal class ScrollChromeMachine(private val density: Float) {
     direction = 0
     pendingTravel = 0f
     navigationCollapsed = false
+    navigationTravel = 0f
+    navigationHeld = true
   }
 
   /** A different page: start from the top, fully shown. */
@@ -237,6 +305,8 @@ internal class ScrollChromeMachine(private val density: Float) {
     speedPxPerMs = 0f
     measured = false
     navigationCollapsed = false
+    navigationTravel = 0f
+    navigationHeld = false
     refreshPhase()
   }
 
@@ -254,13 +324,15 @@ internal class ScrollChromeMachine(private val density: Float) {
     }
   }
 
+  /**
+   * Collapses the navigation once the viewer is travelling through content. Never expands it:
+   * only [onIdle] does that, once everything has been still for long enough.
+   */
   private fun updateNavigation() {
-    navigationCollapsed = when {
-      interacting -> false
-      nearTop || fraction <= 0.05f -> false
-      !navigationCollapsed && direction > 0 && fraction >= 0.45f -> true
-      navigationCollapsed && direction < 0 && fraction <= 0.55f -> false
-      else -> navigationCollapsed
+    when {
+      interacting -> navigationCollapsed = false
+      navigationHeld -> Unit
+      !navigationCollapsed && navigationTravel >= navigationTravelPx -> navigationCollapsed = true
     }
   }
 }

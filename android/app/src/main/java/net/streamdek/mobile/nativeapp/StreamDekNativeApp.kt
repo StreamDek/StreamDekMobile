@@ -4626,18 +4626,22 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   /** The parts of the add-on list Home's rows depend on. Anything else can change without a reload. */
   private fun addonHomeSignature(addons: List<InstalledAddon>): String =
-    addons.filter { it.enabled }.joinToString("|") { addon ->
+    // Only add-ons that publish catalogues can put rows on Home, so only they count.
+    addons.filter { it.enabled && it.manifest.catalogs.isNotEmpty() }.joinToString("|") { addon ->
       addon.id + ":" + addon.manifest.catalogs.joinToString(",") { catalog -> catalog.type + "/" + catalog.id }
     }
 
   fun loadHome(force: Boolean = false, silent: Boolean = false) {
     if (uiState.homeSections.isNotEmpty() && !force) return
-    android.util.Log.d("TEMPHOME", "loadHome force=$force silent=$silent inFlight=$homeLoadInFlight", Throwable()) // TEMP-TRACE
     if (homeLoadInFlight) {
       if (force) homeReloadPending = true
       return
     }
     homeLoadInFlight = true
+    // Recorded now, as the load begins, rather than once its first request has returned: the
+    // provider list is announced again moments after launch, and an announcement arriving in that
+    // gap used to look like a change and queue a whole second load for the same providers.
+    homeLoadCloudStreamSignature = cloudStreamProviderSignature(loadedCloudStreamProviders())
     launchWork(
       onStart = { if (!silent) uiState = uiState.copy(homeLoading = true, errorMessage = null) },
       block = {
@@ -4670,8 +4674,11 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         )
         val wantedIds = (visibleIds + heroIds).distinct()
         // Recorded before the call, not after: what came back cannot answer "did we ask for
-        // this", because the backend omits a row that turned out to be empty.
-        requestedHomeCatalogIds = wantedIds.toSet()
+        // this", because the backend omits a row that turned out to be empty. Add-on and
+        // CloudStream rows are recorded too — the fan-out asks every enabled one — so an add-on
+        // row that answers empty is not mistaken for one that was never fetched.
+        requestedHomeCatalogIds = (wantedIds + rows.filter { !it.builtin && it.enabled }.map { it.id }).toSet()
+        homeLoadCloudStreamSignature = cloudStreamProviderSignature(cloudStreamProviders)
         perf.mark("catalogManifest", "rows=${wantedIds.size}")
         apiClient
           .fetchHomeSections(
@@ -5169,7 +5176,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       )
       appSettingsStore.saveHomeCatalogRows(merged)
     }
-    if (merged.any { it.enabled && isCloudStreamHomeRowId(it.id) }) loadHome(force = true, silent = uiState.homeSections.isNotEmpty())
+    val providersChanged = cloudStreamProviderSignature(loadedCloudStreamProviders()) != homeLoadCloudStreamSignature
+    if (providersChanged && merged.any { it.enabled && isCloudStreamHomeRowId(it.id) }) {
+      loadHome(force = true, silent = uiState.homeSections.isNotEmpty())
+    }
   }
 
   private fun listenForCloudStreamProviders() {
@@ -9920,6 +9930,19 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   private var requestedHomeCatalogIds: Set<String> = emptySet()
 
   /**
+   * The CloudStream providers the most recent Home load fetched rows from.
+   *
+   * The provider list is announced again on every profile switch whether or not it changed, and each
+   * announcement used to force a full Home reload — measured as the second complete load behind
+   * every switch, arriving a moment after Home first appeared.
+   */
+  @Volatile
+  private var homeLoadCloudStreamSignature: String? = null
+
+  private fun cloudStreamProviderSignature(providers: List<com.lagradost.cloudstream3.MainAPI>): String =
+    providers.map { it.name }.sorted().joinToString("|")
+
+  /**
    * A default row is only fetched while it is switched on, so switching one back on has nothing
    * to show until home is loaded again. Turning rows off never needs a refetch — the rows already
    * in hand are simply not laid out.
@@ -9949,7 +9972,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     // disabled the refresh check for every other row on the screen too.
     val known = uiState.allHomeSections.mapTo(mutableSetOf()) { it.id }
     val missingAddonRow = uiState.homeCatalogRows.any { row ->
-      !row.builtin && row.enabled && row.id !in streamDekFeatureRowIds && row.id !in known
+      !row.builtin && row.enabled && row.id !in streamDekFeatureRowIds && row.id !in known && row.id !in requestedHomeCatalogIds
     }
     if (missingAddonRow) reload()
   }
@@ -10515,16 +10538,32 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
         if (manual) uiState = uiState.copy(errorMessage = strings.getString(R.string.error_plugin_refresh_failed))
       }.onSuccess { cloudJson ->
         if (uiState.activeProfileId != profileId || activeOwnerKey() != ownerKey) return@onSuccess
-        lastKnownPluginVersion = runCatching {
-          JSONObject(cloudJson).let { root ->
-            maxOf(root.optLong("updatedAt", 0L), root.optJSONObject("cloudstream")?.optLong("updatedAt", 0L) ?: 0L)
-          }
-        }.getOrDefault(lastKnownPluginVersion)
-        val cloudHasState = runCatching {
-          JSONObject(cloudJson).let { root -> root.has("enabled") || root.has("repos") || root.has("providers") }
-        }.getOrDefault(false)
-        val localSnapshot = StreamDekPlugins.manager.snapshotJson(includeCode = false)
-        val localIsNewer = StreamDekPlugins.manager.state.updatedAt > StreamDekPlugins.manager.snapshotUpdatedAt(cloudJson)
+        // Read and compared off the main thread: the document, and the local state it is weighed
+        // against, carry every source's script, and doing this in the result handler blocked the
+        // main thread for about 300ms right as Home was being revealed after a profile switch.
+        val previousVersion = lastKnownPluginVersion
+        val reconciliation = withContext(Dispatchers.IO) {
+          val root = runCatching { JSONObject(cloudJson) }.getOrNull()
+          val version = root?.let { maxOf(it.optLong("updatedAt", 0L), it.optJSONObject("cloudstream")?.optLong("updatedAt", 0L) ?: 0L) } ?: previousVersion
+          val cloudHasState = root?.let { it.has("enabled") || it.has("repos") || it.has("providers") } ?: false
+          val manager = StreamDekPlugins.manager
+          val cloudAt = manager.snapshotUpdatedAt(cloudJson)
+          val localAt = manager.state.updatedAt
+          PluginReconciliation(
+            version = version,
+            cloudHasState = cloudHasState,
+            localIsNewer = localAt > cloudAt,
+            // The same stamp on both sides is the same document, and nothing local is missing its
+            // script: restoring would rebuild and rewrite the whole state to arrive where it began.
+            // This is the ordinary case on a profile switch.
+            inSync = localAt == cloudAt && localAt > 0L && manager.state.providers.none { it.code.isBlank() },
+            localSnapshot = manager.snapshotJson(includeCode = false),
+          )
+        }
+        lastKnownPluginVersion = reconciliation.version
+        val cloudHasState = reconciliation.cloudHasState
+        val localSnapshot = reconciliation.localSnapshot
+        val localIsNewer = reconciliation.localIsNewer
         // Both sides stamp updatedAt from their own clock, so a phone running even slightly
         // ahead of the machine the portal was used on would keep deciding it was the newer of
         // the two and push over the change instead of taking it. That is fine to arbitrate on a
@@ -10535,11 +10574,16 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
         // engine on a different schedule, so tying it to the JS half's clock would let an edit to
         // one hold back an edit to the other.
         applyCloudStreamDocument(cloudJson, manual)
-        if (cloudHasState && (manual || !localIsNewer)) {
-          StreamDekPlugins.manager.restoreCloudState(cloudJson)
-          StreamDekPlugins.manager.state.repos
-            .filter { repo -> StreamDekPlugins.manager.state.providers.none { provider -> provider.repoUrl == repo.url } || StreamDekPlugins.manager.state.providers.any { provider -> provider.repoUrl == repo.url && provider.code.isBlank() } }
-            .forEach { repo -> StreamDekPlugins.manager.refresh(repo.url) }
+        if (cloudHasState && (manual || !localIsNewer) && !(reconciliation.inSync && !manual)) {
+          val reposNeedingScripts = withContext(Dispatchers.IO) {
+            StreamDekPlugins.manager.restoreCloudState(cloudJson)
+            StreamDekPlugins.manager.state.repos
+              .filter { repo -> StreamDekPlugins.manager.state.providers.none { provider -> provider.repoUrl == repo.url } || StreamDekPlugins.manager.state.providers.any { provider -> provider.repoUrl == repo.url && provider.code.isBlank() } }
+              .map { it.url }
+          }
+          reposNeedingScripts.forEach { url -> StreamDekPlugins.manager.refresh(url) }
+        } else if (cloudHasState && (manual || !localIsNewer)) {
+          // In sync already: nothing to take and nothing to push.
         } else if (StreamDekPlugins.manager.state.repos.isNotEmpty() || StreamDekPlugins.manager.state.updatedAt > 0L) {
           apiClient.putProfilePlugins(session, profileId, localSnapshot)
         }
@@ -13216,6 +13260,15 @@ private fun MainScene(
   }
   }
 }
+
+/** What a profile's plugin document says against the device's copy, worked out off the main thread. */
+private data class PluginReconciliation(
+  val version: Long,
+  val cloudHasState: Boolean,
+  val localIsNewer: Boolean,
+  val inSync: Boolean,
+  val localSnapshot: String,
+)
 
 /** The three things the app's main area can be showing, which crossfade into one another. */
 private enum class SceneLayer { Auth, Picker, Main }

@@ -45,6 +45,10 @@ object CloudStreamPluginLoader {
 
   private val loaded = LinkedHashMap<String, LoadedCsPlugin>()
 
+  /** Moves on every load and unload, so answers derived from the loaded set know when to refresh. */
+  @Volatile var generation = 0
+    private set
+
   fun loadedPlugins(): List<LoadedCsPlugin> = synchronized(loaded) { loaded.values.toList() }
 
   fun isLoaded(filePath: String): Boolean = synchronized(loaded) { loaded.containsKey(filePath) }
@@ -122,6 +126,7 @@ object CloudStreamPluginLoader {
 
     val record = LoadedCsPlugin(filePath, name, version, instance, registered)
     synchronized(loaded) { loaded[filePath] = record }
+    generation += 1
     Log.i(TAG, "Loaded $name (v$version) with ${registered.size} provider(s): ${registered.joinToString { it.name }}")
     record
   }.onFailure { Log.e(TAG, "Failed to load CloudStream plugin ${file.name}", it) }
@@ -129,6 +134,7 @@ object CloudStreamPluginLoader {
   @Synchronized
   fun unload(filePath: String) {
     val record = synchronized(loaded) { loaded.remove(filePath) } ?: return
+    generation += 1
     runCatching { record.instance.beforeUnload() }
       .onFailure { Log.w(TAG, "beforeUnload failed for ${record.name}", it) }
     runCatching {

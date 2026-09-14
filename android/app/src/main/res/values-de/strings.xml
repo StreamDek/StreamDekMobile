@@ -22,6 +22,8 @@
   <string name="action_restart">Neu starten</string>
   <string name="action_cancel">Abbrechen</string>
   <string name="action_close">Schließen</string>
+  <string name="action_done">Fertig</string>
+  <string name="plugin_settings_apply_on_close">Gespeichert. Deine Änderungen werden übernommen, wenn du diese Einstellungen schließt.</string>
   <string name="action_back">Zurück</string>
   <string name="action_retry">Erneut versuchen</string>
   <string name="action_save">Speichern</string>
@@ -229,7 +231,6 @@
   <string name="debrid_connect_provider">%1$s verbinden</string>
   <string name="debrid_key_explainer">Füge den API-Schlüssel deines %1$s-Kontos ein oder tippe ihn. Er wird vor dem Speichern geprüft und verschlüsselt auf diesem Fernseher abgelegt.</string>
   <string name="debrid_api_key">API-Schlüssel</string>
-  <string name="plugin_reading_settings">Einstellungen dieser Quelle werden gelesen…</string>
   <string name="plugin_no_settings">Diese Quelle hat keine auszufüllenden Einstellungen.</string>
   <string name="home_failed">Startseite konnte nicht geladen werden</string>
   <string name="home_empty">Noch nichts zu zeigen</string>
@@ -799,6 +800,10 @@
     <item quantity="one">%1$s Kanal</item>
     <item quantity="other">%1$s Kanäle</item>
   </plurals>
+  <plurals name="hint_search_channel_count">
+    <item quantity="one">%1$s Kanal durchsuchen</item>
+    <item quantity="other">%1$s Kanäle durchsuchen</item>
+  </plurals>
   <string name="home_row_group_no_longer_installed">Nicht mehr installiert</string>
   <string name="home_row_group_hidden_streamdek_rows">durch StreamDek-Startseiten-Reihen ausgeblendet</string>
   <string name="home_row_group_addon_not_installed">das Add-on, aus dem sie stammen, ist nicht installiert</string>
@@ -1176,6 +1181,18 @@
     <item quantity="one">%1$d Streamingquelle aktiv</item>
     <item quantity="other">%1$d Streamingquellen aktiv</item>
   </plurals>
+  <plurals name="settings_summary_live_addons">
+    <item quantity="one">%1$d Add-on mit Live-Kanälen</item>
+    <item quantity="other">%1$d Add-ons mit Live-Kanälen</item>
+  </plurals>
+  <plurals name="settings_summary_live_plugin_sources_from">
+    <item quantity="one">%1$d Quelle aus %2$s mit Live-Kanälen</item>
+    <item quantity="other">%1$d Quellen aus %2$s mit Live-Kanälen</item>
+  </plurals>
+  <plurals name="settings_summary_live_plugin_sources_from_collections">
+    <item quantity="one">%1$d Quelle aus %2$d Sammlungen mit Live-Kanälen</item>
+    <item quantity="other">%1$d Quellen aus %2$d Sammlungen mit Live-Kanälen</item>
+  </plurals>
   <plurals name="settings_summary_services_connected">
     <item quantity="one">%1$d Dienst verbunden</item>
     <item quantity="other">%1$d Dienste verbunden</item>
@@ -1375,6 +1392,9 @@
   <string name="player_finding_a_source">Eine Quelle wird gesucht …</string>
   <string name="player_loading_next_episode">Nächste Folge wird geladen</string>
   <string name="player_channel_slow_to_load">Dieser Kanal ist verfügbar, braucht aber etwas zum Laden …</string>
+  <string name="player_live_connecting_source">Verbindung mit Quelle %1$d von %2$d…</string>
+  <string name="player_live_trying_source">Quelle startete nicht. Versuche Quelle %1$d von %2$d…</string>
+  <string name="player_live_source_slow">Quelle %1$d von %2$d startet langsam. Sonst wird eine andere versucht…</string>
   <string name="player_swarm_peers">PEERS</string>
   <string name="player_swarm_speed">TEMPO</string>
   <string name="credential_status_connected">Verbunden</string>
@@ -1608,6 +1628,5 @@
   <string name="visual_effects_note_performance">Automatisch hat zu reduzierten Effekten gewechselt, weil das Scrollen langsamer wurde.</string>
   <string name="visual_effects_note_unsupported">Diese Android-Version kann nicht weichzeichnen, daher nutzt Glas getönte Flächen.</string>
   <string name="cloudstream_address">Adresse</string>
-  <string name="cloudstream_subsources_help">Aktiviere Unterquellen in den Plugin-Einstellungen und schließe diesen Bildschirm, um die Startseitenzeilen zu aktualisieren.</string>
   <string name="cloudstream_settings_failed">Die Einstellungen dieses Plugins konnten nicht geöffnet werden.</string>
 </resources>

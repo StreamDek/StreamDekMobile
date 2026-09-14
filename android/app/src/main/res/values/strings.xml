@@ -46,6 +46,8 @@
   <string name="action_restart">Restart</string>
   <string name="action_cancel">Cancel</string>
   <string name="action_close">Close</string>
+  <string name="action_done">Done</string>
+  <string name="plugin_settings_apply_on_close">Saved. Your changes apply when you close these settings.</string>
   <string name="action_back">Back</string>
   <string name="action_retry">Try again</string>
   <string name="action_save">Save</string>
@@ -238,7 +240,6 @@
   <string name="debrid_connect_provider">Connect %1$s</string>
   <string name="debrid_key_explainer">Paste or type the API key from your %1$s account. It is checked before it is saved, and kept encrypted on this television.</string>
   <string name="debrid_api_key">API key</string>
-  <string name="plugin_reading_settings">Reading this source settings…</string>
   <string name="plugin_no_settings">This source has no settings to fill in.</string>
   <string name="home_failed">Home failed to load</string>
   <string name="home_empty">Nothing to show yet</string>
@@ -808,6 +809,10 @@
     <item quantity="one">%1$s channel</item>
     <item quantity="other">%1$s channels</item>
   </plurals>
+  <plurals name="hint_search_channel_count">
+    <item quantity="one">Search %1$s Channel</item>
+    <item quantity="other">Search %1$s Channels</item>
+  </plurals>
   <string name="home_row_group_no_longer_installed">No longer installed</string>
   <string name="home_row_group_hidden_streamdek_rows">hidden by StreamDek Home rows</string>
   <string name="home_row_group_addon_not_installed">the add-on they came from is not installed</string>
@@ -1185,6 +1190,18 @@
     <item quantity="one">%1$d streaming source on</item>
     <item quantity="other">%1$d streaming sources on</item>
   </plurals>
+  <plurals name="settings_summary_live_addons">
+    <item quantity="one">%1$d add-on with live channels</item>
+    <item quantity="other">%1$d add-ons with live channels</item>
+  </plurals>
+  <plurals name="settings_summary_live_plugin_sources_from">
+    <item quantity="one">%1$d source from %2$s with live channels</item>
+    <item quantity="other">%1$d sources from %2$s with live channels</item>
+  </plurals>
+  <plurals name="settings_summary_live_plugin_sources_from_collections">
+    <item quantity="one">%1$d source from %2$d collections with live channels</item>
+    <item quantity="other">%1$d sources from %2$d collections with live channels</item>
+  </plurals>
   <plurals name="settings_summary_services_connected">
     <item quantity="one">%1$d service connected</item>
     <item quantity="other">%1$d services connected</item>
@@ -1384,6 +1401,9 @@
   <string name="player_finding_a_source">Finding a source…</string>
   <string name="player_loading_next_episode">Loading next episode</string>
   <string name="player_channel_slow_to_load">This channel is available but is taking a while to load…</string>
+  <string name="player_live_connecting_source">Connecting to source %1$d of %2$d…</string>
+  <string name="player_live_trying_source">Source didn\'t start. Trying source %1$d of %2$d…</string>
+  <string name="player_live_source_slow">Source %1$d of %2$d is slow to start. Another will be tried if it doesn\'t…</string>
   <string name="player_swarm_peers">PEERS</string>
   <string name="player_swarm_speed">SPEED</string>
   <string name="credential_status_connected">Connected</string>
@@ -1622,6 +1642,5 @@
   <string name="visual_effects_note_performance">Automatic switched to Reduced effects after scrolling slowed down.</string>
   <string name="visual_effects_note_unsupported">This version of Android can\'t blur, so glass uses tinted surfaces.</string>
   <string name="cloudstream_address">Address</string>
-  <string name="cloudstream_subsources_help">Enable sub-sources in the plugin settings, then close this screen to refresh Home rows.</string>
   <string name="cloudstream_settings_failed">Could not open this plugin’s settings.</string>
 </resources>

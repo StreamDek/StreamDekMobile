@@ -6,6 +6,19 @@
     <item name="android:navigationBarColor">@android:color/transparent</item>
     <item name="android:windowBackground">@color/activityBackground</item>
   </style>
+  <!-- CloudStreamSettingsActivity: an invisible window over StreamDek, so a plugin's own settings
+       dialog or bottom sheet reads as a popup. MaterialComponents because CloudStream extensions
+       build those with Material classes and styles, as CloudStream's own theme allows. -->
+  <style name="Theme.StreamDek.PluginSettings" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+    <item name="colorPrimary">@color/colorPrimary</item>
+    <item name="colorSecondary">@color/colorPrimary</item>
+    <item name="android:windowIsTranslucent">true</item>
+    <item name="android:windowBackground">@android:color/transparent</item>
+    <item name="android:windowAnimationStyle">@null</item>
+    <item name="android:backgroundDimEnabled">false</item>
+    <item name="android:statusBarColor">@android:color/transparent</item>
+    <item name="android:navigationBarColor">@android:color/transparent</item>
+  </style>
   <!-- Everything every platform understands. The v33 copy adds what only Tiramisu has. -->
   <style name="Theme.App.SplashScreen.Base" parent="Theme.SplashScreen">
     <item name="windowSplashScreenBackground">@color/splashscreen_background</item>

@@ -67,6 +67,7 @@
 -keep class androidx.lifecycle.** { *; }
 -keep class androidx.recyclerview.widget.** { *; }
 -keep class androidx.preference.** { *; }
+-keep class com.google.android.material.** { *; }
 -dontwarn com.fasterxml.jackson.**
 
 # The trimmed runtime keeps method-body references to parts of the CloudStream app that StreamDek
@@ -76,7 +77,6 @@
 -dontwarn org.schabi.newpipe.**
 -dontwarn org.conscrypt.**
 -dontwarn org.chromium.net.**
--dontwarn com.google.android.material.**
 -dontwarn com.google.android.gms.cast.**
 -dontwarn androidx.navigation.**
 -dontwarn androidx.recyclerview.**

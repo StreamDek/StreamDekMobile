@@ -22,6 +22,8 @@
   <string name="action_restart">Ricomincia</string>
   <string name="action_cancel">Annulla</string>
   <string name="action_close">Chiudi</string>
+  <string name="action_done">Fatto</string>
+  <string name="plugin_settings_apply_on_close">Salvato. Le modifiche vengono applicate alla chiusura di queste impostazioni.</string>
   <string name="action_back">Indietro</string>
   <string name="action_retry">Riprova</string>
   <string name="action_save">Salva</string>
@@ -229,7 +231,6 @@
   <string name="debrid_connect_provider">Collega %1$s</string>
   <string name="debrid_key_explainer">Incolla o digita la chiave API del tuo account %1$s. Viene verificata prima del salvataggio e conservata cifrata su questo televisore.</string>
   <string name="debrid_api_key">Chiave API</string>
-  <string name="plugin_reading_settings">Lettura delle impostazioni di questa sorgente…</string>
   <string name="plugin_no_settings">Questa sorgente non ha impostazioni da compilare.</string>
   <string name="home_failed">Impossibile caricare la Home</string>
   <string name="home_empty">Ancora niente da mostrare</string>
@@ -799,6 +800,10 @@
     <item quantity="one">%1$s canale</item>
     <item quantity="other">%1$s canali</item>
   </plurals>
+  <plurals name="hint_search_channel_count">
+    <item quantity="one">Cerca tra %1$s canale</item>
+    <item quantity="other">Cerca tra %1$s canali</item>
+  </plurals>
   <string name="home_row_group_no_longer_installed">Non più installato</string>
   <string name="home_row_group_hidden_streamdek_rows">nascosto dalle righe della Home di StreamDek</string>
   <string name="home_row_group_addon_not_installed">l\'add-on da cui provengono non è installato</string>
@@ -1179,6 +1184,18 @@
     <item quantity="many">%1$d di sorgenti di streaming attive</item>
     <item quantity="other">%1$d sorgenti di streaming attive</item>
   </plurals>
+  <plurals name="settings_summary_live_addons">
+    <item quantity="one">%1$d componente aggiuntivo con canali live</item>
+    <item quantity="other">%1$d componenti aggiuntivi con canali live</item>
+  </plurals>
+  <plurals name="settings_summary_live_plugin_sources_from">
+    <item quantity="one">%1$d sorgente da %2$s con canali live</item>
+    <item quantity="other">%1$d sorgenti da %2$s con canali live</item>
+  </plurals>
+  <plurals name="settings_summary_live_plugin_sources_from_collections">
+    <item quantity="one">%1$d sorgente da %2$d raccolte con canali live</item>
+    <item quantity="other">%1$d sorgenti da %2$d raccolte con canali live</item>
+  </plurals>
   <plurals name="settings_summary_services_connected">
     <item quantity="one">%1$d servizio collegato</item>
     <item quantity="many">%1$d di servizi collegati</item>
@@ -1382,6 +1399,9 @@
   <string name="player_finding_a_source">Ricerca di una sorgente…</string>
   <string name="player_loading_next_episode">Caricamento dell\'episodio successivo</string>
   <string name="player_channel_slow_to_load">Questo canale è disponibile ma ci mette un po\' a caricare…</string>
+  <string name="player_live_connecting_source">Connessione alla sorgente %1$d di %2$d…</string>
+  <string name="player_live_trying_source">La sorgente non è partita. Provo la sorgente %1$d di %2$d…</string>
+  <string name="player_live_source_slow">La sorgente %1$d di %2$d è lenta ad avviarsi. Altrimenti ne verrà provata un\'altra…</string>
   <string name="player_swarm_peers">PEER</string>
   <string name="player_swarm_speed">VELOCITÀ</string>
   <string name="credential_status_connected">Collegato</string>
@@ -1622,6 +1642,5 @@
   <string name="visual_effects_note_performance">Automatico è passato agli effetti ridotti perché lo scorrimento rallentava.</string>
   <string name="visual_effects_note_unsupported">Questa versione di Android non supporta la sfocatura, quindi il vetro usa superfici colorate.</string>
   <string name="cloudstream_address">Indirizzo</string>
-  <string name="cloudstream_subsources_help">Attiva le sottofonti nelle impostazioni del plugin, poi chiudi questa schermata per aggiornare le righe della Home.</string>
   <string name="cloudstream_settings_failed">Impossibile aprire le impostazioni di questo plugin.</string>
 </resources>

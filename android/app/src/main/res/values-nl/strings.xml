@@ -22,6 +22,8 @@
   <string name="action_restart">Opnieuw starten</string>
   <string name="action_cancel">Annuleren</string>
   <string name="action_close">Sluiten</string>
+  <string name="action_done">Klaar</string>
+  <string name="plugin_settings_apply_on_close">Opgeslagen. Je wijzigingen worden toegepast wanneer je deze instellingen sluit.</string>
   <string name="action_back">Terug</string>
   <string name="action_retry">Opnieuw proberen</string>
   <string name="action_save">Opslaan</string>
@@ -229,7 +231,6 @@
   <string name="debrid_connect_provider">%1$s koppelen</string>
   <string name="debrid_key_explainer">Plak of typ de API-sleutel van je %1$s-account. Hij wordt gecontroleerd voordat hij wordt opgeslagen en versleuteld bewaard op deze televisie.</string>
   <string name="debrid_api_key">API-sleutel</string>
-  <string name="plugin_reading_settings">Instellingen van deze bron lezen…</string>
   <string name="plugin_no_settings">Deze bron heeft geen in te vullen instellingen.</string>
   <string name="home_failed">Start kon niet worden geladen</string>
   <string name="home_empty">Nog niets te tonen</string>
@@ -799,6 +800,10 @@
     <item quantity="one">%1$s kanaal</item>
     <item quantity="other">%1$s kanalen</item>
   </plurals>
+  <plurals name="hint_search_channel_count">
+    <item quantity="one">Zoek in %1$s kanaal</item>
+    <item quantity="other">Zoek in %1$s kanalen</item>
+  </plurals>
   <string name="home_row_group_no_longer_installed">Niet meer geïnstalleerd</string>
   <string name="home_row_group_hidden_streamdek_rows">verborgen door StreamDek-startrijen</string>
   <string name="home_row_group_addon_not_installed">de add-on waar ze vandaan komen is niet geïnstalleerd</string>
@@ -1176,6 +1181,18 @@
     <item quantity="one">%1$d streamingbron aan</item>
     <item quantity="other">%1$d streamingbronnen aan</item>
   </plurals>
+  <plurals name="settings_summary_live_addons">
+    <item quantity="one">%1$d add-on met livekanalen</item>
+    <item quantity="other">%1$d add-ons met livekanalen</item>
+  </plurals>
+  <plurals name="settings_summary_live_plugin_sources_from">
+    <item quantity="one">%1$d bron uit %2$s met livekanalen</item>
+    <item quantity="other">%1$d bronnen uit %2$s met livekanalen</item>
+  </plurals>
+  <plurals name="settings_summary_live_plugin_sources_from_collections">
+    <item quantity="one">%1$d bron uit %2$d collecties met livekanalen</item>
+    <item quantity="other">%1$d bronnen uit %2$d collecties met livekanalen</item>
+  </plurals>
   <plurals name="settings_summary_services_connected">
     <item quantity="one">%1$d dienst gekoppeld</item>
     <item quantity="other">%1$d diensten gekoppeld</item>
@@ -1375,6 +1392,9 @@
   <string name="player_finding_a_source">Een bron zoeken…</string>
   <string name="player_loading_next_episode">Volgende aflevering laden</string>
   <string name="player_channel_slow_to_load">Dit kanaal is beschikbaar maar laadt traag…</string>
+  <string name="player_live_connecting_source">Verbinden met bron %1$d van %2$d…</string>
+  <string name="player_live_trying_source">Bron startte niet. Bron %1$d van %2$d proberen…</string>
+  <string name="player_live_source_slow">Bron %1$d van %2$d start traag. Anders wordt een andere geprobeerd…</string>
   <string name="player_swarm_peers">PEERS</string>
   <string name="player_swarm_speed">SNELHEID</string>
   <string name="credential_status_connected">Verbonden</string>
@@ -1608,6 +1628,5 @@
   <string name="visual_effects_note_performance">Automatisch is overgeschakeld naar beperkte effecten omdat scrollen trager werd.</string>
   <string name="visual_effects_note_unsupported">Deze Android-versie kan niet vervagen, dus glas gebruikt getinte vlakken.</string>
   <string name="cloudstream_address">Adres</string>
-  <string name="cloudstream_subsources_help">Schakel subbronnen in via de plugininstellingen en sluit dit scherm om de startrijen te vernieuwen.</string>
   <string name="cloudstream_settings_failed">De instellingen van deze plugin konden niet worden geopend.</string>
 </resources>

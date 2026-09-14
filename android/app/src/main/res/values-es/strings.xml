@@ -22,6 +22,8 @@
   <string name="action_restart">Reiniciar</string>
   <string name="action_cancel">Cancelar</string>
   <string name="action_close">Cerrar</string>
+  <string name="action_done">Listo</string>
+  <string name="plugin_settings_apply_on_close">Guardado. Los cambios se aplican al cerrar estos ajustes.</string>
   <string name="action_back">Atrás</string>
   <string name="action_retry">Reintentar</string>
   <string name="action_save">Guardar</string>
@@ -229,7 +231,6 @@
   <string name="debrid_connect_provider">Conectar %1$s</string>
   <string name="debrid_key_explainer">Pega o escribe la clave de API de tu cuenta de %1$s. Se comprueba antes de guardarla y se conserva cifrada en esta televisión.</string>
   <string name="debrid_api_key">Clave de API</string>
-  <string name="plugin_reading_settings">Leyendo los ajustes de esta fuente…</string>
   <string name="plugin_no_settings">Esta fuente no tiene ajustes que rellenar.</string>
   <string name="home_failed">No se ha podido cargar Inicio</string>
   <string name="home_empty">Todavía no hay nada que mostrar</string>
@@ -799,6 +800,10 @@
     <item quantity="one">%1$s canal</item>
     <item quantity="other">%1$s canales</item>
   </plurals>
+  <plurals name="hint_search_channel_count">
+    <item quantity="one">Buscar en %1$s canal</item>
+    <item quantity="other">Buscar en %1$s canales</item>
+  </plurals>
   <string name="home_row_group_no_longer_installed">Ya no está instalado</string>
   <string name="home_row_group_hidden_streamdek_rows">oculto por las filas de Inicio de StreamDek</string>
   <string name="home_row_group_addon_not_installed">el complemento del que provienen no está instalado</string>
@@ -1179,6 +1184,18 @@
     <item quantity="many">%1$d de fuentes de streaming activas</item>
     <item quantity="other">%1$d fuentes de streaming activas</item>
   </plurals>
+  <plurals name="settings_summary_live_addons">
+    <item quantity="one">%1$d complemento con canales en directo</item>
+    <item quantity="other">%1$d complementos con canales en directo</item>
+  </plurals>
+  <plurals name="settings_summary_live_plugin_sources_from">
+    <item quantity="one">%1$d fuente de %2$s con canales en directo</item>
+    <item quantity="other">%1$d fuentes de %2$s con canales en directo</item>
+  </plurals>
+  <plurals name="settings_summary_live_plugin_sources_from_collections">
+    <item quantity="one">%1$d fuente de %2$d colecciones con canales en directo</item>
+    <item quantity="other">%1$d fuentes de %2$d colecciones con canales en directo</item>
+  </plurals>
   <plurals name="settings_summary_services_connected">
     <item quantity="one">%1$d servicio conectado</item>
     <item quantity="many">%1$d de servicios conectados</item>
@@ -1382,6 +1399,9 @@
   <string name="player_finding_a_source">Buscando una fuente…</string>
   <string name="player_loading_next_episode">Cargando el siguiente episodio</string>
   <string name="player_channel_slow_to_load">Este canal está disponible pero tarda en cargar…</string>
+  <string name="player_live_connecting_source">Conectando con la fuente %1$d de %2$d…</string>
+  <string name="player_live_trying_source">La fuente no arrancó. Probando la fuente %1$d de %2$d…</string>
+  <string name="player_live_source_slow">La fuente %1$d de %2$d tarda en arrancar. Si no lo hace, se probará otra…</string>
   <string name="player_swarm_peers">PARES</string>
   <string name="player_swarm_speed">VELOCIDAD</string>
   <string name="credential_status_connected">Conectado</string>
@@ -1622,6 +1642,5 @@
   <string name="visual_effects_note_performance">Automático cambió a efectos reducidos porque el desplazamiento se ralentizó.</string>
   <string name="visual_effects_note_unsupported">Esta versión de Android no puede desenfocar, así que el cristal usa superficies tintadas.</string>
   <string name="cloudstream_address">Dirección</string>
-  <string name="cloudstream_subsources_help">Activa las subfuentes en los ajustes del complemento y cierra esta pantalla para actualizar las filas de Inicio.</string>
   <string name="cloudstream_settings_failed">No se pudieron abrir los ajustes de este complemento.</string>
 </resources>

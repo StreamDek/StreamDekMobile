@@ -244,6 +244,12 @@ internal fun playerResumePosition(durationSec: Double, exactPositionSec: Double,
   return requested.coerceIn(0.0, (durationSec - 5.0).coerceAtLeast(0.0))
 }
 
+/** A live channel's source being started, as the loading screen names it. */
+internal data class LiveSourceAttempt(val position: Int, val total: Int, val failingOver: Boolean)
+
+/** How long a live source may take to show a picture before the next source is tried. */
+internal const val LIVE_SOURCE_START_TIMEOUT_MS = 10_000L
+
 internal fun shouldAutoFallbackToMpv(preference: String, activeEngine: ActivePlaybackEngine, fallbackUsed: Boolean): Boolean =
   preference.equals("Auto", ignoreCase = true) && activeEngine == ActivePlaybackEngine.Media3 && !fallbackUsed
 internal fun nextUntriedPlaybackSource(
@@ -735,6 +741,10 @@ fun NativePlayerScreen(
     if (duration > 0.0) ((currentTime / duration) * 100.0).coerceIn(0.0, 100.0) else 0.0
 
   val isLoading = nextEpisodeLoading || (!hasLoaded && error.isNullOrBlank())
+  val liveSourceAttempt: LiveSourceAttempt? = if (!session.isLive || availableStreams.size < 2) null else {
+    val index = availableStreams.indexOfFirst { playerStreamIdentity(it) == playerStreamIdentity(session.currentStream) }
+    if (index < 0) null else LiveSourceAttempt(index + 1, availableStreams.size, failingOver = failedSourceKeys.isNotEmpty())
+  }
   LaunchedEffect(isLoading) {
     if (!isLoading) pollPeerSwarm = false
   }
@@ -898,19 +908,36 @@ fun NativePlayerScreen(
   // "keeps reloading and reloading" looks like. Routing both triggers through this one function
   // means every retry — however it was triggered — counts against the same budget before
   // failing over to the next source or giving up.
+  /**
+   * Moves a live channel on to a source it has not tried yet. Tried sources are remembered for the
+   * channel, so a channel with three dead sources walks through them once instead of bouncing
+   * between the first two. False when every source has been tried.
+   */
+  fun failOverToNextLiveSource(reason: String): Boolean {
+    session.currentStream?.let { current ->
+      val key = playerStreamIdentity(current)
+      if (key !in failedSourceKeys) failedSourceKeys.add(key)
+    }
+    val nextSource = nextUntriedPlaybackSource(availableStreams, session.currentStream, failedSourceKeys.toSet()) ?: run {
+      android.util.Log.w("StreamDekLivePlayer", "$reason for ${session.url}; every source has been tried")
+      return false
+    }
+    android.util.Log.w("StreamDekLivePlayer", "$reason for ${session.url}; trying the next source")
+    // No error line: the loading screen that follows says which source is being tried.
+    onSelectStream(nextSource, 0.0)
+    return true
+  }
+
   fun retryOrFailoverLiveFeed() {
     val now = System.currentTimeMillis()
     // A long gap since the previous retry means the feed recovered — reset the budget.
     if (now - lastLiveRetryAtMs > 60_000L) liveRetryAttempts = 0
-    if (liveRetryAttempts >= 5) {
+    // A source that has never played gets one reconnect before the next source is tried: one that
+    // is rejected outright fails the same way every time, and the viewer is left watching a spinner.
+    val budget = if (hasLoaded) 5 else 1
+    if (liveRetryAttempts >= budget) {
       android.util.Log.w("StreamDekLivePlayer", "retry budget exhausted for ${session.url}, looking for a next source")
-      val currentKey = playerStreamIdentity(session.currentStream)
-      val currentIndex = availableStreams.indexOfFirst { playerStreamIdentity(it) == currentKey }
-      val nextSource = availableStreams.drop((currentIndex + 1).coerceAtLeast(0)).firstOrNull { playerStreamIdentity(it) != currentKey }
-      if (nextSource != null) {
-        error = "Switching to another source..."
-        onSelectStream(nextSource, 0.0)
-      } else {
+      if (!failOverToNextLiveSource("retry budget exhausted")) {
         error = "This live feed keeps stalling. Tap retry or choose another source."
       }
       return
@@ -943,6 +970,18 @@ fun NativePlayerScreen(
   }
 
 
+  // A live source that connects but never produces a picture raises no error at all, so nothing
+  // above would ever move on from it. Past the start window, the next source is tried. Restarted by
+  // every reconnect and engine swap, each of which is a fresh attempt at starting.
+  LaunchedEffect(session.url, session.isLive, hasLoaded, activeEngine, liveReconnectVersion) {
+    if (!session.isLive || hasLoaded) return@LaunchedEffect
+    delay(LIVE_SOURCE_START_TIMEOUT_MS)
+    if (hasLoaded) return@LaunchedEffect
+    if (!failOverToNextLiveSource("no picture after ${LIVE_SOURCE_START_TIMEOUT_MS / 1000}s") && error.isNullOrBlank()) {
+      error = "This channel isn't responding. Tap retry or choose another source."
+    }
+  }
+
   // A live stream that's simply slow to start looks identical to a stuck one until the
   // 20s stall watchdog or 5-attempt retry budget above kicks in. Give the user an earlier,
   // reassuring signal instead of leaving the generic spinner up the whole time - this only
@@ -959,7 +998,8 @@ fun NativePlayerScreen(
     hasLoaded = true
     loadedVideoWidth = width
     loadedVideoHeight = height
-    if (session.isLive && channelSwitchLoading) onChannelSwitchPlaybackStarted()
+    // Every live start, not only a channel switch's: the source that worked is remembered either way.
+    if (session.isLive) onChannelSwitchPlaybackStarted()
     duration = loadedDuration
     error = null
     if (session.autoLoadSubtitles && !userPickedSubtitle && !subtitleDisabledByUser && selectedSubtitleTrackId == null &&
@@ -1222,6 +1262,7 @@ fun NativePlayerScreen(
       source = source,
       playback = playback,
       isLoading = isLoading,
+      liveSourceAttempt = liveSourceAttempt,
       peerSwarm = peerSwarm,
       peerSourceLabel = session.sourceLabel,
       channelSwitchLoading = channelSwitchLoading,
@@ -1494,6 +1535,8 @@ private fun PlayerSurface(
         factory = { context ->
           MPVView(context).apply {
             onMpvViewCreated(this)
+            // Before setSource below, so the first load already knows what counts as loaded.
+            setLoadWaitsForPlayback(session.isLive)
             onLoadCallback = onLoad
             onProgressCallback = onProgress
             onErrorCallback = onError
@@ -1521,6 +1564,7 @@ private fun PlayerSurface(
         },
         update = { view ->
           // See the equivalent comment in the Media3 branch above - same reason.
+          view.setLoadWaitsForPlayback(session.isLive)
           view.onLoadCallback = onLoad
           view.onProgressCallback = onProgress
           view.onErrorCallback = onError
@@ -4284,6 +4328,8 @@ private fun BoxScope.PlayerSurfaceOverlays(
   source: PlayerSourceState,
   playback: PlayerPlaybackState,
   isLoading: Boolean,
+  /** Which of a live channel's sources is starting; null for a channel with one source. */
+  liveSourceAttempt: LiveSourceAttempt?,
   peerSwarm: SwarmStats?,
   peerSourceLabel: String?,
   channelSwitchLoading: Boolean,
@@ -4516,6 +4562,14 @@ private fun BoxScope.PlayerSurfaceOverlays(
         // The label beside it is the episode's own code, so the two are joined rather than written
         // as one sentence - only the first half is StreamDek's words.
         nextEpisodeLoading -> listOfNotNull(stringResource(R.string.player_loading_next_episode), nextEpisodeLoadingLabel).joinToString(" · ")
+        // A channel with several sources says which one it is on, so a switch reads as the player
+        // working through them rather than as a stall that happens to recover.
+        session.isLive && liveSourceAttempt != null && slowLoadHintVisible ->
+          stringResource(R.string.player_live_source_slow, liveSourceAttempt.position, liveSourceAttempt.total)
+        session.isLive && liveSourceAttempt != null && liveSourceAttempt.failingOver ->
+          stringResource(R.string.player_live_trying_source, liveSourceAttempt.position, liveSourceAttempt.total)
+        session.isLive && liveSourceAttempt != null ->
+          stringResource(R.string.player_live_connecting_source, liveSourceAttempt.position, liveSourceAttempt.total)
         session.isLive && slowLoadHintVisible -> stringResource(R.string.player_channel_slow_to_load)
         peerSwarm != null -> stringResource(R.string.player_buffering_peers)
         else -> stringResource(R.string.player_preparing_stream)

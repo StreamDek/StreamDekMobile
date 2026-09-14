@@ -105,19 +105,6 @@ data class CsProviderEntry(
 )
 data class CsPluginState(val repos: List<CsRepo> = emptyList(), val providers: List<CsProviderEntry> = emptyList(), val updatedAt: Long = 0L)
 
-/** A known title used to check that a CloudStream source still scrapes. */
-data class CsTestMedia(
-  val label: String,
-  val title: String,
-  val year: Int?,
-  val type: String,
-  val season: Int? = null,
-  val episode: Int? = null,
-) {
-  fun toRequest(): CloudStreamProviderBridge.StreamRequest =
-    CloudStreamProviderBridge.StreamRequest(title = title, year = year, type = type, season = season, episode = episode)
-}
-
 class CloudStreamRepoManager(private val context: Context) {
   private companion object {
     const val TAG = "CloudStreamRepos"
@@ -301,45 +288,6 @@ class CloudStreamRepoManager(private val context: Context) {
     }
     Log.i(TAG, "CloudStream sources ready: ${activeProviders().size} provider(s) from ${wanted.size} enabled source(s)")
     notifyProvidersChanged()
-  }
-
-  /**
-   * A well-known title to probe a source with, chosen from the types the source advertises.
-   * Returns null for sources StreamDek cannot meaningfully test by title — live/IPTV scrapers
-   * answer with channels rather than titles, so searching one for a film proves nothing.
-   */
-  fun testMediaForProvider(repoUrl: String, internalName: String): CsTestMedia? {
-    val entry = state.providers.firstOrNull { it.repoUrl == repoUrl && it.internalName == internalName } ?: return null
-    val types = entry.tvTypes.map { it.lowercase() }
-    val anime = types.any { "anime" in it } || entry.name.contains("anime", ignoreCase = true)
-    val hasSeries = types.any { it in setOf("tvseries", "anime", "ova", "asiandrama", "cartoon") }
-    val hasMovie = types.any { it in setOf("movie", "animemovie", "documentary") }
-    return when {
-      anime && hasSeries -> CsTestMedia("Attack on Titan S1 E1", "Attack on Titan", 2013, "tv", 1, 1)
-      anime -> CsTestMedia("Spirited Away (2001)", "Spirited Away", 2001, "movie")
-      hasMovie -> CsTestMedia("The Matrix (1999)", "The Matrix", 1999, "movie")
-      hasSeries -> CsTestMedia("Breaking Bad S1 E1", "Breaking Bad", 2008, "tv", 1, 1)
-      // Sources that declare nothing usable are still worth a films probe; live-only ones are not.
-      types.isEmpty() -> CsTestMedia("The Matrix (1999)", "The Matrix", 1999, "movie")
-      else -> null
-    }
-  }
-
-  /** Runs [testMediaForProvider] through this one source and returns a few sample results. */
-  suspend fun testProvider(repoUrl: String, internalName: String): Result<List<AddonStream>> = withContext(Dispatchers.IO) {
-    runCatching {
-      val entry = state.providers.firstOrNull { it.repoUrl == repoUrl && it.internalName == internalName }
-        ?: throw IllegalStateException("This source is no longer listed in its collection.")
-      val media = testMediaForProvider(repoUrl, internalName)
-        ?: throw IllegalStateException("${entry.name} serves live channels, which cannot be checked with a test title.")
-      val file = entry.installedFilePath?.let(::File)?.takeIf { it.exists() && it.length() > 0L }
-        ?: throw IllegalStateException("Turn ${entry.name} on before testing it.")
-      // Normally already loaded; loading here keeps the button working right after an enable.
-      CloudStreamPluginLoader.load(context.applicationContext, file).getOrThrow()
-      val providers = CloudStreamPluginLoader.providersFor(file.absolutePath)
-      require(providers.isNotEmpty()) { "${entry.name} did not register any provider to test." }
-      CloudStreamProviderBridge.streams(providers, media.toRequest()).take(5)
-    }
   }
 
   /** The providers usable right now — loaded, and belonging to an enabled source in an enabled repo. */

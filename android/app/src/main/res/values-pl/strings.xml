@@ -22,6 +22,8 @@
   <string name="action_restart">Od początku</string>
   <string name="action_cancel">Anuluj</string>
   <string name="action_close">Zamknij</string>
+  <string name="action_done">Gotowe</string>
+  <string name="plugin_settings_apply_on_close">Zapisano. Zmiany zostaną zastosowane po zamknięciu tych ustawień.</string>
   <string name="action_back">Wstecz</string>
   <string name="action_retry">Spróbuj ponownie</string>
   <string name="action_save">Zapisz</string>
@@ -241,7 +243,6 @@
   <string name="debrid_connect_provider">Połącz %1$s</string>
   <string name="debrid_key_explainer">Wklej lub wpisz klucz API ze swojego konta %1$s. Zostanie sprawdzony przed zapisaniem i zaszyfrowany na tym telewizorze.</string>
   <string name="debrid_api_key">Klucz API</string>
-  <string name="plugin_reading_settings">Odczytywanie ustawień tego źródła…</string>
   <string name="plugin_no_settings">To źródło nie ma ustawień do wypełnienia.</string>
   <string name="home_failed">Nie udało się wczytać ekranu głównego</string>
   <string name="home_empty">Nie ma jeszcze nic do pokazania</string>
@@ -869,6 +870,12 @@
     <item quantity="many">%1$s kanałów</item>
     <item quantity="other">%1$s kanału</item>
   </plurals>
+  <plurals name="hint_search_channel_count">
+    <item quantity="one">Szukaj w %1$s kanale</item>
+    <item quantity="few">Szukaj w %1$s kanałach</item>
+    <item quantity="many">Szukaj w %1$s kanałach</item>
+    <item quantity="other">Szukaj w %1$s kanałach</item>
+  </plurals>
   <string name="home_row_group_no_longer_installed">Już niezainstalowane</string>
   <string name="home_row_group_hidden_streamdek_rows">ukryte przez rzędy główne StreamDek</string>
   <string name="home_row_group_addon_not_installed">dodatek, z którego pochodzą, nie jest zainstalowany</string>
@@ -1256,6 +1263,24 @@
     <item quantity="many">%1$d źródeł streamingu włączonych</item>
     <item quantity="other">%1$d źródła streamingu włączonych</item>
   </plurals>
+  <plurals name="settings_summary_live_addons">
+    <item quantity="one">%1$d dodatek z kanałami na żywo</item>
+    <item quantity="few">%1$d dodatki z kanałami na żywo</item>
+    <item quantity="many">%1$d dodatków z kanałami na żywo</item>
+    <item quantity="other">%1$d dodatków z kanałami na żywo</item>
+  </plurals>
+  <plurals name="settings_summary_live_plugin_sources_from">
+    <item quantity="one">%1$d źródło z %2$s z kanałami na żywo</item>
+    <item quantity="few">%1$d źródła z %2$s z kanałami na żywo</item>
+    <item quantity="many">%1$d źródeł z %2$s z kanałami na żywo</item>
+    <item quantity="other">%1$d źródeł z %2$s z kanałami na żywo</item>
+  </plurals>
+  <plurals name="settings_summary_live_plugin_sources_from_collections">
+    <item quantity="one">%1$d źródło z %2$d kolekcji z kanałami na żywo</item>
+    <item quantity="few">%1$d źródła z %2$d kolekcji z kanałami na żywo</item>
+    <item quantity="many">%1$d źródeł z %2$d kolekcji z kanałami na żywo</item>
+    <item quantity="other">%1$d źródeł z %2$d kolekcji z kanałami na żywo</item>
+  </plurals>
   <plurals name="settings_summary_services_connected">
     <item quantity="one">%1$d usługa połączona</item>
     <item quantity="few">%1$d usługi połączone</item>
@@ -1463,6 +1488,9 @@
   <string name="player_finding_a_source">Wyszukiwanie źródła…</string>
   <string name="player_loading_next_episode">Wczytywanie następnego odcinka</string>
   <string name="player_channel_slow_to_load">Ten kanał jest dostępny, ale wczytuje się dłużej…</string>
+  <string name="player_live_connecting_source">Łączenie ze źródłem %1$d z %2$d…</string>
+  <string name="player_live_trying_source">Źródło nie wystartowało. Próba źródła %1$d z %2$d…</string>
+  <string name="player_live_source_slow">Źródło %1$d z %2$d startuje powoli. W razie potrzeby zostanie użyte inne…</string>
   <string name="player_swarm_peers">PEERY</string>
   <string name="player_swarm_speed">PRĘDKOŚĆ</string>
   <string name="credential_status_connected">Połączono</string>
@@ -1710,6 +1738,5 @@
   <string name="visual_effects_note_performance">Tryb automatyczny przełączył się na ograniczone efekty, bo przewijanie zwolniło.</string>
   <string name="visual_effects_note_unsupported">Ta wersja Androida nie obsługuje rozmycia, więc szkło używa barwionych powierzchni.</string>
   <string name="cloudstream_address">Adres</string>
-  <string name="cloudstream_subsources_help">Włącz podźródła w ustawieniach wtyczki, a następnie zamknij ten ekran, aby odświeżyć wiersze strony głównej.</string>
   <string name="cloudstream_settings_failed">Nie udało się otworzyć ustawień tej wtyczki.</string>
 </resources>

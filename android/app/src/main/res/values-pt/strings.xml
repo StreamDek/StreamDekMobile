@@ -22,6 +22,8 @@
   <string name="action_restart">Recomeçar</string>
   <string name="action_cancel">Cancelar</string>
   <string name="action_close">Fechar</string>
+  <string name="action_done">Concluído</string>
+  <string name="plugin_settings_apply_on_close">Guardado. As alterações são aplicadas quando fechar estas definições.</string>
   <string name="action_back">Voltar</string>
   <string name="action_retry">Tentar novamente</string>
   <string name="action_save">Guardar</string>
@@ -229,7 +231,6 @@
   <string name="debrid_connect_provider">Ligar %1$s</string>
   <string name="debrid_key_explainer">Cole ou escreva a chave de API da sua conta %1$s. É verificada antes de ser guardada e mantida encriptada nesta televisão.</string>
   <string name="debrid_api_key">Chave de API</string>
-  <string name="plugin_reading_settings">A ler as definições desta fonte…</string>
   <string name="plugin_no_settings">Esta fonte não tem definições a preencher.</string>
   <string name="home_failed">Não foi possível carregar o Início</string>
   <string name="home_empty">Ainda não há nada para mostrar</string>
@@ -799,6 +800,10 @@
     <item quantity="one">%1$s canal</item>
     <item quantity="other">%1$s canais</item>
   </plurals>
+  <plurals name="hint_search_channel_count">
+    <item quantity="one">Pesquisar %1$s canal</item>
+    <item quantity="other">Pesquisar %1$s canais</item>
+  </plurals>
   <string name="home_row_group_no_longer_installed">Já não está instalado</string>
   <string name="home_row_group_hidden_streamdek_rows">oculto pelas filas do Início do StreamDek</string>
   <string name="home_row_group_addon_not_installed">o add-on de onde vieram não está instalado</string>
@@ -1179,6 +1184,18 @@
     <item quantity="many">%1$d de fontes de streaming ativas</item>
     <item quantity="other">%1$d fontes de streaming ativas</item>
   </plurals>
+  <plurals name="settings_summary_live_addons">
+    <item quantity="one">%1$d extra com canais em direto</item>
+    <item quantity="other">%1$d extras com canais em direto</item>
+  </plurals>
+  <plurals name="settings_summary_live_plugin_sources_from">
+    <item quantity="one">%1$d fonte de %2$s com canais em direto</item>
+    <item quantity="other">%1$d fontes de %2$s com canais em direto</item>
+  </plurals>
+  <plurals name="settings_summary_live_plugin_sources_from_collections">
+    <item quantity="one">%1$d fonte de %2$d coleções com canais em direto</item>
+    <item quantity="other">%1$d fontes de %2$d coleções com canais em direto</item>
+  </plurals>
   <plurals name="settings_summary_services_connected">
     <item quantity="one">%1$d serviço ligado</item>
     <item quantity="many">%1$d de serviços ligados</item>
@@ -1382,6 +1399,9 @@
   <string name="player_finding_a_source">À procura de uma fonte…</string>
   <string name="player_loading_next_episode">A carregar o episódio seguinte</string>
   <string name="player_channel_slow_to_load">Este canal está disponível mas está a demorar a carregar…</string>
+  <string name="player_live_connecting_source">A ligar à fonte %1$d de %2$d…</string>
+  <string name="player_live_trying_source">A fonte não arrancou. A tentar a fonte %1$d de %2$d…</string>
+  <string name="player_live_source_slow">A fonte %1$d de %2$d está lenta a arrancar. Se não arrancar, será tentada outra…</string>
   <string name="player_swarm_peers">PARES</string>
   <string name="player_swarm_speed">VELOCIDADE</string>
   <string name="credential_status_connected">Ligado</string>
@@ -1622,6 +1642,5 @@
   <string name="visual_effects_note_performance">O modo automático mudou para efeitos reduzidos porque o deslocamento ficou lento.</string>
   <string name="visual_effects_note_unsupported">Esta versão do Android não consegue desfocar, por isso o vidro usa superfícies tingidas.</string>
   <string name="cloudstream_address">Endereço</string>
-  <string name="cloudstream_subsources_help">Ative as subfontes nas definições do plugin e feche este ecrã para atualizar as linhas do Início.</string>
   <string name="cloudstream_settings_failed">Não foi possível abrir as definições deste plugin.</string>
 </resources>

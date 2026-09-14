@@ -148,6 +148,17 @@ class ScrollChromeState internal constructor(density: Float, private val scope: 
   private var navigationReturnWatch: Job? = null
 
   /**
+   * Set while a page needs the floating navigation out of the way whatever the scroll is doing -
+   * while it points at an item low on the screen, for one. Overrides [navigationCollapsed].
+   */
+  var navigationHeldCollapsed: Boolean by mutableStateOf(false)
+    private set
+
+  fun holdNavigationCollapsed(held: Boolean) {
+    navigationHeldCollapsed = held
+  }
+
+  /**
    * Bumped by every [reset], so pages re-tell the chrome where they are.
    *
    * A page change resets the chrome and composes the new page in the same frame, and nothing

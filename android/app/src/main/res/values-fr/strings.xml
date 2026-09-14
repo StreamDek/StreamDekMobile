@@ -22,6 +22,8 @@
   <string name="action_restart">Recommencer</string>
   <string name="action_cancel">Annuler</string>
   <string name="action_close">Fermer</string>
+  <string name="action_done">Terminé</string>
+  <string name="plugin_settings_apply_on_close">Enregistré. Vos modifications s\'appliquent à la fermeture de ces réglages.</string>
   <string name="action_back">Retour</string>
   <string name="action_retry">Réessayer</string>
   <string name="action_save">Enregistrer</string>
@@ -234,7 +236,6 @@
   <string name="debrid_connect_provider">Connecter %1$s</string>
   <string name="debrid_key_explainer">Collez ou saisissez la clé API de votre compte %1$s. Elle est vérifiée avant d\'être enregistrée, puis conservée chiffrée sur ce téléviseur.</string>
   <string name="debrid_api_key">Clé API</string>
-  <string name="plugin_reading_settings">Lecture des réglages de cette source…</string>
   <string name="plugin_no_settings">Cette source n\'a aucun réglage à renseigner.</string>
   <string name="home_failed">L\'accueil n\'a pas pu se charger</string>
   <string name="home_empty">Rien à afficher pour l\'instant</string>
@@ -833,6 +834,10 @@
     <item quantity="many">%1$s chaînes</item>
     <item quantity="other">%1$s chaînes</item>
   </plurals>
+  <plurals name="hint_search_channel_count">
+    <item quantity="one">Rechercher parmi %1$s chaîne</item>
+    <item quantity="other">Rechercher parmi %1$s chaînes</item>
+  </plurals>
   <string name="home_row_group_no_longer_installed">Plus installé</string>
   <string name="home_row_group_hidden_streamdek_rows">masqué par les rangées d\'accueil StreamDek</string>
   <string name="home_row_group_addon_not_installed">l\'add-on dont elles proviennent n\'est pas installé</string>
@@ -1215,6 +1220,18 @@
     <item quantity="many">%1$d de sources de streaming activées</item>
     <item quantity="other">%1$d sources de streaming activées</item>
   </plurals>
+  <plurals name="settings_summary_live_addons">
+    <item quantity="one">%1$d module avec des chaînes en direct</item>
+    <item quantity="other">%1$d modules avec des chaînes en direct</item>
+  </plurals>
+  <plurals name="settings_summary_live_plugin_sources_from">
+    <item quantity="one">%1$d source de %2$s avec des chaînes en direct</item>
+    <item quantity="other">%1$d sources de %2$s avec des chaînes en direct</item>
+  </plurals>
+  <plurals name="settings_summary_live_plugin_sources_from_collections">
+    <item quantity="one">%1$d source de %2$d collections avec des chaînes en direct</item>
+    <item quantity="other">%1$d sources de %2$d collections avec des chaînes en direct</item>
+  </plurals>
   <plurals name="settings_summary_services_connected">
     <item quantity="one">%1$d service connecté</item>
     <item quantity="many">%1$d de services connectés</item>
@@ -1418,6 +1435,9 @@
   <string name="player_finding_a_source">Recherche d\'une source…</string>
   <string name="player_loading_next_episode">Chargement de l\'épisode suivant</string>
   <string name="player_channel_slow_to_load">Cette chaîne est disponible mais met du temps à charger…</string>
+  <string name="player_live_connecting_source">Connexion à la source %1$d sur %2$d…</string>
+  <string name="player_live_trying_source">La source n\'a pas démarré. Essai de la source %1$d sur %2$d…</string>
+  <string name="player_live_source_slow">La source %1$d sur %2$d tarde à démarrer. Une autre sera essayée sinon…</string>
   <string name="player_swarm_peers">PAIRS</string>
   <string name="player_swarm_speed">DÉBIT</string>
   <string name="credential_status_connected">Connecté</string>
@@ -1658,6 +1678,5 @@
   <string name="visual_effects_note_performance">Automatique est passé aux effets réduits car le défilement ralentissait.</string>
   <string name="visual_effects_note_unsupported">Cette version d\'Android ne peut pas flouter, le verre utilise donc des surfaces teintées.</string>
   <string name="cloudstream_address">Adresse</string>
-  <string name="cloudstream_subsources_help">Activez les sous-sources dans les paramètres du plugin, puis fermez cet écran pour actualiser les lignes de l’accueil.</string>
   <string name="cloudstream_settings_failed">Impossible d’ouvrir les paramètres de ce plugin.</string>
 </resources>

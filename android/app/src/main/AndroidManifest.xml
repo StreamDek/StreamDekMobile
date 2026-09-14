@@ -57,7 +57,7 @@
         <data android:scheme="stremio"/>
       </intent-filter>
     </activity>
-    <activity android:name=".nativeapp.CloudStreamSettingsActivity" android:exported="false" android:theme="@style/AppTheme" android:configChanges="orientation|screenSize|keyboardHidden" />
+    <activity android:name=".nativeapp.CloudStreamSettingsActivity" android:exported="false" android:theme="@style/Theme.StreamDek.PluginSettings" android:configChanges="orientation|screenSize|keyboardHidden" />
     <service
       android:name=".peer.PeerStreamService"
       android:enabled="true"

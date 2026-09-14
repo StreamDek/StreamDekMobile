@@ -63,6 +63,11 @@
 -keep class dev.whyoleg.cryptography.** { *; }
 -keep class org.mozilla.javascript.** { *; }
 -keep class androidx.appcompat.app.** { *; }
+# CNCVerse settings screens (PlayZTV, SKTech, Sportzx, Cricify, LivXow, PlayFy...) load their icons
+# through androidx.core's ResourcesCompat. Renamed by R8, opening those settings threw
+# NoClassDefFoundError in release builds only. Kept whole: ContextCompat, ViewCompat and the rest of
+# core are as likely to be reached by other repositories' extensions.
+-keep class androidx.core.** { *; }
 -keep class androidx.fragment.app.** { *; }
 -keep class androidx.lifecycle.** { *; }
 -keep class androidx.recyclerview.widget.** { *; }

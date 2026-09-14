@@ -524,6 +524,10 @@
     <item quantity="one">%1$d Titel</item>
     <item quantity="other">%1$d Titel</item>
   </plurals>
+  <plurals name="library_title_label">
+    <item quantity="one">Titel</item>
+    <item quantity="other">Titel</item>
+  </plurals>
   <string name="browse_no_titles_here">Keine Titel hier</string>
   <string name="browse_no_titles_here_detail">Dieser Bereich hat keine Einträge, die zum gewählten Filter passen.</string>
   <string name="action_clear">Löschen</string>
@@ -1278,6 +1282,7 @@
   <string name="hint_search_within_network">In diesem Dienst suchen</string>
   <string name="hint_search_channels">Kanäle suchen</string>
   <string name="hint_search_this_list">In dieser Liste suchen</string>
+  <string name="hint_search_named_list">Liste „%1$s“ durchsuchen</string>
   <string name="hint_search_movies_series">Filme und Serien suchen ...</string>
   <string name="hint_search_movies_tv_catalogs">Filme, Serien und Kataloge suchen</string>
   <string name="hint_paste_badge_link">Link zu einer Badge-Sammlung einfügen</string>
@@ -1583,13 +1588,13 @@
   <string name="subtitle_none">Keine</string>
   <string name="action_play_again">Erneut abspielen</string>
   <string name="settings_navigation_behaviour">Navigationsverhalten</string>
-  <string name="settings_navigation_behaviour_description">Wähle, wann sich die schwebende Navigation in deine Profiltaste zurückzieht.</string>
+  <string name="settings_navigation_behaviour_description">Wähle, wie Navigation und Seitenkopfzeilen reagieren.</string>
   <string name="navigation_behaviour_always_expanded">Ausgeklappt</string>
-  <string name="navigation_behaviour_always_expanded_description">Alle Seitentasten bleiben sichtbar.</string>
+  <string name="navigation_behaviour_always_expanded_description">Die Navigation bleibt ausgeklappt und die Kopfzeilen bleiben unverändert.</string>
   <string name="navigation_behaviour_after_delay">Nach Verzögerung einklappen</string>
-  <string name="navigation_behaviour_after_delay_description">Zieht sich einige Sekunden nach der Seitenauswahl zurück.</string>
+  <string name="navigation_behaviour_after_delay_description">Die Navigation klappt nach einer Verzögerung ein. Die Kopfzeilen bleiben unverändert.</string>
   <string name="navigation_behaviour_while_scrolling">Beim Scrollen einklappen</string>
-  <string name="navigation_behaviour_while_scrolling_description">Zieht sich beim Scrollen zurück und kehrt zurück, sobald du anhältst.</string>
+  <string name="navigation_behaviour_while_scrolling_description">Beim Scrollen klappt die Navigation ein und die Kopfzeilen werden kleiner oder ausgeblendet.</string>
   <string name="settings_visual_effects">Visuelle Effekte</string>
   <string name="settings_visual_effects_description">Glaseffekte und flüssiges Scrollen abwägen. Nur auf diesem Gerät gespeichert.</string>
   <string name="visual_effects_automatic">Automatisch</string>
@@ -1602,4 +1607,7 @@
   <string name="visual_effects_note_device">Automatisch nutzt reduzierte Effekte, damit dieses Gerät flüssig bleibt.</string>
   <string name="visual_effects_note_performance">Automatisch hat zu reduzierten Effekten gewechselt, weil das Scrollen langsamer wurde.</string>
   <string name="visual_effects_note_unsupported">Diese Android-Version kann nicht weichzeichnen, daher nutzt Glas getönte Flächen.</string>
+  <string name="cloudstream_address">Adresse</string>
+  <string name="cloudstream_subsources_help">Aktiviere Unterquellen in den Plugin-Einstellungen und schließe diesen Bildschirm, um die Startseitenzeilen zu aktualisieren.</string>
+  <string name="cloudstream_settings_failed">Die Einstellungen dieses Plugins konnten nicht geöffnet werden.</string>
 </resources>

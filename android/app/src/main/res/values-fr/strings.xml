@@ -546,6 +546,11 @@
     <item quantity="many">%1$d titres</item>
     <item quantity="other">%1$d titres</item>
   </plurals>
+  <plurals name="library_title_label">
+    <item quantity="one">titre</item>
+    <item quantity="many">titres</item>
+    <item quantity="other">titres</item>
+  </plurals>
   <string name="browse_no_titles_here">Aucun titre ici</string>
   <string name="browse_no_titles_here_detail">Cette section n\'a aucun élément correspondant au filtre sélectionné.</string>
   <string name="action_clear">Effacer</string>
@@ -1317,6 +1322,7 @@
   <string name="hint_search_within_network">Rechercher dans ce service</string>
   <string name="hint_search_channels">Rechercher des chaînes</string>
   <string name="hint_search_this_list">Rechercher dans cette liste</string>
+  <string name="hint_search_named_list">Rechercher dans la liste %1$s</string>
   <string name="hint_search_movies_series">Rechercher films et séries...</string>
   <string name="hint_search_movies_tv_catalogs">Rechercher films, séries et catalogues</string>
   <string name="hint_paste_badge_link">Collez un lien de collection de badges</string>
@@ -1632,13 +1638,13 @@
   <string name="subtitle_none">Aucun</string>
   <string name="action_play_again">Rejouer</string>
   <string name="settings_navigation_behaviour">Comportement de la navigation</string>
-  <string name="settings_navigation_behaviour_description">Choisissez quand la navigation flottante se replie dans votre bouton de profil.</string>
+  <string name="settings_navigation_behaviour_description">Choisissez le comportement de la navigation et des en-têtes de page.</string>
   <string name="navigation_behaviour_always_expanded">Déployée</string>
-  <string name="navigation_behaviour_always_expanded_description">Tous les boutons de page restent visibles.</string>
+  <string name="navigation_behaviour_always_expanded_description">La navigation reste déployée et les en-têtes restent fixes.</string>
   <string name="navigation_behaviour_after_delay">Replier après un délai</string>
-  <string name="navigation_behaviour_after_delay_description">Se replie quelques secondes après avoir choisi une page.</string>
+  <string name="navigation_behaviour_after_delay_description">La navigation se replie après un délai. Les en-têtes restent fixes.</string>
   <string name="navigation_behaviour_while_scrolling">Replier pendant le défilement</string>
-  <string name="navigation_behaviour_while_scrolling_description">Se replie pendant le défilement et revient quand vous vous arrêtez.</string>
+  <string name="navigation_behaviour_while_scrolling_description">Pendant le défilement, la navigation se replie et les en-têtes se réduisent ou se masquent.</string>
   <string name="settings_visual_effects">Effets visuels</string>
   <string name="settings_visual_effects_description">Équilibrez les effets de verre et la fluidité du défilement. Enregistré sur cet appareil uniquement.</string>
   <string name="visual_effects_automatic">Automatique</string>
@@ -1651,4 +1657,7 @@
   <string name="visual_effects_note_device">Automatique utilise des effets réduits pour garder cet appareil fluide.</string>
   <string name="visual_effects_note_performance">Automatique est passé aux effets réduits car le défilement ralentissait.</string>
   <string name="visual_effects_note_unsupported">Cette version d\'Android ne peut pas flouter, le verre utilise donc des surfaces teintées.</string>
+  <string name="cloudstream_address">Adresse</string>
+  <string name="cloudstream_subsources_help">Activez les sous-sources dans les paramètres du plugin, puis fermez cet écran pour actualiser les lignes de l’accueil.</string>
+  <string name="cloudstream_settings_failed">Impossible d’ouvrir les paramètres de ce plugin.</string>
 </resources>

@@ -533,6 +533,10 @@
     <item quantity="one">%1$d title</item>
     <item quantity="other">%1$d titles</item>
   </plurals>
+  <plurals name="library_title_label">
+    <item quantity="one">title</item>
+    <item quantity="other">titles</item>
+  </plurals>
   <string name="browse_no_titles_here">No titles here</string>
   <string name="browse_no_titles_here_detail">This section does not have matching items for the selected filter.</string>
   <string name="action_clear">Clear</string>
@@ -1287,6 +1291,7 @@
   <string name="hint_search_within_network">Search within this network</string>
   <string name="hint_search_channels">Search channels</string>
   <string name="hint_search_this_list">Search this list</string>
+  <string name="hint_search_named_list">Search %1$s list</string>
   <string name="hint_search_movies_series">Search movies &amp; TV series...</string>
   <string name="hint_search_movies_tv_catalogs">Search movies, TV and catalogs</string>
   <string name="hint_paste_badge_link">Paste a badge collection link</string>
@@ -1597,13 +1602,13 @@
   <string name="app_version_required_message">This version of StreamDek is no longer supported. Update to continue.</string>
   <string name="action_play_again">Play Again</string>
   <string name="settings_navigation_behaviour">Navigation Behaviour</string>
-  <string name="settings_navigation_behaviour_description">Choose when the floating navigation tucks into your profile button.</string>
+  <string name="settings_navigation_behaviour_description">Choose how navigation and page headers respond.</string>
   <string name="navigation_behaviour_always_expanded">Expanded</string>
-  <string name="navigation_behaviour_always_expanded_description">Every page button stays visible.</string>
+  <string name="navigation_behaviour_always_expanded_description">Navigation stays expanded and headers stay static.</string>
   <string name="navigation_behaviour_after_delay">Collapse After a Delay</string>
-  <string name="navigation_behaviour_after_delay_description">Tucks away a few seconds after you choose a page.</string>
+  <string name="navigation_behaviour_after_delay_description">Navigation collapses after a delay. Headers stay static.</string>
   <string name="navigation_behaviour_while_scrolling">Collapse While Scrolling</string>
-  <string name="navigation_behaviour_while_scrolling_description">Tucks away while you scroll and comes back when you stop.</string>
+  <string name="navigation_behaviour_while_scrolling_description">Navigation collapses and headers shrink or hide while scrolling.</string>
   <string name="settings_visual_effects">Visual Effects</string>
   <string name="settings_visual_effects_description">Balance glass effects with smooth scrolling. Saved on this device only.</string>
   <string name="visual_effects_automatic">Automatic</string>
@@ -1616,4 +1621,7 @@
   <string name="visual_effects_note_device">Automatic is using Reduced effects to keep this device smooth.</string>
   <string name="visual_effects_note_performance">Automatic switched to Reduced effects after scrolling slowed down.</string>
   <string name="visual_effects_note_unsupported">This version of Android can\'t blur, so glass uses tinted surfaces.</string>
+  <string name="cloudstream_address">Address</string>
+  <string name="cloudstream_subsources_help">Enable sub-sources in the plugin settings, then close this screen to refresh Home rows.</string>
+  <string name="cloudstream_settings_failed">Could not open this plugin’s settings.</string>
 </resources>

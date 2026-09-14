@@ -40,7 +40,9 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -392,6 +394,9 @@ class ScrollChromeState internal constructor(density: Float, private val scope: 
 /** Null outside `MainScene`, where chrome simply stays put. */
 val LocalScrollChrome: ProvidableCompositionLocal<ScrollChromeState?> = staticCompositionLocalOf { null }
 
+/** Headers move only when the viewer chooses scroll-driven navigation. */
+val LocalHeaderCollapseEnabled = staticCompositionLocalOf { false }
+
 @Composable
 fun rememberScrollChromeState(): ScrollChromeState {
   val density = LocalDensity.current.density
@@ -456,8 +461,12 @@ sealed interface ScrollAwareHeaderSurface {
    * away, as the Modern glass does. Otherwise — a library page keeping its title row — it tightens
    * into a band across the width.
    */
+  /**
+   * [hazeState], when given, turns the compact pill into glass: the opaque band gives way to a blur of
+   * the page as it closes on the field — dark glass in a dark theme, the light glass in a light one.
+   */
   @Immutable
-  data class Solid(val color: Color, val pillAroundAnchor: Boolean = false) : ScrollAwareHeaderSurface
+  data class Solid(val color: Color, val pillAroundAnchor: Boolean = false, val hazeState: HazeState? = null) : ScrollAwareHeaderSurface
 
   /** The Modern style: a glass panel that closes into a floating pill around the search field. */
   @Immutable
@@ -492,6 +501,12 @@ class ScrollAwareHeaderScope internal constructor() {
   internal var anchorPaddingHorizontalPx = 0
   internal var anchorPaddingVerticalPx = 0
   internal var fraction: () -> Float = { 0f }
+  internal var isRtl = false
+  internal var joinGapPx = 0
+  private var joinedLeft by mutableIntStateOf(0)
+  private var joinedTop by mutableIntStateOf(0)
+  private var joinedWidth by mutableIntStateOf(0)
+  private var joinedHeight by mutableIntStateOf(0)
 
   /** 0 at rest, 1 once compact. Only a header that keeps its field compacts; others slide away. */
   internal fun compactProgress(): Float =
@@ -530,6 +545,56 @@ class ScrollAwareHeaderScope internal constructor() {
     anchorKnown = true
   }
 
+  /** Width the anchor gives up at its end as the header compacts, to make room for [joinsAnchorRow]. */
+  internal fun anchorYield(): Int =
+    if (joinedWidth == 0) 0 else ((joinedWidth + joinGapPx) * HeaderEasing.transform(compactProgress())).roundToInt()
+
+  /**
+   * Narrows the anchor from its end as the header compacts, keeping its slot full width.
+   *
+   * Goes after [compactAnchor], so the anchor is still measured at full width and the room given up
+   * is accounted for once, by [anchorYield].
+   */
+  fun Modifier.yieldsToJoinedControl(): Modifier = layout { measurable, constraints ->
+    val give = if (constraints.hasBoundedWidth) anchorYield().coerceAtMost(constraints.maxWidth) else 0
+    val placeable = measurable.measure(
+      constraints.copy(minWidth = (constraints.minWidth - give).coerceAtLeast(0), maxWidth = constraints.maxWidth - give),
+    )
+    layout(placeable.width + give, placeable.height) { placeable.placeRelative(0, 0) }
+  }
+
+  /**
+   * A control that leaves its own row to sit beside the anchor once compact — a grid button coming
+   * down to the end of the search field's row. It keeps its own surface, separate from the anchor's.
+   *
+   * Composable so that a control which goes away — View all hides its grid button on a category
+   * list — takes its reserved room with it, instead of leaving the field narrowed for nothing.
+   */
+  @Composable
+  fun Modifier.joinsAnchorRow(): Modifier {
+    DisposableEffect(this@ScrollAwareHeaderScope) {
+      onDispose { joinedWidth = 0; joinedHeight = 0 }
+    }
+    return joinedPlacement()
+  }
+
+  private fun Modifier.joinedPlacement(): Modifier = onPlaced { coordinates ->
+    val parent = root ?: return@onPlaced
+    if (!parent.isAttached) return@onPlaced
+    // Placed before the offset below, so this is where the control rests, not where it has moved to.
+    val position = parent.localPositionOf(coordinates, Offset.Zero)
+    joinedLeft = position.x.roundToInt()
+    joinedTop = position.y.roundToInt()
+    joinedWidth = coordinates.size.width
+    joinedHeight = coordinates.size.height
+  }.absoluteOffset {
+    val eased = HeaderEasing.transform(compactProgress())
+    if (eased <= 0f || joinedWidth == 0) return@absoluteOffset IntOffset.Zero
+    val targetLeft = if (isRtl) anchorLeft else anchorLeft + anchorWidth - joinedWidth
+    val targetTop = anchorTop + (anchorHeight - joinedHeight) / 2
+    IntOffset(((targetLeft - joinedLeft) * eased).roundToInt(), ((targetTop - joinedTop) * eased).roundToInt())
+  }
+
   /** How far the header content has moved up, in pixels. */
   internal fun translation(): Int {
     if (keepAnchor && anchorKnown) {
@@ -552,10 +617,11 @@ class ScrollAwareHeaderScope internal constructor() {
     // The surface trails the parts a little, so they have begun to leave before it closes on them.
     val morph = HeaderEasing.transform(((progress - SURFACE_DELAY) / (1f - SURFACE_DELAY)).coerceIn(0f, 1f))
     val compact = if (pill) {
+      val give = anchorYield()
       IntRect(
-        (anchorLeft - anchorPaddingHorizontalPx).coerceAtLeast(0),
+        (anchorLeft + (if (isRtl) give else 0) - anchorPaddingHorizontalPx).coerceAtLeast(0),
         (anchorTop - anchorPaddingVerticalPx).coerceAtLeast(0),
-        (anchorLeft + anchorWidth + anchorPaddingHorizontalPx).coerceAtMost(stageWidth),
+        (anchorLeft + anchorWidth - (if (isRtl) 0 else give) + anchorPaddingHorizontalPx).coerceAtMost(stageWidth),
         (anchorTop + anchorHeight + anchorPaddingVerticalPx).coerceAtMost(stageHeight),
       )
     } else {
@@ -647,18 +713,23 @@ internal fun ScrollAwareHeader(
    */
   anchorPaddingHorizontal: Dp = 0.dp,
   anchorPaddingVertical: Dp = 0.dp,
+  // Shared with attached chrome so its placement follows the same measured surface.
+  headerScope: ScrollAwareHeaderScope = remember { ScrollAwareHeaderScope() },
+  // A page may keep its header compact by absolute position instead of scroll direction.
+  fractionOverride: (() -> Float)? = null,
   content: @Composable ScrollAwareHeaderScope.() -> Unit,
 ) {
   val chrome = LocalScrollChrome.current
   val density = LocalDensity.current
-  val headerScope = remember { ScrollAwareHeaderScope() }
-  val active = enabled && chrome != null
+  val active = enabled && LocalHeaderCollapseEnabled.current && chrome != null
   headerScope.keepAnchor = keepAnchorVisible && active
   headerScope.pill = when (surface) {
     is ScrollAwareHeaderSurface.Glass -> true
     is ScrollAwareHeaderSurface.Solid -> surface.pillAroundAnchor
   }
+  headerScope.isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
   with(density) {
+    headerScope.joinGapPx = 10.dp.roundToPx()
     headerScope.panelTopPx = panelPadding.calculateTopPadding().roundToPx()
     headerScope.restingMarginPx = 8.dp.roundToPx()
     headerScope.bandPaddingPx = 10.dp.roundToPx()
@@ -666,7 +737,7 @@ internal fun ScrollAwareHeader(
     headerScope.anchorPaddingHorizontalPx = anchorPaddingHorizontal.roundToPx()
     headerScope.anchorPaddingVerticalPx = anchorPaddingVertical.roundToPx()
   }
-  headerScope.fraction = if (active) ({ chrome!!.presentedFraction }) else ({ 0f })
+  headerScope.fraction = if (active) (fractionOverride ?: { chrome!!.presentedFraction }) else ({ 0f })
 
   Box(modifier = modifier.clipToBounds()) {
     Box(
@@ -702,6 +773,7 @@ internal fun ScrollAwareHeader(
               } else {
                 RectangleShape
               }
+              val glass = surface.hazeState?.takeIf { surface.pillAroundAnchor }
               Box(
                 modifier = Modifier
                   .fillMaxSize()
@@ -709,26 +781,23 @@ internal fun ScrollAwareHeader(
                   .drawBehind {
                     // Read at draw time, so the tint firming up as the band closes costs a redraw only.
                     val progress = if (surface.pillAroundAnchor) headerScope.compactProgress() else 0f
-                    val alpha = DefaultHeaderAlpha + (DefaultHeaderPillAlpha - DefaultHeaderAlpha) * progress
-                    drawRect(surface.color.copy(alpha = alpha))
+                    val alpha = if (glass != null) DefaultHeaderAlpha * (1f - progress)
+                      else DefaultHeaderAlpha + (DefaultHeaderPillAlpha - DefaultHeaderAlpha) * progress
+                    if (alpha > 0.005f) drawRect(surface.color.copy(alpha = alpha))
                   },
               )
+              if (glass != null) {
+                HeaderGlassSurface(
+                  hazeState = glass,
+                  shape = shape,
+                  darkInDarkTheme = true,
+                  modifier = Modifier.fillMaxSize().graphicsLayer { alpha = headerScope.compactProgress() },
+                )
+              }
             }
             is ScrollAwareHeaderSurface.Glass -> {
-              val lightHeader = MaterialTheme.colorScheme.background.luminance() > 0.5f
               val shape = remember(headerScope) { HeaderMorphShape(headerScope, StreamDekRadius.sheet, StreamDekRadius.card) }
-              FrostedGlassSurface(
-                modifier = Modifier.fillMaxSize(),
-                shape = shape,
-                hazeStateOverride = surface.hazeState,
-                blurRadius = 68f,
-                tintAlpha = if (lightHeader) 0.14f else 0.06f,
-                borderAlpha = if (lightHeader) 0.10f else 0f,
-                baseAlpha = if (lightHeader) 0.28f else 0.08f,
-                fillColorOverride = if (lightHeader) null else Color.White,
-                showEdgeGradient = false,
-                contrastZone = GlassContrastZone.TopChrome,
-              ) {}
+              HeaderGlassSurface(hazeState = surface.hazeState, shape = shape, modifier = Modifier.fillMaxSize())
             }
           }
         }
@@ -736,6 +805,36 @@ internal fun ScrollAwareHeader(
       }
     }
   }
+}
+
+/**
+ * The glass behind header chrome: a header panel, a pinned pill, a pinned filter row.
+ *
+ * The Modern style's glass is a light frost in both themes. [darkInDarkTheme] is the Default style's
+ * variant, which keeps that frost in a light theme but tints toward the dark page in a dark one, so
+ * a condensed Default header still reads as part of a dark app.
+ */
+@Composable
+internal fun HeaderGlassSurface(
+  hazeState: HazeState,
+  shape: Shape,
+  modifier: Modifier = Modifier,
+  darkInDarkTheme: Boolean = false,
+) {
+  val light = MaterialTheme.colorScheme.background.luminance() > 0.5f
+  val tinted = light || darkInDarkTheme
+  FrostedGlassSurface(
+    modifier = modifier,
+    shape = shape,
+    hazeStateOverride = hazeState,
+    blurRadius = 68f,
+    tintAlpha = if (tinted) 0.14f else 0.06f,
+    borderAlpha = if (light) 0.10f else if (darkInDarkTheme) 0.06f else 0f,
+    baseAlpha = if (tinted) 0.28f else 0.08f,
+    fillColorOverride = if (tinted) null else Color.White,
+    showEdgeGradient = false,
+    contrastZone = GlassContrastZone.TopChrome,
+  ) {}
 }
 
 /**
@@ -775,6 +874,7 @@ internal const val DefaultHeaderPillAlpha = 0.92f
 internal fun DefaultHeaderStatusStrip(color: Color, fadesWithHeader: Boolean, modifier: Modifier = Modifier) {
   val chrome = LocalScrollChrome.current
   val contrast = LocalGlassContrast.current
+  val headerCollapseEnabled = LocalHeaderCollapseEnabled.current
   // The same ground as the status-bar scrim: deepen toward black in a dark theme, wash toward the page
   // in a light one, so the icons keep whichever contrast the theme gave them.
   val ground = if (color.luminance() > 0.5f) color else Color.Black
@@ -783,7 +883,7 @@ internal fun DefaultHeaderStatusStrip(color: Color, fadesWithHeader: Boolean, mo
       .fillMaxWidth()
       .windowInsetsTopHeight(WindowInsets.statusBars)
       .drawBehind {
-        val compact = if (fadesWithHeader && chrome != null) {
+        val compact = if (fadesWithHeader && headerCollapseEnabled && chrome != null) {
           (chrome.presentedFraction / ScrollChromeMachine.COMPACT).coerceIn(0f, 1f)
         } else {
           0f

@@ -87,6 +87,35 @@ class MainActivity : ComponentActivity() {
     // A foldable opening, or the app being dragged between windowing modes, can move the device
     // across the threshold while it is running.
     applyOrientationPolicy()
+    applyRefreshRatePolicy()
+  }
+
+  override fun onResume() {
+    super.onResume()
+    applyRefreshRatePolicy()
+  }
+
+  @Suppress("DEPRECATION")
+  fun applyRefreshRatePolicy() {
+    val currentDisplay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      display
+    } else {
+      windowManager.defaultDisplay
+    }
+    val currentMode = currentDisplay?.mode
+    // Request only a refresh rate, leaving resolution and system power policy to Android.
+    // Use an advertised rate for compatibility with Android versions before API 34.
+    val browsingRate = currentDisplay?.supportedModes
+      ?.filter { it.physicalWidth == currentMode?.physicalWidth && it.physicalHeight == currentMode.physicalHeight }
+      ?.map { it.refreshRate }
+      ?.filter { it > 60f && it <= 120.1f }
+      ?.maxOrNull() ?: 0f
+    val preferredRate = if (playerOwnsOrientation) 0f else browsingRate
+    val attributes = window.attributes
+    if (attributes.preferredRefreshRate != preferredRate) {
+      attributes.preferredRefreshRate = preferredRate
+      window.attributes = attributes
+    }
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {

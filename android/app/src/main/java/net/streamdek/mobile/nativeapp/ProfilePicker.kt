@@ -23,6 +23,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -734,7 +735,7 @@ private fun ProfilePickerAvatar(
   Column(
     horizontalAlignment = Alignment.CenterHorizontally,
     verticalArrangement = Arrangement.spacedBy(24.dp),
-    modifier = modifier.width(avatarSize + 8.dp).clickable(onClick = onClick),
+    modifier = modifier.width(avatarSize + 8.dp).profileTilePress(onClick),
   ) {
     Box(
       modifier = Modifier
@@ -775,12 +776,28 @@ private fun ProfilePickerAvatar(
   }
 }
 
+/**
+ * A tap on a profile tile, without a ripple.
+ *
+ * The default indication filled the tile's rectangular bounds — a grey square flashing around a
+ * round avatar and its name. The tile presses in slightly instead, which follows the avatar's own
+ * shape.
+ */
+@Composable
+private fun Modifier.profileTilePress(onClick: () -> Unit): Modifier {
+  val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+  val pressed by interactionSource.collectIsPressedAsState()
+  val scale by androidx.compose.animation.core.animateFloatAsState(if (pressed) 0.94f else 1f, label = "profileTilePress")
+  return graphicsLayer { scaleX = scale; scaleY = scale }
+    .clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
+}
+
 @Composable
 private fun AddProfileAvatar(avatarSize: Dp = 92.dp, modifier: Modifier = Modifier, onClick: () -> Unit) {
   Column(
     horizontalAlignment = Alignment.CenterHorizontally,
     verticalArrangement = Arrangement.spacedBy(24.dp),
-    modifier = modifier.width(avatarSize + 20.dp).clickable(onClick = onClick),
+    modifier = modifier.width(avatarSize + 20.dp).profileTilePress(onClick),
   ) {
     Box(
       modifier = Modifier

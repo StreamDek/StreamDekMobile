@@ -570,6 +570,12 @@
     <item quantity="many">%1$d tytułów</item>
     <item quantity="other">%1$d tytułu</item>
   </plurals>
+  <plurals name="library_title_label">
+    <item quantity="one">tytuł</item>
+    <item quantity="few">tytuły</item>
+    <item quantity="many">tytułów</item>
+    <item quantity="other">tytułu</item>
+  </plurals>
   <string name="browse_no_titles_here">Brak tytułów</string>
   <string name="browse_no_titles_here_detail">Ta sekcja nie ma elementów pasujących do wybranego filtra.</string>
   <string name="action_clear">Wyczyść</string>
@@ -1358,6 +1364,7 @@
   <string name="hint_search_within_network">Szukaj w tym serwisie</string>
   <string name="hint_search_channels">Szukaj kanałów</string>
   <string name="hint_search_this_list">Szukaj na tej liście</string>
+  <string name="hint_search_named_list">Szukaj na liście %1$s</string>
   <string name="hint_search_movies_series">Szukaj filmów i seriali...</string>
   <string name="hint_search_movies_tv_catalogs">Szukaj filmów, seriali i katalogów</string>
   <string name="hint_paste_badge_link">Wklej odnośnik do kolekcji plakietek</string>
@@ -1683,13 +1690,13 @@
   <string name="subtitle_none">Brak</string>
   <string name="action_play_again">Odtwórz ponownie</string>
   <string name="settings_navigation_behaviour">Zachowanie nawigacji</string>
-  <string name="settings_navigation_behaviour_description">Wybierz, kiedy pływająca nawigacja chowa się do przycisku profilu.</string>
+  <string name="settings_navigation_behaviour_description">Wybierz zachowanie nawigacji i nagłówków stron.</string>
   <string name="navigation_behaviour_always_expanded">Rozwinięta</string>
-  <string name="navigation_behaviour_always_expanded_description">Wszystkie przyciski stron pozostają widoczne.</string>
+  <string name="navigation_behaviour_always_expanded_description">Nawigacja pozostaje rozwinięta, a nagłówki pozostają bez zmian.</string>
   <string name="navigation_behaviour_after_delay">Zwiń po opóźnieniu</string>
-  <string name="navigation_behaviour_after_delay_description">Chowa się kilka sekund po wybraniu strony.</string>
+  <string name="navigation_behaviour_after_delay_description">Nawigacja zwija się po chwili. Nagłówki pozostają bez zmian.</string>
   <string name="navigation_behaviour_while_scrolling">Zwijaj podczas przewijania</string>
-  <string name="navigation_behaviour_while_scrolling_description">Chowa się podczas przewijania i wraca, gdy przestaniesz.</string>
+  <string name="navigation_behaviour_while_scrolling_description">Podczas przewijania nawigacja zwija się, a nagłówki zmniejszają się lub znikają.</string>
   <string name="settings_visual_effects">Efekty wizualne</string>
   <string name="settings_visual_effects_description">Wyważ efekty szkła i płynność przewijania. Zapisywane tylko na tym urządzeniu.</string>
   <string name="visual_effects_automatic">Automatycznie</string>
@@ -1702,4 +1709,7 @@
   <string name="visual_effects_note_device">Tryb automatyczny używa ograniczonych efektów, aby urządzenie działało płynnie.</string>
   <string name="visual_effects_note_performance">Tryb automatyczny przełączył się na ograniczone efekty, bo przewijanie zwolniło.</string>
   <string name="visual_effects_note_unsupported">Ta wersja Androida nie obsługuje rozmycia, więc szkło używa barwionych powierzchni.</string>
+  <string name="cloudstream_address">Adres</string>
+  <string name="cloudstream_subsources_help">Włącz podźródła w ustawieniach wtyczki, a następnie zamknij ten ekran, aby odświeżyć wiersze strony głównej.</string>
+  <string name="cloudstream_settings_failed">Nie udało się otworzyć ustawień tej wtyczki.</string>
 </resources>

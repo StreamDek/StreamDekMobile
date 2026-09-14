@@ -524,6 +524,10 @@
     <item quantity="one">%1$d título</item>
     <item quantity="other">%1$d títulos</item>
   </plurals>
+  <plurals name="library_title_label">
+    <item quantity="one">título</item>
+    <item quantity="other">títulos</item>
+  </plurals>
   <string name="browse_no_titles_here">Aquí no hay títulos</string>
   <string name="browse_no_titles_here_detail">Esta sección no tiene elementos que coincidan con el filtro seleccionado.</string>
   <string name="action_clear">Borrar</string>
@@ -1282,6 +1286,7 @@
   <string name="hint_search_within_network">Buscar en este servicio</string>
   <string name="hint_search_channels">Buscar canales</string>
   <string name="hint_search_this_list">Buscar en esta lista</string>
+  <string name="hint_search_named_list">Buscar en la lista %1$s</string>
   <string name="hint_search_movies_series">Buscar películas y series...</string>
   <string name="hint_search_movies_tv_catalogs">Buscar películas, series y catálogos</string>
   <string name="hint_paste_badge_link">Pega un enlace de colección de distintivos</string>
@@ -1597,13 +1602,13 @@
   <string name="subtitle_none">Ninguno</string>
   <string name="action_play_again">Volver a reproducir</string>
   <string name="settings_navigation_behaviour">Comportamiento de la navegación</string>
-  <string name="settings_navigation_behaviour_description">Elige cuándo se recoge la navegación flotante en tu botón de perfil.</string>
+  <string name="settings_navigation_behaviour_description">Elige cómo se comportan la navegación y las cabeceras de página.</string>
   <string name="navigation_behaviour_always_expanded">Desplegada</string>
-  <string name="navigation_behaviour_always_expanded_description">Todos los botones de página permanecen visibles.</string>
+  <string name="navigation_behaviour_always_expanded_description">La navegación permanece expandida y las cabeceras no cambian.</string>
   <string name="navigation_behaviour_after_delay">Recoger tras un retraso</string>
-  <string name="navigation_behaviour_after_delay_description">Se recoge unos segundos después de elegir una página.</string>
+  <string name="navigation_behaviour_after_delay_description">La navegación se contrae tras una pausa. Las cabeceras no cambian.</string>
   <string name="navigation_behaviour_while_scrolling">Recoger al desplazarse</string>
-  <string name="navigation_behaviour_while_scrolling_description">Se recoge mientras te desplazas y vuelve cuando te detienes.</string>
+  <string name="navigation_behaviour_while_scrolling_description">Al desplazarte, la navegación se contrae y las cabeceras se reducen u ocultan.</string>
   <string name="settings_visual_effects">Efectos visuales</string>
   <string name="settings_visual_effects_description">Equilibra los efectos de cristal con un desplazamiento fluido. Solo se guarda en este dispositivo.</string>
   <string name="visual_effects_automatic">Automático</string>
@@ -1616,4 +1621,7 @@
   <string name="visual_effects_note_device">Automático usa efectos reducidos para que este dispositivo vaya fluido.</string>
   <string name="visual_effects_note_performance">Automático cambió a efectos reducidos porque el desplazamiento se ralentizó.</string>
   <string name="visual_effects_note_unsupported">Esta versión de Android no puede desenfocar, así que el cristal usa superficies tintadas.</string>
+  <string name="cloudstream_address">Dirección</string>
+  <string name="cloudstream_subsources_help">Activa las subfuentes en los ajustes del complemento y cierra esta pantalla para actualizar las filas de Inicio.</string>
+  <string name="cloudstream_settings_failed">No se pudieron abrir los ajustes de este complemento.</string>
 </resources>

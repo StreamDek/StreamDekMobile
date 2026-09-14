@@ -4,9 +4,40 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.TvType
 
 /** Home rows offered by CloudStream providers' main pages; see [cloudStreamHomeCatalogCandidates]. */
 class CloudStreamHomeRowsTest {
+  private fun liveSubsource(label: String) = object : MainAPI() {
+    override var name = label
+    override val hasMainPage = true
+    override val supportedTypes = setOf(TvType.Live)
+  }
+
+  @Test
+  fun everyRegisteredSubsourceGetsItsOwnRowEvenWithTheDefaultBlankMainPage() {
+    // PlayZTV/SKTech register multiple MainAPI instances, each using the default blank request.
+    val providers = listOf("Live Events", "JioTV", "Sony", "Zee Live").map(::liveSubsource)
+    val rows = cloudStreamHomeCatalogCandidates(providers)
+    assertEquals(providers.map { it.name }, rows.map { it.title })
+    assertEquals(4, rows.map { it.id }.distinct().size)
+    assertTrue(rows.all { !it.enabled })
+    rows.forEachIndexed { index, row ->
+      assertTrue(resolveCloudStreamHomeRow(row.id, providers)?.provider === providers[index])
+    }
+  }
+
+  @Test
+  fun newlyEnabledSubsourcesPreserveExistingHomeRowChoices() {
+    val events = liveSubsource("Live Events")
+    val saved = cloudStreamHomeCatalogCandidates(listOf(events)).map { it.copy(enabled = true) }
+    val candidates = cloudStreamHomeCatalogCandidates(listOf(events, liveSubsource("JioTV")))
+    val merged = mergeHomeCatalogRows(saved, emptyList(), fallbackCatalogDefinitions, candidates)
+    assertTrue(merged.single { it.id == saved.single().id }.enabled)
+    assertFalse(merged.single { it.title == "JioTV" }.enabled)
+  }
+
   private fun csRow(provider: String, name: String, index: Int, enabled: Boolean = false) = HomeCatalogRow(
     id = "addon:${cloudStreamRowSourceId(provider)}:series:$name:$index",
     title = name,

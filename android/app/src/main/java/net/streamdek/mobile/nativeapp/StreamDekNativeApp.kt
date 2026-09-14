@@ -3282,6 +3282,21 @@ internal fun homeCatalogRowMatchKey(id: String): String {
 internal fun homeCatalogRowAddonId(id: String): String? =
   if (id.startsWith("addon:")) id.split(":").getOrNull(1)?.takeIf { it.isNotBlank() } else null
 
+private val LiveHomeRowTitle = Regex("""\b(live|sports?)\b""", RegexOption.IGNORE_CASE)
+
+/**
+ * Whether a Home row is live TV or live events, which Home keeps directly under New Episodes.
+ *
+ * The same signals View all uses to open a row as a channel list — an add-on catalogue of a live
+ * type, a title that says live or sport, or channels among its opening items — with the title
+ * matched as a whole word, so "Delivery" is not a live row. Only the opening items are sampled: a
+ * catalogue is homogeneous by construction, and this runs whenever Home's rows are rebuilt.
+ */
+private fun isLiveHomeRow(row: HomeRow): Boolean =
+  isLiveHomeCatalogRowId(row.id) ||
+    LiveHomeRowTitle.containsMatchIn(row.title) ||
+    row.items.asSequence().take(12).any(MediaItem::isLiveCatalogItem)
+
 private fun isLiveHomeCatalogRowId(id: String): Boolean {
   if (!id.startsWith("addon:")) return false
   val rawType = id.split(":").getOrNull(2)?.lowercase().orEmpty()
@@ -12779,7 +12794,11 @@ private fun MainScene(
   LaunchedEffect(selectedTab, openDetail, browseRow?.id, networkBrowse?.id, settingsRoute, showAuth, showProfilePicker, homeScrollToTopSignal) {
     scrollChrome.reset()
   }
-  CompositionLocalProvider(LocalScrollChrome provides scrollChrome, LocalGlassContrast provides glassContrast) {
+  CompositionLocalProvider(
+    LocalScrollChrome provides scrollChrome,
+    LocalHeaderCollapseEnabled provides (uiState.navigationBehaviour == NavigationBehaviour.CollapseWhileScrolling),
+    LocalGlassContrast provides glassContrast,
+  ) {
   Scaffold(
     containerColor = Color.Transparent,
     bottomBar = {
@@ -12811,6 +12830,7 @@ private fun MainScene(
           contentAlignment = Alignment.BottomEnd,
         ) {
           val lightNavigation = MaterialTheme.colorScheme.background.luminance() > 0.5f
+          val darkGlassNavigation = !lightNavigation && uiState.headerStyle != HeaderStyle.Modern
           val activeProfile = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }
           val expandedNavIconSize by animateDpAsState(if (uiState.showNavLabels) 24.dp else 36.dp, label = "expanded_nav_icon_size")
           val expandedNavProfileSize by animateDpAsState(if (uiState.showNavLabels) 28.dp else 38.dp, label = "expanded_nav_profile_size")
@@ -12896,10 +12916,12 @@ private fun MainScene(
               blurRadius = 68f,
               contentPadding = PaddingValues(7.dp),
               contrastZone = GlassContrastZone.BottomChrome,
-              tintAlpha = if (lightNavigation) 0.14f else 0.06f,
-              borderAlpha = if (lightNavigation) 0.10f else 0.08f,
-              baseAlpha = if (lightNavigation) 0.28f else 0.08f,
-              fillColorOverride = if (lightNavigation) null else Color.White,
+              // The Default header style's dark glass, matching its condensed header chrome
+              // (see [HeaderGlassSurface]); Modern keeps its light frost in both themes.
+              tintAlpha = if (lightNavigation || darkGlassNavigation) 0.14f else 0.06f,
+              borderAlpha = if (lightNavigation) 0.10f else if (darkGlassNavigation) 0.06f else 0.08f,
+              baseAlpha = if (lightNavigation || darkGlassNavigation) 0.28f else 0.08f,
+              fillColorOverride = if (lightNavigation || darkGlassNavigation) null else Color.White,
               showEdgeGradient = false,
             ) {
               AnimatedContent(
@@ -13161,7 +13183,7 @@ private fun MainScene(
           ) { tab ->
           when (tab) {
             MainTab.Home -> browseStateHolder.SaveableStateProvider("tab_home") {
-              HomeTab(uiState = uiState, scrollToTopSignal = homeScrollToTopSignal, onReload = { viewModel.loadHome(force = true) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onPlayContinueWatching = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onViewAll = { row -> if (row.id == "continue") selectedTab = MainTab.Continue else viewModel.setBrowseRow(when (row.id) { "m3u_playlists_live" -> row.copy(items = uiState.m3uChannels); "m3u_playlists_vod" -> row.copy(items = uiState.m3uVodItems); else -> fullSectionRow(uiState, row) }) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onMarkEarlierEpisodesWatched = viewModel::markEarlierEpisodesWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onRemoveFromContinueWatching = viewModel::removeFromContinueWatching, onResolveHeroTitleLogos = viewModel::resolveHomeHeroTitleLogos, onResolveAddonRatings = viewModel::resolveAddonCatalogRatings, onToggleFavourite = viewModel::toggleFavouriteChannel, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel, onHandoffContinueWatching = viewModel::handoffContinueWatching)
+              HomeTab(uiState = uiState, scrollToTopSignal = homeScrollToTopSignal, onReload = { viewModel.loadHome(force = true) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onPlayContinueWatching = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onViewAll = { row -> if (row.id == "continue") selectedTab = MainTab.Continue else if (row.id == "watchlist") selectedTab = MainTab.Watchlist else viewModel.setBrowseRow(when (row.id) { "m3u_playlists_live" -> row.copy(items = uiState.m3uChannels); "m3u_playlists_vod" -> row.copy(items = uiState.m3uVodItems); else -> fullSectionRow(uiState, row) }) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onMarkEarlierEpisodesWatched = viewModel::markEarlierEpisodesWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onRemoveFromContinueWatching = viewModel::removeFromContinueWatching, onResolveHeroTitleLogos = viewModel::resolveHomeHeroTitleLogos, onResolveAddonRatings = viewModel::resolveAddonCatalogRatings, onToggleFavourite = viewModel::toggleFavouriteChannel, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel, onHandoffContinueWatching = viewModel::handoffContinueWatching)
             }
             MainTab.Search -> browseStateHolder.SaveableStateProvider("tab_search") {
               SearchTab(uiState = uiState, ownerKey = watchedOwnerKey(uiState.session, uiState.activeProfileId), onSearch = viewModel::search, onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched)
@@ -13626,11 +13648,17 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
       // Straight after Continue Watching, as on the television: both answer "what should I put on
       // now", and a feed of what has just aired is worth less further down the page.
       if (uiState.newEpisodeItems.isNotEmpty()) add(HomeRow("new-episodes", newEpisodesTitle, uiState.newEpisodeItems))
-      if (uiState.favouriteChannels.isNotEmpty()) add(HomeRow("favourites", liveFavouritesTitle, uiState.favouriteChannels))
+      // Live rows come next, whatever the saved layout says, and Streaming Networks follows them —
+      // so Networks sits straight under New Episodes and is pushed down only by live rows that
+      // actually have something in them. See [isLiveHomeRow].
+      val liveRows = mutableListOf<HomeRow>()
+      var networksRow: HomeRow? = null
+      val laterRows = mutableListOf<HomeRow>()
+      if (uiState.favouriteChannels.isNotEmpty()) liveRows += HomeRow("favourites", liveFavouritesTitle, uiState.favouriteChannels)
       // Home only needs a small preview. View All receives the complete list separately, which
       // keeps composition and card clicks bounded even for very large IPTV playlists.
-      if (uiState.m3uChannels.isNotEmpty()) add(HomeRow("m3u_playlists_live", playlistLiveTitle, uiState.m3uChannels.take(30)))
-      if (uiState.m3uVodItems.isNotEmpty()) add(HomeRow("m3u_playlists_vod", playlistVodTitle, uiState.m3uVodItems.take(30)))
+      if (uiState.m3uChannels.isNotEmpty()) liveRows += HomeRow("m3u_playlists_live", playlistLiveTitle, uiState.m3uChannels.take(30))
+      if (uiState.m3uVodItems.isNotEmpty()) laterRows += HomeRow("m3u_playlists_vod", playlistVodTitle, uiState.m3uVodItems.take(30))
       // Catalogue rows and StreamDek's own assembled rows, in the one order the viewer arranged.
       //
       // Both come out of the saved layout, so the walk is over that rather than over the fetched
@@ -13663,8 +13691,16 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
             HomeRow(section.id, section.title, section.homePreviewItems().withAddonRatings(uiState))
           }
           ?: return@forEach
-        if (built.items.isNotEmpty()) add(built)
+        if (built.items.isEmpty()) return@forEach
+        when {
+          built.id == "streaming_networks" -> networksRow = built
+          row.id !in assembled && isLiveHomeRow(built) -> liveRows += built
+          else -> laterRows += built
+        }
       }
+      addAll(liveRows)
+      networksRow?.let(::add)
+      addAll(laterRows)
     }.map { row -> row.copy(items = row.items.distinctBy(::mediaCollectionKey)) }
   }
   val heroBackdrop = heroItems.getOrNull(pagerState.currentPage.coerceIn(0, (heroItems.size - 1).coerceAtLeast(0)))
@@ -14384,13 +14420,26 @@ private fun NetworkBrowseScreen(network: MediaItem, headerStyle: HeaderStyle, on
     }
   }
 
+  val headerScope = remember { ScrollAwareHeaderScope() }
+  val density = LocalDensity.current
+  val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+  var headerHeight by remember { mutableStateOf(if (modernHeader) 190.dp else 170.dp) }
+  var filtersHeight by remember { mutableStateOf(48.dp) }
+  val collapseDistance = with(density) { 96.dp.toPx() }
+  // By absolute grid position, as Search's sections are: the filters only rest without a surface
+  // while the grid is at its top, so the header must never reopen partway down it.
+  val progress: () -> Float = {
+    if (listState.firstVisibleItemIndex > 0) 1f
+    else (listState.firstVisibleItemScrollOffset / collapseDistance).coerceIn(0f, 1f)
+  }
+  val filtersTop = headerHeight + 4.dp
   ReportScrollTop { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
   Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
     LazyVerticalGrid(
       columns = GridCells.Fixed(adaptiveMediaColumns(columns)),
       state = listState,
-      modifier = Modifier.fillMaxSize().then(if (modernHeader) Modifier.glassSource(headerHazeState) else Modifier),
-      contentPadding = PaddingValues(start = MediaGridSideMargin, end = MediaGridSideMargin, top = if (modernHeader) 272.dp else 274.dp, bottom = 126.dp),
+      modifier = Modifier.fillMaxSize().glassSource(headerHazeState),
+      contentPadding = PaddingValues(start = MediaGridSideMargin, end = MediaGridSideMargin, top = filtersTop + filtersHeight + 12.dp, bottom = 126.dp),
       horizontalArrangement = Arrangement.spacedBy(LocalStreamDekSpacing.current.gridGap),
       verticalArrangement = Arrangement.spacedBy(MediaGridRowGap),
     ) {
@@ -14425,52 +14474,45 @@ private fun NetworkBrowseScreen(network: MediaItem, headerStyle: HeaderStyle, on
       }
     }
 
-    if (modernHeader) {
-      ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(2f))
-      ScrollAwareHeader(
-        surface = ScrollAwareHeaderSurface.Glass(headerHazeState),
-        modifier = Modifier.align(Alignment.TopCenter).zIndex(2f).fillMaxWidth().statusBarsPadding(),
-        keepAnchorVisible = true,
-        panelPadding = PaddingValues(start = HeaderSearchInset.modernPanel, end = HeaderSearchInset.modernPanel, top = 12.dp),
-        panelHeight = 204.dp,
-        contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = 12.dp),
-      ) {
-        NetworkCatalogHeaderContent(
-          network = network,
-          query = query,
-          onQueryChange = { query = it },
-          columns = columns,
-          onToggleColumns = { columns = if (columns == 3) 2 else 3 },
-          type = type,
-          genres = genres,
-          genreId = genreId,
-          year = year,
-          onOpenFilter = { selectionSheet = it },
-        )
-      }
-    } else {
-      Column(modifier = Modifier.align(Alignment.TopCenter).zIndex(2f).fillMaxWidth()) {
-        DefaultHeaderStatusStrip(color = MaterialTheme.colorScheme.background, fadesWithHeader = true)
-        ScrollAwareHeader(
-          surface = ScrollAwareHeaderSurface.Solid(MaterialTheme.colorScheme.background, pillAroundAnchor = true),
-          modifier = Modifier.fillMaxWidth(),
-          keepAnchorVisible = true,
-          contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = 12.dp),
-        ) {
-          NetworkCatalogHeaderContent(
-          network = network,
-          query = query,
-          onQueryChange = { query = it },
-          columns = columns,
-          onToggleColumns = { columns = if (columns == 3) 2 else 3 },
-          type = type,
-          genres = genres,
-          genreId = genreId,
-          year = year,
-          onOpenFilter = { selectionSheet = it },
-        )
-        }
-      }
+    PinnedSectionChrome(
+      title = networkCatalogDisplayName(network.title),
+      titleAtRest = false,
+      progress = progress,
+      hazeState = headerHazeState,
+      defaultStyle = !modernHeader,
+      fieldInset = HeaderSearchInset.content + if (modernHeader) HeaderSearchInset.modernPanel else 0.dp,
+      onFullHeight = { filtersHeight = with(density) { it.toDp() } },
+      filterSpacing = 18.dp,
+      modifier = Modifier.fillMaxWidth().zIndex(1f).pinnedBelowHeader(headerScope, statusTop) {
+        if (listState.firstVisibleItemIndex > 0) Int.MIN_VALUE
+        else filtersTop.roundToPx() - listState.firstVisibleItemScrollOffset
+      },
+      filters = listOf<@Composable () -> Unit>(
+        { SearchDiscoverField("Type", when (type) { "movie" -> "Movies"; "tv" -> "Series"; else -> "Type" }) { selectionSheet = "type" } },
+        { SearchDiscoverField("Genre", genres.firstOrNull { it.id == genreId }?.name ?: "Genre", enabled = genres.isNotEmpty()) { selectionSheet = "genre" } },
+        { SearchDiscoverField("Year", year ?: "Year") { selectionSheet = "year" } },
+      ),
+    )
+    ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(2f))
+    ScrollAwareHeader(
+      surface = if (modernHeader) ScrollAwareHeaderSurface.Glass(headerHazeState)
+        else ScrollAwareHeaderSurface.Solid(MaterialTheme.colorScheme.background, pillAroundAnchor = true, hazeState = headerHazeState),
+      modifier = Modifier.align(Alignment.TopCenter).zIndex(2f).fillMaxWidth().statusBarsPadding()
+        .onSizeChanged { headerHeight = with(density) { it.height.toDp() } + statusTop },
+      keepAnchorVisible = true,
+      panelPadding = if (modernHeader) PaddingValues(start = HeaderSearchInset.modernPanel, end = HeaderSearchInset.modernPanel, top = 12.dp) else PaddingValues(0.dp),
+      contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = 12.dp),
+      headerScope = headerScope,
+      fractionOverride = { progress() * ScrollChromeMachine.COMPACT },
+    ) {
+      NetworkCatalogHeaderContent(
+        network = network,
+        query = query,
+        onQueryChange = { query = it },
+        columns = columns,
+        onToggleColumns = { columns = if (columns == 3) 2 else 3 },
+        gridButtonHazeState = headerHazeState,
+      )
     }
   }
   if (selectionSheet != null && selectionOptions.isNotEmpty()) {
@@ -14494,20 +14536,23 @@ private fun ScrollAwareHeaderScope.NetworkCatalogHeaderContent(
   onQueryChange: (String) -> Unit,
   columns: Int,
   onToggleColumns: () -> Unit,
-  type: String,
-  genres: List<DiscoverGenre>,
-  genreId: Int?,
-  year: String?,
-  onOpenFilter: (String) -> Unit,
+  gridButtonHazeState: HazeState,
   modifier: Modifier = Modifier,
 ) {
   Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-    Row(modifier = Modifier.fillMaxWidth().compactsAway(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-      Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+      Column(modifier = Modifier.weight(1f).compactsAway(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
         AdaptivePageTitle(title = networkCatalogDisplayName(network.title))
         Text(stringResource(R.string.browse_network_catalog), color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.64f), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
       }
-      GlassCircleButton(borderless = true, onClick = onToggleColumns) {
+      // Stays when the title goes: it comes down to the end of the search field's row, on its own
+      // circle beside the field's pill rather than inside it.
+      GlassCircleButton(
+        modifier = Modifier.joinsAnchorRow(),
+        hazeState = gridButtonHazeState,
+        borderless = true,
+        onClick = onToggleColumns,
+      ) {
         Icon(if (columns == 3) Icons.Rounded.ViewAgenda else Icons.Rounded.ViewModule, contentDescription = stringResource(R.string.a11y_change_grid_size), tint = MaterialTheme.colorScheme.onBackground)
       }
     }
@@ -14515,12 +14560,8 @@ private fun ScrollAwareHeaderScope.NetworkCatalogHeaderContent(
       query = query,
       onQueryChange = onQueryChange,
       placeholder = stringResource(R.string.hint_search_within_network),
+      yieldsToJoinedControl = true,
     )
-    Row(modifier = Modifier.fillMaxWidth().compactsAway(order = 1, belowAnchor = true), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-      SearchDiscoverField("Type", when (type) { "movie" -> "Movies"; "tv" -> "Series"; else -> "Type" }, Modifier.weight(1f)) { onOpenFilter("type") }
-      SearchDiscoverField("Genre", genres.firstOrNull { it.id == genreId }?.name ?: "Genre", Modifier.weight(1f), enabled = genres.isNotEmpty()) { onOpenFilter("genre") }
-      SearchDiscoverField("Year", year ?: "Year", Modifier.weight(1f)) { onOpenFilter("year") }
-    }
   }
 }
 @Composable
@@ -14582,6 +14623,12 @@ private fun AdaptivePageTitle(
   title: String,
   modifier: Modifier = Modifier,
   color: Color = MaterialTheme.colorScheme.onBackground,
+  compact: Boolean = false,
+  /**
+   * 0 at rest to 1 condensed: the title eases 2sp smaller as a header compacts. Applied as a draw-time
+   * scale from the leading edge, so a scrolled frame redraws the title rather than re-laying it out.
+   */
+  shrinkProgress: (() -> Float)? = null,
 ) {
   val adaptiveSize = when {
     title.length >= 38 -> 22.sp
@@ -14592,11 +14639,19 @@ private fun AdaptivePageTitle(
   // Honours Reduced Motion: someone who has asked the app to hold still should not be handed a
   // heading that never stops moving. They get the ellipsis instead, which is what this did before.
   val scroll = !LocalReducedMotion.current
+  val originX = if (androidx.compose.ui.platform.LocalLayoutDirection.current == androidx.compose.ui.unit.LayoutDirection.Rtl) 1f else 0f
+  val shrink = if (shrinkProgress == null) Modifier else Modifier.graphicsLayer {
+    val size = adaptiveSize.value - if (compact) 2f else 0f
+    val scale = (size - 2f * shrinkProgress().coerceIn(0f, 1f)) / size
+    scaleX = scale
+    scaleY = scale
+    transformOrigin = androidx.compose.ui.graphics.TransformOrigin(originX, 0.5f)
+  }
   Text(
     text = title,
-    modifier = if (scroll) modifier.basicMarquee() else modifier,
-    fontSize = adaptiveSize,
-    lineHeight = (adaptiveSize.value + 4f).sp,
+    modifier = modifier.then(shrink).then(if (scroll) Modifier.basicMarquee() else Modifier),
+    fontSize = (adaptiveSize.value - if (compact) 2f else 0f).sp,
+    lineHeight = (adaptiveSize.value + if (compact) 2f else 4f).sp,
     fontWeight = FontWeight.ExtraBold,
     color = color,
     maxLines = 1,
@@ -15509,17 +15564,13 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
   val hasMovies = remember(uniqueItems, isM3uRow) { !isM3uRow && uniqueItems.any { it.type.equals("movie", true) } }
   val hasSeries = remember(uniqueItems, isM3uRow) { !isM3uRow && uniqueItems.any { it.type.equals("tv", true) || it.type.equals("series", true) } }
   val showsTypeFilters = hasMovies && hasSeries
-  // Live TV / sports rows hold long channel lists, so they get local search. Filtering and
-  // sorting run on Default rather than the UI thread so very large IPTV lists remain responsive.
-  // Also from the start on a list that pages. Such a list opens with its first page — twenty titles
-  // on a catalogue like In Theatres — so waiting for twenty-four meant the search box, and the
-  // header around it, appeared only once the viewer had scrolled far enough to fetch a second page:
-  // the page rearranged itself under their thumb. And once offered it stays: a list that turns out
-  // to end early must not take the box away again.
-  val wantsSearch = isLiveRow || uniqueItems.size >= 24 || canLoadMore || row.id in pageableRowIds
-  var searchOffered by remember(row.id) { mutableStateOf(false) }
-  if (wantsSearch && !searchOffered) androidx.compose.runtime.SideEffect { searchOffered = true }
-  val showSearch = wantsSearch || searchOffered
+  // Every View all list offers search, so every one of them gets the same header: the title row
+  // condensing away, the search field pinned with the layout button beside it. A list that decided
+  // for itself — search only past twenty-four titles, or once it paged — left short lists such as
+  // Trending On Trakt and Recommended For You with a header of their own that simply slid off.
+  // Filtering and sorting run on Default rather than the UI thread so very large IPTV lists remain
+  // responsive.
+  val showSearch = true
   var filteredItems by remember(row.id) { mutableStateOf<List<MediaItem>>(emptyList()) }
   // Grouping a 50k-channel playlist is far too much work for the main thread, so categories are
   // built on Default alongside the search/sort pass below.
@@ -15590,8 +15641,8 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
   }
   val showHeaderFilters = !isNetworkRow && showsTypeFilters && !showCategoryGrid
   val searchExtra = if (showSearch) 72.dp else 0.dp
-  val modernHeaderHeight = (if (showHeaderFilters) 164.dp else 124.dp) + searchExtra
-  val modernContentTop = (if (showHeaderFilters) 234.dp else 194.dp) + searchExtra
+  val modernHeaderHeight = (if (showHeaderFilters) 140.dp else 100.dp) + searchExtra
+  val modernContentTop = (if (showHeaderFilters) 210.dp else 170.dp) + searchExtra
   val classicContentTop = (if (showHeaderFilters) 202.dp else 152.dp) + searchExtra
   val clearFavouritesAction: (() -> Unit)? =
     if (isFavouritesRow && uniqueItems.isNotEmpty()) ({ showClearFavouritesConfirm = true }) else null
@@ -15721,7 +15772,7 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
       modifier = Modifier
         .fillMaxSize()
         .background(MaterialTheme.colorScheme.background)
-        .then(if (modernHeader) Modifier.glassSource(browseHazeState) else Modifier),
+        .glassSource(browseHazeState),
       contentPadding = run {
         val sideMargin = if (showsList) 20.dp else MediaGridSideMargin
         if (sideHeader) {
@@ -15813,6 +15864,7 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
       ) {
         BrowseSectionHeaderContent(
           title = headerTitle,
+          compact = true,
           countLabel = headerCount,
           onUpNavigate = headerUpAction,
           showLayoutToggle = !showCategoryGrid,
@@ -15839,13 +15891,14 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
           },
           onClearAll = clearFavouritesAction,
           clearAllDescription = "Clear Live Favourites",
+          layoutButtonHazeState = browseHazeState,
         )
       }
     } else {
       Column(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f).fillMaxWidth()) {
         DefaultHeaderStatusStrip(color = MaterialTheme.colorScheme.background, fadesWithHeader = true)
         ScrollAwareHeader(
-          surface = ScrollAwareHeaderSurface.Solid(MaterialTheme.colorScheme.background, pillAroundAnchor = showSearch),
+          surface = ScrollAwareHeaderSurface.Solid(MaterialTheme.colorScheme.background, pillAroundAnchor = showSearch, hazeState = browseHazeState),
           modifier = Modifier.fillMaxWidth(),
           keepAnchorVisible = showSearch,
           contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = 12.dp),
@@ -15878,6 +15931,7 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
           },
           onClearAll = clearFavouritesAction,
           clearAllDescription = "Clear Live Favourites",
+          layoutButtonHazeState = browseHazeState,
         )
         }
       }
@@ -15922,6 +15976,7 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
 @Composable
 private fun ScrollAwareHeaderScope.BrowseSectionHeaderContent(
   title: String,
+  compact: Boolean = false,
   countLabel: String,
   layout: BrowseLayout,
   onCycleLayout: () -> Unit,
@@ -15938,33 +15993,43 @@ private fun ScrollAwareHeaderScope.BrowseSectionHeaderContent(
   clearAllDescription: String = "Clear all",
   onUpNavigate: (() -> Unit)? = null,
   showLayoutToggle: Boolean = true,
+  layoutButtonHazeState: HazeState? = null,
 ) {
+  // The layout button stays when the rest of the title row goes, coming down beside the search field
+  // as it narrows — the same movement as a network's page.
+  val joinSearchRow = showSearch && showLayoutToggle
+  val goes = if (showSearch) Modifier.compactsAway() else Modifier
   Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
     // With no search field there is nothing to compact down to, so the title row stays opaque and
     // the whole header simply slides away.
-    Row(modifier = Modifier.fillMaxWidth().then(if (showSearch) Modifier.compactsAway() else Modifier), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
       // Only shown one level deep (inside a category), where back means "up", not "leave".
       if (onUpNavigate != null) {
-        GlassCircleButton(borderless = true, onClick = onUpNavigate) {
-          Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.a11y_all_categories), tint = MaterialTheme.colorScheme.onBackground)
+        GlassCircleButton(modifier = goes.size(if (compact) 48.dp else 52.dp), borderless = true, onClick = onUpNavigate) {
+          Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.a11y_all_categories), modifier = Modifier.size(if (compact) 22.dp else 24.dp), tint = MaterialTheme.colorScheme.onBackground)
         }
       }
-      Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        AdaptivePageTitle(title = title)
+      Column(modifier = Modifier.weight(1f).then(goes), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        AdaptivePageTitle(title = title, compact = compact)
         Text(countLabel, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.60f), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
       }
       if (showSort) {
-        TextButton(onClick = onToggleSort) {
+        TextButton(modifier = goes, onClick = onToggleSort) {
           Text(sortLabel, fontWeight = FontWeight.Bold)
         }
       }
       if (onClearAll != null) {
-        GlassCircleButton(borderless = true, onClick = onClearAll) {
-          Icon(Icons.Rounded.DeleteSweep, contentDescription = clearAllDescription, tint = MaterialTheme.colorScheme.onBackground)
+        GlassCircleButton(modifier = goes.size(if (compact) 48.dp else 52.dp), borderless = true, onClick = onClearAll) {
+          Icon(Icons.Rounded.DeleteSweep, contentDescription = clearAllDescription, modifier = Modifier.size(if (compact) 22.dp else 24.dp), tint = MaterialTheme.colorScheme.onBackground)
         }
       }
       if (showLayoutToggle) {
-        GlassCircleButton(borderless = true, onClick = onCycleLayout) {
+        GlassCircleButton(
+          modifier = (if (joinSearchRow) Modifier.joinsAnchorRow() else Modifier).size(if (compact) 48.dp else 52.dp),
+          hazeState = layoutButtonHazeState,
+          borderless = true,
+          onClick = onCycleLayout,
+        ) {
           Icon(
             when (layout) {
               BrowseLayout.Cards3 -> Icons.Rounded.ViewAgenda
@@ -15972,7 +16037,7 @@ private fun ScrollAwareHeaderScope.BrowseSectionHeaderContent(
               BrowseLayout.List -> Icons.AutoMirrored.Rounded.ViewList
             },
             contentDescription = stringResource(R.string.a11y_change_layout),
-            tint = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.size(if (compact) 22.dp else 24.dp), tint = MaterialTheme.colorScheme.onBackground,
           )
         }
       }
@@ -15982,6 +16047,9 @@ private fun ScrollAwareHeaderScope.BrowseSectionHeaderContent(
         query = query,
         onQueryChange = onQueryChange,
         placeholder = stringResource(R.string.hint_search_this_list),
+        compactPlaceholder = stringResource(R.string.hint_search_named_list, title),
+        compactTrailingLabel = countLabel,
+        yieldsToJoinedControl = showLayoutToggle,
       )
     }
     if (showFilters) {
@@ -17047,50 +17115,58 @@ private fun BrowseListRow(
  *
  * Collapses to its top row rather than to a search field: these pages have no search, and the row is
  * what a viewer reaches for while browsing — the page's name, how many titles, clear all and the grid
- * size. The filter chips beneath it condense away, and the surface closes around the row.
+ * size. The surface closes around the row; the filters live in [LibraryPage]'s pinned row beneath it.
  */
 @Composable
 private fun LibraryStreamDekHeader(
   title: String,
   subtitle: String,
   count: Int,
-  selectedFilter: MediaFilter,
-  onFilterChange: (MediaFilter) -> Unit,
   columns: Int,
   onToggleColumns: () -> Unit,
   style: HeaderStyle,
   hazeState: HazeState,
+  headerScope: ScrollAwareHeaderScope,
+  fractionOverride: (() -> Float)?,
   modifier: Modifier = Modifier,
   trailingAction: (@Composable () -> Unit)? = null,
 ) {
   val content: @Composable ScrollAwareHeaderScope.() -> Unit = {
-    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-      Row(modifier = Modifier.fillMaxWidth().compactAnchor(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+      Row(modifier = Modifier.fillMaxWidth().then(if (style == HeaderStyle.Classic) Modifier.height(56.dp) else Modifier).compactAnchor(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         // Weighted so the count and the layout button keep their room. Without it a heading that is
         // half again as long in German or Polish pushed them off the edge of the screen.
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-          AdaptivePageTitle(title = title)
+        // Stepped in from the pill's edge as the header condenses. The Default pill hugs the row with no
+        // padding of its own, so its title needs more room than the Modern glass, which already
+        // leaves 12dp around the row.
+        val titleInset = if (style == HeaderStyle.Classic) 16f else 10f
+        Column(modifier = Modifier.weight(1f).padding(start = (titleInset * compactProgress()).dp, end = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+          AdaptivePageTitle(title = title, shrinkProgress = { compactProgress() })
           if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.64f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-          Box(modifier = Modifier.clip(StreamDekRadius.pill).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)).padding(horizontal = 12.dp, vertical = 7.dp)) {
-            Text(pluralStringResource(R.plurals.library_title_count, count, count), color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.82f), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Row(horizontalArrangement = Arrangement.spacedBy(if (style == HeaderStyle.Classic) 4.dp else 10.dp), verticalAlignment = Alignment.CenterVertically) {
+          FrostedGlassSurface(
+            modifier = Modifier.size(48.dp),
+            shape = CircleShape,
+            blurRadius = 56f,
+            tintAlpha = 0.12f,
+            borderAlpha = 0f,
+            baseAlpha = 0.08f,
+            showEdgeGradient = false,
+          ) {
+            Column(
+              modifier = Modifier.fillMaxSize().semantics(mergeDescendants = true) {},
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.Center,
+            ) {
+              Text(count.toString(), fontSize = 17.sp, lineHeight = 19.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+              Text(pluralStringResource(R.plurals.library_title_label, count), fontSize = 8.sp, lineHeight = 10.sp, fontWeight = FontWeight.Normal, maxLines = 1)
+            }
           }
           trailingAction?.invoke()
-          GlassCircleButton(borderless = true, onClick = onToggleColumns) {
-            Icon(if (columns == 3) Icons.Rounded.ViewAgenda else Icons.Rounded.ViewModule, contentDescription = null, tint = MaterialTheme.colorScheme.onBackground)
+          GlassCircleButton(modifier = Modifier.size(48.dp), borderless = true, onClick = onToggleColumns) {
+            Icon(if (columns == 3) Icons.Rounded.ViewAgenda else Icons.Rounded.ViewModule, contentDescription = null, modifier = Modifier.size(if (style == HeaderStyle.Modern) 22.dp else 24.dp), tint = MaterialTheme.colorScheme.onBackground)
           }
-        }
-      }
-      Row(modifier = Modifier.compactsAway(order = 0, belowAnchor = true), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        MediaFilter.values().forEach { value ->
-          FilterChip(
-            selected = selectedFilter == value,
-            onClick = { onFilterChange(value) },
-            label = { Text(stringResource(value.labelRes)) },
-            border = null,
-            colors = borderlessFilterChipColors(),
-          )
         }
       }
     }
@@ -17100,26 +17176,116 @@ private fun LibraryStreamDekHeader(
       surface = ScrollAwareHeaderSurface.Glass(hazeState),
       modifier = modifier.fillMaxWidth().statusBarsPadding(),
       keepAnchorVisible = true,
-      panelPadding = PaddingValues(start = 8.dp, end = 8.dp, top = 12.dp, bottom = 6.dp),
-      panelHeight = 152.dp,
-      contentPadding = PaddingValues(horizontal = 18.dp, vertical = 16.dp),
-      anchorPaddingHorizontal = 12.dp,
+      panelPadding = PaddingValues(start = LibraryHeaderInset.modernPanel, end = LibraryHeaderInset.modernPanel, top = 12.dp, bottom = 6.dp),
+      contentPadding = PaddingValues(horizontal = LibraryHeaderInset.modernContent, vertical = 16.dp),
+      anchorPaddingHorizontal = LibraryHeaderInset.modernAnchor,
       anchorPaddingVertical = 8.dp,
+      headerScope = headerScope,
+      fractionOverride = fractionOverride,
       content = content,
     )
   } else {
-    Column(modifier = modifier.fillMaxWidth()) {
-      // Keeps its band — and so its strip — through the collapse: the title row is still across the
-      // full width, and the band is what it sits on.
-      DefaultHeaderStatusStrip(color = MaterialTheme.colorScheme.background, fadesWithHeader = false)
-      ScrollAwareHeader(
-        surface = ScrollAwareHeaderSurface.Solid(MaterialTheme.colorScheme.background),
-        modifier = Modifier.fillMaxWidth(),
-        keepAnchorVisible = true,
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        content = content,
-      )
+    // Match Search: the band closes around the title row, inset 18dp.
+    ScrollAwareHeader(
+      surface = ScrollAwareHeaderSurface.Solid(MaterialTheme.colorScheme.background, pillAroundAnchor = true, hazeState = hazeState),
+      modifier = modifier.fillMaxWidth().statusBarsPadding(),
+      keepAnchorVisible = true,
+      contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = 12.dp),
+      headerScope = headerScope,
+      fractionOverride = fractionOverride,
+      content = content,
+    )
+  }
+}
+
+/** Where a library header's title row sits, so its pinned filter row can line up with the pill. */
+private object LibraryHeaderInset {
+  val modernPanel = 8.dp
+  val modernContent = 18.dp
+  val modernAnchor = 12.dp
+  /** The compact pill's distance from the screen edge in each style. */
+  val modernPill = modernPanel + modernContent - modernAnchor
+}
+
+/**
+ * A library page — Continue Watching, the Watchlist — with its header and pinned filter row.
+ *
+ * Laid out as Search is: the header condenses to its title row as the list scrolls, and the filters,
+ * which rest in the page beneath it, gather into their own rounded row pinned below that pill.
+ */
+@Composable
+private fun LibraryPage(
+  title: String,
+  count: Int,
+  selectedFilter: MediaFilter,
+  onFilterChange: (MediaFilter) -> Unit,
+  columns: Int,
+  onToggleColumns: () -> Unit,
+  style: HeaderStyle,
+  listState: androidx.compose.foundation.lazy.LazyListState,
+  trailingAction: (@Composable () -> Unit)?,
+  content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit,
+) {
+  val modernHeader = style == HeaderStyle.Modern
+  val headerHazeState = rememberHazeState()
+  val headerScope = remember { ScrollAwareHeaderScope() }
+  val density = LocalDensity.current
+  val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+  var headerHeight by remember { mutableStateOf(120.dp) }
+  var filtersHeight by remember { mutableStateOf(48.dp) }
+  val collapseDistance = with(density) { 96.dp.toPx() }
+  val progress: () -> Float = { listState.sectionPinProgress(0, collapseDistance) }
+  val contentTop = headerHeight + 4.dp
+  Box(modifier = Modifier.fillMaxSize()) {
+    LazyColumn(
+      state = listState,
+      modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).glassSource(headerHazeState),
+      contentPadding = PaddingValues(top = contentTop, bottom = 126.dp),
+      verticalArrangement = Arrangement.spacedBy(20.dp),
+    ) {
+      // Reserve the filters' resting space; the pinned row draws them.
+      item(key = "library-filters") { Spacer(Modifier.height(filtersHeight)) }
+      content()
     }
+    PinnedSectionChrome(
+      title = null,
+      progress = progress,
+      hazeState = headerHazeState,
+      defaultStyle = !modernHeader,
+      fieldInset = if (modernHeader) LibraryHeaderInset.modernPill else HeaderSearchInset.content,
+      onFullHeight = { filtersHeight = with(density) { it.toDp() } },
+      filterSpacing = 10.dp,
+      modifier = Modifier.fillMaxWidth().zIndex(3f).pinnedBelowHeader(headerScope, statusTop) {
+        listState.sectionNaturalTop(0, contentTop.roundToPx())
+      },
+      filters = MediaFilter.values().map { value ->
+        @Composable {
+          FilterChip(
+            selected = selectedFilter == value,
+            onClick = { onFilterChange(value) },
+            label = { Text(stringResource(value.labelRes), maxLines = 1) },
+            border = null,
+            colors = borderlessFilterChipColors(),
+          )
+        }
+      },
+    )
+    ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f))
+    LibraryStreamDekHeader(
+      title = title,
+      subtitle = "",
+      count = count,
+      columns = columns,
+      onToggleColumns = onToggleColumns,
+      style = style,
+      hazeState = headerHazeState,
+      headerScope = headerScope,
+      fractionOverride = { progress() * ScrollChromeMachine.COMPACT },
+      // Measured outside the header's status-bar padding, so this already includes the bar.
+      modifier = Modifier.align(Alignment.TopCenter).zIndex(4f)
+        .onSizeChanged { headerHeight = with(density) { it.height.toDp() } },
+      trailingAction = trailingAction,
+    )
   }
 }
 
@@ -17149,13 +17315,12 @@ private fun ContinueTab(
   val allItems = remember(uiState.traktContinueWatching, uiState.localContinueWatching) { combinedContinueWatching(uiState) }
   val items = remember(allItems, filter) { allItems.filteredBy(filter) }
   val modernHeader = uiState.headerStyle == HeaderStyle.Modern
-  val headerHazeState = rememberHazeState()
   val listState = rememberLazyListState()
   ReportScrollTop { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
   val clearAction: (@Composable () -> Unit)? = if (allItems.isEmpty()) null else {
     {
-      GlassCircleButton(borderless = true, onClick = { showClearConfirm = true }) {
-        Icon(Icons.Rounded.DeleteSweep, contentDescription = stringResource(R.string.a11y_clear_continue_watching), tint = MaterialTheme.colorScheme.onBackground)
+      GlassCircleButton(modifier = Modifier.size(48.dp), borderless = true, onClick = { showClearConfirm = true }) {
+        Icon(Icons.Rounded.DeleteSweep, modifier = Modifier.size(if (modernHeader) 22.dp else 24.dp), contentDescription = stringResource(R.string.a11y_clear_continue_watching), tint = MaterialTheme.colorScheme.onBackground)
       }
     }
   }
@@ -17168,29 +17333,17 @@ private fun ContinueTab(
       dismissButton = { TextButton(onClick = { showClearConfirm = false }) { Text(stringResource(R.string.action_cancel)) } },
     )
   }
-  Box(modifier = Modifier.fillMaxSize()) {
-    LazyColumn(
-      state = listState,
-      modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).then(if (modernHeader) Modifier.glassSource(headerHazeState) else Modifier),
-      contentPadding = PaddingValues(top = if (modernHeader) 222.dp else 0.dp, bottom = 126.dp),
-      verticalArrangement = Arrangement.spacedBy(20.dp),
-    ) {
-      if (!modernHeader) {
-        stickyHeader {
-          LibraryStreamDekHeader(
-            title = stringResource(R.string.continue_watching),
-            subtitle = "",
-            count = items.size,
-            selectedFilter = filter,
-            onFilterChange = { filter = it },
-            columns = columns,
-            onToggleColumns = { columns = if (columns == 3) 2 else 3 },
-            style = HeaderStyle.Classic,
-            hazeState = headerHazeState,
-            trailingAction = clearAction,
-          )
-        }
-      }
+  LibraryPage(
+    title = stringResource(R.string.continue_watching),
+    count = items.size,
+    selectedFilter = filter,
+    onFilterChange = { filter = it },
+    columns = columns,
+    onToggleColumns = { columns = if (columns == 3) 2 else 3 },
+    style = uiState.headerStyle,
+    listState = listState,
+    trailingAction = clearAction,
+  ) {
       if (items.isEmpty()) {
         item { LibraryEmptyState(icon = { Icon(Icons.Rounded.PlayCircleOutline, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.76f), modifier = Modifier.size(54.dp)) }, title = stringResource(R.string.continue_watching_empty_title), subtitle = stringResource(R.string.continue_watching_empty_detail)) }
       } else {
@@ -17213,23 +17366,6 @@ private fun ContinueTab(
           )
         }
       }
-    }
-    ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f))
-    if (modernHeader) {
-      LibraryStreamDekHeader(
-        title = stringResource(R.string.continue_watching),
-        subtitle = "",
-        count = items.size,
-        selectedFilter = filter,
-        onFilterChange = { filter = it },
-        columns = columns,
-        onToggleColumns = { columns = if (columns == 3) 2 else 3 },
-        style = HeaderStyle.Modern,
-        hazeState = headerHazeState,
-        modifier = Modifier.align(Alignment.TopCenter).zIndex(4f),
-        trailingAction = clearAction,
-      )
-    }
   }
 }
 
@@ -17244,13 +17380,12 @@ private fun WatchlistTab(uiState: AppUiState, onOpen: (MediaItem) -> Unit, onTog
       .sortedWith(compareByDescending<MediaItem> { it.addedAt ?: Long.MIN_VALUE }.thenByDescending { it.updatedAt ?: Long.MIN_VALUE })
   }
   val modernHeader = uiState.headerStyle == HeaderStyle.Modern
-  val headerHazeState = rememberHazeState()
   val listState = rememberLazyListState()
   ReportScrollTop { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
   val clearAction: (@Composable () -> Unit)? = if (uiState.mergedWatchlist.isEmpty()) null else {
     {
-      GlassCircleButton(borderless = true, onClick = { showClearConfirm = true }) {
-        Icon(Icons.Rounded.DeleteSweep, contentDescription = stringResource(R.string.a11y_clear_watchlist), tint = MaterialTheme.colorScheme.onBackground)
+      GlassCircleButton(modifier = Modifier.size(48.dp), borderless = true, onClick = { showClearConfirm = true }) {
+        Icon(Icons.Rounded.DeleteSweep, modifier = Modifier.size(if (modernHeader) 22.dp else 24.dp), contentDescription = stringResource(R.string.a11y_clear_watchlist), tint = MaterialTheme.colorScheme.onBackground)
       }
     }
   }
@@ -17263,50 +17398,21 @@ private fun WatchlistTab(uiState: AppUiState, onOpen: (MediaItem) -> Unit, onTog
       dismissButton = { TextButton(onClick = { showClearConfirm = false }) { Text(stringResource(R.string.action_cancel)) } },
     )
   }
-  Box(modifier = Modifier.fillMaxSize()) {
-    LazyColumn(
-      state = listState,
-      modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).then(if (modernHeader) Modifier.glassSource(headerHazeState) else Modifier),
-      contentPadding = PaddingValues(top = if (modernHeader) 222.dp else 0.dp, bottom = 126.dp),
-      verticalArrangement = Arrangement.spacedBy(20.dp),
-    ) {
-      if (!modernHeader) {
-        stickyHeader {
-          LibraryStreamDekHeader(
-            title = stringResource(R.string.nav_watchlist),
-            subtitle = "",
-            count = items.size,
-            selectedFilter = filter,
-            onFilterChange = { filter = it },
-            columns = columns,
-            onToggleColumns = { columns = if (columns == 3) 2 else 3 },
-            style = HeaderStyle.Classic,
-            hazeState = headerHazeState,
-            trailingAction = clearAction,
-          )
-        }
-      }
-      if (items.isEmpty()) {
-        item { LibraryEmptyState(icon = { Icon(Icons.Rounded.Bookmark, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.62f), modifier = Modifier.size(54.dp)) }, title = stringResource(R.string.watchlist_empty_title), subtitle = stringResource(R.string.watchlist_empty_detail)) }
-      } else {
-        item { MediaGrid(items, onOpen, columns = columns, showMeta = false, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, includeRemoveAction = true, onMarkWatched = onMarkWatched) }
-      }
-    }
-    ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f))
-    if (modernHeader) {
-      LibraryStreamDekHeader(
-        title = stringResource(R.string.nav_watchlist),
-        subtitle = "",
-        count = items.size,
-        selectedFilter = filter,
-        onFilterChange = { filter = it },
-        columns = columns,
-        onToggleColumns = { columns = if (columns == 3) 2 else 3 },
-        style = HeaderStyle.Modern,
-        hazeState = headerHazeState,
-        modifier = Modifier.align(Alignment.TopCenter).zIndex(4f),
-        trailingAction = clearAction,
-      )
+  LibraryPage(
+    title = stringResource(R.string.nav_watchlist),
+    count = items.size,
+    selectedFilter = filter,
+    onFilterChange = { filter = it },
+    columns = columns,
+    onToggleColumns = { columns = if (columns == 3) 2 else 3 },
+    style = uiState.headerStyle,
+    listState = listState,
+    trailingAction = clearAction,
+  ) {
+    if (items.isEmpty()) {
+      item { LibraryEmptyState(icon = { Icon(Icons.Rounded.Bookmark, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.62f), modifier = Modifier.size(54.dp)) }, title = stringResource(R.string.watchlist_empty_title), subtitle = stringResource(R.string.watchlist_empty_detail)) }
+    } else {
+      item { MediaGrid(items, onOpen, columns = columns, showMeta = false, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, includeRemoveAction = true, onMarkWatched = onMarkWatched) }
     }
   }
 }
@@ -17487,7 +17593,16 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
   LaunchedEffect(query, uiState.searchLoading, uiState.searchResults) {
     val normalized = query.trim()
     if (normalized.length > 1 && uiState.searchResultQuery == normalized && !uiState.searchLoading && uiState.searchResults.isNotEmpty()) {
-      recentSearches = listOf(normalized, *recentSearches.filterNot { it.equals(normalized, ignoreCase = true) }.toTypedArray()).take(3)
+      // The live search answers every pause in typing, so "Jur", "Jurassic" and "Jurassic Park" each
+      // came back with results and each took a slot. Only a query the viewer has stayed on counts —
+      // any further keystroke restarts this effect and cancels the wait — and a query that extends
+      // or trims an earlier one replaces it rather than sitting beside it.
+      delay(RecentSearchSettleMs)
+      val lower = normalized.lowercase()
+      recentSearches = listOf(normalized, *recentSearches.filterNot {
+        val other = it.lowercase()
+        other.startsWith(lower) || lower.startsWith(other)
+      }.toTypedArray()).take(3)
       searchPrefs.edit().putString(recentSearchesKey, JSONArray(recentSearches).toString()).apply()
     }
   }
@@ -17722,42 +17837,29 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
 
   val modernHeader = uiState.headerStyle == HeaderStyle.Modern
   val headerHazeState = rememberHazeState()
+  val searchHeaderScope = remember { ScrollAwareHeaderScope() }
+  val density = LocalDensity.current
+  val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+  var classicHeaderHeight by remember { mutableStateOf(220.dp) }
+  var sectionSlotHeight by remember { mutableStateOf(100.dp) }
+  val resultsPopulated = query.isNotBlank() && (uiState.searchResults.isNotEmpty() || hasPlaylistMatches || addonMatches.isNotEmpty())
+  // Discover and Results both pin beneath the search field; Discover sits after Recent searches.
+  val sectionSlotIndex = if (query.isBlank() && recentSearches.isNotEmpty()) 1 else 0
+  val sectionPins = query.isBlank() || resultsPopulated
+  val collapseDistance = with(density) { 96.dp.toPx() }
+  val sectionProgress: () -> Float = {
+    if (!sectionPins) 0f else listState.sectionPinProgress(sectionSlotIndex, collapseDistance)
+  }
+  val sectionFraction: (() -> Float)? = if (sectionPins) ({ sectionProgress() * ScrollChromeMachine.COMPACT }) else null
+  val searchContentTop = if (modernHeader) 236.dp else classicHeaderHeight + 20.dp
   ReportScrollTop { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
   Box(modifier = Modifier.fillMaxSize()) {
   LazyColumn(
     state = listState,
-    modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).then(if (modernHeader) Modifier.glassSource(headerHazeState) else Modifier),
-    contentPadding = PaddingValues(top = if (modernHeader) 236.dp else 0.dp, bottom = 126.dp),
+    modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).glassSource(headerHazeState),
+    contentPadding = PaddingValues(top = searchContentTop, bottom = 126.dp),
     verticalArrangement = Arrangement.spacedBy(20.dp),
   ) {
-    if (!modernHeader) {
-      stickyHeader {
-        // The status-bar strip keeps its ground while the header slides up beneath it, so the clock
-        // and battery never end up sitting on a poster.
-        Column(modifier = Modifier.fillMaxWidth()) {
-          // The background goes as the header condenses, leaving only the search field on a pill of its
-          // own, just as the Modern glass does; the strip above follows it out.
-          DefaultHeaderStatusStrip(color = MaterialTheme.colorScheme.background, fadesWithHeader = true)
-          ScrollAwareHeader(
-            surface = ScrollAwareHeaderSurface.Solid(MaterialTheme.colorScheme.background, pillAroundAnchor = true),
-            modifier = Modifier.fillMaxWidth(),
-            keepAnchorVisible = true,
-            contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = 10.dp),
-          ) {
-            SearchHeader(
-              query = query,
-              columns = columns,
-              showResultsState = query.isNotBlank() && searchResults.isNotEmpty(),
-              onQueryChange = { query = it },
-              onClear = { query = "" },
-              onToggleColumns = { columns = if (columns == 3) 2 else 3 },
-              modifier = Modifier.fillMaxWidth(),
-            )
-          }
-        }
-      }
-    }
-
     if (query.isBlank()) {
       if (recentSearches.isNotEmpty()) {
         item {
@@ -17771,68 +17873,8 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
           )
         }
       }
-      item {
-        Column(
-          modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-          verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-          SearchSectionLabel(
-            title = stringResource(R.string.nav_discover),
-            subtitle = "",
-            horizontalPadding = 0.dp,
-          )
-          // Sized to their contents and wrapped rather than forced into equal columns. Add-on
-          // catalog names vary from "A24" to "Right Now Movies", and an even split either wasted
-          // half the row on "Movies" or cut the selected source down to something unreadable.
-          androidx.compose.foundation.layout.FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(18.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-          ) {
-            // Ordered the way the choices actually depend on each other: Source decides which
-            // catalogue is being asked, and both Genre and Year are dropped or replaced depending
-            // on what that source supports - so it belongs first, before the controls it governs.
-            // Type narrows what Source returns, then Genre and Year narrow that, ending on the
-            // two that disappear most often so the row does not reshuffle around a stable control.
-            if (addonSources.isNotEmpty()) {
-              SearchDiscoverField(
-                label = stringResource(R.string.discover_filter_source),
-                value = selectedSourceLabel(),
-                onClick = { discoverSheet = "source" },
-              )
-            }
-            SearchDiscoverField(
-              label = stringResource(R.string.discover_filter_type),
-              value = discoverTypeLabel(discoverType),
-              onClick = { discoverSheet = "type" },
-            )
-            // With an add-on catalog selected the control offers that catalog's own options, so
-            // it is dropped entirely when that catalog declares none - a permanently greyed-out
-            // "All Genres" only looks broken.
-            val showGenre = if (selectedCatalog != null) {
-              catalogGenreOptions.isNotEmpty()
-            } else {
-              discoverType != "documentary" && discoverGenres.isNotEmpty()
-            }
-            if (showGenre) {
-              SearchDiscoverField(
-                label = stringResource(R.string.discover_filter_genre),
-                value = selectedGenreLabel(),
-                onClick = { discoverSheet = "genre" },
-              )
-            }
-            // An add-on catalog answers with its own ordering and has no year parameter, so the
-            // control is dropped rather than left showing a filter that would be ignored.
-            if (selectedCatalog == null) {
-              SearchDiscoverField(
-                label = stringResource(R.string.discover_filter_year),
-                value = selectedYearLabel(),
-                onClick = { discoverSheet = "year" },
-              )
-            }
-          }
-        }
-      }
+      // Reserve the section's resting space; the heading and filters are drawn by the pinned chrome.
+      item(key = "search-discover-header") { Spacer(Modifier.height(sectionSlotHeight)) }
       when {
         discoverLoading && discoverItems.isEmpty() -> {
           item { SearchGridSkeleton(columns = columns) }
@@ -17860,32 +17902,8 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
         }
       }
     } else {
-      item {
-        Column(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp),
-          verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-          Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            MediaFilter.values().forEach { value ->
-              FilterChip(
-                selected = filter == value,
-                onClick = { filter = value },
-                label = { Text(stringResource(value.labelRes)) },
-                border = null,
-                colors = borderlessFilterChipColors(),
-              )
-            }
-          }
-          Text(
-            text = stringResource(R.string.search_results),
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onBackground,
-          )
-        }
-      }
+      // Reserve the original section's space; animation never changes grid geometry.
+      item(key = "search-results-header") { Spacer(Modifier.height(sectionSlotHeight)) }
       when {
         uiState.searchLoading && searchResults.isEmpty() && !hasPlaylistMatches && addonMatches.isEmpty() -> {
           item { SearchGridSkeleton(columns = columns) }
@@ -17971,28 +17989,71 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
       }
     }
   }
-  if (modernHeader) {
-    ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f))
-    // Search is what this page is for, so its field stays: the glass panel closes into a pill
-    // around it and floats there on its own.
-    ScrollAwareHeader(
-      surface = ScrollAwareHeaderSurface.Glass(headerHazeState),
-      modifier = Modifier.align(Alignment.TopCenter).zIndex(4f).fillMaxWidth().statusBarsPadding(),
-      keepAnchorVisible = true,
-      panelPadding = PaddingValues(start = HeaderSearchInset.modernPanel, end = HeaderSearchInset.modernPanel, top = 12.dp, bottom = 6.dp),
-      panelHeight = 166.dp,
-      contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = 12.dp),
-    ) {
-      SearchHeader(
-              query = query,
-              columns = columns,
-              showResultsState = query.isNotBlank() && searchResults.isNotEmpty(),
-              onQueryChange = { query = it },
-              onClear = { query = "" },
-              onToggleColumns = { columns = if (columns == 3) 2 else 3 },
-              modifier = Modifier.fillMaxWidth(),
-            )
+  // Ordered the way the Discover choices depend on each other: Source decides which catalogue is
+  // asked, and Genre and Year are dropped or replaced depending on what that source supports. Type
+  // narrows what Source returns, then Genre and Year narrow that, ending on the two that disappear
+  // most often so the row does not reshuffle around a stable control.
+  val discoverSourceLabel = stringResource(R.string.discover_filter_source)
+  val discoverTypeFieldLabel = stringResource(R.string.discover_filter_type)
+  val discoverGenreLabel = stringResource(R.string.discover_filter_genre)
+  val discoverYearLabel = stringResource(R.string.discover_filter_year)
+  // With an add-on catalog selected the Genre control offers that catalog's own options, so it is
+  // dropped entirely when that catalog declares none - a permanently greyed-out "All Genres" only
+  // looks broken. An add-on catalog has no year parameter either, so Year goes with it.
+  val showDiscoverGenre = if (selectedCatalog != null) catalogGenreOptions.isNotEmpty() else discoverType != "documentary" && discoverGenres.isNotEmpty()
+  val sectionFilters: List<@Composable () -> Unit> = if (query.isBlank()) {
+    buildList<@Composable () -> Unit> {
+      if (addonSources.isNotEmpty()) add { SearchDiscoverField(label = discoverSourceLabel, value = selectedSourceLabel(), onClick = { discoverSheet = "source" }) }
+      add { SearchDiscoverField(label = discoverTypeFieldLabel, value = discoverTypeLabel(discoverType), onClick = { discoverSheet = "type" }) }
+      if (showDiscoverGenre) add { SearchDiscoverField(label = discoverGenreLabel, value = selectedGenreLabel(), onClick = { discoverSheet = "genre" }) }
+      if (selectedCatalog == null) add { SearchDiscoverField(label = discoverYearLabel, value = selectedYearLabel(), onClick = { discoverSheet = "year" }) }
     }
+  } else {
+    MediaFilter.values().map { value ->
+      @Composable {
+        FilterChip(selected = filter == value, onClick = { filter = value },
+          label = { Text(stringResource(value.labelRes), maxLines = 1) },
+          border = null, colors = borderlessFilterChipColors())
+      }
+    }
+  }
+  PinnedSectionChrome(
+    title = stringResource(if (query.isBlank()) R.string.nav_discover else R.string.search_results),
+    titleAbove = query.isBlank(),
+    filterSpacing = if (query.isBlank()) 18.dp else 6.dp,
+    progress = sectionProgress,
+    hazeState = headerHazeState,
+    defaultStyle = !modernHeader,
+    fieldInset = HeaderSearchInset.content + if (modernHeader) HeaderSearchInset.modernPanel else 0.dp,
+    onFullHeight = { sectionSlotHeight = with(density) { it.toDp() } },
+    modifier = Modifier.fillMaxWidth().zIndex(3f).pinnedBelowHeader(searchHeaderScope, statusTop) {
+      listState.sectionNaturalTop(sectionSlotIndex, searchContentTop.roundToPx())
+    },
+    filters = sectionFilters,
+  )
+  ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f))
+  ScrollAwareHeader(
+    surface = if (modernHeader) ScrollAwareHeaderSurface.Glass(headerHazeState)
+      else ScrollAwareHeaderSurface.Solid(MaterialTheme.colorScheme.background, pillAroundAnchor = true, hazeState = headerHazeState),
+    modifier = Modifier.align(Alignment.TopCenter).zIndex(4f).fillMaxWidth().statusBarsPadding()
+      .onSizeChanged { if (!modernHeader) classicHeaderHeight = with(density) { it.height.toDp() } + statusTop },
+    keepAnchorVisible = true,
+    panelPadding = if (modernHeader) PaddingValues(start = HeaderSearchInset.modernPanel, end = HeaderSearchInset.modernPanel, top = 12.dp, bottom = 6.dp) else PaddingValues(0.dp),
+    panelHeight = if (modernHeader) 166.dp else null,
+    contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = if (modernHeader) 12.dp else 10.dp),
+    headerScope = searchHeaderScope,
+    fractionOverride = sectionFraction,
+  ) {
+    SearchHeader(
+      query = query,
+      columns = columns,
+      showResultsState = query.isNotBlank() && searchResults.isNotEmpty(),
+      onQueryChange = { query = it },
+      onClear = { query = "" },
+      onToggleColumns = { columns = if (columns == 3) 2 else 3 },
+      gridButtonHazeState = headerHazeState,
+      modifier = Modifier.fillMaxWidth(),
+    )
   }
   }
 
@@ -18007,6 +18068,182 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
       options = discoverOptions,
       onDismiss = { discoverSheet = null },
     )
+  }
+}
+
+/**
+ * How far a list section has condensed into its pinned row: 0 until its top reaches the top of the
+ * list's content, 1 once it has travelled [distancePx] beyond it.
+ *
+ * Absolute list position, never scroll direction: reversing a swipe mid-list cannot reopen the
+ * header above it and leave the section's filters floating over posters with no background.
+ */
+private fun androidx.compose.foundation.lazy.LazyListState.sectionPinProgress(slotIndex: Int, distancePx: Float): Float {
+  val slot = layoutInfo.visibleItemsInfo.firstOrNull { it.index == slotIndex }
+  return when {
+    slot != null -> (-slot.offset / distancePx).coerceIn(0f, 1f)
+    firstVisibleItemIndex > slotIndex -> 1f
+    else -> 0f
+  }
+}
+
+/** Where the section at [slotIndex] would sit in the page if it scrolled with the list. */
+private fun androidx.compose.foundation.lazy.LazyListState.sectionNaturalTop(slotIndex: Int, restingTop: Int): Int {
+  val info = layoutInfo
+  val slot = info.visibleItemsInfo.firstOrNull { it.index == slotIndex }
+  return when {
+    slot != null -> slot.offset + info.beforeContentPadding
+    firstVisibleItemIndex > slotIndex -> Int.MIN_VALUE
+    info.visibleItemsInfo.isEmpty() -> restingTop
+    else -> info.viewportEndOffset + info.beforeContentPadding
+  }
+}
+
+/**
+ * Places pinned section chrome where the page puts it, but never above the bottom of the header, so
+ * once the header has condensed the section rides just beneath it.
+ */
+private fun Modifier.pinnedBelowHeader(
+  headerScope: ScrollAwareHeaderScope,
+  statusTop: Dp,
+  naturalTop: androidx.compose.ui.unit.Density.() -> Int,
+): Modifier = offset {
+  val headerBottom = statusTop.roundToPx() + headerScope.panelTopPx +
+    headerScope.surfaceBounds(0, headerScope.stageHeight).bottom - headerScope.translation()
+  IntOffset(0, maxOf(naturalTop(), headerBottom + 4.dp.roundToPx()))
+}
+
+/**
+ * A section's heading and filters that condense into one rounded row beneath a pinned header.
+ *
+ * At rest it reads like any section: the heading, its filters beneath, no background. As [progress]
+ * runs to 1 the filters make room from the trailing end, each one moving just before its neighbour;
+ * a rounded surface forms around them, inset to line up with the header's pinned control; and the
+ * heading condenses into the start of that row. Without a heading the filters settle straight into
+ * the row with the same stagger.
+ *
+ * The row is glass in both header styles; [defaultStyle] gives it the Default style's dark glass in a
+ * dark theme. [onFullHeight] reports the resting height, so a page can reserve exactly that
+ * much room and never re-measure its grid while the row animates.
+ */
+@Composable
+private fun PinnedSectionChrome(
+  title: String?,
+  progress: () -> Float,
+  hazeState: HazeState,
+  fieldInset: Dp,
+  onFullHeight: (Int) -> Unit,
+  modifier: Modifier = Modifier,
+  /** The Default header style, whose glass turns dark in a dark theme to match its pill. */
+  defaultStyle: Boolean = false,
+  /** Whether the heading rests above its filters, as Discover's does, or below them, as Results' does. */
+  titleAbove: Boolean = false,
+  /**
+   * False for a heading the page already shows elsewhere at rest — a network's name in its header.
+   * It then takes no room in the resting layout and only arrives in the compact row.
+   */
+  titleAtRest: Boolean = true,
+  filterSpacing: Dp = 6.dp,
+  filters: List<@Composable () -> Unit>,
+) {
+  val motion = LocalMotionSettings.current
+  val target = progress().coerceIn(0f, 1f)
+  val springSpec = if (motion.motionless) androidx.compose.animation.core.snap<Float>() else
+    androidx.compose.animation.core.spring<Float>(dampingRatio = 0.72f, stiffness = 240f / motion.scale.coerceAtLeast(0.1f))
+  // Start at the trailing filter: each makes room for the one immediately before it. The leading
+  // filter always starts at 0.24, however many there are, so the heading keeps its cue.
+  val step = if (filters.size > 1) 0.24f / (filters.size - 1) else 0f
+  val phases = List(filters.size) { index ->
+    key(index) {
+      animateFloatAsState(((target - (filters.size - 1 - index) * step) / 0.40f).coerceIn(0f, 1f), springSpec, label = "pinnedFilter$index")
+    }
+  }
+  val heading by animateFloatAsState(((target - 0.64f) / 0.36f).coerceIn(0f, 1f), springSpec, label = "pinnedHeading")
+  val across = (phases.firstOrNull()?.value ?: target).coerceIn(0f, 1f)
+  val up = if (title == null) 0f else minOf(heading.coerceIn(0f, 1f), across)
+  val titleStyle = androidx.compose.ui.text.TextStyle(fontSize = 22.sp, fontWeight = FontWeight.Bold)
+  val measurer = rememberTextMeasurer()
+  // Measured rather than guessed, so a longer heading in another language is not cut off in the row.
+  val titleWidthPx = remember(title, measurer) { title?.let { measurer.measure(it, titleStyle, maxLines = 1).size.width } ?: 0 }
+  BoxWithConstraints(modifier = modifier.padding(horizontal = fieldInset * across)) {
+    val density = LocalDensity.current
+    val compactScale = 0.82f
+    val headingWidthPx = with(density) { minOf(titleWidthPx * compactScale, ((maxWidth - 32.dp) / 3).toPx()) }
+    // A clear gap after the heading, so it reads as the row's label rather than as its first filter.
+    val shift = if (title == null) 0 else with(density) { (headingWidthPx + 20.dp.toPx()).roundToInt() }
+    // Without a heading there is nothing to make room for, so the stagger is a short glide instead.
+    val stagger = if (title == null) with(density) { 12.dp.roundToPx() } else shift
+    HeaderGlassSurface(
+      hazeState = hazeState,
+      shape = StreamDekRadius.cardShape,
+      darkInDarkTheme = defaultStyle,
+      modifier = Modifier.matchParentSize().graphicsLayer { alpha = across },
+    )
+    androidx.compose.ui.layout.Layout(
+      modifier = Modifier.padding(horizontal = 16.dp),
+      content = {
+        if (title != null) {
+          Text(title, style = titleStyle, color = MaterialTheme.colorScheme.onBackground,
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.graphicsLayer {
+              if (titleAtRest) {
+                val scale = 1f - (1f - compactScale) * up
+                scaleX = scale; scaleY = scale
+                translationY = if (motion.motionless) 0f else (if (titleAbove) 4f else -4f) * 1.dp.toPx() * (heading - up)
+              } else {
+                // Arrives rather than condenses: the header's own copy has just left from above.
+                scaleX = compactScale; scaleY = compactScale
+                alpha = up
+                translationY = if (motion.motionless) 0f else -6.dp.toPx() * (1f - up)
+              }
+              transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
+            })
+        }
+        androidx.compose.ui.layout.Layout(
+          modifier = Modifier.horizontalScroll(rememberScrollState()),
+          content = { filters.forEach { it() } },
+        ) { children, constraints ->
+          val chips = children.map { it.measure(constraints.copy(minWidth = 0, minHeight = 0)) }
+          val gap = filterSpacing.roundToPx()
+          var edge = 0
+          var natural = 0
+          val positions = chips.mapIndexed { index, chip ->
+            val phase = phases.getOrNull(index)?.value ?: across
+            // Clamp only horizontal collisions; spring overshoot remains visible in the free space.
+            val x = maxOf(edge, natural + ((phase - across).coerceAtLeast(0f) * stagger).roundToInt())
+            natural += chip.width + gap
+            edge = x + chip.width + gap
+            x
+          }
+          layout((edge - gap).coerceAtLeast(0), chips.maxOfOrNull { it.height } ?: 0) {
+            chips.forEachIndexed { index, chip -> chip.placeRelative(positions[index], 0) }
+          }
+        }
+      },
+    ) { children, constraints ->
+      val titleNode = if (title != null) children[0] else null
+      val filtersNode = children.last()
+      val compactTitleMax = (headingWidthPx / compactScale).roundToInt()
+      val titlePlaceable = titleNode?.measure(constraints.copy(minWidth = 0, minHeight = 0,
+        maxWidth = (constraints.maxWidth + (compactTitleMax - constraints.maxWidth) * across).roundToInt().coerceIn(0, constraints.maxWidth)))
+      val filtersPlaceable = filtersNode.measure(constraints.copy(minWidth = 0, minHeight = 0,
+        maxWidth = (constraints.maxWidth - (shift * across).roundToInt()).coerceAtLeast(0)))
+      val titleHeight = titlePlaceable?.height ?: 0
+      val compactHeight = maxOf(48.dp.roundToPx(), filtersPlaceable.height, titleHeight)
+      val fullHeight = if (titlePlaceable == null || !titleAtRest) compactHeight
+        else maxOf(if (titleAbove) 0 else 100.dp.roundToPx(), filtersPlaceable.height + titleHeight + 14.dp.roundToPx())
+      onFullHeight(fullHeight)
+      layout(constraints.maxWidth, (fullHeight + (compactHeight - fullHeight) * up).roundToInt()) {
+        val titleRest = if (titleAbove) 0 else filtersPlaceable.height + 14.dp.roundToPx()
+        val filtersRest = if (titleAbove) titleHeight + 14.dp.roundToPx() else 0
+        val titleTop = if (titleAtRest) (titleRest * (1f - up) + (compactHeight - titleHeight) / 2f * up).roundToInt()
+          else (compactHeight - titleHeight) / 2
+        titlePlaceable?.placeRelative(0, titleTop)
+        val filtersTop = if (titlePlaceable == null || !titleAtRest) (compactHeight - filtersPlaceable.height) / 2
+          else (filtersRest * (1f - up) + (compactHeight - filtersPlaceable.height) / 2f * up).roundToInt()
+        filtersPlaceable.placeRelative((shift * across).roundToInt(), filtersTop)
+      }
+    }
   }
 }
 
@@ -18044,13 +18281,18 @@ private fun SearchDiscoverField(
   }
 }
 
+/** How long a search has to stay unchanged, with results showing, before it counts as a recent search. */
+private const val RecentSearchSettleMs = 1_800L
+
 @Composable
 private fun SearchSelectionDialog(
   title: String,
   options: List<SearchSelectionOption>,
   onDismiss: () -> Unit,
 ) {
-  Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+  // Drawn edge to edge, so the tint covers the status bar too rather than stopping beneath it and
+  // leaving the clock sitting on an undimmed strip of the page.
+  Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
     Box(
       modifier = Modifier
         .fillMaxSize()
@@ -18061,6 +18303,7 @@ private fun SearchSelectionDialog(
       Card(
         modifier = Modifier
           .fillMaxWidth()
+          .navigationBarsPadding()
           .padding(horizontal = 16.dp, vertical = 18.dp)
           .clickable(enabled = false, onClick = {}),
         shape = StreamDekRadius.sheetShape,
@@ -18119,17 +18362,19 @@ private fun ScrollAwareHeaderScope.SearchHeader(
   onQueryChange: (String) -> Unit,
   onClear: () -> Unit,
   onToggleColumns: () -> Unit,
+  gridButtonHazeState: HazeState,
   modifier: Modifier = Modifier,
 ) {
   Column(
     modifier = modifier.fillMaxWidth().padding(top = 10.dp, bottom = 8.dp),
     verticalArrangement = Arrangement.spacedBy(12.dp),
   ) {
-    Row(modifier = Modifier.fillMaxWidth().compactsAway(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-      Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+      Column(modifier = Modifier.compactsAway(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         AdaptivePageTitle(title = stringResource(R.string.nav_search))
       }
-      GlassCircleButton(borderless = true, onClick = onToggleColumns) {
+      // Stays when the title goes, coming down beside the narrowing field as on a network's page.
+      GlassCircleButton(modifier = Modifier.joinsAnchorRow(), hazeState = gridButtonHazeState, borderless = true, onClick = onToggleColumns) {
         Icon(if (columns == 3) Icons.Rounded.ViewAgenda else Icons.Rounded.ViewModule, contentDescription = null, tint = MaterialTheme.colorScheme.onBackground)
       }
     }
@@ -18138,6 +18383,7 @@ private fun ScrollAwareHeaderScope.SearchHeader(
       onQueryChange = onQueryChange,
       placeholder = stringResource(R.string.hint_search_movies_tv_catalogs),
       onClear = onClear,
+      yieldsToJoinedControl = true,
     )
     if (showResultsState) {
       Text(if (columns == 3) "Three-column layout" else "Two-column layout", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall, modifier = Modifier.compactsAway(order = 1, belowAnchor = true))
@@ -18169,15 +18415,50 @@ private fun ScrollAwareHeaderScope.HeaderSearchField(
   onQueryChange: (String) -> Unit,
   placeholder: String,
   onClear: () -> Unit = { onQueryChange("") },
+  /** Narrow as the header compacts, for a control that [ScrollAwareHeaderScope.joinsAnchorRow]. */
+  yieldsToJoinedControl: Boolean = false,
+  /**
+   * The placeholder once the header has compacted. The page title that said what is being searched
+   * has gone by then, so the field takes over naming it.
+   */
+  compactPlaceholder: String? = null,
+  /** Shown at the end of the empty field once compacted — a list's count, which left with its title. */
+  compactTrailingLabel: String? = null,
 ) {
+  // Derived, so a scrolled frame recomposes only on the one frame the answer flips.
+  val compacted by remember(this) { derivedStateOf { compactProgress() > 0.5f } }
+  val shownPlaceholder = if (compactPlaceholder != null && compacted) compactPlaceholder else placeholder
   OutlinedTextField(
     value = query,
     onValueChange = onQueryChange,
-    modifier = Modifier.fillMaxWidth().compactAnchor().holdsChromeWhileTyping(),
+    modifier = Modifier.fillMaxWidth().compactAnchor()
+      .then(if (yieldsToJoinedControl) Modifier.yieldsToJoinedControl() else Modifier)
+      .holdsChromeWhileTyping(),
     singleLine = true,
-    placeholder = { InputGuideText(placeholder) },
+    placeholder = {
+      Crossfade(targetState = shownPlaceholder, label = "headerSearchPlaceholder") { text ->
+        // One step smaller than the field's text, so a long list name fits the narrowed field.
+        Text(text, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.50f), fontSize = (androidx.compose.material3.LocalTextStyle.current.fontSize.value - 1f).sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+      }
+    },
     leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
-    trailingIcon = if (query.isNotBlank()) ({ IconButton(onClick = onClear) { Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.action_clear)) } }) else null,
+    trailingIcon = when {
+      query.isNotBlank() -> ({ IconButton(onClick = onClear) { Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.action_clear)) } })
+      compactTrailingLabel != null -> ({
+        androidx.compose.animation.AnimatedVisibility(visible = compacted, enter = fadeIn(), exit = fadeOut()) {
+          Text(
+            compactTrailingLabel,
+            modifier = Modifier.padding(start = 8.dp, end = 16.dp).widthIn(max = 140.dp),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.60f),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+        }
+      })
+      else -> null
+    },
     shape = StreamDekRadius.cardShape,
     colors = streamDekSearchFieldColors(),
   )
@@ -24273,6 +24554,16 @@ private fun CloudStreamCollectionsSection(refreshSignal: Int) {
   var query by rememberSaveable { mutableStateOf("") }
   var pendingProvider by remember { mutableStateOf<String?>(null) }
   var sourceTest by remember { mutableStateOf<PluginSourceTestState?>(null) }
+  var detailsRepo by remember { mutableStateOf<CsRepo?>(null) }
+  var detailsProvider by remember { mutableStateOf<CsProviderEntry?>(null) }
+  detailsRepo?.let { repo ->
+    CloudStreamDetailsDialog(repo.name, repo.description, repo.url, repo.enabled,
+      state.providers.filter { it.repoUrl == repo.url }, onDismiss = { detailsRepo = null })
+  }
+  detailsProvider?.let { provider ->
+    CloudStreamDetailsDialog(provider.name, provider.description, provider.downloadUrl, provider.enabled,
+      listOf(provider), onDismiss = { detailsProvider = null })
+  }
 
   fun syncState() { state = manager.state }
 
@@ -24298,6 +24589,7 @@ private fun CloudStreamCollectionsSection(refreshSignal: Int) {
           busy = busy,
           favourite = repo.favourite,
           onToggleFavourite = { manager.toggleRepoFavourite(repo.url); syncState() },
+          onDetails = { detailsRepo = repo },
           onToggleEnabled = { enabled ->
             manager.enableRepo(repo.url, enabled)
             syncState()
@@ -24346,6 +24638,18 @@ private fun CloudStreamCollectionsSection(refreshSignal: Int) {
                   style = MaterialTheme.typography.bodySmall,
                 )
               }
+              IconButton(onClick = { detailsProvider = provider }) {
+                Icon(Icons.Rounded.Info, contentDescription = stringResource(R.string.a11y_details_named, provider.name))
+              }
+              val loadedPlugin = provider.installedFilePath?.let { path -> CloudStreamPluginLoader.loadedPlugins().firstOrNull { it.filePath == path } }
+              if ((loadedPlugin?.instance as? com.lagradost.cloudstream3.plugins.Plugin)?.openSettings != null) {
+                IconButton(enabled = repo.enabled && provider.enabled, onClick = {
+                  context.startActivity(Intent(context, CloudStreamSettingsActivity::class.java)
+                    .putExtra(CloudStreamSettingsActivity.EXTRA_PLUGIN_PATH, provider.installedFilePath))
+                }) {
+                  Icon(Icons.Rounded.Settings, contentDescription = stringResource(R.string.plugin_source_settings))
+                }
+              }
               IconButton(
                 onClick = {
                   val media = testMedia ?: return@IconButton
@@ -24384,6 +24688,36 @@ private fun CloudStreamCollectionsSection(refreshSignal: Int) {
       }
       message?.let {
         Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.76f), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 10.dp))
+      }
+    }
+  }
+}
+
+@Composable
+private fun CloudStreamDetailsDialog(
+  name: String,
+  description: String?,
+  url: String,
+  enabled: Boolean,
+  providers: List<CsProviderEntry>,
+  onDismiss: () -> Unit,
+) {
+  Dialog(onDismissRequest = onDismiss) {
+    Surface(shape = StreamDekRadius.panelShape, color = MaterialTheme.colorScheme.surface) {
+      Column(Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()).padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text(stringResource(R.string.plugin_collection_details), style = MaterialTheme.typography.labelMedium)
+        Text(name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        description?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+        DetailUrlRow(stringResource(R.string.cloudstream_address), url)
+        DetailRow(stringResource(R.string.detail_fact_status), stringResource(if (enabled) R.string.state_on else R.string.settings_state_off))
+        Text(pluralStringResource(R.plurals.plugin_sources_count, providers.size, providers.size), fontWeight = FontWeight.Bold)
+        providers.forEach { provider ->
+          Text(provider.name, fontWeight = FontWeight.SemiBold)
+          Text(stringResource(R.string.settings_summary_version, provider.version.toString()), style = MaterialTheme.typography.bodySmall)
+          Text(listOfNotNull(provider.language, provider.tvTypes.takeIf { it.isNotEmpty() }?.joinToString(" / ")).joinToString(" · "), style = MaterialTheme.typography.bodySmall)
+        }
+        TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text(stringResource(R.string.action_close)) }
       }
     }
   }
@@ -26227,7 +26561,11 @@ private fun DetailScreen(
                     },
                     enabled = selectedSeasonIds.isNotEmpty(),
                     shape = StreamDekRadius.pill,
-                    border = BorderStroke(1.dp, if (fullSeasonWatched) Color(0xFF22C55E) else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.34f)),
+                    border = null,
+                    colors = ButtonDefaults.outlinedButtonColors(
+                      containerColor = if (fullSeasonWatched) Color(0xFF22C55E).copy(alpha = DetailTone.selected) else MaterialTheme.colorScheme.onBackground.copy(alpha = DetailTone.rest),
+                      contentColor = MaterialTheme.colorScheme.onBackground,
+                    ),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                   ) {
                     Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = if (fullSeasonWatched) Color(0xFF22C55E) else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.76f), modifier = Modifier.size(16.dp))
@@ -28225,9 +28563,9 @@ private fun StreamDekDetailActions(
             enabled = hasTrailer,
             modifier = Modifier.size(50.dp),
             shape = StreamDekRadius.pill,
-            border = BorderStroke(1.dp, foreground.copy(alpha = if (hasTrailer) 0.26f else 0.10f)),
+            border = null,
             colors = ButtonDefaults.outlinedButtonColors(
-              containerColor = foreground.copy(alpha = 0.08f),
+              containerColor = foreground.copy(alpha = DetailTone.rest),
               contentColor = foreground,
               disabledContentColor = foreground.copy(alpha = 0.34f),
             ),
@@ -28274,6 +28612,18 @@ private fun StreamDekDetailActions(
 }
 
 /**
+ * How the detail page's controls and cards stand off the page: a soft tonal fill, no outline.
+ *
+ * Tinted from the foreground colour, so the same values read as a faint lift on a dark page and a
+ * faint shade on a light one — separate from the background without a contrasting edge around every
+ * pill and card. Selected controls take the stronger step.
+ */
+private object DetailTone {
+  const val rest = 0.08f
+  const val selected = 0.16f
+}
+
+/**
  * A tab pill that falls back to [compactLabel] when [label] will not fit.
  *
  * The pills share the row with About and up to three icon buttons, so on a narrow screen the
@@ -28297,9 +28647,9 @@ private fun DetailPillTab(
     modifier = modifier,
     onClick = onClick,
     shape = StreamDekRadius.pill,
-    border = BorderStroke(1.dp, foreground.copy(alpha = if (selected) 0.82f else 0.18f)),
+    border = null,
     colors = ButtonDefaults.outlinedButtonColors(
-      containerColor = foreground.copy(alpha = if (selected) 0.10f else 0.04f),
+      containerColor = foreground.copy(alpha = if (selected) DetailTone.selected else DetailTone.rest),
       contentColor = foreground,
     ),
     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp),
@@ -28346,9 +28696,9 @@ private fun DetailIconOnlyPill(label: String, selected: Boolean, onClick: () -> 
   OutlinedButton(
     onClick = onClick,
     shape = StreamDekRadius.pill,
-    border = BorderStroke(1.dp, if (selected) selectedColor.copy(alpha = 0.92f) else foreground.copy(alpha = 0.16f)),
+    border = null,
     colors = ButtonDefaults.outlinedButtonColors(
-      containerColor = if (selected) selectedColor.copy(alpha = 0.18f) else foreground.copy(alpha = 0.04f),
+      containerColor = if (selected) selectedColor.copy(alpha = DetailTone.selected) else foreground.copy(alpha = DetailTone.rest),
       contentColor = if (selected) selectedColor else foreground,
     ),
     contentPadding = PaddingValues(0.dp),
@@ -28362,9 +28712,9 @@ private fun DetailIconTab(label: String, selected: Boolean, onClick: () -> Unit)
   OutlinedButton(
     onClick = onClick,
     shape = StreamDekRadius.pill,
-    border = BorderStroke(1.dp, Color.White.copy(alpha = if (selected) 0.70f else 0.16f)),
+    border = null,
     colors = ButtonDefaults.outlinedButtonColors(
-      containerColor = if (selected) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.12f),
+      containerColor = Color.White.copy(alpha = if (selected) DetailTone.selected else DetailTone.rest),
       contentColor = Color.White,
     ),
     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp),
@@ -28378,9 +28728,9 @@ private fun DetailActionIconPill(icon: ImageVector, label: String, selected: Boo
   OutlinedButton(
     onClick = onClick,
     shape = StreamDekRadius.pill,
-    border = BorderStroke(1.dp, Color.White.copy(alpha = if (selected) 0.70f else 0.16f)),
+    border = null,
     colors = ButtonDefaults.outlinedButtonColors(
-      containerColor = if (selected) Color.White.copy(alpha = 0.10f) else Color.Black.copy(alpha = 0.12f),
+      containerColor = Color.White.copy(alpha = if (selected) DetailTone.selected else DetailTone.rest),
       contentColor = Color.White,
     ),
     contentPadding = PaddingValues(horizontal = 11.dp, vertical = 7.dp),
@@ -28438,8 +28788,7 @@ private fun DetailFactCard(label: String, value: String, modifier: Modifier = Mo
   Column(
     modifier = modifier
       .clip(StreamDekRadius.cardShape)
-      .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.72f))
-      .border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f), StreamDekRadius.cardShape)
+      .background(MaterialTheme.colorScheme.onBackground.copy(alpha = DetailTone.rest))
       .padding(horizontal = 14.dp, vertical = 10.dp),
     verticalArrangement = Arrangement.spacedBy(2.dp),
   ) {
@@ -28631,15 +28980,14 @@ private fun TraktCommentCard(comment: TraktCommentPreview) {
       .width(310.dp)
       .height(206.dp)
       .clip(StreamDekRadius.panelShape)
-      .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.72f))
-      .border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.07f), StreamDekRadius.panelShape)
+      .background(MaterialTheme.colorScheme.onBackground.copy(alpha = DetailTone.rest))
       .padding(18.dp),
     verticalArrangement = Arrangement.SpaceBetween,
   ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
       Text(comment.author, color = MaterialTheme.colorScheme.onBackground, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
       comment.rating?.let {
-        Box(modifier = Modifier.clip(StreamDekRadius.pill).background(MaterialTheme.colorScheme.background.copy(alpha = 0.72f)).border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.10f), StreamDekRadius.pill).padding(horizontal = 12.dp, vertical = 6.dp)) {
+        Box(modifier = Modifier.clip(StreamDekRadius.pill).background(MaterialTheme.colorScheme.onBackground.copy(alpha = DetailTone.rest)).padding(horizontal = 12.dp, vertical = 6.dp)) {
           Text(it, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.74f), fontSize = 12.sp, fontWeight = FontWeight.Bold)
         }
       }
@@ -28655,15 +29003,14 @@ private fun ServiceProviderPill(provider: WatchProvider, onClick: () -> Unit) {
   Row(
     modifier = Modifier
       .clip(StreamDekRadius.pill)
-      .background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.08f))
-      .border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.12f), StreamDekRadius.pill)
+      .background(MaterialTheme.colorScheme.onBackground.copy(alpha = DetailTone.rest))
       .clickable(onClick = onClick)
       .padding(horizontal = 14.dp, vertical = 10.dp),
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(8.dp),
   ) {
     Box(
-      modifier = Modifier.size(22.dp).clip(CircleShape).background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.12f)).border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.12f), CircleShape),
+      modifier = Modifier.size(22.dp).clip(CircleShape).background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.12f)),
       contentAlignment = Alignment.Center,
     ) {
       if (provider.logo != null) {

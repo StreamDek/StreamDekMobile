@@ -3987,11 +3987,13 @@ DisposableEffect(activity) {
   // Claimed before the rotation is requested: the activity re-applies its own orientation policy
   // on configuration changes, and the rotation asked for here arrives as one of those.
   MainActivity.playerOwnsOrientation = true
+  (activity as? MainActivity)?.applyRefreshRatePolicy()
   activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
   applyPlayerSystemUi()
   onDispose {
     MainActivity.pipShouldEnter = false
     MainActivity.playerOwnsOrientation = false
+    (activity as? MainActivity)?.applyRefreshRatePolicy()
     activity?.requestedOrientation = previous
     activity?.window?.let { window ->
       val attributes = window.attributes

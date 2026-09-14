@@ -524,6 +524,10 @@
     <item quantity="one">%1$d titel</item>
     <item quantity="other">%1$d titels</item>
   </plurals>
+  <plurals name="library_title_label">
+    <item quantity="one">titel</item>
+    <item quantity="other">titels</item>
+  </plurals>
   <string name="browse_no_titles_here">Geen titels hier</string>
   <string name="browse_no_titles_here_detail">Deze sectie heeft geen items die overeenkomen met het gekozen filter.</string>
   <string name="action_clear">Wissen</string>
@@ -1278,6 +1282,7 @@
   <string name="hint_search_within_network">Zoeken binnen deze dienst</string>
   <string name="hint_search_channels">Kanalen zoeken</string>
   <string name="hint_search_this_list">Zoeken in deze lijst</string>
+  <string name="hint_search_named_list">Zoeken in lijst %1$s</string>
   <string name="hint_search_movies_series">Films en series zoeken...</string>
   <string name="hint_search_movies_tv_catalogs">Films, series en catalogi zoeken</string>
   <string name="hint_paste_badge_link">Plak een link naar een labelverzameling</string>
@@ -1583,13 +1588,13 @@
   <string name="subtitle_none">Geen</string>
   <string name="action_play_again">Opnieuw afspelen</string>
   <string name="settings_navigation_behaviour">Navigatiegedrag</string>
-  <string name="settings_navigation_behaviour_description">Kies wanneer de zwevende navigatie in je profielknop wegschuift.</string>
+  <string name="settings_navigation_behaviour_description">Kies hoe de navigatie en paginakoppen reageren.</string>
   <string name="navigation_behaviour_always_expanded">Uitgevouwen</string>
-  <string name="navigation_behaviour_always_expanded_description">Alle paginaknoppen blijven zichtbaar.</string>
+  <string name="navigation_behaviour_always_expanded_description">De navigatie blijft uitgeklapt en de koppen blijven ongewijzigd.</string>
   <string name="navigation_behaviour_after_delay">Invouwen na vertraging</string>
-  <string name="navigation_behaviour_after_delay_description">Schuift een paar seconden nadat je een pagina kiest weg.</string>
+  <string name="navigation_behaviour_after_delay_description">De navigatie klapt na een vertraging in. De koppen blijven ongewijzigd.</string>
   <string name="navigation_behaviour_while_scrolling">Invouwen tijdens scrollen</string>
-  <string name="navigation_behaviour_while_scrolling_description">Schuift weg tijdens het scrollen en komt terug zodra je stopt.</string>
+  <string name="navigation_behaviour_while_scrolling_description">Tijdens het scrollen klapt de navigatie in en worden de koppen kleiner of verborgen.</string>
   <string name="settings_visual_effects">Visuele effecten</string>
   <string name="settings_visual_effects_description">Balans tussen glaseffecten en soepel scrollen. Alleen op dit apparaat opgeslagen.</string>
   <string name="visual_effects_automatic">Automatisch</string>
@@ -1602,4 +1607,7 @@
   <string name="visual_effects_note_device">Automatisch gebruikt beperkte effecten om dit apparaat soepel te houden.</string>
   <string name="visual_effects_note_performance">Automatisch is overgeschakeld naar beperkte effecten omdat scrollen trager werd.</string>
   <string name="visual_effects_note_unsupported">Deze Android-versie kan niet vervagen, dus glas gebruikt getinte vlakken.</string>
+  <string name="cloudstream_address">Adres</string>
+  <string name="cloudstream_subsources_help">Schakel subbronnen in via de plugininstellingen en sluit dit scherm om de startrijen te vernieuwen.</string>
+  <string name="cloudstream_settings_failed">De instellingen van deze plugin konden niet worden geopend.</string>
 </resources>

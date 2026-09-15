@@ -4148,7 +4148,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   fun playLiveChannel(item: MediaItem) {
-    if (!item.isLiveCatalogItem() || uiState.liveChannelSwitching) return
+    val cloudStreamChannel = isCloudStreamMediaId(item.id) &&
+      (isCloudStreamLiveChannel(item) || uiState.playerLiveChannels.any { it.id == item.id })
+    if (!(item.isLiveCatalogItem() || cloudStreamChannel) || uiState.liveChannelSwitching) return
     liveChannelSwitchSnapshot = LiveChannelSwitchSnapshot(
       detail = uiState.detail,
       detailIsLive = uiState.detailIsLive,
@@ -4199,6 +4201,37 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       liveChannelSwitching = false, liveChannelSwitchingLabel = null, errorMessage = null,
     )
     liveChannelSwitchSnapshot = null
+  }
+
+  /**
+   * The channel list for a CloudStream live channel. Its card carries none of the catalogue fields
+   * [loadPlayerLiveChannels] matches on, so the list is the row it was opened from - its Home row or
+   * that row's View all page - then the whole row as the provider lists it, since Home keeps only the
+   * first [CLOUDSTREAM_ROW_MAX_ITEMS].
+   */
+  private fun loadCloudStreamPlayerLiveChannels(anchor: MediaItem) {
+    // Picking a channel from the list reopens its page; the list it was picked from stays.
+    if (uiState.playerLiveChannels.size > 1 && uiState.playerLiveChannels.any { it.id == anchor.id }) return
+    val candidates = buildList {
+      uiState.browseRow?.let { add(it.id to uiState.browseLoadedItems.ifEmpty { it.items }) }
+      uiState.allHomeSections.forEach { add(it.id to it.items) }
+      uiState.homeSections.forEach { add(it.id to it.items) }
+    }
+    val row = candidates.firstOrNull { (id, items) -> isCloudStreamHomeRowId(id) && items.any { it.id == anchor.id } }
+    val generation = ++liveChannelCatalogGeneration
+    val shown = row?.second?.distinctBy { it.id }?.ifEmpty { null } ?: listOf(anchor)
+    val target = row?.let { resolveCloudStreamHomeRow(it.first, loadedCloudStreamProviders()) }
+    uiState = uiState.copy(playerLiveChannels = shown, playerLiveChannelsLoading = target != null)
+    if (target == null) return
+    viewModelScope.launch {
+      val full = withContext(Dispatchers.IO) {
+        runCatching { CloudStreamProviderBridge.mainPageItems(target.provider, target.page) }
+          .onFailure { Log.w("StreamDekCloudStream", "Channel list for '${target.page.name}' from ${target.provider.name} failed", it) }
+          .getOrDefault(emptyList())
+      }
+      if (generation != liveChannelCatalogGeneration) return@launch
+      uiState = uiState.copy(playerLiveChannels = (shown + full).distinctBy { it.id }, playerLiveChannelsLoading = false)
+    }
   }
 
   private fun loadPlayerLiveChannels(anchor: MediaItem) {
@@ -5257,6 +5290,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           refreshExternalRatings(resolvedDetail)
           refreshTraktComments(resolvedDetail)
         }
+        if (live) loadCloudStreamPlayerLiveChannels(item)
         if (takeCloudStreamSwitchPlay(id)) {
           playBestStream()
         } else if (live) {
@@ -5279,6 +5313,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         val live = CloudStreamProviderBridge.isLive(provider, null)
         val fallback = item.toFallbackDetail().let { if (live) it.copy(type = "live") else it }
         uiState = uiState.copy(detailLoading = false, detail = fallback, detailIsLive = live, errorMessage = message)
+        if (live) loadCloudStreamPlayerLiveChannels(item)
         if (takeCloudStreamSwitchPlay(id)) {
           // The provider could not describe the channel, but its link is enough to ask for streams.
           playBestStream()
@@ -6586,6 +6621,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       playStream(cached, selectedEpisode, resumePercentOverride, returnToEpisodeStreams)
       return
     }
+    // A full search can outlast the viewer: the slowest providers answer tens of seconds later. If
+    // any other playback has been asked for since (or the launch was cancelled), its result is
+    // stale and must not replace what is now on screen.
+    val searchGeneration = ++playbackRequestGeneration
     launchWork(
       onStart = {
         if (pendingDirectContinueFallback != null) Log.i("StreamDekPlayback", "[ContinueWatching] sourceResolution=started")
@@ -6631,6 +6670,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         }
       },
       onSuccess = { streams ->
+        if (searchGeneration != playbackRequestGeneration) {
+          Log.i("StreamDekPlayback", "Dropped a finished source search for ${detail.id}: another playback was requested while it ran")
+          return@launchWork
+        }
         val ranked = rankedProfileStreams(mediaStreamsOnly(streams, detail))
         uiState = uiState.copy(streamLoading = false, availableStreams = ranked, selectedEpisode = selectedEpisode)
         val preferred = remembered?.stream?.takeIf { uiState.detailIsLive && uiState.rememberLastSource }
@@ -6647,6 +6690,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         }
       },
       onFailure = { message ->
+        if (searchGeneration != playbackRequestGeneration) return@launchWork
         pendingDirectContinueFallback?.let { showDetails ->
           pendingDirectContinueFallback = null
           val resumeEpisode = pendingDirectContinueEpisode

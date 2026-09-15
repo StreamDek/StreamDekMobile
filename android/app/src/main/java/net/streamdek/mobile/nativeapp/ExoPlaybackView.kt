@@ -475,7 +475,10 @@ class ExoPlaybackView @JvmOverloads constructor(
     val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
     if (drmLicenseType.equals("clearkey", ignoreCase = true) && drmClearKeys.isNotEmpty()) {
       runCatching { clearKeyDrmSessionManager(drmClearKeys) }
-        .onSuccess { manager -> mediaSourceFactory.setDrmSessionManagerProvider { manager } }
+        .onSuccess { manager ->
+          mediaSourceFactory.setDrmSessionManagerProvider { manager }
+          Log.i(TAG, "ClearKey DRM set up with ${drmClearKeys.size} key(s) for ${url.substringBefore('?')}")
+        }
         .onFailure { Log.w(TAG, "Unable to set up ClearKey DRM for $url, playback will likely fail to decrypt", it) }
     }
     val active = ExoPlayer.Builder(context)

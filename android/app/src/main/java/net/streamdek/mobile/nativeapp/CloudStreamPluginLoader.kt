@@ -6,6 +6,7 @@ import android.content.res.Resources
 import android.util.Log
 import com.lagradost.cloudstream3.APIHolder
 import com.lagradost.cloudstream3.MainAPI
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import androidx.appcompat.app.AppCompatActivity
@@ -13,9 +14,12 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import com.lagradost.cloudstream3.plugins.BasePlugin
 import com.lagradost.cloudstream3.plugins.Plugin
+import dalvik.system.InMemoryDexClassLoader
 import dalvik.system.PathClassLoader
 import org.json.JSONObject
 import java.io.File
+import java.nio.ByteBuffer
+import java.util.zip.ZipFile
 import java.lang.ref.WeakReference
 
 /**
@@ -33,6 +37,7 @@ import java.lang.ref.WeakReference
  */
 object CloudStreamPluginLoader {
   private const val TAG = "CloudStreamPluginLoader"
+  private val DEX_ENTRY = Regex("classes\\d*\\.dex")
 
   class LoadedCsPlugin(
     val filePath: String,
@@ -79,13 +84,9 @@ object CloudStreamPluginLoader {
       com.lagradost.cloudstream3.CommonActivity.setActivityInstance(it)
     }
 
-    // Android 14+ refuses to load code the app itself wrote unless the file is read-only.
-    runCatching { if (!file.setReadOnly()) Log.w(TAG, "Failed to set ${file.name} read-only") }
-
-    val loader = PathClassLoader(filePath, context.classLoader)
-    val manifestJson = loader.getResourceAsStream("manifest.json")?.use { stream ->
-      JSONObject(stream.bufferedReader().readText())
-    } ?: throw IllegalStateException("No manifest.json inside ${file.name} — is this really a .cs3 plugin?")
+    val manifestJson = readManifest(file)
+      ?: throw IllegalStateException("No manifest.json inside ${file.name} — is this really a .cs3 plugin?")
+    val loader = pluginClassLoader(context, file)
 
     val name = manifestJson.optString("name").ifBlank { file.nameWithoutExtension }
     val version = manifestJson.optInt("version", Int.MIN_VALUE)
@@ -140,6 +141,68 @@ object CloudStreamPluginLoader {
     runCatching {
       APIHolder.allProviders.removeAll { provider -> record.providers.any { it === provider } }
     }.onFailure { Log.w(TAG, "Failed to unregister providers for ${record.name}", it) }
+  }
+
+  private fun readManifest(file: File): JSONObject? = runCatching {
+    ZipFile(file).use { zip ->
+      zip.getEntry("manifest.json")?.let { entry ->
+        zip.getInputStream(entry).use { JSONObject(it.bufferedReader().readText()) }
+      }
+    }
+  }.getOrNull()
+
+  /**
+   * A class loader for [file] that ART will accept. Android 14+ refuses to open a dex file the app
+   * can still write to — it tests `access(path, W_OK)` — and `setReadOnly()` alone does not always
+   * get there: on some devices (a OnePlus Nord N30 SE on Android 15, for one) app-specific external
+   * storage ignores chmod, so the plugin stays writable and loading throws
+   * "Writable dex file ... is not allowed". Internal storage does honour it, and is where CloudStream
+   * keeps the plugins it downloads, so a private copy is loaded instead. If even that stays
+   * writable, the dex is loaded from memory, which the check does not apply to.
+   */
+  private fun pluginClassLoader(context: Context, file: File): ClassLoader {
+    val readOnly = makeReadOnly(file)
+    if (readOnly || Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+      return PathClassLoader(file.absolutePath, context.classLoader)
+    }
+    Log.w(TAG, "${file.name} is still writable after setReadOnly(); loading a private copy")
+    val copy = privateCopy(context, file)
+    if (copy != null && makeReadOnly(copy)) return PathClassLoader(copy.absolutePath, context.classLoader)
+    Log.w(TAG, "No read-only copy of ${file.name} could be made; loading its dex from memory")
+    return inMemoryClassLoader(context, file)
+  }
+
+  /** True once [file] can no longer be written, by the same `access(W_OK)` test ART applies. */
+  private fun makeReadOnly(file: File): Boolean {
+    runCatching { file.setReadOnly() }.onFailure { Log.w(TAG, "setReadOnly failed for ${file.name}", it) }
+    return !file.canWrite()
+  }
+
+  /** [file] mirrored into internal storage, refreshed whenever the original changes. */
+  private fun privateCopy(context: Context, file: File): File? = runCatching {
+    val copy = File(File(context.filesDir, "cs3_plugins").apply { mkdirs() }, file.name)
+    if (copy.absolutePath == file.absolutePath) return@runCatching null
+    if (!copy.exists() || copy.length() != file.length() || copy.lastModified() != file.lastModified()) {
+      // A previous copy was made read-only, so it has to be made writable before it is replaced.
+      copy.setWritable(true)
+      copy.delete()
+      file.copyTo(copy)
+      copy.setLastModified(file.lastModified())
+    }
+    copy
+  }.onFailure { Log.w(TAG, "Could not copy ${file.name} into internal storage", it) }.getOrNull()
+
+  private fun inMemoryClassLoader(context: Context, file: File): ClassLoader {
+    val dexes = ZipFile(file).use { zip ->
+      zip.entries().asSequence()
+        .filter { DEX_ENTRY.matches(it.name) }
+        // classes.dex first, then classes2.dex, classes3.dex, ... as the runtime would order them.
+        .sortedBy { it.name.removePrefix("classes").removeSuffix(".dex").toIntOrNull() ?: 1 }
+        .map { entry -> ByteBuffer.wrap(zip.getInputStream(entry).use { it.readBytes() }) }
+        .toList()
+    }
+    require(dexes.isNotEmpty()) { "${file.name} has no classes.dex" }
+    return InMemoryDexClassLoader(dexes.toTypedArray(), context.classLoader)
   }
 }
 

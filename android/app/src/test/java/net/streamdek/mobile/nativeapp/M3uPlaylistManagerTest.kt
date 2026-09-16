@@ -174,6 +174,116 @@ class M3uPlaylistManagerTest {
     assertTrue(items[1].drmClearKeys.isEmpty())
   }
 
+  @Test fun capturesCookieFromExtvlcopt() {
+    val playlist = """
+      #EXTM3U
+      #EXTINF:-1 group-title="News",Cookie Channel
+      #EXTVLCOPT:http-user-agent=Provider Player
+      #EXTVLCOPT:http-cookie=__hdnea__=st=1789548446~exp=1789570046~acl=/*~hmac=2e3de672
+      https://stream.test/live/index.mpd
+    """.trimIndent()
+
+    val headers = parseM3u(playlist, "m3u:cookie").single().requestHeaders
+
+    assertEquals("__hdnea__=st=1789548446~exp=1789570046~acl=/*~hmac=2e3de672", headers["Cookie"])
+    assertEquals("Provider Player", headers["User-Agent"])
+  }
+
+  @Test fun capturesExtHttpHeadersLiterally() {
+    // JSON values are not URL-encoded; a literal %2f in a signed token must survive untouched.
+    val playlist = """
+      #EXTM3U
+      #EXTINF:-1 group-title="Sports",Json Channel
+      #EXTHTTP:{"origin":"https://www.provider.test","Referer":"https://www.provider.test/","Cookie":"hdntl=exp=1789629904~acl=%2f*~hmac=68cd","X-Custom":"a, b"}
+      https://stream.test/live/master.m3u8
+    """.trimIndent()
+
+    val headers = parseM3u(playlist, "m3u:exthttp").single().requestHeaders
+
+    assertEquals("https://www.provider.test", headers["Origin"])
+    assertEquals("https://www.provider.test/", headers["Referer"])
+    assertEquals("hdntl=exp=1789629904~acl=%2f*~hmac=68cd", headers["Cookie"])
+    assertEquals("a, b", headers["X-Custom"])
+    assertEquals(4, headers.size)
+  }
+
+  @Test fun capturesHeadersAndDrmFromPremiumPlugxStyleEntry() {
+    // The shape PremiumPlugX serves: KODIPROP DRM, EXTVLCOPT and EXTHTTP all describing one channel.
+    val playlist = """
+      #EXTM3U
+      #EXTINF:-1 tvg-id="255" group-title="Jio TV+ | News",NDTV 24x7
+      #KODIPROP:inputstream=inputstream.adaptive
+      #KODIPROP:inputstream.adaptive.manifest_type=mpd
+      #KODIPROP:inputstream.adaptive.stream_headers=User-Agent=Premium%20Plugx&Cookie=__hdnea__%3Dst%3D1
+      #KODIPROP:inputstream.adaptive.license_type=clearkey
+      #KODIPROP:inputstream.adaptive.license_key=9b5f31aacf4f57758fb654a54b5aafec:e7ff670f95103a87bdb0ede3689f257b
+      #EXTVLCOPT:http-user-agent=Premium Plugx
+      #EXTVLCOPT:http-referrer=https://www.jiotv.com/
+      #EXTVLCOPT:http-cookie=__hdnea__=st=1~exp=2~acl=/*~hmac=abc
+      #EXTHTTP:{"User-Agent":"Premium Plugx","Referer":"https://www.jiotv.com/","Origin":"https://www.jiotv.com/","Cookie":"__hdnea__=st=1~exp=2~acl=/*~hmac=abc"}
+      https://jiotvmblive.cdn.jio.com/bpk-tv/NDTV_24x7_MOB/WDVLive/index.mpd
+      #EXTINF:-1 group-title="Jio TV+ | News",No Headers Channel
+      https://stream.test/plain.m3u8
+    """.trimIndent()
+
+    val items = parseM3u(playlist, "m3u:plugx")
+
+    assertEquals(2, items.size)
+    assertEquals(
+      mapOf(
+        "User-Agent" to "Premium Plugx",
+        "Referer" to "https://www.jiotv.com/",
+        "Cookie" to "__hdnea__=st=1~exp=2~acl=/*~hmac=abc",
+        "Origin" to "https://www.jiotv.com/",
+      ),
+      items[0].requestHeaders,
+    )
+    assertEquals("clearkey", items[0].drmLicenseType)
+    assertEquals("e7ff670f95103a87bdb0ede3689f257b", items[0].drmClearKeys["9b5f31aacf4f57758fb654a54b5aafec"])
+    // Headers are per entry and must not carry over.
+    assertTrue(items[1].requestHeaders.isEmpty())
+  }
+
+  @Test fun inlineSuffixStillWinsWithoutDuplicatingHeaderNames() {
+    val playlist = """
+      #EXTM3U
+      #EXTINF:-1 group-title="Sports",Both Forms
+      #EXTHTTP:{"Cookie":"from=json","Referer":"https://json.test/","X-Token":"json"}
+      https://stream.test/live.m3u8?|cookie=from%3Dsuffix&referer=https://suffix.test/&x-token=suffix
+    """.trimIndent()
+
+    val item = parseM3u(playlist, "m3u:both").single()
+
+    assertEquals("https://stream.test/live.m3u8?", item.directStreamUrl)
+    assertEquals(
+      mapOf("Cookie" to "from=suffix", "Referer" to "https://suffix.test/", "x-token" to "suffix"),
+      item.requestHeaders,
+    )
+  }
+
+  @Test fun ignoresMalformedOrUnsendableExtHttpValues() {
+    val playlist = """
+      #EXTM3U
+      #EXTINF:-1 group-title="News",Broken Json
+      #EXTVLCOPT:http-user-agent=Provider Player
+      #EXTHTTP:{"Cookie":"unterminated
+      https://stream.test/broken.m3u8
+      #EXTINF:-1 group-title="News",Odd Values
+      #EXTHTTP:{"Cookie":"a\r\nX-Injected: 1","Nested":{"a":1},"List":[1],"Empty":"","Missing":null,"Port":8080}
+      https://stream.test/odd.m3u8
+      #EXTINF:-1 group-title="News",Not An Object
+      #EXTHTTP:["Cookie","x"]
+      https://stream.test/array.m3u8
+    """.trimIndent()
+
+    val items = parseM3u(playlist, "m3u:badjson")
+
+    assertEquals(3, items.size)
+    assertEquals(mapOf("User-Agent" to "Provider Player"), items[0].requestHeaders)
+    assertEquals(mapOf("Port" to "8080"), items[1].requestHeaders)
+    assertTrue(items[2].requestHeaders.isEmpty())
+  }
+
   @Test fun reportsIncrementalProgressForLargePlaylists() {
     val playlist = buildString {
       appendLine("#EXTM3U")

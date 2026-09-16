@@ -120,7 +120,8 @@ class CloudStreamRepoManager(private val context: Context) {
   // no classes, which is what a "didn't find class ... on path" error actually means here; the
   // file itself is fine). Real CloudStream's own PluginManager works around this the same way —
   // see its loadAllLocalPlugins, which copies plugin files into getExternalFilesDir(null)/plugins
-  // specifically because of this.
+  // specifically because of this. Not every device honours chmod on external storage, though, so
+  // a file here can stay writable after setReadOnly(); the loader falls back to a private copy then.
   private val pluginDir: File by lazy {
     val base = context.applicationContext.getExternalFilesDir(null) ?: context.applicationContext.filesDir
     File(base, "cs3_plugins").apply { mkdirs() }

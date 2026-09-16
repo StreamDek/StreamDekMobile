@@ -435,6 +435,23 @@ private val m3uVodExtensions = setOf("mp4", "m4v", "mkv", "avi", "mov", "webm", 
 
 private fun Int.formattedM3uCount(): String = String.format("%,d", this)
 
+/** Playlists spell the common headers several ways; folding them to one spelling means the same
+ * header arriving from two directives (say `#EXTHTTP` and a `|cookie=` suffix) replaces rather
+ * than duplicates - a second Cookie header is sent as-is and servers reject the pair. */
+private fun canonicalM3uHeaderName(name: String): String = when (name.lowercase()) {
+  "user-agent", "useragent" -> "User-Agent"
+  "referer", "referrer" -> "Referer"
+  "origin" -> "Origin"
+  "cookie" -> "Cookie"
+  else -> name
+}
+
+/** Sets [name], first dropping any entry that differs from it only by case. */
+private fun MutableMap<String, String>.putM3uHeader(name: String, value: String) {
+  keys.firstOrNull { it != name && it.equals(name, ignoreCase = true) }?.let(::remove)
+  this[name] = value
+}
+
 private fun parseInlineM3uHeaders(raw: String): Pair<String, Map<String, String>> {
   val url = raw.substringBefore('|').trim()
   val encodedHeaders = raw.substringAfter('|', "")
@@ -444,15 +461,29 @@ private fun parseInlineM3uHeaders(raw: String): Pair<String, Map<String, String>
     val key = pair.substringBefore('=', "").trim()
     val value = pair.substringAfter('=', "").trim()
     if (key.isBlank() || value.isBlank()) return@forEach
-    val headerName = when (key.lowercase()) {
-      "user-agent", "useragent" -> "User-Agent"
-      "referer", "referrer" -> "Referer"
-      "origin" -> "Origin"
-      else -> key
-    }
-    headers[headerName] = runCatching { URLDecoder.decode(value, StandardCharsets.UTF_8.name()) }.getOrDefault(value)
+    headers[canonicalM3uHeaderName(key)] = runCatching { URLDecoder.decode(value, StandardCharsets.UTF_8.name()) }.getOrDefault(value)
   }
   return url to headers
+}
+
+/**
+ * Headers from an `#EXTHTTP:{"User-Agent":"...","Cookie":"..."}` line (the JSON object form used by
+ * TiviMate/OTT Navigator playlists). Values are taken literally - unlike the `|key=value` suffix,
+ * nothing here is URL-encoded. A malformed object is ignored rather than failing the playlist, and
+ * anything carrying a line break is dropped since it cannot be sent as a header.
+ */
+private fun parseExtHttpHeaders(raw: String): Map<String, String> {
+  val json = runCatching { JSONObject(raw.trim()) }.getOrNull() ?: return emptyMap()
+  val headers = linkedMapOf<String, String>()
+  json.keys().forEach { key ->
+    val value = json.opt(key)
+    if (value == null || value == JSONObject.NULL || value is JSONObject || value is JSONArray) return@forEach
+    val name = key.trim()
+    val text = value.toString().trim()
+    if (name.isEmpty() || text.isEmpty() || name.any { it == '\r' || it == '\n' } || text.any { it == '\r' || it == '\n' }) return@forEach
+    headers.putM3uHeader(canonicalM3uHeaderName(name), text)
+  }
+  return headers
 }
 
 /**
@@ -596,6 +627,12 @@ internal fun parseM3uLines(
       line.startsWith("#EXTVLCOPT:http-user-agent=", ignoreCase = true) -> pendingHeaders["User-Agent"] = line.substringAfter('=').trim()
       line.startsWith("#EXTVLCOPT:http-referrer=", ignoreCase = true) || line.startsWith("#EXTVLCOPT:http-referer=", ignoreCase = true) -> pendingHeaders["Referer"] = line.substringAfter('=').trim()
       line.startsWith("#EXTVLCOPT:http-origin=", ignoreCase = true) -> pendingHeaders["Origin"] = line.substringAfter('=').trim()
+      // Only the first '=' separates the option from its value; cookie values carry their own.
+      line.startsWith("#EXTVLCOPT:http-cookie=", ignoreCase = true) ->
+        line.substringAfter('=').trim().takeIf { it.isNotEmpty() }?.let { pendingHeaders.putM3uHeader("Cookie", it) }
+      // Scoped like #EXTVLCOPT: a later directive for the same header wins.
+      line.startsWith("#EXTHTTP:", ignoreCase = true) ->
+        parseExtHttpHeaders(line.substring("#EXTHTTP:".length)).forEach { (name, value) -> pendingHeaders.putM3uHeader(name, value) }
       // KODIPROP directives can precede or follow their entry's #EXTINF line (both conventions
       // appear in the wild), so unlike the #EXTINF-scoped fields above they're only cleared once
       // an entry is actually emitted below - never on #EXTINF itself.
@@ -629,7 +666,12 @@ internal fun parseM3uLines(
             directStreamUrl = streamUrl,
             // Both maps are empty for the overwhelming majority of entries; sharing the one
             // immutable empty map avoids 200k throwaway allocations.
-            requestHeaders = if (pendingHeaders.isEmpty() && inlineHeaders.isEmpty()) emptyMap() else pendingHeaders + inlineHeaders,
+            // The `|key=value` suffix still takes precedence over directive lines, as it always has.
+            requestHeaders = when {
+              pendingHeaders.isEmpty() && inlineHeaders.isEmpty() -> emptyMap()
+              inlineHeaders.isEmpty() -> pendingHeaders.toMap()
+              else -> LinkedHashMap(pendingHeaders).apply { inlineHeaders.forEach { (name, value) -> putM3uHeader(name, value) } }
+            },
             drmLicenseType = pendingDrmLicenseType,
             drmClearKeys = if (pendingDrmClearKeys.isEmpty()) emptyMap() else pendingDrmClearKeys.toMap(),
           ),

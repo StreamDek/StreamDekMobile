@@ -457,7 +457,8 @@ class ExoPlaybackView @JvmOverloads constructor(
       .setUserAgent(DEFAULT_USER_AGENT)
       .setAllowCrossProtocolRedirects(true)
       .setDefaultRequestProperties(requestHeaders)
-    val upstreamFactory = DefaultDataSource.Factory(context, httpFactory)
+    // A fresh jar per player: cookies one stream's CDN hands out never reach another channel.
+    val upstreamFactory = DefaultDataSource.Factory(context, CookieJarDataSourceFactory(httpFactory, requestHeaders))
     // Transparently serves already-downloaded content from disk (see StreamDekDownloads) when
     // the URL matches - falls through to the network otherwise, same as any cache miss.
     val dataSourceFactory = StreamDekDownloads.wrapWithDownloadCache(upstreamFactory)

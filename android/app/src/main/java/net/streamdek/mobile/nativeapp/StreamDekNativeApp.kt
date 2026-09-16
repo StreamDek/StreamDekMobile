@@ -17302,8 +17302,8 @@ private fun FavouriteChannelBadge(modifier: Modifier = Modifier, size: Dp = 23.d
 }
 
 /**
- * Compact text row for the "View All" list layout. IPTV catalogs run to thousands of channels
- * whose logos are near-identical, so this keeps the name readable and the row height small while
+ * Landscape artwork row for the "View All" list layout. IPTV catalogs run to thousands of channels
+ * whose logos are near-identical, so this keeps the name readable while
  * still carrying the favourite star and the same long-press menu as the card layouts.
  */
 @Composable
@@ -17316,7 +17316,7 @@ private fun BrowseListRow(
   /**
    * Set for a streaming-networks row, and null everywhere else.
    *
-   * A network is recognised by its wordmark, not by its name, and the square 44dp thumbnail below
+   * A network is recognised by its wordmark, not by its name, and the former square thumbnail
    * was cropping a landscape card down to a centre square - which for most services cuts the
    * wordmark in half. When this is set the row leads with a miniature of the same card the grid
    * draws, in whichever style is currently selected, so switching Classic/Branded changes the list
@@ -17337,7 +17337,7 @@ private fun BrowseListRow(
       .clip(StreamDekRadius.thumbShape)
       .background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.045f))
       .pressable(item.id, item.type, onClick = onClick, onLongPress = onLongPress)
-      .padding(horizontal = 12.dp, vertical = 10.dp),
+      .height(77.dp),
     horizontalArrangement = Arrangement.spacedBy(12.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
@@ -17351,11 +17351,9 @@ private fun BrowseListRow(
       val fullBleed = tile != null
       Box(
         modifier = Modifier
-          .width(76.dp)
-          .height(44.dp)
-          .clip(StreamDekRadius.controlShape)
+          .width(77.dp * 16f / 9f)
+          .fillMaxHeight()
           .background(if (fullBleed) Color(0xFF0E0E0E) else Color.White)
-          .border(1.dp, if (fullBleed) Color.White.copy(alpha = 0.10f) else Color.Black.copy(alpha = 0.08f), StreamDekRadius.controlShape)
           .padding(horizontal = if (fullBleed) 0.dp else 8.dp, vertical = if (fullBleed) 0.dp else 6.dp),
         contentAlignment = Alignment.Center,
       ) {
@@ -17368,10 +17366,10 @@ private fun BrowseListRow(
       }
     } else {
       Box(
-        modifier = Modifier.size(44.dp).clip(StreamDekRadius.controlShape).background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.08f)),
+        modifier = Modifier.width(77.dp * 16f / 9f).fillMaxHeight().background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.08f)),
         contentAlignment = Alignment.Center,
       ) {
-        val artwork = item.poster ?: item.backdrop
+        val artwork = item.backdrop?.takeIf { it.isNotBlank() } ?: item.poster
         if (artwork != null) {
           AsyncImage(model = artwork, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         } else {
@@ -17379,7 +17377,7 @@ private fun BrowseListRow(
         }
       }
     }
-    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    Column(modifier = Modifier.weight(1f).padding(end = if (favourite) 0.dp else 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
       Text(
         item.title,
         color = MaterialTheme.colorScheme.onBackground,
@@ -17393,7 +17391,7 @@ private fun BrowseListRow(
       }
     }
     if (favourite) {
-      Icon(Icons.Rounded.Star, contentDescription = stringResource(R.string.player_favourite_channel), tint = Color(0xFFFACC15), modifier = Modifier.size(18.dp))
+      Icon(Icons.Rounded.Star, contentDescription = stringResource(R.string.player_favourite_channel), tint = Color(0xFFFACC15), modifier = Modifier.padding(end = 12.dp).size(18.dp))
     }
   }
 }

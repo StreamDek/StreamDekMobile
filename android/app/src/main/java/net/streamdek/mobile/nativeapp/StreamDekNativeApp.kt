@@ -4097,6 +4097,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     invalidatePendingPlaybackRequest()
     clearPreparedNextEpisode()
     liveChannelSwitchSnapshot = null
+    liveChannelSwitchTargetId = null
     progressPercent?.let {
       saveCurrentPlaybackSnapshot(it)
       scrobbleCurrentPlayer("pause", it)
@@ -4159,18 +4160,30 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     repairFavouriteChannelIds(listOf(item))
     val cloudStreamChannel = isCloudStreamMediaId(item.id) &&
       (isCloudStreamLiveChannel(item) || uiState.playerLiveChannels.any { it.id == item.id })
-    if (!(item.isLiveCatalogItem() || cloudStreamChannel) || uiState.liveChannelSwitching) return
-    liveChannelSwitchSnapshot = LiveChannelSwitchSnapshot(
-      detail = uiState.detail,
-      detailIsLive = uiState.detailIsLive,
-      fallbackItem = uiState.detailFallbackItem,
-      selectedEpisode = uiState.selectedEpisode,
-      availableStreams = uiState.availableStreams,
-      sourceAddonId = detailSourceAddonId,
-      sourceCatalogType = detailSourceCatalogType,
-      directStream = detailDirectStream,
-      playerSession = uiState.playerSession,
-    )
+    if (!(item.isLiveCatalogItem() || cloudStreamChannel)) return
+    if (uiState.liveChannelSwitching) {
+      // Already on its way: picking it again changes nothing.
+      if (item.id == liveChannelSwitchTargetId) return
+      // Another channel picked mid-switch replaces the one still loading. Its page, stream search and
+      // playback request are retired so none of them can land after the new pick; the snapshot is kept,
+      // so Back still returns to the channel that was playing before any of these switches began.
+      playWhenCloudStreamDetailLoads = null
+      playbackRequestGeneration += 1
+      streamRequestGeneration += 1
+    } else {
+      liveChannelSwitchSnapshot = LiveChannelSwitchSnapshot(
+        detail = uiState.detail,
+        detailIsLive = uiState.detailIsLive,
+        fallbackItem = uiState.detailFallbackItem,
+        selectedEpisode = uiState.selectedEpisode,
+        availableStreams = uiState.availableStreams,
+        sourceAddonId = detailSourceAddonId,
+        sourceCatalogType = detailSourceCatalogType,
+        directStream = detailDirectStream,
+        playerSession = uiState.playerSession,
+      )
+    }
+    liveChannelSwitchTargetId = item.id
     uiState = uiState.copy(liveChannelSwitching = true, liveChannelSwitchingLabel = item.title, errorMessage = null)
     // A plugin channel's page is built by asking its provider, which answers later; asking for its
     // best stream now would find no page and quietly do nothing, leaving the switch spinning. It is
@@ -4187,6 +4200,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
    */
   private var playWhenCloudStreamDetailLoads: String? = null
 
+  /** The channel the switch in progress is loading, so picking it a second time does not restart it. */
+  private var liveChannelSwitchTargetId: String? = null
+
   private fun takeCloudStreamSwitchPlay(id: String): Boolean {
     val waiting = playWhenCloudStreamDetailLoads == id && uiState.liveChannelSwitching
     if (playWhenCloudStreamDetailLoads == id) playWhenCloudStreamDetailLoads = null
@@ -4197,6 +4213,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   fun cancelLiveChannelSwitch() {
     playWhenCloudStreamDetailLoads = null
+    liveChannelSwitchTargetId = null
     val snapshot = liveChannelSwitchSnapshot ?: return
     playbackRequestGeneration += 1
     streamRequestGeneration += 1
@@ -6561,6 +6578,14 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       rememberLiveSource(detail, stream)
     }
     if (!uiState.liveChannelSwitching) return
+    // A picture from a channel other than the one being switched to is the old feed still running
+    // underneath, not the switch arriving; the switch keeps waiting for its own channel.
+    // Matched on the page it opened as well as on the id picked, in case the page settled on another id.
+    val target = liveChannelSwitchTargetId
+    if (target != null && session?.mediaId != target &&
+      !(uiState.detailFallbackItem?.id == target && detail?.id == session?.mediaId)
+    ) return
+    liveChannelSwitchTargetId = null
     // Keep the previous working session snapshot available. If this new feed later
     // errors or stalls, Back can still restore it instead of leaving the player.
     uiState = uiState.copy(liveChannelSwitching = false, liveChannelSwitchingLabel = null)
@@ -33227,13 +33252,22 @@ fun MediaHubScreen(
     catalogs = withContext(Dispatchers.Default) { mediaHubCatalogs(state) }
     catalogsReady = true
   }
+  // "all", "live", "favourites" or "vod". Favourites is a view of its own rather than a filter that
+  // only appeared under Live TV: it is where a viewer most often starts, and a chip that showed only
+  // once another had been chosen hid it from the page's default view.
   var mode by rememberSaveable { mutableStateOf("all") }
+  /** Whether the current view takes live sources, on-demand ones, or both. */
+  fun modeAllows(live: Boolean): Boolean = when (mode) {
+    "all" -> true
+    "vod" -> !live
+    else -> live
+  }
   var sourceKey by rememberSaveable { mutableStateOf<String?>(null) }
   var catalogKey by rememberSaveable { mutableStateOf<String?>(null) }
   var category by rememberSaveable { mutableStateOf<String?>(null) }
   var query by rememberSaveable { mutableStateOf("") }
   var settledQuery by remember { mutableStateOf(query.trim()) }
-  var favouritesOnly by rememberSaveable { mutableStateOf(false) }
+  val favouritesOnly = mode == "favourites"
   // Poster columns for on-demand titles, and whether channels show as a list or as tiles.
   var columns by rememberSaveable { mutableIntStateOf(3) }
   var liveGrid by rememberSaveable { mutableStateOf(false) }
@@ -33246,7 +33280,7 @@ fun MediaHubScreen(
   }
   val scoped = remember(catalogs, mode, sourceKey, catalogKey, settledQuery) {
     catalogs.filter { (sourceKey == null || it.sourceKey == sourceKey) && (catalogKey == null || it.key == catalogKey) &&
-      (mode == "all" || (mode == "live") == it.live) }
+      modeAllows(it.live) }
       .distinctBy { if (it.cloudRowId != null && settledQuery.isNotBlank()) it.sourceKey else it.key }
   }
   LaunchedEffect(query) { delay(300); settledQuery = query.trim() }
@@ -33363,7 +33397,7 @@ fun MediaHubScreen(
   val lead = filledKeys.firstOrNull()
   fun groupExpanded(key: String) = key in openedGroups || (key == lead && key !in closedGroups)
 
-  val grid = rememberLazyGridState()
+  val grid = rememberLazyListState()
   var previousFilters by remember { mutableStateOf(listOf(mode, sourceKey, catalogKey, category, settledQuery, favouritesOnly.toString())) }
   LaunchedEffect(mode, sourceKey, catalogKey, category, settledQuery, favouritesOnly) {
     val filters = listOf(mode, sourceKey, catalogKey, category, settledQuery, favouritesOnly.toString())
@@ -33371,7 +33405,7 @@ fun MediaHubScreen(
   }
   ReportScrollTop { grid.firstVisibleItemIndex == 0 && grid.firstVisibleItemScrollOffset == 0 }
   BackHandler(onBack = onBack)
-  val onlyLive = mode == "live" || (scoped.isNotEmpty() && scoped.all { it.live })
+  val onlyLive = mode == "live" || favouritesOnly || (scoped.isNotEmpty() && scoped.all { it.live })
   val hasLive = onlyLive || scoped.any { it.live }
   val light = MaterialTheme.colorScheme.background.luminance() > 0.5f
   val lastWatched = remember(state.localContinueWatching, state.m3uChannels, state.favouriteChannels, scoped) {
@@ -33381,7 +33415,15 @@ fun MediaHubScreen(
     } }
   }
   val resumeChannel = lastWatched?.takeIf { settledQuery.isBlank() && !favouritesOnly && category == null }
-  val availableCatalogs = catalogs.filter { (sourceKey == null || it.sourceKey == sourceKey) && (mode == "all" || (mode == "live") == it.live) }
+  val availableCatalogs = catalogs.filter { (sourceKey == null || it.sourceKey == sourceKey) && modeAllows(it.live) }
+  // Favourites from sources on this page, for the count on the Favourites view.
+  val favouriteCount = remember(state.favouriteChannels, catalogs) {
+    val liveSources = catalogs.filter { it.live }
+    state.favouriteChannels.count { favourite ->
+      val provider = decodeCloudStreamMediaId(favourite.id)?.first
+      liveSources.any { source -> source.sourceKey == favourite.sourceAddonId || (source.cloudRowId != null && provider == source.sourceName) }
+    }
+  }
 
   // The same arrangement as a streaming network's page and a View all list: the title row condenses
   // away, the search field pins with the layout button coming down beside it, the filters pin in a
@@ -33423,21 +33465,50 @@ fun MediaHubScreen(
   val gridColumns = if (onlyLive && !liveGrid) 1 else adaptiveMediaColumns(columns)
   val sideMargin = if (gridColumns == 1) 20.dp else MediaGridSideMargin
   fun isLive(item: MediaItem) = onlyLive || mediaHubItemKey(item) in liveKeys
-  fun androidx.compose.foundation.lazy.grid.LazyGridScope.hubItems(items: List<MediaItem>) {
-    gridItems(items, key = ::mediaHubItemKey, span = { item -> if (isLive(item) && !liveGrid) GridItemSpan(maxLineSpan) else GridItemSpan(1) }) { item ->
-      val favourite = item.id in favouriteKeys
-      when {
-        isLive(item) && !liveGrid -> LiveChannelRow(item, favourite, light, { onOpen(item) }, { onToggleFavourite(item) })
-        // A tile has no star of its own, so holding one stars it; the badge shows the result.
-        isLive(item) -> LibraryPosterTile(item = item, modifier = Modifier.fillMaxWidth(), showMeta = false, favourite = favourite, onClick = { onOpen(item) }, onLongPress = { onToggleFavourite(item) })
-        else -> LibraryPosterTile(item = item, modifier = Modifier.fillMaxWidth(), showMeta = true, onClick = { onOpen(item) }, onLongPress = { onToggleWatchlist(item) })
+  fun isChannelRow(item: MediaItem) = isLive(item) && !liveGrid
+  val tileGap = LocalStreamDekSpacing.current.gridGap
+  /**
+   * A list, with tiles laid out in rows here, rather than a grid.
+   *
+   * This page mixes full-width channel rows and headers with one-column tiles, and its sources keep
+   * adding items while it scrolls. As a LazyVerticalGrid with per-item spans that combination
+   * crashed mid-scroll ("Place was called on a node which was placed already"); a list of lines has
+   * no spans to go wrong. Each line is keyed on its first title, which only that line starts with.
+   */
+  fun androidx.compose.foundation.lazy.LazyListScope.hubItems(items: List<MediaItem>) {
+    val lines = ArrayList<List<MediaItem>>()
+    var tiles = ArrayList<MediaItem>(gridColumns)
+    items.forEach { item ->
+      if (isChannelRow(item)) {
+        if (tiles.isNotEmpty()) { lines += tiles; tiles = ArrayList(gridColumns) }
+        lines += listOf(item)
+      } else {
+        tiles += item
+        if (tiles.size == gridColumns) { lines += tiles; tiles = ArrayList(gridColumns) }
+      }
+    }
+    if (tiles.isNotEmpty()) lines += tiles
+    items(lines, key = { line -> mediaHubItemKey(line.first()) }, contentType = { line -> if (isChannelRow(line.first())) "channel" else "tiles" }) { line ->
+      val first = line.first()
+      if (isChannelRow(first)) {
+        LiveChannelRow(first, first.id in favouriteKeys, light, { onOpen(first) }, { onToggleFavourite(first) })
+      } else {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(tileGap)) {
+          line.forEach { item ->
+            Box(Modifier.weight(1f)) {
+              // A tile has no star of its own, so holding a channel's stars it; the badge shows the result.
+              if (isLive(item)) LibraryPosterTile(item = item, modifier = Modifier.fillMaxWidth(), showMeta = false, favourite = item.id in favouriteKeys, onClick = { onOpen(item) }, onLongPress = { onToggleFavourite(item) })
+              else LibraryPosterTile(item = item, modifier = Modifier.fillMaxWidth(), showMeta = true, onClick = { onOpen(item) }, onLongPress = { onToggleWatchlist(item) })
+            }
+          }
+          repeat(gridColumns - line.size) { Spacer(Modifier.weight(1f)) }
+        }
       }
     }
   }
 
   Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-    LazyVerticalGrid(
-      columns = GridCells.Fixed(gridColumns),
+    LazyColumn(
       state = grid,
       modifier = Modifier.fillMaxSize().glassSource(headerHazeState),
       contentPadding = PaddingValues(
@@ -33446,17 +33517,16 @@ fun MediaHubScreen(
         top = filtersTop + filtersHeight + 12.dp + if (resumeChannel != null) resumeHeight + 8.dp else 0.dp,
         bottom = 126.dp,
       ),
-      horizontalArrangement = Arrangement.spacedBy(LocalStreamDekSpacing.current.gridGap),
       verticalArrangement = Arrangement.spacedBy(if (gridColumns == 1) 12.dp else MediaGridRowGap),
     ) {
-      if (searchLimited) item(key = "search_limited", span = { GridItemSpan(maxLineSpan) }) {
+      if (searchLimited) item(key = "search_limited") {
         Text(stringResource(R.string.media_hub_search_limited), style = MaterialTheme.typography.bodySmall)
       }
       when {
-        catalogsReady && catalogs.isEmpty() -> item(key = "no_sources", span = { GridItemSpan(maxLineSpan) }) {
+        catalogsReady && catalogs.isEmpty() -> item(key = "no_sources") {
           Text(stringResource(R.string.media_hub_empty), modifier = Modifier.padding(vertical = 24.dp))
         }
-        currentView == null || filtering || (loading && currentView.items.isEmpty()) -> item(key = "loading", span = { GridItemSpan(maxLineSpan) }) {
+        currentView == null || filtering || (loading && currentView.items.isEmpty()) -> item(key = "loading") {
           Column(Modifier.fillMaxWidth().height(220.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically)) {
             CircularProgressIndicator()
             Text(
@@ -33466,12 +33536,15 @@ fun MediaHubScreen(
             )
           }
         }
-        currentView.items.isEmpty() -> item(key = "no_results", span = { GridItemSpan(maxLineSpan) }) {
-          Text(stringResource(R.string.empty_no_results), modifier = Modifier.padding(vertical = 24.dp))
+        currentView.items.isEmpty() -> item(key = "no_results") {
+          Text(
+            stringResource(if (favouritesOnly && settledQuery.isBlank()) R.string.media_hub_favourites_empty else R.string.empty_no_results),
+            modifier = Modifier.padding(vertical = 24.dp),
+          )
         }
         groupedBySource -> shownGroups.forEach { group ->
           val open = group.items.isNotEmpty() && groupExpanded(group.sourceKey)
-          item(key = "group:${group.sourceKey}", span = { GridItemSpan(maxLineSpan) }, contentType = "source_group") {
+          item(key = "group:${group.sourceKey}", contentType = "source_group") {
             CollapsibleSourceHeader(
               title = sourceNames[group.sourceKey] ?: group.sourceKey,
               originLabel = sourceOrigins[group.sourceKey],
@@ -33489,7 +33562,7 @@ fun MediaHubScreen(
         }
         else -> hubItems(currentView.items)
       }
-      item(key = "footer", span = { GridItemSpan(maxLineSpan) }) {
+      item(key = "footer") {
         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
           if (loading && !filtering && currentView?.items?.isNotEmpty() == true) CircularProgressIndicator(Modifier.padding(16.dp).size(28.dp))
           if (failed) {
@@ -33502,12 +33575,30 @@ fun MediaHubScreen(
     }
 
     val filters = buildList<@Composable () -> Unit> {
-      if (catalogs.any { it.live } && catalogs.any { !it.live }) {
-        listOf("all" to R.string.filter_all, "live" to R.string.live_tv, "vod" to R.string.media_hub_vod).forEach { (key, label) ->
-          add {
-            FilterChip(selected = mode == key, onClick = { mode = key; catalogKey = null; category = null; favouritesOnly = false },
-              label = { Text(stringResource(label), maxLines = 1) }, border = null, colors = borderlessFilterChipColors())
-          }
+      val hasLiveSources = catalogs.any { it.live }
+      val hasVodSources = catalogs.any { !it.live }
+      val views = buildList {
+        add("all")
+        if (hasLiveSources && hasVodSources) add("live")
+        if (hasLiveSources) add("favourites")
+        if (hasLiveSources && hasVodSources) add("vod")
+      }
+      if (views.size > 1) views.forEach { key ->
+        add {
+          FilterChip(selected = mode == key, onClick = { mode = key; catalogKey = null; category = null },
+            label = {
+              Text(
+                when (key) {
+                  "live" -> stringResource(R.string.live_tv)
+                  "vod" -> stringResource(R.string.media_hub_vod)
+                  // The count says whether there is anything there before it is opened.
+                  "favourites" -> stringResource(R.string.live_favourites).let { if (favouriteCount > 0) "$it $favouriteCount" else it }
+                  else -> stringResource(R.string.filter_all)
+                },
+                maxLines = 1,
+              )
+            },
+            border = null, colors = borderlessFilterChipColors())
         }
       }
       if (sources.size > 1) add {
@@ -33521,10 +33612,6 @@ fun MediaHubScreen(
           label = { Text(catalogs.firstOrNull { it.key == catalogKey }?.title ?: stringResource(R.string.media_hub_collections), maxLines = 1) },
           trailingIcon = { Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(18.dp)) },
           border = null, colors = borderlessFilterChipColors())
-      }
-      if (onlyLive) add {
-        FilterChip(selected = favouritesOnly, onClick = { favouritesOnly = !favouritesOnly },
-          label = { Text(stringResource(R.string.home_row_live_favourites), maxLines = 1) }, border = null, colors = borderlessFilterChipColors())
       }
       if (categories.size > 1) add {
         FilterChip(selected = category != null, onClick = { picker = "category" },

@@ -1696,4 +1696,5 @@
   <string name="media_hub_loading">Chargement de vos sources…</string>
   <string name="media_hub_updating">Mise à jour des résultats…</string>
   <string name="media_hub_origin_playlist">Playlist</string>
+  <string name="media_hub_favourites_empty">Aucune chaîne favorite pour l’instant. Touchez l’étoile d’une chaîne pour la garder ici.</string>
 </resources>

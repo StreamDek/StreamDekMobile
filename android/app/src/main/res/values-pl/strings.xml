@@ -1756,4 +1756,5 @@
   <string name="media_hub_loading">Wczytywanie źródeł…</string>
   <string name="media_hub_updating">Aktualizowanie wyników…</string>
   <string name="media_hub_origin_playlist">Playlista</string>
+  <string name="media_hub_favourites_empty">Brak ulubionych kanałów. Dotknij gwiazdki przy kanale, aby go tu zachować.</string>
 </resources>

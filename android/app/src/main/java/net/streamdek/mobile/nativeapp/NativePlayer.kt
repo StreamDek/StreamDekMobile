@@ -248,7 +248,7 @@ internal fun playerResumePosition(durationSec: Double, exactPositionSec: Double,
 internal data class LiveSourceAttempt(val position: Int, val total: Int, val failingOver: Boolean)
 
 /** How long a live source may take to show a picture before the next source is tried. */
-internal const val LIVE_SOURCE_START_TIMEOUT_MS = 10_000L
+internal const val LIVE_SOURCE_START_TIMEOUT_MS = 13_000L
 
 internal fun shouldAutoFallbackToMpv(preference: String, activeEngine: ActivePlaybackEngine, fallbackUsed: Boolean): Boolean =
   preference.equals("Auto", ignoreCase = true) && activeEngine == ActivePlaybackEngine.Media3 && !fallbackUsed
@@ -864,10 +864,10 @@ fun NativePlayerScreen(
 
   BackHandler {
     when {
-      channelSwitchLoading -> onCancelChannelSwitch()
-      session.isLive && channelSwitchFallbackAvailable && !error.isNullOrBlank() -> onCancelChannelSwitch()
       showFavouriteDrawer -> showFavouriteDrawer = false
       showLiveChannels -> showLiveChannels = false
+      channelSwitchLoading -> onCancelChannelSwitch()
+      session.isLive && channelSwitchFallbackAvailable && !error.isNullOrBlank() -> onCancelChannelSwitch()
       !controlsLocked -> closePlayer()
     }
   }
@@ -4641,8 +4641,10 @@ private fun BoxScope.PlayerSurfaceOverlays(
           }
         }
       }
-      .pointerInput(session.url, session.isLive, isLoading, controlsLocked, audioManager, session.swipeToSeekEnabled, session.levelGesturesEnabled, duration) {
-        if (!isLoading && !controlsLocked) {
+      .pointerInput(session.url, session.isLive, isLoading, channelSwitchLoading, controlsLocked, audioManager, session.swipeToSeekEnabled, session.levelGesturesEnabled, duration) {
+        // A channel switch counts as loading, but the lists are how a viewer picks a different channel
+        // instead of waiting for this one, so their swipes stay available through it.
+        if ((!isLoading || (session.isLive && channelSwitchLoading)) && !controlsLocked) {
           var totalX = 0f
           var totalY = 0f
           var dragStartX = 0f
@@ -4820,8 +4822,9 @@ private fun BoxScope.PlayerLiveOverlays(
   ) { LiveChannelSwipeCue() }
 
   AnimatedVisibility(
-    visible = session.isLive && !isLoading && !controlsLocked && !showFavouriteDrawer,
-    modifier = Modifier.align(Alignment.CenterEnd).zIndex(19f),
+    visible = session.isLive && (!isLoading || channelSwitchLoading) && !controlsLocked && !showFavouriteDrawer,
+    // Above the switch's tint, so the favourites stay one tap away while a channel loads.
+    modifier = Modifier.align(Alignment.CenterEnd).zIndex(31f),
     enter = fadeIn(tween(180)) + slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(260)),
     exit = fadeOut(tween(160)) + slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(220)),
   ) {
@@ -4833,8 +4836,9 @@ private fun BoxScope.PlayerLiveOverlays(
   }
 
   AnimatedVisibility(
+    // Above the switching tint and label (29f, 30f): a channel can be picked while another loads.
     visible = session.isLive && showLiveChannels,
-    modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().zIndex(24f),
+    modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().zIndex(32f),
     enter = fadeIn(tween(180)) + slideInVertically(initialOffsetY = { it }, animationSpec = tween(340)),
     exit = fadeOut(tween(160)) + slideOutVertically(targetOffsetY = { it }, animationSpec = tween(260)),
   ) {
@@ -4849,7 +4853,7 @@ private fun BoxScope.PlayerLiveOverlays(
 
   AnimatedVisibility(
     visible = session.isLive && showFavouriteDrawer,
-    modifier = Modifier.align(Alignment.CenterEnd).fillMaxWidth(0.275f).fillMaxHeight().zIndex(26f),
+    modifier = Modifier.align(Alignment.CenterEnd).fillMaxWidth(0.275f).fillMaxHeight().zIndex(33f),
     enter = fadeIn(tween(180)) + slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(360)),
     exit = fadeOut(tween(160)) + slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(280)),
   ) {

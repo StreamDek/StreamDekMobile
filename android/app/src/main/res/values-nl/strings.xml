@@ -1646,4 +1646,5 @@
   <string name="media_hub_loading">Je bronnen worden geladen…</string>
   <string name="media_hub_updating">Resultaten worden bijgewerkt…</string>
   <string name="media_hub_origin_playlist">Afspeellijst</string>
+  <string name="media_hub_favourites_empty">Nog geen favoriete zenders. Tik op de ster bij een zender om hem hier te bewaren.</string>
 </resources>

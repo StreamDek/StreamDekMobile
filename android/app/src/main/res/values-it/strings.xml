@@ -1660,4 +1660,5 @@
   <string name="media_hub_loading">Caricamento delle tue fonti…</string>
   <string name="media_hub_updating">Aggiornamento dei risultati…</string>
   <string name="media_hub_origin_playlist">Playlist</string>
+  <string name="media_hub_favourites_empty">Ancora nessun canale preferito. Tocca la stella di un canale per tenerlo qui.</string>
 </resources>

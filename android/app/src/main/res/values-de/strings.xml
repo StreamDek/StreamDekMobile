@@ -1646,4 +1646,5 @@
   <string name="media_hub_loading">Deine Quellen werden geladen…</string>
   <string name="media_hub_updating">Ergebnisse werden aktualisiert…</string>
   <string name="media_hub_origin_playlist">Playlist</string>
+  <string name="media_hub_favourites_empty">Noch keine Lieblingssender. Tippe bei einem Sender auf den Stern, um ihn hier zu behalten.</string>
 </resources>

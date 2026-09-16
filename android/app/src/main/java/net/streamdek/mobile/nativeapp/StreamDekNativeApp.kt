@@ -1,5 +1,6 @@
 package net.streamdek.mobile.nativeapp
 
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import kotlinx.coroutines.ensureActive
 
 import android.app.Activity
@@ -355,6 +356,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import net.streamdek.mobile.BuildConfig
 import net.streamdek.mobile.MainActivity
@@ -916,6 +918,8 @@ private data class AppUiState(
   // Browse navigation lives in the view model so it survives the player screen
   // replacing the main scene — otherwise backing out of a detail page opened from
   // a browse row would fall through to Home.
+  val mediaHubOpen: Boolean = false,
+  val mediaHubPages: Map<String, MediaHubPage> = emptyMap(),
   val browseRow: HomeRow? = null,
   val browseLoadedItems: List<MediaItem> = emptyList(),
   val browseReturnItemId: String? = null,
@@ -1274,6 +1278,7 @@ private data class AppUiState(
    * How tightly Home is packed. The one canonical source for it — every measurement on the screen
    * comes from [HomeLayoutMetrics.forDensity], so no two rows can disagree about which mode it is.
    */
+  val mediaHubEnabled: Boolean = false,
   val homeDensity: HomeDensity = HomeDensity.Default,
   /** How often the trailer cache clears itself, in hours. Zero switches it off. */
   val trailerCacheClearHours: Int = DEFAULT_TRAILER_CACHE_CLEAR_HOURS,
@@ -1759,7 +1764,7 @@ private fun tvDisplayName(device: LinkedTvDevice): String = DisplayNameOverrides
 private fun withTvDisplayName(device: LinkedTvDevice): LinkedTvDevice = device.copy(name = tvDisplayName(device))
 
 private fun List<MediaItem>.findFavouriteChannel(item: MediaItem): MediaItem? =
-  firstOrNull { it.id == item.id && it.sourceAddonId == item.sourceAddonId } ?: firstOrNull { it.id == item.id }
+  firstOrNull { it.id == item.id && it.sourceAddonId == item.sourceAddonId } ?: firstOrNull { favouriteChannelIdMatches(it.id, item.id) }
 
 private fun List<MediaItem>.hasFavouriteChannel(item: MediaItem): Boolean = findFavouriteChannel(item) != null
 
@@ -1768,7 +1773,7 @@ private fun List<MediaItem>.hasFavouriteChannel(item: MediaItem): Boolean = find
  * match: a list written before duplicates were prevented can hold several copies of one channel,
  * and removing them one at a time leaves the star lit after the tap that was supposed to clear it.
  */
-private fun List<MediaItem>.withoutFavouriteChannel(item: MediaItem): List<MediaItem> = filterNot { it.id == item.id }
+private fun List<MediaItem>.withoutFavouriteChannel(item: MediaItem): List<MediaItem> = filterNot { favouriteChannelIdMatches(it.id, item.id) }
 
 // Addons are installed dynamically by manifest URL, so there is no vendor flag
 // declaring "this addon proxies its streams" — instead we infer it: either the
@@ -2128,6 +2133,7 @@ private class AppSettingsStore(context: Context) {
     }.getOrDefault(BackgroundMode.Cinematic).takeIf { it in homeBackgroundModes } ?: BackgroundMode.Cinematic,
     // Device-local, like the animation speed and the player gestures: it describes how close this
     // particular screen is held, which is not something the account can answer for the television.
+    mediaHubEnabled = prefs.getBoolean(MEDIA_HUB_PREFERENCE, false),
     homeDensity = HomeDensity.fromKey(prefs.getString(HOME_DENSITY_PREFERENCE, null)),
     trailerCacheClearHours = profilePrefs.getInt("trailer_cache_clear_hours", DEFAULT_TRAILER_CACHE_CLEAR_HOURS),
     ambientTintPercent = profilePrefs.getInt("ambient_tint_percent", 50).coerceIn(20, 100),
@@ -2218,6 +2224,8 @@ private class AppSettingsStore(context: Context) {
   fun saveFullscreenStatusBar(value: String) { prefs.edit().putString("fullscreen_status_bar", value).apply() }
   fun savePlayerTitleDisplay(value: String) { prefs.edit().putString("player_title_display", value).apply() }
   fun savePlayerLevelGesturesEnabled(value: Boolean) { prefs.edit().putBoolean("player_level_gestures_enabled", value).apply() }
+  fun saveMediaHubEnabled(value: Boolean) { prefs.edit().putBoolean(MEDIA_HUB_PREFERENCE, value).apply() }
+
   fun saveHomeDensity(value: HomeDensity) { prefs.edit().putString(HOME_DENSITY_PREFERENCE, value.key).apply() }
   fun saveSkipIntroEnabled(value: Boolean) { profilePrefs.edit().putBoolean("skip_intro_enabled", value).putBoolean("skip_segments_enabled", value).apply() }
   fun saveSkipRecapEnabled(value: Boolean) { profilePrefs.edit().putBoolean("skip_recap_enabled", value).apply() }
@@ -4148,6 +4156,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   fun playLiveChannel(item: MediaItem) {
+    repairFavouriteChannelIds(listOf(item))
     val cloudStreamChannel = isCloudStreamMediaId(item.id) &&
       (isCloudStreamLiveChannel(item) || uiState.playerLiveChannels.any { it.id == item.id })
     if (!(item.isLiveCatalogItem() || cloudStreamChannel) || uiState.liveChannelSwitching) return
@@ -4231,6 +4240,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       }
       if (generation != liveChannelCatalogGeneration) return@launch
       uiState = uiState.copy(playerLiveChannels = (shown + full).distinctBy { it.id }, playerLiveChannelsLoading = false)
+      repairFavouriteChannelIds(full)
     }
   }
 
@@ -4304,7 +4314,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   fun setNetworkBrowseItem(item: MediaItem?) { uiState = uiState.copy(networkBrowseItem = item) }
 
-  fun clearBrowseNavigation() { uiState = uiState.copy(browseRow = null, networkBrowseItem = null) }
+  fun clearBrowseNavigation() { uiState = uiState.copy(browseRow = null, networkBrowseItem = null, mediaHubOpen = false) }
 
   fun clearPlayerReturnTarget() {
     uiState = uiState.copy(returnToDetailAfterPlayer = false, playerReturnEpisodeId = null)
@@ -5347,6 +5357,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   fun loadDetail(type: String, id: String, fallbackItem: MediaItem? = null, preservePendingContinue: Boolean = false) {
+    fallbackItem?.let { repairFavouriteChannelIds(listOf(it)) }
     // A download id has no catalogue entry behind it. Looking one up returned whatever the id
     // happened to match, which is how tapping a downloaded title opened a different one.
     if (isDownloadMediaId(id)) {
@@ -9122,7 +9133,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
     favouriteChannelStore.save(ownerKey, updated)
     applyFavouriteChannels(updated)
-    syncLiveFavouriteChannels(updated)
+    syncLiveFavouriteChannels()
   }
 
   /**
@@ -9181,45 +9192,98 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val ownerKey = activeOwnerKey() ?: return
     favouriteChannelStore.clear(ownerKey)
     applyFavouriteChannels(emptyList())
-    syncLiveFavouriteChannels(emptyList())
+    syncLiveFavouriteChannels()
   }
 
-  private fun syncLiveFavouriteChannels(items: List<MediaItem>) {
+  /**
+   * One favourites request at a time. Each upload used to carry the list as it was at its own tap,
+   * so two quick taps could reach the account in the wrong order and leave it holding the older
+   * list - which the next profile refresh then wrote back over the phone. Serialised, and sending
+   * the list as it stands when its turn comes, the last request to land is always the newest.
+   */
+  private val favouriteSyncLock = kotlinx.coroutines.sync.Mutex()
+
+  private fun syncLiveFavouriteChannels() {
     val session = uiState.session ?: return
     val profileId = uiState.activeProfileId ?: return
+    val ownerKey = activeOwnerKey() ?: return
     viewModelScope.launch {
-      apiClient.saveLiveFavouriteChannels(session, profileId, items).onFailure { failure ->
+      favouriteSyncLock.withLock { pushLiveFavouriteChannels(session, profileId, ownerKey) }
+    }
+  }
+
+  /**
+   * Gives back the full id of any favourite the account cut short, from channels the app has in hand
+   * - a page of a source, the player's channel list, a channel being opened. Saved as an edit so the
+   * account receives the full ids too, once it keeps them.
+   */
+  private fun repairFavouriteChannelIds(known: List<MediaItem>) {
+    if (known.isEmpty() || uiState.favouriteChannels.none { it.id.length == ACCOUNT_FAVOURITE_ID_LIMIT }) return
+    val ownerKey = activeOwnerKey() ?: return
+    val stored = favouriteChannelStore.load(ownerKey)
+    val repaired = restoreTruncatedFavouriteIds(stored, known)
+    if (repaired === stored) return
+    favouriteChannelStore.save(ownerKey, repaired)
+    applyFavouriteChannels(repaired)
+    syncLiveFavouriteChannels()
+  }
+
+  /** Sends the local list if it holds an edit the account has not confirmed. Call with [favouriteSyncLock] held. */
+  private suspend fun pushLiveFavouriteChannels(session: AuthSession, profileId: String, ownerKey: String) {
+    val stamp = favouriteChannelStore.pendingSyncStamp(ownerKey) ?: return
+    apiClient.saveLiveFavouriteChannels(session, profileId, favouriteChannelStore.load(ownerKey))
+      .onSuccess { favouriteChannelStore.markSynced(ownerKey, stamp) }
+      .onFailure { failure ->
         Log.w("StreamDekFavourites", "Live favourites will retry on the next profile refresh", failure)
       }
-    }
   }
 
   private fun refreshLiveFavouriteChannels() {
     val session = uiState.session ?: return
     val profileId = uiState.activeProfileId ?: return
     val ownerKey = activeOwnerKey() ?: return
-    val local = favouriteChannelStore.load(ownerKey)
     viewModelScope.launch {
-      apiClient.fetchLiveFavouriteChannels(session, profileId).onSuccess { cloud ->
-        if (uiState.activeProfileId != profileId || activeOwnerKey() != ownerKey) return@onSuccess
-        if (cloud.updatedAt > 0L) {
-          // Read back through the store so a cloud copy written by an older build cannot
-          // reintroduce duplicates the local list has already been cleaned of.
-          favouriteChannelStore.save(ownerKey, cloud.items)
-          applyFavouriteChannels(favouriteChannelStore.load(ownerKey))
-        } else if (local.isNotEmpty()) {
-          apiClient.saveLiveFavouriteChannels(session, profileId, local)
+      favouriteSyncLock.withLock {
+        // An edit the account never confirmed is newer than anything it holds: send it, never replace it.
+        if (favouriteChannelStore.pendingSyncStamp(ownerKey) != null) {
+          pushLiveFavouriteChannels(session, profileId, ownerKey)
+          return@withLock
         }
-      }.onFailure { failure ->
-        Log.w("StreamDekFavourites", "Using locally cached live favourites", failure)
+        apiClient.fetchLiveFavouriteChannels(session, profileId).onSuccess { cloud ->
+          if (uiState.activeProfileId != profileId || activeOwnerKey() != ownerKey) return@onSuccess
+          // Starred or unstarred while the fetch was out: that edit is newer than what came back,
+          // and its own upload is queued behind this lock.
+          if (favouriteChannelStore.pendingSyncStamp(ownerKey) != null) return@onSuccess
+          val local = favouriteChannelStore.load(ownerKey)
+          if (cloud.updatedAt > 0L) {
+            // Read back through the store so a cloud copy written by an older build cannot
+            // reintroduce duplicates the local list has already been cleaned of.
+            favouriteChannelStore.save(ownerKey, mergeAccountFavourites(cloud.items, local), fromAccount = true)
+            applyFavouriteChannels(favouriteChannelStore.load(ownerKey))
+          } else if (local.isNotEmpty()) {
+            apiClient.saveLiveFavouriteChannels(session, profileId, local)
+          }
+        }.onFailure { failure ->
+          Log.w("StreamDekFavourites", "Using locally cached live favourites", failure)
+        }
       }
     }
   }
 
   fun toggleFavouriteChannelForCurrentSession() {
-    val session = uiState.playerSession ?: return
+    // The launch session too, as the star's own state reads it: otherwise the star shows while a
+    // channel is still starting and a tap on it does nothing.
+    val session = uiState.playerSession ?: uiState.playerLaunchSession ?: return
     if (!session.isLive) return
-    val item = uiState.detailFallbackItem?.takeIf { it.id == session.mediaId } ?: MediaItem(
+    // After switching channels in the player the detail item is the first channel's, so the channel
+    // playing now is looked up among the lists that carry its full source fields before one is built.
+    val known = uiState.detailFallbackItem?.takeIf { it.id == session.mediaId }
+      ?: uiState.playerLiveChannels.firstOrNull { it.id == session.mediaId }
+      ?: uiState.favouriteChannels.firstOrNull { it.id == session.mediaId }
+      ?: uiState.m3uChannels.firstOrNull { it.id == session.mediaId }
+    // The session says it is live, which is the check the add path needs; a rebuilt item carries none
+    // of the catalogue fields that check reads, and without this the tap was silently dropped.
+    val item = known?.let { if (it.isLiveCatalogItem()) it else it.copy(sourceCatalogType = "live") } ?: MediaItem(
       id = session.mediaId,
       type = session.mediaType,
       title = session.title,
@@ -9230,6 +9294,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       description = session.synopsis.orEmpty(),
       sourceAddonId = session.currentStream?.addonId,
       sourceAddonName = session.currentStream?.addonName,
+      sourceCatalogType = "live",
     )
     toggleFavouriteChannel(item)
   }
@@ -10031,11 +10096,67 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
    * started with; the next one takes the new value.
    */
   fun setPlayerLevelGesturesEnabled(value: Boolean) { appSettingsStore.savePlayerLevelGesturesEnabled(value); uiState = uiState.copy(playerLevelGesturesEnabled = value) }
-  /**
-   * Also device-local, and applied by the state change alone: Home reads its measurements from
-   * [LocalHomeLayout], which is provided from this value, so the screen re-lays out on the next
-   * composition with no restart and nothing to invalidate.
-   */
+  /** Device-local and off by default: Mobile verification does not change the television. */
+  fun setMediaHubEnabled(value: Boolean) {
+    appSettingsStore.saveMediaHubEnabled(value)
+    uiState = uiState.copy(mediaHubEnabled = value, mediaHubOpen = value && uiState.mediaHubOpen)
+  }
+  fun setMediaHubOpen(value: Boolean) { uiState = uiState.copy(mediaHubOpen = value, mediaHubPages = if (value) uiState.mediaHubPages else emptyMap()) }
+
+  suspend fun loadMediaHubPage(source: MediaHubCatalog, query: String, reset: Boolean = false) {
+    val owner = activeOwnerKey()
+    val cacheKey = MediaHubUi.mediaHubCacheKey(uiState, source, query)
+    val previous = if (reset) MediaHubPage() else uiState.mediaHubPages[cacheKey] ?: MediaHubPage()
+    if (previous.end && !reset) return
+    val result = try {
+      withContext(Dispatchers.IO) {
+        when {
+          source.localItems != null -> source.localItems
+          source.cloudRowId != null -> {
+            val target = resolveCloudStreamHomeRow(source.cloudRowId, loadedCloudStreamProviders())
+              ?: error("Provider unavailable")
+            val found = if (query.isNotBlank()) CloudStreamProviderBridge.hubSearch(target.provider, query, previous.nextOffset + 1)
+              else CloudStreamProviderBridge.mainPageItems(target.provider, target.page, previous.nextOffset + 1)
+            found.map { it.copy(sourceAddonName = source.sourceName, sourceCatalogName = if (query.isBlank()) source.title else source.sourceName,
+              sourceCatalogType = if (source.live) "live" else it.type) }
+          }
+          source.addon != null && source.catalog != null -> {
+            if (query.isNotBlank() && source.catalog.supportsSearch) {
+              apiClient.searchAddonCatalog(source.addon, source.catalog, query, source.genre, previous.nextOffset).getOrThrow()
+            } else {
+              apiClient.fetchMoreCatalogItems(uiState.session, source.addon, source.catalog.type,
+                source.catalog.id, source.catalog.name, source.genre, previous.nextOffset, uiState.activeProfileId).getOrThrow()
+            }
+          }
+          else -> emptyList()
+        }
+      }
+    } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+      if (activeOwnerKey() == owner) uiState = uiState.copy(mediaHubPages = uiState.mediaHubPages + (cacheKey to previous.copy(failed = true)))
+      return
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+      throw cancelled
+    } catch (_: Throwable) {
+      // Plugins may throw linkage errors or NotImplementedError, not just Exceptions.
+      if (activeOwnerKey() == owner) uiState = uiState.copy(mediaHubPages = uiState.mediaHubPages + (cacheKey to previous.copy(failed = true)))
+      return
+    }
+    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+    if (activeOwnerKey() != owner) return
+    val merged = withContext(Dispatchers.Default) {
+      (previous.items + result).distinctBy(::mediaHubItemKey).filterNot {
+        AdultContentFilter.isBlockedItem(title = it.title, genres = it.genres) || AdultContentFilter.isBlocked(it.sourceCatalogName)
+      }
+    }
+    val page = MediaHubPage(merged,
+      nextOffset = previous.nextOffset + if (source.cloudRowId != null) 1 else result.size,
+      end = source.localItems != null || result.isEmpty() || merged.size == previous.items.size)
+    // Retain browse pages and this query; old queries must not grow memory or evict active sources.
+    val retained = uiState.mediaHubPages.filterKeys { it.substringAfterLast("\u001e").let { cachedQuery -> cachedQuery.isBlank() || cachedQuery == query.trim() } }
+    uiState = uiState.copy(mediaHubPages = retained + (cacheKey to page))
+    repairFavouriteChannelIds(result)
+  }
+
   fun setHomeDensity(value: HomeDensity) { appSettingsStore.saveHomeDensity(value); uiState = uiState.copy(homeDensity = value) }
   fun setSkipIntroEnabled(value: Boolean) { appSettingsStore.saveSkipIntroEnabled(value); uiState = uiState.copy(skipIntroEnabled = value); syncCloudPreferences() }
   fun setSkipRecapEnabled(value: Boolean) { appSettingsStore.saveSkipRecapEnabled(value); uiState = uiState.copy(skipRecapEnabled = value); syncCloudPreferences() }
@@ -11896,7 +12017,7 @@ private fun StreamDekNativeAppContent(
                 onPrepareNextEpisodeAtEnding = viewModel::prepareNextEpisodeFromEnding,
                 onNextEpisodeAtEnding = viewModel::playNextEpisodeFromEnding,
                 onUnairedEpisodeAtEnding = viewModel::finishCurrentEpisodeFromEnding,
-                isFavourite = uiState.favouriteChannels.any { it.id == (uiState.playerSession ?: uiState.playerLaunchSession)?.mediaId },
+                isFavourite = (uiState.playerSession ?: uiState.playerLaunchSession)?.mediaId?.let { mediaId -> uiState.favouriteChannels.any { favouriteChannelIdMatches(it.id, mediaId) } } == true,
                 onToggleFavourite = viewModel::toggleFavouriteChannelForCurrentSession,
                 liveChannels = uiState.playerLiveChannels,
                 liveChannelsLoading = uiState.playerLiveChannelsLoading,
@@ -12350,7 +12471,7 @@ private fun AuthScene(
         modifier = Modifier.size(logoSize),
         contentScale = ContentScale.Fit,
       )
-      Text("StreamDek", color = white, fontSize = if (compact) 24.sp else 27.sp, fontWeight = FontWeight.Black)
+      Text(stringResource(R.string.app_name), color = white, fontSize = if (compact) 24.sp else 27.sp, fontWeight = FontWeight.Black)
       Text(stringResource(R.string.auth_tagline), color = muted, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
 
       Spacer(modifier = Modifier.height(if (compact) 14.dp else 20.dp))
@@ -12902,6 +13023,7 @@ private fun MainScene(
       }
       networkBrowse != null -> viewModel.setNetworkBrowseItem(null)
       browseRow != null -> viewModel.setBrowseRow(null)
+      uiState.mediaHubOpen -> viewModel.setMediaHubOpen(false)
       settingsRoute != null -> popSettingsRoute()
       selectedTab == MainTab.Settings && detailReturnFromSettings != null -> {
         val returnDetail = detailReturnFromSettings
@@ -13002,7 +13124,7 @@ private fun MainScene(
   val glassContrast = rememberGlassContrastState(scrollChrome)
   // A different page starts from its top with everything shown. Without this, arriving on Search
   // from halfway down Home would open with the search field already tucked away.
-  LaunchedEffect(selectedTab, openDetail, browseRow?.id, networkBrowse?.id, settingsRoute, showAuth, showProfilePicker, homeScrollToTopSignal) {
+  LaunchedEffect(selectedTab, openDetail, browseRow?.id, networkBrowse?.id, uiState.mediaHubOpen, settingsRoute, showAuth, showProfilePicker, homeScrollToTopSignal) {
     scrollChrome.reset()
   }
   CompositionLocalProvider(
@@ -13377,6 +13499,14 @@ private fun MainScene(
           browseStateHolder.SaveableStateProvider("network_browse") {
             NetworkBrowseScreen(network = networkBrowse, headerStyle = uiState.headerStyle, onBack = { viewModel.setNetworkBrowseItem(null) }, onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })
           }
+        } else if (uiState.mediaHubOpen) {
+          browseStateHolder.SaveableStateProvider("media_hub_${uiState.activeProfileId}") {
+            MediaHubUi.MediaHubScreen(uiState, onBack = { viewModel.setMediaHubOpen(false) },
+              onLoad = viewModel::loadMediaHubPage,
+              onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) },
+              onToggleFavourite = viewModel::toggleFavouriteChannel,
+              onToggleWatchlist = viewModel::toggleWatchlist)
+          }
         } else if (browseRow != null) {
           browseStateHolder.SaveableStateProvider("browse_row_${browseRow.id}") {
             BrowseSectionScreen(row = browseRow, loadedItems = uiState.browseLoadedItems, returnItemId = uiState.browseReturnItemId, headerStyle = uiState.headerStyle, lastWatchedChannel = uiState.lastWatchedLiveChannel(), networkCardStyle = uiState.networkCardStyle, liveLandscapeCards = uiState.liveLandscapeCards, categoriesEnabled = uiState.liveCategoriesEnabled, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel, onBack = { viewModel.setBrowseRow(null) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { viewModel.rememberBrowseReturnItem(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onToggleWatchlist = viewModel::toggleWatchlist, onToggleFavourite = viewModel::toggleFavouriteChannel, onClearFavourites = viewModel::clearFavouriteChannels, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, onMarkWatched = viewModel::markWatched, pageableRowIds = pageableCatalogRowIds(uiState.catalogDefinitions), onLoadMore = viewModel::loadMoreRowItems)
@@ -13396,7 +13526,7 @@ private fun MainScene(
           ) { tab ->
           when (tab) {
             MainTab.Home -> browseStateHolder.SaveableStateProvider("tab_home") {
-              HomeTab(uiState = uiState, scrollToTopSignal = homeScrollToTopSignal, onReload = { viewModel.loadHome(force = true) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onPlayContinueWatching = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onViewAll = { row -> if (row.id == "continue") selectedTab = MainTab.Continue else if (row.id == "watchlist") selectedTab = MainTab.Watchlist else viewModel.setBrowseRow(when (row.id) { "m3u_playlists_live" -> row.copy(items = uiState.m3uChannels); "m3u_playlists_vod" -> row.copy(items = uiState.m3uVodItems); else -> fullSectionRow(uiState, row) }) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onMarkEarlierEpisodesWatched = viewModel::markEarlierEpisodesWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onRemoveFromContinueWatching = viewModel::removeFromContinueWatching, onResolveHeroTitleLogos = viewModel::resolveHomeHeroTitleLogos, onResolveAddonRatings = viewModel::resolveAddonCatalogRatings, onToggleFavourite = viewModel::toggleFavouriteChannel, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel, onHandoffContinueWatching = viewModel::handoffContinueWatching)
+              HomeTab(uiState = uiState, scrollToTopSignal = homeScrollToTopSignal, onReload = { viewModel.loadHome(force = true) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onPlayContinueWatching = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onViewAll = { row -> if (row.id == MEDIA_HUB_ROW_ID) viewModel.setMediaHubOpen(true) else if (row.id == "continue") selectedTab = MainTab.Continue else if (row.id == "watchlist") selectedTab = MainTab.Watchlist else viewModel.setBrowseRow(when (row.id) { "m3u_playlists_live" -> row.copy(items = uiState.m3uChannels); "m3u_playlists_vod" -> row.copy(items = uiState.m3uVodItems); else -> fullSectionRow(uiState, row) }) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onMarkEarlierEpisodesWatched = viewModel::markEarlierEpisodesWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onRemoveFromContinueWatching = viewModel::removeFromContinueWatching, onResolveHeroTitleLogos = viewModel::resolveHomeHeroTitleLogos, onResolveAddonRatings = viewModel::resolveAddonCatalogRatings, onToggleFavourite = viewModel::toggleFavouriteChannel, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel, onHandoffContinueWatching = viewModel::handoffContinueWatching)
             }
             MainTab.Search -> browseStateHolder.SaveableStateProvider("tab_search") {
               SearchTab(uiState = uiState, ownerKey = watchedOwnerKey(uiState.session, uiState.activeProfileId), onSearch = viewModel::search, onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched)
@@ -13934,6 +14064,14 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
       addAll(laterRows)
     }.map { row -> row.copy(items = row.items.distinctBy(::mediaCollectionKey)) }
   }
+  val hubTitle = stringResource(R.string.media_hub_title)
+  val displayRows = remember(rows, uiState.mediaHubEnabled, hubTitle) {
+    val byId = rows.associateBy { it.id }
+    val eligible = rows.filter { it.id == "favourites" || it.id.startsWith("m3u_playlists_") || (it.id.startsWith("addon:") && isMediaHubCatalogType(it.id.split(":").getOrNull(2).orEmpty())) }.mapTo(hashSetOf()) { it.id }
+    mediaHubHomeOrder(rows.map { it.id }, eligible, uiState.mediaHubEnabled).mapNotNull { id ->
+      if (id == MEDIA_HUB_ROW_ID) HomeRow(id, hubTitle, rows.filter { it.id in eligible }.flatMap { it.items.take(3) }.take(12)) else byId[id]
+    }
+  }
   val heroBackdrop = heroItems.getOrNull(pagerState.currentPage.coerceIn(0, (heroItems.size - 1).coerceAtLeast(0)))
   // Hoisted out of the background layer below so it is remembered for as long as Home is, rather
   // than for as long as the spotlight happens to be on screen. Scrolling down past the hero and
@@ -14042,10 +14180,11 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
           )
         }
       }
-      itemsIndexed(rows, key = { _, row -> row.id }) { index, row ->
+      itemsIndexed(displayRows, key = { _, row -> row.id }) { index, row ->
         Column {
           if (heroItems.isNotEmpty() && index > 0) Spacer(modifier = Modifier.height(homeLayout.rowGap - homeLayout.heroToRowGap))
-          HomeStrip(rowId = row.id, title = row.title, items = row.items, continueWatchingStyle = uiState.continueWatchingStyle, homeCardTextMode = uiState.homeCardTextMode, networkCardStyle = uiState.networkCardStyle, liveLandscapeCards = uiState.liveLandscapeCards, newEpisodesLandscape = uiState.newEpisodesLandscape, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = handoffDevices, onRefreshHandoffDevices = onRefreshHandoffDevices, onHandoffLive = onHandoffLive, onHandoffContinueWatching = onHandoffContinueWatching, onOpen = onOpen, onViewAll = { onViewAll(row) }, onToggleWatchlist = onToggleWatchlist, onToggleFavourite = onToggleFavourite, onEnableAddon = onEnableAddon, onMarkWatched = onMarkWatched, onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched, onRestartFromBeginning = onRestartFromBeginning, onRemoveFromContinueWatching = onRemoveFromContinueWatching, onPlayContinueWatching = onPlayContinueWatching)
+          if (row.id == MEDIA_HUB_ROW_ID) MediaHubUi.MediaHubPortal(row.items, onClick = { onViewAll(row) })
+          else HomeStrip(rowId = row.id, title = row.title, items = row.items, continueWatchingStyle = uiState.continueWatchingStyle, homeCardTextMode = uiState.homeCardTextMode, networkCardStyle = uiState.networkCardStyle, liveLandscapeCards = uiState.liveLandscapeCards, newEpisodesLandscape = uiState.newEpisodesLandscape, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = handoffDevices, onRefreshHandoffDevices = onRefreshHandoffDevices, onHandoffLive = onHandoffLive, onHandoffContinueWatching = onHandoffContinueWatching, onOpen = onOpen, onViewAll = { onViewAll(row) }, onToggleWatchlist = onToggleWatchlist, onToggleFavourite = onToggleFavourite, onEnableAddon = onEnableAddon, onMarkWatched = onMarkWatched, onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched, onRestartFromBeginning = onRestartFromBeginning, onRemoveFromContinueWatching = onRemoveFromContinueWatching, onPlayContinueWatching = onPlayContinueWatching)
         }
       }
     }
@@ -15457,9 +15596,21 @@ private enum class LiveChannelScope { All, Favourites, Category }
 /** Sentinel for the Favourites entry in the category sheet, which is not a category. */
 private const val LIVE_SCOPE_FAVOURITES = " favourites"
 
-/** The channel left part-way, with one press to go back to it. */
+/**
+ * The channel left part-way, with one press to go back to it.
+ *
+ * [compactFraction] runs from 0, the full card, to 1 once it has pinned beneath a condensed header,
+ * as on the Media Hub: it slims to one short row there, since every line of height it keeps is a
+ * line of channels the page cannot show. Every measurement follows that one fraction, so the card
+ * flows between its two sizes instead of jumping from one to the other. Read as a lambda, so an
+ * animation frame redraws the card rather than the page around it.
+ */
 @Composable
-private fun LiveResumeCard(channel: MediaItem, lightPage: Boolean, onPlay: () -> Unit) {
+private fun LiveResumeCard(channel: MediaItem, lightPage: Boolean, onPlay: () -> Unit, compactFraction: () -> Float = { 0f }) {
+  val t = compactFraction().coerceIn(0f, 1f)
+  fun dp(full: Dp, compact: Dp) = androidx.compose.ui.unit.lerp(full, compact, t)
+  fun sp(full: androidx.compose.ui.unit.TextUnit, compact: androidx.compose.ui.unit.TextUnit) = androidx.compose.ui.unit.lerp(full, compact, t)
+  val typography = MaterialTheme.typography
   Card(
     modifier = Modifier.fillMaxWidth().clickable(onClick = onPlay),
     colors = CardDefaults.cardColors(
@@ -15468,34 +15619,52 @@ private fun LiveResumeCard(channel: MediaItem, lightPage: Boolean, onPlay: () ->
     shape = StreamDekRadius.panelShape,
   ) {
     Row(
-      modifier = Modifier.fillMaxWidth().padding(14.dp),
-      horizontalArrangement = Arrangement.spacedBy(14.dp),
+      modifier = Modifier.fillMaxWidth().padding(horizontal = dp(14.dp, 12.dp), vertical = dp(14.dp, 8.dp)),
+      horizontalArrangement = Arrangement.spacedBy(dp(14.dp, 10.dp)),
       verticalAlignment = Alignment.CenterVertically,
     ) {
-      LiveChannelArtwork(channel = channel, size = 62.dp, lightPage = lightPage)
-      Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+      // Edge to edge, so the logo takes its tile's rounded corners instead of sitting inside it square.
+      LiveChannelArtwork(channel = channel, size = dp(62.dp, 40.dp), lightPage = lightPage, fill = true)
+      Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(dp(2.dp, 0.dp))) {
         Text(
           stringResource(R.string.a11y_last_watched_channel),
           color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.58f),
-          style = MaterialTheme.typography.labelMedium,
+          style = typography.labelMedium.copy(
+            fontSize = sp(typography.labelMedium.fontSize, typography.labelSmall.fontSize),
+            lineHeight = sp(typography.labelMedium.lineHeight, typography.labelSmall.lineHeight),
+          ),
           fontWeight = FontWeight.Bold,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
         )
         Text(
           channel.title,
           color = MaterialTheme.colorScheme.onBackground,
-          style = MaterialTheme.typography.titleMedium,
+          style = typography.titleMedium.copy(
+            fontSize = sp(typography.titleMedium.fontSize, typography.titleSmall.fontSize),
+            lineHeight = sp(typography.titleMedium.lineHeight, typography.titleSmall.lineHeight),
+          ),
           fontWeight = FontWeight.Black,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis,
         )
-        channel.sourceCatalogName?.takeIf { it.isNotBlank() }?.let {
-          Text(
-            it,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.50f),
-            style = MaterialTheme.typography.bodySmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-          )
+        if (t < 1f) {
+          channel.sourceCatalogName?.takeIf { it.isNotBlank() }?.let {
+            Text(
+              it,
+              color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.50f),
+              style = typography.bodySmall,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              // Folds away with the fraction rather than vanishing in one frame.
+              modifier = Modifier
+                .graphicsLayer { alpha = 1f - t }
+                .layout { measurable, constraints ->
+                  val placeable = measurable.measure(constraints)
+                  layout(placeable.width, (placeable.height * (1f - t)).roundToInt()) { placeable.placeRelative(0, 0) }
+                },
+            )
+          }
         }
       }
       Row(
@@ -15503,12 +15672,21 @@ private fun LiveResumeCard(channel: MediaItem, lightPage: Boolean, onPlay: () ->
           .clip(StreamDekRadius.pill)
           .background(MaterialTheme.colorScheme.primary)
           .clickable(onClick = onPlay)
-          .padding(horizontal = 16.dp, vertical = 10.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+          .padding(horizontal = dp(16.dp, 12.dp), vertical = dp(10.dp, 6.dp)),
+        horizontalArrangement = Arrangement.spacedBy(dp(6.dp, 4.dp)),
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(20.dp))
-        Text(stringResource(R.string.continue_watching), color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Black, maxLines = 1)
+        Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(dp(20.dp, 16.dp)))
+        Text(
+          stringResource(R.string.detail_continue),
+          color = MaterialTheme.colorScheme.onPrimary,
+          style = typography.labelLarge.copy(
+            fontSize = sp(typography.labelLarge.fontSize, typography.labelMedium.fontSize),
+            lineHeight = sp(typography.labelLarge.lineHeight, typography.labelMedium.lineHeight),
+          ),
+          fontWeight = FontWeight.Black,
+          maxLines = 1,
+        )
       }
     }
   }
@@ -15558,7 +15736,7 @@ private fun LiveChannelRow(
       IconButton(onClick = onToggleFavourite, modifier = Modifier.size(40.dp)) {
         Icon(
           if (favourite) Icons.Rounded.Star else Icons.Rounded.StarBorder,
-          contentDescription = if (favourite) "Remove ${channel.title} from favourites" else "Add ${channel.title} to favourites",
+          contentDescription = stringResource(if (favourite) R.string.media_hub_remove_favourite else R.string.media_hub_add_favourite, channel.title),
           tint = if (favourite) Color(0xFFFACC15) else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.42f),
         )
       }
@@ -15583,7 +15761,7 @@ private fun LiveChannelRow(
  * error case and is drawn to look deliberate.
  */
 @Composable
-private fun LiveChannelArtwork(channel: MediaItem, size: Dp, lightPage: Boolean) {
+private fun LiveChannelArtwork(channel: MediaItem, size: Dp, lightPage: Boolean, fill: Boolean = false) {
   Box(
     modifier = Modifier
       .size(size)
@@ -15603,7 +15781,7 @@ private fun LiveChannelArtwork(channel: MediaItem, size: Dp, lightPage: Boolean)
       AsyncImage(
         model = artwork,
         contentDescription = channel.title,
-        modifier = Modifier.fillMaxSize().padding(6.dp),
+        modifier = Modifier.fillMaxSize().padding(if (fill) 0.dp else 6.dp),
         contentScale = ContentScale.Fit,
       )
     }
@@ -17569,7 +17747,7 @@ private fun LibraryPage(
       fractionOverride = { progress() * ScrollChromeMachine.COMPACT },
       // Measured outside the header's status-bar padding, so this already includes the bar.
       modifier = Modifier.align(Alignment.TopCenter).zIndex(4f)
-        .onSizeChanged { headerHeight = with(density) { it.height.toDp() } },
+        .onSizeChanged { headerHeight = maxOf(headerHeight, with(density) { it.height.toDp() }) },
       trailingAction = trailingAction,
     )
   }
@@ -20296,6 +20474,8 @@ private fun SettingsTab(
         SettingsRoute.HomeScreen -> {
           item {
             SettingsSection(stringResource(R.string.settings_m_home_screen)) {
+              SettingsSwitchRow("HUB", Color(0xFF38BDF8), stringResource(R.string.media_hub_title), stringResource(R.string.media_hub_setting_description), uiState.mediaHubEnabled, playerSettingsViewModel::setMediaHubEnabled)
+              SettingsDivider()
               HomeDensityPicker(selected = uiState.homeDensity, onSelected = onHomeDensityChange)
               SettingsDivider()
               SettingsChoiceRow(
@@ -21697,7 +21877,7 @@ internal fun settingsRouteKeywords(route: SettingsRoute): String = when (route) 
     "formatting remember last source list"
   SettingsRoute.Downloads -> "download downloads offline saved save storage remove delete watch offline"
   SettingsRoute.Appearance -> "appearance language theme colour color dark light mode header navigation labels collapse scroll scrolling behaviour behavior font motion animation animations speed transitions reduce reduced cinematic visual effects glass blur transparency performance battery"
-  SettingsRoute.HomeScreen -> "home screen rows spotlight hero synopsis continue watching streaming networks network cards branded logo ambient glow background " +
+  SettingsRoute.HomeScreen -> "streamdek fuse media hub unified live vod home screen rows spotlight hero synopsis continue watching streaming networks network cards branded logo ambient glow background " +
     "layout density relaxed compact spacing card size smaller bigger tighter fit more"
   SettingsRoute.HomeLayout -> "layout rows reorder drag order arrange home catalog sections which rows"
   SettingsRoute.TitlePages -> "title detail page style layout trailer autoplay season tabs episode artwork blur spoiler ratings trailer cache clear schedule stale"
@@ -29661,6 +29841,67 @@ internal fun buildStreamSourceSections(
 /** How many results a quality band shows before it offers the rest. */
 private const val STREAM_BAND_PREVIEW_ROWS = 6
 
+/**
+ * Where one source's results begin, and the tap that opens or closes them.
+ *
+ * Shared by a title's stream results and the Media Hub, so a source heading reads the same wherever
+ * results are grouped by where they came from. [loading] is for a source that is still answering: it
+ * gets a heading straight away, so a slow provider is visibly on its way rather than simply missing.
+ */
+@Composable
+private fun CollapsibleSourceHeader(
+  title: String,
+  originLabel: String?,
+  count: Int,
+  expanded: Boolean,
+  onToggle: () -> Unit,
+  modifier: Modifier = Modifier,
+  loading: Boolean = false,
+) {
+  val foreground = MaterialTheme.colorScheme.onSurface
+  Row(
+    modifier = modifier
+      .fillMaxWidth()
+      .clip(StreamDekRadius.thumbShape)
+      .clickable(enabled = count > 0, onClick = onToggle)
+      .padding(vertical = 6.dp),
+    horizontalArrangement = Arrangement.spacedBy(10.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    // A short accent stroke rather than a filled header bar: it marks where a source begins
+    // without turning every group into a slab the results then have to sit inside.
+    Box(modifier = Modifier.width(3.dp).height(26.dp).clip(StreamDekRadius.pill).background(MaterialTheme.colorScheme.primary))
+    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+      Text(
+        title,
+        color = foreground,
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.Black,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+      )
+      originLabel?.let {
+        Text(it, color = foreground.copy(alpha = 0.48f), style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+      }
+    }
+    if (loading) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = foreground.copy(alpha = 0.58f))
+    if (count > 0 || !loading) {
+      Box(
+        modifier = Modifier.clip(StreamDekRadius.pill).background(foreground.copy(alpha = 0.10f)).padding(horizontal = 9.dp, vertical = 3.dp),
+      ) {
+        Text(count.toString(), color = foreground.copy(alpha = 0.72f), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black)
+      }
+    }
+    if (count > 0) {
+      Icon(
+        if (expanded) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown,
+        contentDescription = if (expanded) "Hide $title results" else "Show $title results",
+        tint = foreground.copy(alpha = 0.58f),
+      )
+    }
+  }
+}
+
 @Composable
 private fun StreamSourceSection(
   section: StreamSourceGroup,
@@ -29673,7 +29914,6 @@ private fun StreamSourceSection(
   onDownloadStream: (AddonStream) -> Unit,
   onLongPressStream: (AddonStream) -> Unit,
 ) {
-  val foreground = MaterialTheme.colorScheme.onSurface
   // Keyed on where the section sits as well as on its name. Filtering to one source used to leave
   // that source collapsed - it had been remembered as "not the first section" from the unfiltered
   // list - so choosing a provider produced a page with one closed header and nothing under it.
@@ -29681,43 +29921,14 @@ private fun StreamSourceSection(
   // collapse still survives everything short of the list re-ordering around it.
   var expanded by rememberSaveable(section.source, initiallyExpanded) { mutableStateOf(initiallyExpanded) }
   Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-    Row(
-      modifier = Modifier
-        .padding(horizontal = horizontalPadding)
-        .fillMaxWidth()
-        .clip(StreamDekRadius.thumbShape)
-        .clickable { expanded = !expanded }
-        .padding(vertical = 6.dp),
-      horizontalArrangement = Arrangement.spacedBy(10.dp),
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      // A short accent stroke rather than a filled header bar: it marks where a source begins
-      // without turning every group into a slab the results then have to sit inside.
-      Box(modifier = Modifier.width(3.dp).height(26.dp).clip(StreamDekRadius.pill).background(MaterialTheme.colorScheme.primary))
-      Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-        Text(
-          section.source,
-          color = foreground,
-          style = MaterialTheme.typography.titleSmall,
-          fontWeight = FontWeight.Black,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-        )
-        streamOriginLabel(section.representative, stringResource(R.string.stream_origin_addon))?.let {
-          Text(it, color = foreground.copy(alpha = 0.48f), style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-      }
-      Box(
-        modifier = Modifier.clip(StreamDekRadius.pill).background(foreground.copy(alpha = 0.10f)).padding(horizontal = 9.dp, vertical = 3.dp),
-      ) {
-        Text(section.total.toString(), color = foreground.copy(alpha = 0.72f), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Black)
-      }
-      Icon(
-        if (expanded) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown,
-        contentDescription = if (expanded) "Hide ${section.source} results" else "Show ${section.source} results",
-        tint = foreground.copy(alpha = 0.58f),
-      )
-    }
+    CollapsibleSourceHeader(
+      title = section.source,
+      originLabel = streamOriginLabel(section.representative, stringResource(R.string.stream_origin_addon)),
+      count = section.total,
+      expanded = expanded,
+      onToggle = { expanded = !expanded },
+      modifier = Modifier.padding(horizontal = horizontalPadding),
+    )
     AnimatedVisibility(visible = expanded) {
       Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         section.bands.forEach { band ->
@@ -32906,4 +33117,556 @@ private fun GlassCard(modifier: Modifier = Modifier, containerAlpha: Float = 0.8
   ) {
     Column(modifier = Modifier.fillMaxWidth(), content = content)
   }
+}
+
+private object MediaHubUi {
+
+fun mediaHubCacheKey(state: AppUiState, source: MediaHubCatalog, query: String): String =
+  listOf(state.session?.user?.uid.orEmpty(), state.activeProfileId.orEmpty(), if (source.cloudRowId != null && query.isNotBlank()) source.sourceKey else source.key, if (source.supportsSearch) query.trim() else "").joinToString("\u001e")
+
+/**
+ * Configured catalogues, less any switched off in Home Rows: a row turned off there is a source the
+ * viewer has said they do not want, and the hub must not bring it back. Playlists are not in Home
+ * Rows; they are switched on and off in their own settings.
+ */
+private fun mediaHubCatalogs(state: AppUiState): List<MediaHubCatalog> = buildList {
+  val switches = mediaHubRowSwitches(state.homeCatalogRows)
+  listOf(true to state.m3uChannels, false to state.m3uVodItems).forEach { (live, items) ->
+    items.groupBy { it.sourceAddonId.orEmpty() }.forEach { (sourceId, content) ->
+      val name = content.firstOrNull()?.sourceAddonName.orEmpty()
+      add(MediaHubCatalog(
+        key = "playlist:$sourceId:$live", sourceId, name, name, live, localItems = content))
+    }
+  }
+  state.addons.filter { it.enabled }.forEach { addon ->
+    addon.manifest.catalogs.filter { catalog -> isMediaHubCatalogType(catalog.type) &&
+      isMediaHubRowSwitchedOn(mediaHubAddonRowId(addon.id, catalog.type, catalog.id), switches, offWhenUnlisted = false) }.forEach { catalog ->
+      val genres = if (catalog.genreOptions.isEmpty()) listOf<String?>(null) else catalog.genreOptions
+      genres.forEach { genre ->
+        add(MediaHubCatalog(
+          key = "addon:${addon.id}:${catalog.type}:${catalog.id}:${genre.orEmpty()}", addon.id,
+          addon.manifest.name, genre ?: catalog.name, catalog.type.lowercase() in liveCatalogTypes,
+          addon = addon, catalog = catalog, genre = genre))
+      }
+    }
+  }
+  // CloudStream rows start switched off in Home Rows, so one the layout has not listed yet is off too.
+  cloudStreamHomeCatalogCandidates(if (CloudStreamPlugins.isInitialized) runCatching { CloudStreamPlugins.manager.activeProviders() }.getOrDefault(emptyList()) else emptyList())
+    .filter { row -> isMediaHubRowSwitchedOn(row.id, switches, offWhenUnlisted = true) }.forEach { row ->
+    val source = homeCatalogRowAddonId(row.id).orEmpty()
+    add(MediaHubCatalog(row.id, source, row.subtitleArg ?: source, row.title,
+      isLiveCatalogRowId(row.id), cloudRowId = row.id))
+  }
+}.distinctBy { it.key }
+
+@Composable
+fun MediaHubPortal(items: List<MediaItem>, onClick: () -> Unit) {
+  val home = LocalHomeLayout.current
+  Card(modifier = Modifier.fillMaxWidth().padding(horizontal = home.rowSideInset).clickable(onClick = onClick),
+    shape = StreamDekRadius.cardShape) {
+    Box(Modifier.fillMaxWidth().heightIn(min = home.card(190.dp)).background(
+      Brush.linearGradient(listOf(MaterialTheme.colorScheme.primary.copy(alpha = 0.32f), MaterialTheme.colorScheme.surface, MaterialTheme.colorScheme.secondary.copy(alpha = 0.22f))))) {
+      Row(Modifier.align(Alignment.CenterEnd).padding(16.dp).alpha(0.25f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        items.asSequence().mapNotNull { it.poster ?: it.backdrop }.distinct().take(3).forEach { artwork ->
+          AsyncImage(model = artwork, contentDescription = null, contentScale = ContentScale.Crop,
+            modifier = Modifier.width(home.card(72.dp)).height(home.card(130.dp)).clip(StreamDekRadius.cardShape))
+        }
+      }
+      Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+          Icon(Icons.Rounded.LiveTv, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+          Text(stringResource(R.string.media_hub_title), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
+        }
+        Text(stringResource(R.string.media_hub_portal_description), style = MaterialTheme.typography.bodyMedium,
+          modifier = Modifier.widthIn(max = 260.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          Text(stringResource(R.string.media_hub_explore), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+          Icon(Icons.AutoMirrored.Rounded.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
+        }
+      }
+    }
+  }
+}
+
+/** One source's matching titles, for the All sources view. */
+private data class MediaHubGroup(val sourceKey: String, val items: List<MediaItem>)
+
+/** What the grid shows, and the filters it was worked out for. */
+private data class MediaHubView(
+  val identity: List<Any?>,
+  val items: List<MediaItem>,
+  val groups: List<MediaHubGroup>,
+  val categories: List<String>,
+  val liveKeys: Set<String>,
+)
+
+/** "Add-on", "Playlist" or "CloudStream · <collection>": the same words a title's stream results use. */
+private fun mediaHubOrigin(source: MediaHubCatalog, addonLabel: String, playlistLabel: String): String? = when {
+  source.localItems != null -> playlistLabel
+  source.cloudRowId != null -> cloudStreamProviderOriginLabel(source.sourceName) ?: "CloudStream"
+  source.addon != null -> streamOriginLabel(
+    AddonStream(addonId = source.addon.id, addonName = source.sourceName, name = null, title = null, description = null,
+      url = null, infoHash = null, fileIdx = null, filename = null, quality = null, size = null, cachedBy = emptyList()),
+    addonLabel,
+  )
+  else -> null
+}
+
+@Composable
+fun MediaHubScreen(
+  state: AppUiState,
+  onBack: () -> Unit,
+  onLoad: suspend (MediaHubCatalog, String, Boolean) -> Unit,
+  onOpen: (MediaItem) -> Unit,
+  onToggleFavourite: (MediaItem) -> Unit,
+  onToggleWatchlist: (MediaItem) -> Unit,
+) {
+  var catalogs by remember { mutableStateOf<List<MediaHubCatalog>>(emptyList()) }
+  var catalogsReady by remember { mutableStateOf(false) }
+  LaunchedEffect(state.addons, state.homeCatalogRows, state.m3uChannels, state.m3uVodItems) {
+    catalogs = withContext(Dispatchers.Default) { mediaHubCatalogs(state) }
+    catalogsReady = true
+  }
+  var mode by rememberSaveable { mutableStateOf("all") }
+  var sourceKey by rememberSaveable { mutableStateOf<String?>(null) }
+  var catalogKey by rememberSaveable { mutableStateOf<String?>(null) }
+  var category by rememberSaveable { mutableStateOf<String?>(null) }
+  var query by rememberSaveable { mutableStateOf("") }
+  var settledQuery by remember { mutableStateOf(query.trim()) }
+  var favouritesOnly by rememberSaveable { mutableStateOf(false) }
+  // Poster columns for on-demand titles, and whether channels show as a list or as tiles.
+  var columns by rememberSaveable { mutableIntStateOf(3) }
+  var liveGrid by rememberSaveable { mutableStateOf(false) }
+  var picker by remember { mutableStateOf<String?>(null) }
+  val sources = remember(catalogs) { catalogs.distinctBy { it.sourceKey } }
+  LaunchedEffect(catalogs, catalogsReady) {
+    if (!catalogsReady) return@LaunchedEffect
+    if (sourceKey != null && sources.none { it.sourceKey == sourceKey }) sourceKey = null
+    if (catalogKey != null && catalogs.none { it.key == catalogKey }) catalogKey = null
+  }
+  val scoped = remember(catalogs, mode, sourceKey, catalogKey, settledQuery) {
+    catalogs.filter { (sourceKey == null || it.sourceKey == sourceKey) && (catalogKey == null || it.key == catalogKey) &&
+      (mode == "all" || (mode == "live") == it.live) }
+      .distinctBy { if (it.cloudRowId != null && settledQuery.isNotBlank()) it.sourceKey else it.key }
+  }
+  LaunchedEffect(query) { delay(300); settledQuery = query.trim() }
+  var loading by remember { mutableStateOf(false) }
+  // Catalogue key to the request round loading it, so a cancelled round cannot clear a newer round's entry.
+  var inFlight by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
+  var rounds by remember { mutableIntStateOf(0) }
+  var requestRound by remember { mutableIntStateOf(0) }
+  var retry by remember { mutableStateOf(false) }
+  val requestIdentity = remember(scoped, settledQuery) { scoped.map { it.key } to settledQuery }
+  LaunchedEffect(requestIdentity, requestRound) {
+    val round = ++rounds
+    loading = true
+    try {
+      val pending = scoped.filter { source ->
+        val page = state.mediaHubPages[mediaHubCacheKey(state, source, settledQuery)]
+        source.localItems == null && (page == null || (!page.end && (!page.failed || retry)))
+      }.sortedBy { source -> state.mediaHubPages[mediaHubCacheKey(state, source, settledQuery)]?.nextOffset ?: -1 }
+        .let { candidates -> if (settledQuery.isNotBlank()) candidates else candidates.take(4) }
+      val gate = Semaphore(4)
+      supervisorScope {
+        pending.map { source ->
+          async {
+            gate.withPermit {
+              inFlight = inFlight + (source.key to round)
+              try { onLoad(source, settledQuery, false) } finally { if (inFlight[source.key] == round) inFlight = inFlight - source.key }
+            }
+          }
+        }.awaitAll()
+      }
+    } finally {
+      // A cancelled round must not hide the loading state of the round that replaced it.
+      if (kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]?.isActive == true) { loading = false; retry = false }
+    }
+  }
+  val favouriteKeys = remember(state.favouriteChannels) { state.favouriteChannels.mapTo(hashSetOf()) { it.id } }
+  // Everything that decides which titles match. While the grid still shows an older answer to these,
+  // it shows that it is working instead, so choosing a filter never looks like it did nothing.
+  val filterIdentity = listOf(mode, sourceKey, catalogKey, category, settledQuery, favouritesOnly, state.liveCategoriesEnabled, requestIdentity.first)
+  var view by remember { mutableStateOf<MediaHubView?>(null) }
+  LaunchedEffect(filterIdentity, state.mediaHubPages, favouriteKeys) {
+    view = withContext(Dispatchers.Default) {
+      val owners = HashMap<String, String>()
+      val loaded = scoped.flatMap { source ->
+        (source.localItems ?: state.mediaHubPages[mediaHubCacheKey(state, source, settledQuery)]?.items.orEmpty())
+          .onEach { item -> owners.getOrPut(mediaHubItemKey(item)) { source.sourceKey } }
+      }
+      val loadedIds = loaded.mapTo(hashSetOf()) { it.id }
+      val favourites = if (!favouritesOnly) emptyList() else state.favouriteChannels.filter { favourite ->
+        if (favourite.id in loadedIds) return@filter false
+        val owner = scoped.firstOrNull { source -> source.sourceKey == favourite.sourceAddonId ||
+          (source.cloudRowId != null && decodeCloudStreamMediaId(favourite.id)?.first == source.sourceName) } ?: return@filter false
+        owners.getOrPut(mediaHubItemKey(favourite)) { owner.sourceKey }
+        true
+      }
+      val items = (loaded + favourites).distinctBy(::mediaHubItemKey).filterNot {
+        AdultContentFilter.isBlockedItem(title = it.title, genres = it.genres) || AdultContentFilter.isBlocked(it.sourceCatalogName)
+      }
+      val grouped = if (scoped.isNotEmpty() && scoped.all { it.live } && state.liveCategoriesEnabled) buildBrowseCategories(items) else emptyList()
+      val base = if (category == null) items else grouped.firstOrNull { it.name == category }?.items.orEmpty()
+      val matches = base.filter { item ->
+        (!favouritesOnly || item.id in favouriteKeys) &&
+          (settledQuery.isBlank() || item.title.contains(settledQuery, true) || item.description.contains(settledQuery, true))
+      }
+      val live = scoped.filter { it.live }.flatMap { source ->
+        source.localItems ?: state.mediaHubPages[mediaHubCacheKey(state, source, settledQuery)]?.items.orEmpty()
+      }.mapTo(hashSetOf(), ::mediaHubItemKey)
+      val groups = matches.groupBy { owners[mediaHubItemKey(it)].orEmpty() }.map { (key, owned) -> MediaHubGroup(key, owned) }
+      MediaHubView(filterIdentity, matches, groups, grouped.map { it.name }, live)
+    }
+  }
+  val currentView = view
+  val filtering = currentView == null || currentView.identity != filterIdentity
+  val categories = currentView?.categories.orEmpty()
+  val liveKeys = currentView?.liveKeys.orEmpty()
+  val pages = scoped.mapNotNull { state.mediaHubPages[mediaHubCacheKey(state, it, settledQuery)] }
+  val hasMore = scoped.any { source -> source.localItems == null && state.mediaHubPages[mediaHubCacheKey(state, source, settledQuery)]?.let { !it.end && !it.failed } != false }
+  val failed = pages.any { it.failed }
+  val searchLimited = settledQuery.isNotBlank() && scoped.any { !it.supportsSearch }
+  val updating = loading || filtering || query.trim() != settledQuery
+
+  // All sources: each source is a collapsible section, as a title's stream results are. The first
+  // source with titles opens and the rest are one tap away; a source still answering gets its
+  // heading straight away, with a spinner, so it is visibly on its way rather than missing.
+  val groupedBySource = sourceKey == null && sources.size > 1
+  val loadingSources = remember(inFlight, catalogs) { catalogs.filter { it.key in inFlight }.mapTo(hashSetOf()) { it.sourceKey } }
+  val sourceNames = remember(sources) { sources.associate { it.sourceKey to it.sourceName } }
+  val addonOrigin = stringResource(R.string.stream_origin_addon)
+  val playlistOrigin = stringResource(R.string.media_hub_origin_playlist)
+  val sourceOrigins = remember(sources, addonOrigin, playlistOrigin) { sources.associate { it.sourceKey to mediaHubOrigin(it, addonOrigin, playlistOrigin) } }
+  // Re-keyed on the filters, as the stream results re-key on position: a new filter starts from its
+  // own first source open instead of inheriting a collapse that leaves nothing on the page.
+  val groupIdentity = listOf(mode, catalogKey, category, settledQuery, favouritesOnly).joinToString("")
+  // Sources in the order they answered. A slow source joins below the ones already showing rather
+  // than pushing them down, so the open section and the scroll position stay where they are.
+  var groupOrder by rememberSaveable(groupIdentity) { mutableStateOf(emptyList<String>()) }
+  var openedGroups by rememberSaveable(groupIdentity) { mutableStateOf(emptySet<String>()) }
+  var closedGroups by rememberSaveable(groupIdentity) { mutableStateOf(emptySet<String>()) }
+  val shownGroups = remember(currentView, filtering, scoped, loadingSources, groupOrder) {
+    if (currentView == null || filtering) emptyList() else {
+      val byKey = currentView.groups.associateBy { it.sourceKey }
+      val scopedKeys = scoped.map { it.sourceKey }.distinct()
+      val filled = groupOrder.filter { key -> byKey[key]?.items?.isNotEmpty() == true } +
+        scopedKeys.filter { key -> key !in groupOrder && byKey[key]?.items?.isNotEmpty() == true }
+      filled.map { byKey.getValue(it) } +
+        scopedKeys.filter { key -> key !in filled && key in loadingSources }.map { MediaHubGroup(it, emptyList()) }
+    }
+  }
+  val filledKeys = shownGroups.filter { it.items.isNotEmpty() }.map { it.sourceKey }
+  LaunchedEffect(groupIdentity, filledKeys) {
+    val arrived = filledKeys.filterNot { it in groupOrder }
+    if (arrived.isNotEmpty()) groupOrder = groupOrder + arrived
+  }
+  val lead = filledKeys.firstOrNull()
+  fun groupExpanded(key: String) = key in openedGroups || (key == lead && key !in closedGroups)
+
+  val grid = rememberLazyGridState()
+  var previousFilters by remember { mutableStateOf(listOf(mode, sourceKey, catalogKey, category, settledQuery, favouritesOnly.toString())) }
+  LaunchedEffect(mode, sourceKey, catalogKey, category, settledQuery, favouritesOnly) {
+    val filters = listOf(mode, sourceKey, catalogKey, category, settledQuery, favouritesOnly.toString())
+    if (filters != previousFilters) { grid.scrollToItem(0); previousFilters = filters }
+  }
+  ReportScrollTop { grid.firstVisibleItemIndex == 0 && grid.firstVisibleItemScrollOffset == 0 }
+  BackHandler(onBack = onBack)
+  val onlyLive = mode == "live" || (scoped.isNotEmpty() && scoped.all { it.live })
+  val hasLive = onlyLive || scoped.any { it.live }
+  val light = MaterialTheme.colorScheme.background.luminance() > 0.5f
+  val lastWatched = remember(state.localContinueWatching, state.m3uChannels, state.favouriteChannels, scoped) {
+    state.lastWatchedLiveChannel()?.takeIf { channel -> scoped.any { source ->
+      source.live && (source.sourceKey == channel.sourceAddonId ||
+        (source.cloudRowId != null && decodeCloudStreamMediaId(channel.id)?.first == source.sourceName))
+    } }
+  }
+  val resumeChannel = lastWatched?.takeIf { settledQuery.isBlank() && !favouritesOnly && category == null }
+  val availableCatalogs = catalogs.filter { (sourceKey == null || it.sourceKey == sourceKey) && (mode == "all" || (mode == "live") == it.live) }
+
+  // The same arrangement as a streaming network's page and a View all list: the title row condenses
+  // away, the search field pins with the layout button coming down beside it, the filters pin in a
+  // row of their own beneath, and the last watched channel rides just below the filters.
+  val modernHeader = state.headerStyle == HeaderStyle.Modern
+  val headerHazeState = rememberHazeState()
+  val headerScope = remember { ScrollAwareHeaderScope() }
+  val density = LocalDensity.current
+  val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+  var headerHeight by remember { mutableStateOf(if (modernHeader) 190.dp else 170.dp) }
+  var filtersHeight by remember { mutableStateOf(48.dp) }
+  // The resting height, which is what the grid makes room for. The card slims once pinned, and that
+  // smaller size must not pull the grid up under it mid-scroll.
+  var resumeHeight by remember(resumeChannel?.id) { mutableStateOf(0.dp) }
+  val collapseDistance = with(density) { 96.dp.toPx() }
+  // By absolute grid position: the filters only rest without a surface while the grid is at its top,
+  // so the header must never reopen partway down it.
+  val progress: () -> Float = {
+    if (grid.firstVisibleItemIndex > 0) 1f
+    else (grid.firstVisibleItemScrollOffset / collapseDistance).coerceIn(0f, 1f)
+  }
+  // The header's minimised state: the last watched channel slims down only once it is pinned there.
+  val resumeCompact by remember(grid, collapseDistance) {
+    derivedStateOf { grid.firstVisibleItemIndex > 0 || grid.firstVisibleItemScrollOffset >= collapseDistance }
+  }
+  val resumeMotion = LocalMotionSettings.current
+  // Held as State and read only inside the card and its layout, so a frame never recomposes the grid.
+  val resumeFraction = animateFloatAsState(
+    if (resumeCompact) 1f else 0f,
+    tween(resumeMotion.scaled(MotionDuration.standard), easing = FastOutSlowInEasing),
+    label = "resumeCompact",
+  )
+  val filtersTop = headerHeight + 4.dp
+  val filtersNaturalTop: androidx.compose.ui.unit.Density.() -> Int = {
+    if (grid.firstVisibleItemIndex > 0) Int.MIN_VALUE
+    else filtersTop.roundToPx() - grid.firstVisibleItemScrollOffset
+  }
+  val fieldInset = HeaderSearchInset.content + if (modernHeader) HeaderSearchInset.modernPanel else 0.dp
+  val gridColumns = if (onlyLive && !liveGrid) 1 else adaptiveMediaColumns(columns)
+  val sideMargin = if (gridColumns == 1) 20.dp else MediaGridSideMargin
+  fun isLive(item: MediaItem) = onlyLive || mediaHubItemKey(item) in liveKeys
+  fun androidx.compose.foundation.lazy.grid.LazyGridScope.hubItems(items: List<MediaItem>) {
+    gridItems(items, key = ::mediaHubItemKey, span = { item -> if (isLive(item) && !liveGrid) GridItemSpan(maxLineSpan) else GridItemSpan(1) }) { item ->
+      val favourite = item.id in favouriteKeys
+      when {
+        isLive(item) && !liveGrid -> LiveChannelRow(item, favourite, light, { onOpen(item) }, { onToggleFavourite(item) })
+        // A tile has no star of its own, so holding one stars it; the badge shows the result.
+        isLive(item) -> LibraryPosterTile(item = item, modifier = Modifier.fillMaxWidth(), showMeta = false, favourite = favourite, onClick = { onOpen(item) }, onLongPress = { onToggleFavourite(item) })
+        else -> LibraryPosterTile(item = item, modifier = Modifier.fillMaxWidth(), showMeta = true, onClick = { onOpen(item) }, onLongPress = { onToggleWatchlist(item) })
+      }
+    }
+  }
+
+  Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    LazyVerticalGrid(
+      columns = GridCells.Fixed(gridColumns),
+      state = grid,
+      modifier = Modifier.fillMaxSize().glassSource(headerHazeState),
+      contentPadding = PaddingValues(
+        start = sideMargin,
+        end = sideMargin,
+        top = filtersTop + filtersHeight + 12.dp + if (resumeChannel != null) resumeHeight + 8.dp else 0.dp,
+        bottom = 126.dp,
+      ),
+      horizontalArrangement = Arrangement.spacedBy(LocalStreamDekSpacing.current.gridGap),
+      verticalArrangement = Arrangement.spacedBy(if (gridColumns == 1) 12.dp else MediaGridRowGap),
+    ) {
+      if (searchLimited) item(key = "search_limited", span = { GridItemSpan(maxLineSpan) }) {
+        Text(stringResource(R.string.media_hub_search_limited), style = MaterialTheme.typography.bodySmall)
+      }
+      when {
+        catalogsReady && catalogs.isEmpty() -> item(key = "no_sources", span = { GridItemSpan(maxLineSpan) }) {
+          Text(stringResource(R.string.media_hub_empty), modifier = Modifier.padding(vertical = 24.dp))
+        }
+        currentView == null || filtering || (loading && currentView.items.isEmpty()) -> item(key = "loading", span = { GridItemSpan(maxLineSpan) }) {
+          Column(Modifier.fillMaxWidth().height(220.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically)) {
+            CircularProgressIndicator()
+            Text(
+              stringResource(if (!catalogsReady || (loading && !filtering)) R.string.media_hub_loading else R.string.media_hub_updating),
+              color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.68f),
+              style = MaterialTheme.typography.bodyMedium,
+            )
+          }
+        }
+        currentView.items.isEmpty() -> item(key = "no_results", span = { GridItemSpan(maxLineSpan) }) {
+          Text(stringResource(R.string.empty_no_results), modifier = Modifier.padding(vertical = 24.dp))
+        }
+        groupedBySource -> shownGroups.forEach { group ->
+          val open = group.items.isNotEmpty() && groupExpanded(group.sourceKey)
+          item(key = "group:${group.sourceKey}", span = { GridItemSpan(maxLineSpan) }, contentType = "source_group") {
+            CollapsibleSourceHeader(
+              title = sourceNames[group.sourceKey] ?: group.sourceKey,
+              originLabel = sourceOrigins[group.sourceKey],
+              count = group.items.size,
+              expanded = open,
+              loading = group.sourceKey in loadingSources,
+              onToggle = {
+                if (open) { openedGroups = openedGroups - group.sourceKey; closedGroups = closedGroups + group.sourceKey }
+                else { closedGroups = closedGroups - group.sourceKey; openedGroups = openedGroups + group.sourceKey }
+              },
+              modifier = Modifier.padding(horizontal = if (gridColumns == 1) 0.dp else 12.dp),
+            )
+          }
+          if (open) hubItems(group.items)
+        }
+        else -> hubItems(currentView.items)
+      }
+      item(key = "footer", span = { GridItemSpan(maxLineSpan) }) {
+        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+          if (loading && !filtering && currentView?.items?.isNotEmpty() == true) CircularProgressIndicator(Modifier.padding(16.dp).size(28.dp))
+          if (failed) {
+            Text(stringResource(R.string.media_hub_partial), style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { retry = true; requestRound++ }, enabled = !loading) { Text(stringResource(R.string.action_retry)) }
+          }
+          if (hasMore && !loading) TextButton(onClick = { requestRound++ }) { Text(stringResource(R.string.browse_load_more_titles)) }
+        }
+      }
+    }
+
+    val filters = buildList<@Composable () -> Unit> {
+      if (catalogs.any { it.live } && catalogs.any { !it.live }) {
+        listOf("all" to R.string.filter_all, "live" to R.string.live_tv, "vod" to R.string.media_hub_vod).forEach { (key, label) ->
+          add {
+            FilterChip(selected = mode == key, onClick = { mode = key; catalogKey = null; category = null; favouritesOnly = false },
+              label = { Text(stringResource(label), maxLines = 1) }, border = null, colors = borderlessFilterChipColors())
+          }
+        }
+      }
+      if (sources.size > 1) add {
+        FilterChip(selected = sourceKey != null, onClick = { picker = "source" },
+          label = { Text(sources.firstOrNull { it.sourceKey == sourceKey }?.sourceName ?: stringResource(R.string.browse_all_sources), maxLines = 1) },
+          trailingIcon = { Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(18.dp)) },
+          border = null, colors = borderlessFilterChipColors())
+      }
+      if (availableCatalogs.size > 1) add {
+        FilterChip(selected = catalogKey != null, onClick = { picker = "catalog" },
+          label = { Text(catalogs.firstOrNull { it.key == catalogKey }?.title ?: stringResource(R.string.media_hub_collections), maxLines = 1) },
+          trailingIcon = { Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(18.dp)) },
+          border = null, colors = borderlessFilterChipColors())
+      }
+      if (onlyLive) add {
+        FilterChip(selected = favouritesOnly, onClick = { favouritesOnly = !favouritesOnly },
+          label = { Text(stringResource(R.string.home_row_live_favourites), maxLines = 1) }, border = null, colors = borderlessFilterChipColors())
+      }
+      if (categories.size > 1) add {
+        FilterChip(selected = category != null, onClick = { picker = "category" },
+          label = { Text(category ?: stringResource(R.string.browse_choose_category), maxLines = 1) },
+          trailingIcon = { Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(18.dp)) },
+          border = null, colors = borderlessFilterChipColors())
+      }
+    }
+    PinnedSectionChrome(
+      title = null,
+      progress = progress,
+      hazeState = headerHazeState,
+      defaultStyle = !modernHeader,
+      fieldInset = fieldInset,
+      onFullHeight = { filtersHeight = with(density) { it.toDp() } },
+      filterSpacing = 10.dp,
+      modifier = Modifier.fillMaxWidth().zIndex(1f).pinnedBelowHeader(headerScope, statusTop, filtersNaturalTop),
+      filters = filters,
+    )
+    // A thin bar just under the filters while anything is still arriving or being worked out: it
+    // stays in view however far down the grid is, where the spinner at the end of the grid does not.
+    if (updating && (!catalogsReady || catalogs.isNotEmpty())) {
+      LinearProgressIndicator(
+        modifier = Modifier.fillMaxWidth().zIndex(1f).pinnedBelowHeader(headerScope, statusTop, filtersNaturalTop)
+          .offset { IntOffset(0, (filtersHeight + 2.dp).roundToPx()) }
+          .padding(horizontal = fieldInset + 16.dp).height(2.dp).clip(StreamDekRadius.pill),
+      )
+    }
+    resumeChannel?.let { channel ->
+      val restInset = if (modernHeader) HeaderSearchInset.modernPanel else 0.dp
+      Box(
+        Modifier.fillMaxWidth().zIndex(1f).pinnedBelowHeader(headerScope, statusTop, filtersNaturalTop)
+          .offset { IntOffset(0, (filtersHeight + 8.dp).roundToPx()) }
+          // The header's width at rest; once slimmed and pinned, the search field's and the pinned
+          // filters' width. Moved on the card's own fraction, in layout, so it flows with the card.
+          // Only the resting height is kept for the grid, so the slim card cannot move the grid.
+          .layout { measurable, constraints ->
+            val inset = androidx.compose.ui.unit.lerp(restInset, fieldInset, resumeFraction.value).roundToPx()
+            val width = (constraints.maxWidth - inset * 2).coerceAtLeast(0)
+            val placeable = measurable.measure(constraints.copy(minWidth = width, maxWidth = width))
+            layout(constraints.maxWidth, placeable.height) { placeable.placeRelative(inset, 0) }
+          }
+          .onSizeChanged { resumeHeight = maxOf(resumeHeight, with(density) { it.height.toDp() }) },
+      ) {
+        // Titles scroll beneath it once it has pinned, so it gathers the filters' glass as it does.
+        HeaderGlassSurface(
+          hazeState = headerHazeState,
+          shape = StreamDekRadius.panelShape,
+          darkInDarkTheme = !modernHeader,
+          modifier = Modifier.matchParentSize().graphicsLayer { alpha = progress() },
+        )
+        LiveResumeCard(channel, light, onPlay = { onOpen(channel) }, compactFraction = { resumeFraction.value })
+      }
+    }
+    ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(2f))
+    ScrollAwareHeader(
+      surface = if (modernHeader) ScrollAwareHeaderSurface.Glass(headerHazeState)
+        else ScrollAwareHeaderSurface.Solid(MaterialTheme.colorScheme.background, pillAroundAnchor = true, hazeState = headerHazeState),
+      modifier = Modifier.align(Alignment.TopCenter).zIndex(2f).fillMaxWidth().statusBarsPadding()
+        .onSizeChanged { headerHeight = with(density) { it.height.toDp() } + statusTop },
+      keepAnchorVisible = true,
+      panelPadding = if (modernHeader) PaddingValues(start = HeaderSearchInset.modernPanel, end = HeaderSearchInset.modernPanel, top = 12.dp) else PaddingValues(0.dp),
+      contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = 12.dp),
+      headerScope = headerScope,
+      fractionOverride = { progress() * ScrollChromeMachine.COMPACT },
+    ) {
+      Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+          GlassCircleButton(modifier = Modifier.compactsAway(), borderless = true, onClick = onBack) {
+            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.action_back), tint = MaterialTheme.colorScheme.onBackground)
+          }
+          Box(modifier = Modifier.weight(1f).compactsAway()) {
+            AdaptivePageTitle(title = stringResource(R.string.media_hub_title))
+          }
+          // Stays when the title goes: it comes down to the end of the search field's row. With channels
+          // on the page it steps list, three columns, two columns - every press changes what is shown,
+          // including under All, where titles alone following the columns left channel rows unchanged.
+          // Without channels it switches titles between three columns and two.
+          GlassCircleButton(
+            modifier = Modifier.joinsAnchorRow(),
+            hazeState = headerHazeState,
+            borderless = true,
+            onClick = {
+              when {
+                !hasLive -> columns = if (columns == 3) 2 else 3
+                !liveGrid -> { liveGrid = true; columns = 3 }
+                columns == 3 -> columns = 2
+                else -> { liveGrid = false; columns = 3 }
+              }
+            },
+          ) {
+            // Shows the layout the next press moves to, as the other pages' layout buttons do.
+            Icon(
+              when {
+                !hasLive -> if (columns == 3) Icons.Rounded.ViewAgenda else Icons.Rounded.ViewModule
+                !liveGrid -> Icons.Rounded.ViewModule
+                columns == 3 -> Icons.Rounded.ViewAgenda
+                else -> Icons.AutoMirrored.Rounded.ViewList
+              },
+              contentDescription = stringResource(if (hasLive) R.string.a11y_change_layout else R.string.a11y_change_grid_size),
+              tint = MaterialTheme.colorScheme.onBackground,
+            )
+          }
+        }
+        HeaderSearchField(
+          query = query,
+          onQueryChange = { query = it; if (it.isNotBlank()) { catalogKey = null; category = null } },
+          placeholder = stringResource(R.string.media_hub_search),
+          yieldsToJoinedControl = true,
+        )
+      }
+    }
+  }
+
+  when (picker) {
+    "source" -> HubPicker(stringResource(R.string.browse_all_sources), sources.map { it.sourceKey to it.sourceName }, sourceKey,
+      onDismiss = { picker = null }, onPick = { sourceKey = it; catalogKey = null; category = null; picker = null })
+    "catalog" -> HubPicker(stringResource(R.string.media_hub_collections), availableCatalogs.map { it.key to stringResource(R.string.media_hub_source_collection, it.sourceName, it.title) }, catalogKey,
+      onDismiss = { picker = null }, onPick = { catalogKey = it; category = null; query = ""; picker = null })
+    "category" -> HubPicker(stringResource(R.string.browse_choose_category), categories.map { it to it }, category,
+      onDismiss = { picker = null }, onPick = { category = it; picker = null })
+  }
+}
+
+@Composable
+private fun HubPicker(title: String, entries: List<Pair<String, String>>, selected: String?, onDismiss: () -> Unit, onPick: (String?) -> Unit) {
+  var query by rememberSaveable { mutableStateOf("") }
+  val filtered = remember(entries, query) { entries.filter { it.second.contains(query.trim(), true) } }
+  Dialog(onDismissRequest = onDismiss) {
+    Surface(shape = StreamDekRadius.cardShape) {
+      Column(Modifier.fillMaxWidth().heightIn(max = 560.dp).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        if (entries.size > 12) OutlinedTextField(value = query, onValueChange = { query = it },
+          placeholder = { Text(stringResource(R.string.nav_search)) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        LazyColumn(Modifier.weight(1f, fill = false)) {
+          item { LiveCategorySheetRow(stringResource(R.string.filter_all), null, selected == null, { onPick(null) }) }
+          items(filtered, key = { it.first }) { (key, label) -> LiveCategorySheetRow(label, null, selected == key, { onPick(key) }) }
+        }
+        TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text(stringResource(R.string.action_cancel)) }
+      }
+    }
+  }
+}
+
 }

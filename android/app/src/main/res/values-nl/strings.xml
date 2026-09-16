@@ -1629,4 +1629,21 @@
   <string name="visual_effects_note_unsupported">Deze Android-versie kan niet vervagen, dus glas gebruikt getinte vlakken.</string>
   <string name="cloudstream_address">Adres</string>
   <string name="cloudstream_settings_failed">De instellingen van deze plugin konden niet worden geopend.</string>
+
+  <string name="media_hub_title">StreamDek Fuse</string>
+  <string name="media_hub_setting_description">Bundel live-tv en VOD uit je plug-ins, add-ons en afspeellijsten op één plek op Home.</string>
+  <string name="media_hub_portal_description">Live-tv en bibliotheken op aanvraag, samen op één plek.</string>
+  <string name="media_hub_explore">Ontdek je bronnen</string>
+  <string name="media_hub_vod">VOD</string>
+  <string name="media_hub_empty">Geen bronnen beschikbaar. Voeg een plug-in, add-on of afspeellijst toe of schakel deze in via Instellingen.</string>
+  <string name="media_hub_search">Zoeken in StreamDek Fuse</string>
+  <string name="media_hub_search_limited">Sommige bronnen ondersteunen geen cataloguszoekopdracht. Daar worden alleen geladen titels doorzocht; laad meer om meer titels mee te nemen.</string>
+  <string name="media_hub_partial">Sommige bronnen konden niet worden geladen. Je andere bronnen blijven beschikbaar.</string>
+  <string name="media_hub_collections">Collecties</string>
+  <string name="media_hub_source_collection">%1$s · %2$s</string>
+  <string name="media_hub_add_favourite">%1$s toevoegen aan favorieten</string>
+  <string name="media_hub_remove_favourite">%1$s verwijderen uit favorieten</string>
+  <string name="media_hub_loading">Je bronnen worden geladen…</string>
+  <string name="media_hub_updating">Resultaten worden bijgewerkt…</string>
+  <string name="media_hub_origin_playlist">Afspeellijst</string>
 </resources>

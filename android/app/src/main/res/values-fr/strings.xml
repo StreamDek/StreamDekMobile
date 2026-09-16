@@ -1679,4 +1679,21 @@
   <string name="visual_effects_note_unsupported">Cette version d\'Android ne peut pas flouter, le verre utilise donc des surfaces teintées.</string>
   <string name="cloudstream_address">Adresse</string>
   <string name="cloudstream_settings_failed">Impossible d’ouvrir les paramètres de ce plugin.</string>
+
+  <string name="media_hub_title">StreamDek Fuse</string>
+  <string name="media_hub_setting_description">Regroupez la TV en direct et la VOD de vos plugins, extensions et listes de lecture dans un espace sur Accueil.</string>
+  <string name="media_hub_portal_description">TV en direct et bibliothèques à la demande réunies.</string>
+  <string name="media_hub_explore">Explorer vos sources</string>
+  <string name="media_hub_vod">VOD</string>
+  <string name="media_hub_empty">Aucune source disponible. Ajoutez ou activez un plugin, une extension ou une liste de lecture dans les paramètres.</string>
+  <string name="media_hub_search">Rechercher dans StreamDek Fuse</string>
+  <string name="media_hub_search_limited">Certaines sources ne proposent pas de recherche dans leur catalogue. Seuls les titres chargés y sont recherchés ; chargez-en davantage pour élargir la recherche.</string>
+  <string name="media_hub_partial">Certaines sources ne sont pas disponibles. Les autres restent accessibles.</string>
+  <string name="media_hub_collections">Collections</string>
+  <string name="media_hub_source_collection">%1$s · %2$s</string>
+  <string name="media_hub_add_favourite">Ajouter %1$s aux favoris</string>
+  <string name="media_hub_remove_favourite">Retirer %1$s des favoris</string>
+  <string name="media_hub_loading">Chargement de vos sources…</string>
+  <string name="media_hub_updating">Mise à jour des résultats…</string>
+  <string name="media_hub_origin_playlist">Playlist</string>
 </resources>

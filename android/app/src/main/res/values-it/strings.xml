@@ -1643,4 +1643,21 @@
   <string name="visual_effects_note_unsupported">Questa versione di Android non supporta la sfocatura, quindi il vetro usa superfici colorate.</string>
   <string name="cloudstream_address">Indirizzo</string>
   <string name="cloudstream_settings_failed">Impossibile aprire le impostazioni di questo plugin.</string>
+
+  <string name="media_hub_title">StreamDek Fuse</string>
+  <string name="media_hub_setting_description">Riunisci TV in diretta e VOD da plugin, componenti aggiuntivi e playlist in una sola destinazione nella Home.</string>
+  <string name="media_hub_portal_description">TV in diretta e cataloghi on demand, tutti insieme.</string>
+  <string name="media_hub_explore">Esplora le tue fonti</string>
+  <string name="media_hub_vod">VOD</string>
+  <string name="media_hub_empty">Nessuna fonte disponibile. Aggiungi o attiva un plugin, componente aggiuntivo o playlist nelle Impostazioni.</string>
+  <string name="media_hub_search">Cerca in StreamDek Fuse</string>
+  <string name="media_hub_search_limited">Alcune fonti non supportano la ricerca nel catalogo. Per queste vengono cercati solo i titoli caricati; caricane altri per ampliare la ricerca.</string>
+  <string name="media_hub_partial">Impossibile caricare alcune fonti. Le altre sono ancora disponibili.</string>
+  <string name="media_hub_collections">Raccolte</string>
+  <string name="media_hub_source_collection">%1$s · %2$s</string>
+  <string name="media_hub_add_favourite">Aggiungi %1$s ai preferiti</string>
+  <string name="media_hub_remove_favourite">Rimuovi %1$s dai preferiti</string>
+  <string name="media_hub_loading">Caricamento delle tue fonti…</string>
+  <string name="media_hub_updating">Aggiornamento dei risultati…</string>
+  <string name="media_hub_origin_playlist">Playlist</string>
 </resources>

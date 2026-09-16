@@ -1643,4 +1643,21 @@
   <string name="visual_effects_note_unsupported">This version of Android can\'t blur, so glass uses tinted surfaces.</string>
   <string name="cloudstream_address">Address</string>
   <string name="cloudstream_settings_failed">Could not open this plugin’s settings.</string>
+
+  <string name="media_hub_title">StreamDek Fuse</string>
+  <string name="media_hub_setting_description">Combine Live TV and VOD from your plugins, add-ons and playlists in one destination on Home.</string>
+  <string name="media_hub_portal_description">Live TV and on-demand libraries, together in one place.</string>
+  <string name="media_hub_explore">Explore your sources</string>
+  <string name="media_hub_vod">VOD</string>
+  <string name="media_hub_empty">No sources available. Add or enable a plugin, add-on or playlist in Settings.</string>
+  <string name="media_hub_search">Search StreamDek Fuse</string>
+  <string name="media_hub_search_limited">Some sources do not support catalogue search. For those sources, only loaded titles are searched; load more to include more titles.</string>
+  <string name="media_hub_partial">Some sources could not load. Your other sources are still available.</string>
+  <string name="media_hub_collections">Collections</string>
+  <string name="media_hub_source_collection">%1$s · %2$s</string>
+  <string name="media_hub_add_favourite">Add %1$s to favourites</string>
+  <string name="media_hub_remove_favourite">Remove %1$s from favourites</string>
+  <string name="media_hub_loading">Loading your sources…</string>
+  <string name="media_hub_updating">Updating results…</string>
+  <string name="media_hub_origin_playlist">Playlist</string>
 </resources>

@@ -1643,4 +1643,21 @@
   <string name="visual_effects_note_unsupported">Esta versión de Android no puede desenfocar, así que el cristal usa superficies tintadas.</string>
   <string name="cloudstream_address">Dirección</string>
   <string name="cloudstream_settings_failed">No se pudieron abrir los ajustes de este complemento.</string>
+
+  <string name="media_hub_title">StreamDek Fuse</string>
+  <string name="media_hub_setting_description">Reúne TV en directo y VOD de tus plugins, complementos y listas en un solo destino de Inicio.</string>
+  <string name="media_hub_portal_description">TV en directo y bibliotecas bajo demanda, en un mismo lugar.</string>
+  <string name="media_hub_explore">Explorar tus fuentes</string>
+  <string name="media_hub_vod">VOD</string>
+  <string name="media_hub_empty">No hay fuentes disponibles. Añade o activa un plugin, complemento o lista en Ajustes.</string>
+  <string name="media_hub_search">Buscar en StreamDek Fuse</string>
+  <string name="media_hub_search_limited">Algunas fuentes no permiten buscar en el catálogo. En ellas solo se buscan los títulos cargados; carga más para incluir más títulos.</string>
+  <string name="media_hub_partial">No se pudieron cargar algunas fuentes. Las demás siguen disponibles.</string>
+  <string name="media_hub_collections">Colecciones</string>
+  <string name="media_hub_source_collection">%1$s · %2$s</string>
+  <string name="media_hub_add_favourite">Añadir %1$s a favoritos</string>
+  <string name="media_hub_remove_favourite">Quitar %1$s de favoritos</string>
+  <string name="media_hub_loading">Cargando tus fuentes…</string>
+  <string name="media_hub_updating">Actualizando resultados…</string>
+  <string name="media_hub_origin_playlist">Lista</string>
 </resources>

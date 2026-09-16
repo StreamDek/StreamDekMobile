@@ -1629,4 +1629,21 @@
   <string name="visual_effects_note_unsupported">Diese Android-Version kann nicht weichzeichnen, daher nutzt Glas getönte Flächen.</string>
   <string name="cloudstream_address">Adresse</string>
   <string name="cloudstream_settings_failed">Die Einstellungen dieses Plugins konnten nicht geöffnet werden.</string>
+
+  <string name="media_hub_title">StreamDek Fuse</string>
+  <string name="media_hub_setting_description">Live-TV und VOD aus Plugins, Add-ons und Playlists an einem Ort auf der Startseite bündeln.</string>
+  <string name="media_hub_portal_description">Live-TV und Mediatheken an einem Ort.</string>
+  <string name="media_hub_explore">Quellen entdecken</string>
+  <string name="media_hub_vod">VOD</string>
+  <string name="media_hub_empty">Keine Quellen verfügbar. Aktiviere oder ergänze ein Plugin, Add-on oder eine Playlist in den Einstellungen.</string>
+  <string name="media_hub_search">StreamDek Fuse durchsuchen</string>
+  <string name="media_hub_search_limited">Einige Quellen unterstützen keine Katalogsuche. Dort werden nur geladene Titel durchsucht; lade weitere Titel, um sie einzubeziehen.</string>
+  <string name="media_hub_partial">Einige Quellen konnten nicht geladen werden. Die anderen sind weiterhin verfügbar.</string>
+  <string name="media_hub_collections">Sammlungen</string>
+  <string name="media_hub_source_collection">%1$s · %2$s</string>
+  <string name="media_hub_add_favourite">%1$s zu Favoriten hinzufügen</string>
+  <string name="media_hub_remove_favourite">%1$s aus Favoriten entfernen</string>
+  <string name="media_hub_loading">Deine Quellen werden geladen…</string>
+  <string name="media_hub_updating">Ergebnisse werden aktualisiert…</string>
+  <string name="media_hub_origin_playlist">Playlist</string>
 </resources>

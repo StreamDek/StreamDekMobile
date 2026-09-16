@@ -1739,4 +1739,21 @@
   <string name="visual_effects_note_unsupported">Ta wersja Androida nie obsługuje rozmycia, więc szkło używa barwionych powierzchni.</string>
   <string name="cloudstream_address">Adres</string>
   <string name="cloudstream_settings_failed">Nie udało się otworzyć ustawień tej wtyczki.</string>
+
+  <string name="media_hub_title">StreamDek Fuse</string>
+  <string name="media_hub_setting_description">Połącz telewizję na żywo i VOD z wtyczek, dodatków i playlist w jednym miejscu na ekranie głównym.</string>
+  <string name="media_hub_portal_description">Telewizja na żywo i biblioteki na żądanie w jednym miejscu.</string>
+  <string name="media_hub_explore">Przeglądaj źródła</string>
+  <string name="media_hub_vod">VOD</string>
+  <string name="media_hub_empty">Brak dostępnych źródeł. Dodaj lub włącz wtyczkę, dodatek albo playlistę w Ustawieniach.</string>
+  <string name="media_hub_search">Szukaj w StreamDek Fuse</string>
+  <string name="media_hub_search_limited">Niektóre źródła nie obsługują wyszukiwania w katalogu. Przeszukiwane są w nich tylko wczytane tytuły; wczytaj więcej, aby rozszerzyć wyszukiwanie.</string>
+  <string name="media_hub_partial">Nie udało się wczytać niektórych źródeł. Pozostałe są nadal dostępne.</string>
+  <string name="media_hub_collections">Kolekcje</string>
+  <string name="media_hub_source_collection">%1$s · %2$s</string>
+  <string name="media_hub_add_favourite">Dodaj %1$s do ulubionych</string>
+  <string name="media_hub_remove_favourite">Usuń %1$s z ulubionych</string>
+  <string name="media_hub_loading">Wczytywanie źródeł…</string>
+  <string name="media_hub_updating">Aktualizowanie wyników…</string>
+  <string name="media_hub_origin_playlist">Playlista</string>
 </resources>

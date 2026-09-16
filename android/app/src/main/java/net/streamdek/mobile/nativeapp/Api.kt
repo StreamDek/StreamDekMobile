@@ -40,6 +40,7 @@ private const val PROFILE_PREFS = "streamdek_native_profiles"
 private const val GUEST_PROFILE_PREFS = "streamdek_native_guest_profiles"
 private const val WATCHLIST_PREFS = "streamdek_native_watchlist"
 private const val FAVOURITE_CHANNELS_PREFS = "streamdek_native_favourite_channels"
+private const val FAVOURITE_CHANNELS_SYNC_PREFS = "streamdek_native_favourite_channels_sync"
 private const val CLIENT_IDENTITY_PREFS = "streamdek_native_client_identity"
 private const val CLIENT_DEVICE_ID_KEY = "device_id"
 private const val CLIENT_PREVIOUS_DEVICE_ID_KEY = "previous_device_id"
@@ -223,6 +224,16 @@ class WatchlistStore(context: Context) {
 class FavouriteChannelStore(context: Context) {
   private val prefs = context.getSharedPreferences(FAVOURITE_CHANNELS_PREFS, Context.MODE_PRIVATE)
 
+  /**
+   * Local edits the account has not confirmed yet, by owner, each stamped with the edit it records.
+   *
+   * Without this the account's copy always won: a profile refresh wrote whatever the account held
+   * over the local list, so a channel starred while that fetch was out, or whose upload had failed
+   * or not yet landed, quietly disappeared again. A pending edit is newer than the account's copy
+   * and is sent to it instead of being replaced by it.
+   */
+  private val pendingSync = context.getSharedPreferences(FAVOURITE_CHANNELS_SYNC_PREFS, Context.MODE_PRIVATE)
+
   fun load(ownerKey: String): List<MediaItem> {
     val raw = prefs.getString(ownerKey, null) ?: return emptyList()
     return runCatching {
@@ -243,7 +254,8 @@ class FavouriteChannelStore(context: Context) {
     }.getOrDefault(emptyList())
   }
 
-  fun save(ownerKey: String, items: List<MediaItem>) {
+  /** [fromAccount] for a list the account itself supplied, which leaves nothing waiting to be sent. */
+  fun save(ownerKey: String, items: List<MediaItem>, fromAccount: Boolean = false) {
     val array = JSONArray()
     items.forEach { item ->
       array.put(
@@ -268,10 +280,30 @@ class FavouriteChannelStore(context: Context) {
       )
     }
     prefs.edit().putString(ownerKey, array.toString()).apply()
+    if (fromAccount) pendingSync.edit().remove(ownerKey).apply() else markPending(ownerKey)
   }
 
   fun clear(ownerKey: String) {
     prefs.edit().remove(ownerKey).apply()
+    markPending(ownerKey)
+  }
+
+  /** The stamp of the newest edit still waiting for the account, or null when it has everything. */
+  fun pendingSyncStamp(ownerKey: String): Long? =
+    if (pendingSync.contains(ownerKey)) pendingSync.getLong(ownerKey, 0L) else null
+
+  /**
+   * Records that the account now holds the edit stamped [stamp]. An edit made while that upload was
+   * out has a different stamp, so it stays pending and goes up in the next upload.
+   */
+  fun markSynced(ownerKey: String, stamp: Long) {
+    if (pendingSyncStamp(ownerKey) == stamp) pendingSync.edit().remove(ownerKey).apply()
+  }
+
+  // Strictly increasing, so two taps inside one millisecond still carry different stamps.
+  private fun markPending(ownerKey: String) {
+    val stamp = maxOf(System.currentTimeMillis(), (pendingSyncStamp(ownerKey) ?: 0L) + 1)
+    pendingSync.edit().putLong(ownerKey, stamp).apply()
   }
 }
 
@@ -1791,6 +1823,8 @@ class StreamDekApiClient(context: Context? = null) {
     addon: InstalledAddon,
     catalog: AddonCatalog,
     query: String,
+    genre: String? = null,
+    skip: Int = 0,
   ): Result<List<MediaItem>> = withContext(Dispatchers.IO) {
     runCatching {
       if (query.isBlank()) return@runCatching emptyList()
@@ -1800,8 +1834,9 @@ class StreamDekApiClient(context: Context? = null) {
         catalogId = catalog.id,
         catalogName = catalog.name,
         // A catalog that insists on a genre still needs one alongside the query.
-        genre = catalog.genreOptions.firstOrNull()?.takeIf { catalog.requiresGenre },
+        genre = genre ?: catalog.genreOptions.firstOrNull()?.takeIf { catalog.requiresGenre },
         search = query.trim(),
+        skip = skip,
       )
     }
   }

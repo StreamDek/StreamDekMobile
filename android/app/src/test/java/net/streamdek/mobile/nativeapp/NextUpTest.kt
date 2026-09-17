@@ -85,4 +85,55 @@ class NextUpTest {
     val next = item(2, next = true)
     assertEquals(listOf(next), mergeNextUpContinueWatching(listOf(item(1)), listOf(next)))
   }
+
+  @Test fun abandonedStartOfNextEpisodeKeepsNextUp() {
+    val completedFour = event(e = 4, at = 100)
+    val tapped = event(e = 5, at = 200).copy(completed = false, progress = 0.4)
+    assertEquals(completedFour, nextUpAnchors(listOf(completedFour, tapped)).single())
+    assertTrue(nextUpAnchors(listOf(completedFour, tapped.copy(progress = 3.0))).isEmpty())
+  }
+
+  @Test fun staleEarlierResumeDoesNotHoldBackNextUp() {
+    val next = item(5, next = true, at = 200)
+    assertEquals(listOf(next), mergeNextUpContinueWatching(listOf(item(2, 40.0, at = 100)), listOf(next)))
+    val newer = item(2, 40.0, at = 300)
+    assertEquals(listOf(newer), mergeNextUpContinueWatching(listOf(newer), listOf(next)))
+    val sameEpisode = item(5, 30.0, at = 100)
+    assertEquals(listOf(sameEpisode), mergeNextUpContinueWatching(listOf(sameEpisode), listOf(next)))
+  }
+
+  @Test fun newlyAiredNextUpMovesAheadOfLaterPlayback() {
+    val resume = MediaItem("1", "movie", "Film", null, null, null, null, "", progress = 20.0, updatedAt = 300)
+    val caughtUp = item(5, next = true, at = 100).copy(nextUpAiredAt = 400)
+    assertEquals(listOf(caughtUp, resume), mergeNextUpContinueWatching(listOf(resume), listOf(caughtUp)))
+    val airedBefore = caughtUp.copy(nextUpAiredAt = 50)
+    assertEquals(listOf(resume, airedBefore), mergeNextUpContinueWatching(listOf(resume), listOf(airedBefore)))
+    assertEquals(200L, continueWatchingRecency(item(2, 30.0, at = 200).copy(nextUpAiredAt = 900)))
+  }
+
+  @Test fun releaseDateIsStartOfDayInViewerZone() {
+    val zone = java.time.ZoneId.of("Europe/London")
+    assertEquals(Instant.parse("2026-09-12T23:00:00Z").toEpochMilli(), nextUpReleaseMillis("2026-09-13", zone))
+    assertEquals(Instant.parse("2026-09-13T01:00:00Z").toEpochMilli(), nextUpReleaseMillis("2026-09-13T01:00:00Z", zone))
+    assertNull(nextUpReleaseMillis("soon", zone))
+  }
+
+  @Test fun newerUnwatchedMarkRetiresProviderPause() {
+    val pause = item(5, 4.8, at = 100)
+    val unwatched = event(e = 5, at = 200).copy(completed = false, unwatched = true, progress = 0.0)
+    assertTrue(unwatchedMarkSupersedesResume(unwatched, pause))
+    assertTrue(unwatchedMarkSupersedesResume(unwatched, pause.copy(updatedAt = null)))
+    assertFalse(unwatchedMarkSupersedesResume(unwatched, pause.copy(updatedAt = 300)))
+    assertFalse(unwatchedMarkSupersedesResume(unwatched, item(4, 4.8, at = 100)))
+    assertFalse(unwatchedMarkSupersedesResume(event(e = 5, at = 200), pause))
+  }
+
+  @Test fun watchedKeysMatchAppAndTraktFormats() {
+    val ids = setOf("1399")
+    assertTrue(nextUpEpisodeIsMarkedWatched(ids, 1, 5, setOf("episode:1399:1:5"), includeTrakt = false))
+    assertTrue(nextUpEpisodeIsMarkedWatched(ids, 1, 5, setOf("1399:s1:e5"), includeTrakt = true))
+    // A SyncDek profile ignores Trakt history even when it was copied into the local store.
+    assertFalse(nextUpEpisodeIsMarkedWatched(ids, 1, 5, setOf("1399:s1:e5"), includeTrakt = false))
+    assertFalse(nextUpEpisodeIsMarkedWatched(ids, 1, 5, setOf("1399:s1:e4", "episode:1399:1:15", "13:s1:e5"), includeTrakt = true))
+  }
 }

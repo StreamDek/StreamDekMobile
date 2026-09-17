@@ -3132,7 +3132,8 @@ class StreamDekApiClient(context: Context? = null) {
   suspend fun fetchTraktWatchlist(session: AuthSession, profileId: String): Result<List<TraktItem>> =
     traktList(session, profileId, "/trakt/sync/watchlist/enriched")
 
-  suspend fun fetchTraktWatchedEpisodeKeys(session: AuthSession, profileId: String, seriesId: String): Result<Set<String>> =
+  /** Episode keys as `<tmdb>:s<season>:e<episode>`; every series when [seriesId] is null. */
+  suspend fun fetchTraktWatchedEpisodeKeys(session: AuthSession, profileId: String, seriesId: String? = null): Result<Set<String>> =
     withContext(Dispatchers.IO) {
       runCatching {
         val response = execute(
@@ -3146,11 +3147,11 @@ class StreamDekApiClient(context: Context? = null) {
             val item = results.optJSONObject(index) ?: continue
             if (!item.optString("type").equals("episode", true)) continue
             val showId = item.optJSONObject("show")?.optJSONObject("ids")?.opt("tmdb").asOptionalInt()?.toString() ?: continue
-            if (showId != seriesId) continue
+            if (seriesId != null && showId != seriesId) continue
             val node = item.optJSONObject("episode") ?: continue
             val season = node.opt("season").asOptionalInt() ?: continue
             val episode = node.opt("number").asOptionalInt() ?: continue
-            add("$seriesId:s$season:e$episode")
+            add("$showId:s$season:e$episode")
           }
         }
       }

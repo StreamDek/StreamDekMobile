@@ -123,6 +123,7 @@ import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ChildCare
 import androidx.compose.material.icons.rounded.Church
@@ -256,6 +257,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
@@ -592,17 +594,6 @@ internal fun backgroundModeDescription(mode: BackgroundMode): String = stringRes
   }
 )
 private enum class AppAppearance { System, Dark, Light }
-/** The accent palettes. The name beside each swatch is a colour, so it is translated. */
-private enum class AppThemePreset(@StringRes val labelRes: Int) {
-  Monochrome(R.string.theme_monochrome),
-  Ocean(R.string.theme_ocean),
-  Emerald(R.string.theme_emerald),
-  Amber(R.string.theme_amber),
-  Crimson(R.string.theme_crimson),
-  Rose(R.string.theme_rose),
-  Violet(R.string.theme_violet),
-  White(R.string.theme_white),
-}
 private enum class HeaderStyle { Classic, Modern }
 
 // Public because it appears in PlayerSession, which is public.
@@ -1083,7 +1074,7 @@ private data class AppUiState(
   val animationSpeed: AnimationSpeed = AnimationSpeed.Default,
   /** Either [AppLanguage.SystemSelection] or a supported language tag. */
   val appLanguage: String = AppLanguage.DefaultSelection,
-  val themePreset: AppThemePreset = AppThemePreset.White,
+  val themePreset: AppThemePreset = AppThemePreset.Default,
   val headerStyle: HeaderStyle = HeaderStyle.Classic,
   val pictureInPictureEnabled: Boolean = true,
   val decoderMode: String = "HW+",
@@ -1110,6 +1101,8 @@ private data class AppUiState(
   val collapsibleNavigationEnabled: Boolean = false,
   /** Device-local: what triggers the collapse. See [NavigationBehaviour] for why it is a second key. */
   val navigationCollapsesOnScroll: Boolean = false,
+  /** Device-local: whether an expanded navigation keeps scroll-aware headers. See [NavigationBehaviour]. */
+  val expandedHeadersScrollAware: Boolean = false,
   val navigationAutoCollapseSeconds: Int = 5,
   /** Device-local, like [animationSpeed]: see `VisualEffects.kt`. */
   val visualEffectsMode: VisualEffectsMode = VisualEffectsMode.Default,
@@ -1331,7 +1324,7 @@ private data class AppUiState(
   val infoMessage: String? = null,
 ) {
   val navigationBehaviour: NavigationBehaviour
-    get() = NavigationBehaviour.from(collapsibleNavigationEnabled, navigationCollapsesOnScroll)
+    get() = NavigationBehaviour.from(collapsibleNavigationEnabled, navigationCollapsesOnScroll, expandedHeadersScrollAware)
 }
 
 /**
@@ -2024,7 +2017,7 @@ private class AppSettingsStore(context: Context) {
     appAppearance = runCatching { AppAppearance.valueOf(prefs.getString("app_appearance", AppAppearance.Dark.name) ?: AppAppearance.Dark.name) }.getOrDefault(AppAppearance.Dark),
     animationSpeed = AnimationSpeed.fromKey(prefs.getString(ANIMATION_SPEED_PREFERENCE, null)),
     appLanguage = normalizeAppLanguageSelection(prefs.getString(APP_LANGUAGE_PREFERENCE, null)),
-    themePreset = runCatching { AppThemePreset.valueOf(prefs.getString("theme_preset", AppThemePreset.White.name) ?: AppThemePreset.White.name) }.getOrDefault(AppThemePreset.White),
+    themePreset = AppThemePreset.fromName(prefs.getString("theme_preset", null)) ?: AppThemePreset.Default,
     headerStyle = runCatching { HeaderStyle.valueOf(prefs.getString("header_style", HeaderStyle.Classic.name) ?: HeaderStyle.Classic.name) }.getOrDefault(HeaderStyle.Classic),
     pictureInPictureEnabled = prefs.getBoolean("pip_enabled", true),
     decoderMode = normalizeDecoderModeSetting(prefs.getString("decoder_mode", "HW+") ?: "HW+"),
@@ -2043,6 +2036,7 @@ private class AppSettingsStore(context: Context) {
     showNavLabels = prefs.getBoolean("show_nav_labels", true),
     collapsibleNavigationEnabled = prefs.getBoolean("collapsible_navigation_enabled", false),
     navigationCollapsesOnScroll = prefs.getString(NavigationBehaviour.TRIGGER_PREFERENCE, null) == NavigationBehaviour.TRIGGER_SCROLL,
+    expandedHeadersScrollAware = prefs.getString(NavigationBehaviour.EXPANDED_HEADERS_PREFERENCE, null) == NavigationBehaviour.EXPANDED_HEADERS_SCROLL,
     visualEffectsMode = VisualEffectsMode.fromKey(prefs.getString(VISUAL_EFFECTS_PREFERENCE, null)),
     downloadsEnabled = prefs.getBoolean("downloads_enabled", false),
     dv7HevcFallback = prefs.getBoolean("dv7_hevc_fallback", false),
@@ -2192,6 +2186,13 @@ private class AppSettingsStore(context: Context) {
     prefs.edit().putString(
       NavigationBehaviour.TRIGGER_PREFERENCE,
       if (value) NavigationBehaviour.TRIGGER_SCROLL else NavigationBehaviour.TRIGGER_DELAY,
+    ).apply()
+  }
+  /** Device prefs, like the collapse trigger: see [NavigationBehaviour]. */
+  fun saveExpandedHeadersScrollAware(value: Boolean) {
+    prefs.edit().putString(
+      NavigationBehaviour.EXPANDED_HEADERS_PREFERENCE,
+      if (value) NavigationBehaviour.EXPANDED_HEADERS_SCROLL else NavigationBehaviour.EXPANDED_HEADERS_FIXED,
     ).apply()
   }
   /** Device prefs: the choice describes this phone's hardware, not the account. */
@@ -2542,101 +2543,6 @@ private fun buildPeerMagnet(stream: AddonStream, infoHash: String): String =
 
 
 /**
- * [color] mixed into white, so a container tint is an opaque colour rather than a translucent one.
- *
- * Material's container roles are painted straight onto a surface and are also used as the parent
- * for other translucent overlays; leaving them at an alpha means whatever sits behind the surface
- * — an ambient backdrop, a scrim — bleeds through a chip that was meant to read as solid.
- */
-private fun tintOnWhite(color: Color, amount: Float): Color = Color(
-  red = color.red * amount + (1f - amount),
-  green = color.green * amount + (1f - amount),
-  blue = color.blue * amount + (1f - amount),
-)
-
-private data class ThemeAccentPalette(
-  val accent: Color,
-  val tertiary: Color,
-)
-
-/**
- * A preset's accent, for the mode it is being shown in.
- *
- * Two palettes rather than one, because an accent is a foreground colour: `primary` is what
- * Material paints a filled button, a focused text field's border, a checked switch, a spinner and
- * every `TextButton` label with. The dark palette is deliberately pale so it reads against black —
- * and that is exactly what made it disappear in light mode, where the surface behind those same
- * controls is white. Monochrome was the extreme case (a white button on a white card), but every
- * preset lost its buttons and field borders to some degree.
- *
- * The light column is the same hue taken down to something that carries text at ~4.5:1 on white,
- * so `onPrimary` can be white and a filled button reads as a button.
- */
-private fun themeAccentPalette(theme: AppThemePreset, darkMode: Boolean = true): ThemeAccentPalette =
-  if (darkMode) when (theme) {
-    AppThemePreset.Monochrome -> ThemeAccentPalette(accent = Color(0xFFFFFFFF), tertiary = Color(0xFFE5E7EB))
-    AppThemePreset.Ocean -> ThemeAccentPalette(accent = Color(0xFF60A5FA), tertiary = Color(0xFF38BDF8))
-    AppThemePreset.Emerald -> ThemeAccentPalette(accent = Color(0xFF34D399), tertiary = Color(0xFF10B981))
-    AppThemePreset.Amber -> ThemeAccentPalette(accent = Color(0xFFFBBF24), tertiary = Color(0xFFF59E0B))
-    AppThemePreset.Crimson -> ThemeAccentPalette(accent = Color(0xFFFB7185), tertiary = Color(0xFFE11D48))
-    AppThemePreset.Rose -> ThemeAccentPalette(accent = Color(0xFFF9A8D4), tertiary = Color(0xFFF472B6))
-    AppThemePreset.Violet -> ThemeAccentPalette(accent = Color(0xFFC4B5FD), tertiary = Color(0xFFA78BFA))
-    AppThemePreset.White -> ThemeAccentPalette(accent = Color(0xFFE2E8F0), tertiary = Color(0xFFCBD5E1))
-  } else when (theme) {
-    AppThemePreset.Monochrome -> ThemeAccentPalette(accent = Color(0xFF1F2937), tertiary = Color(0xFF4B5563))
-    AppThemePreset.Ocean -> ThemeAccentPalette(accent = Color(0xFF1D4ED8), tertiary = Color(0xFF0369A1))
-    AppThemePreset.Emerald -> ThemeAccentPalette(accent = Color(0xFF047857), tertiary = Color(0xFF0F766E))
-    AppThemePreset.Amber -> ThemeAccentPalette(accent = Color(0xFFB45309), tertiary = Color(0xFF92400E))
-    AppThemePreset.Crimson -> ThemeAccentPalette(accent = Color(0xFFBE123C), tertiary = Color(0xFF9F1239))
-    AppThemePreset.Rose -> ThemeAccentPalette(accent = Color(0xFFDB2777), tertiary = Color(0xFFBE185D))
-    AppThemePreset.Violet -> ThemeAccentPalette(accent = Color(0xFF6D28D9), tertiary = Color(0xFF5B21B6))
-    AppThemePreset.White -> ThemeAccentPalette(accent = Color(0xFF334155), tertiary = Color(0xFF475569))
-  }
-
-private fun appColorScheme(theme: AppThemePreset, darkMode: Boolean) = themeAccentPalette(theme, darkMode).let { palette ->
-  if (darkMode) {
-    darkColorScheme(
-      primary = palette.accent,
-      secondary = palette.accent.copy(alpha = 0.92f),
-      tertiary = palette.tertiary,
-      background = Color.Black,
-      surface = Color(0xFF111111),
-      surfaceVariant = Color(0xFF1D1D1D),
-      onPrimary = Color(0xFF06243B),
-      onBackground = Color(0xFFF5F7FB),
-      onSurface = Color(0xFFF5F7FB),
-    )
-  } else {
-    lightColorScheme(
-      primary = palette.accent,
-      secondary = palette.tertiary,
-      tertiary = palette.tertiary,
-      background = Color(0xFFF5F4F0),
-      surface = Color.White,
-      // Not the raw accent at 12%: several of these presets are warm, and Material paints an
-      // unselected chip and a text field's own container with this. A near-neutral slate keeps
-      // those controls looking like controls rather than like tinted slabs.
-      surfaceVariant = Color(0xFFE7E9EE),
-      onSurfaceVariant = Color(0xFF334155),
-      // The accent is now dark enough to carry white text, which is what a filled button needs.
-      // It was black before, against an accent chosen to sit on black — so the button and its
-      // label were both near-white and the control vanished into the card behind it.
-      onPrimary = Color.White,
-      onSecondary = Color.White,
-      onTertiary = Color.White,
-      primaryContainer = tintOnWhite(palette.accent, 0.14f),
-      onPrimaryContainer = palette.accent,
-      secondaryContainer = tintOnWhite(palette.tertiary, 0.14f),
-      onSecondaryContainer = palette.tertiary,
-      outline = Color(0xFF94A3B8),
-      outlineVariant = Color(0xFFCBD5E1),
-      onBackground = Color(0xFF0F172A),
-      onSurface = Color(0xFF0F172A),
-    )
-  }
-}
-
-/**
  * The saved Theme and Appearance, read straight from preferences, for screens composed before there
  * is a view model — the version gate — so they look like the app they are standing in front of.
  *
@@ -2644,7 +2550,7 @@ private fun appColorScheme(theme: AppThemePreset, darkMode: Boolean) = themeAcce
  */
 internal fun savedAppColorScheme(context: Context, systemDarkMode: Boolean) =
   context.getSharedPreferences(APP_SETTINGS_PREFERENCES, Context.MODE_PRIVATE).let { prefs ->
-    val preset = runCatching { AppThemePreset.valueOf(prefs.getString("theme_preset", null) ?: "") }.getOrDefault(AppThemePreset.White)
+    val preset = AppThemePreset.fromName(prefs.getString("theme_preset", null)) ?: AppThemePreset.Default
     val darkMode = when (prefs.getString(APP_APPEARANCE_PREFERENCE, null)) {
       AppAppearance.Light.name -> false
       AppAppearance.System.name -> systemDarkMode
@@ -2754,6 +2660,12 @@ private fun resumePositionLabel(entry: PlaybackMemoryEntry): String? {
   return "%02d:%02d".format(positionSeconds / 3600, (positionSeconds % 3600) / 60)
 }
 
+/**
+ * Unfinished films and episodes kept on the phone. Large enough for every unfinished position the
+ * account's progress pull can deliver in practice; live channels have their own, separate budget.
+ */
+private const val RESUMABLE_ENTRY_LIMIT = 250
+
 private class PlaybackResumeStore(context: Context) {
   private val prefs = context.getSharedPreferences("streamdek_native_playback_resume", Context.MODE_PRIVATE)
 
@@ -2781,7 +2693,12 @@ private class PlaybackResumeStore(context: Context) {
       .filterNot { playbackMemoryKey(it.mediaId, it.mediaType, it.seasonNumber, it.episodeNumber) == playbackMemoryKey(entry.mediaId, entry.mediaType, entry.seasonNumber, entry.episodeNumber) }
       .toMutableList()
     updated.add(0, if (touch) entry.copy(updatedAt = System.currentTimeMillis()) else entry)
-    persist(ownerKey, updated.take(80))
+    // Live channels are kept only to remember their source, and are tuned far more often than
+    // films and episodes are played. Sharing one limit let an evening of channel surfing evict
+    // every resume position -- including the ones SyncDek had just delivered -- so Continue
+    // Watching showed a handful of titles the account still held. Each kind keeps its own budget.
+    val (live, resumable) = updated.partition { it.isLive }
+    persist(ownerKey, resumable.take(RESUMABLE_ENTRY_LIMIT) + live.take(40))
   }
 
   /** Records that the account now holds this entry, so its later absence can be read as a removal. */
@@ -8716,7 +8633,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   private fun applyCloudPlaybackPreferences(preferences: CloudPlaybackPreferences) {
     val appAppearance = preferences.appAppearance?.let { runCatching { AppAppearance.valueOf(it) }.getOrNull() }
-    val themePreset = preferences.themePreset?.let { runCatching { AppThemePreset.valueOf(it) }.getOrNull() }
+    val themePreset = AppThemePreset.fromName(preferences.themePreset)
     val headerStyle = preferences.headerStyle?.let { runCatching { HeaderStyle.valueOf(it) }.getOrNull() }
     val detailPageStyle = preferences.detailPageStyle?.let { runCatching { DetailPageStyle.valueOf(it) }.getOrNull() }
     val continueWatchingStyle = preferences.continueWatchingStyle?.let { runCatching { ContinueWatchingStyle.valueOf(it) }.getOrNull() }
@@ -10059,14 +9976,19 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   /**
    * Only the synced "collapses at all" half reaches the cloud; the trigger stays on this device.
    *
-   * Choosing Expanded leaves the stored trigger alone, so switching collapsing back on — here
-   * or from another device through sync — returns to whichever trigger this phone last used.
+   * Choosing an expanded option leaves the stored trigger alone, so switching collapsing back on —
+   * here or from another device through sync — returns to whichever trigger this phone last used.
+   * Likewise a collapsing option leaves the expanded header choice alone.
    */
   fun setNavigationBehaviour(value: NavigationBehaviour) {
-    if (value != NavigationBehaviour.AlwaysExpanded) {
+    if (value.collapses) {
       val onScroll = value == NavigationBehaviour.CollapseWhileScrolling
       appSettingsStore.saveNavigationCollapsesOnScroll(onScroll)
       uiState = uiState.copy(navigationCollapsesOnScroll = onScroll)
+    } else {
+      val scrollAware = value == NavigationBehaviour.ExpandedScrollAwareHeaders
+      appSettingsStore.saveExpandedHeadersScrollAware(scrollAware)
+      uiState = uiState.copy(expandedHeadersScrollAware = scrollAware)
     }
     if (uiState.collapsibleNavigationEnabled != value.collapses) setCollapsibleNavigationEnabled(value.collapses)
   }
@@ -11315,8 +11237,15 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
    * [markWatched] records one, which is what takes it out of Continue Watching rather than leaving
    * it sitting at 99%.
    */
-  /** One page of the account's positions. The local store keeps 80, so this always covers it. */
-  private val PROGRESS_PULL_LIMIT = 100
+  /**
+   * The account's positions, as many as SyncDek serves in one request.
+   *
+   * This was 100, and the page counts every kind of record: marking a season watched writes one
+   * per episode, so a single bulk mark pushed older unfinished titles out of the page and off the
+   * phone, while the television still listed them. Continue Watching shows every unfinished
+   * position within the account's latest 500 records, on both apps.
+   */
+  private val PROGRESS_PULL_LIMIT = 500
 
   fun pullPlaybackProgress() {
     val session = uiState.session ?: return
@@ -11621,9 +11550,16 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     val anchors = nextUpAnchors(records).take(80)
     val session = uiState.session
     val profile = uiState.activeProfileId
-    val traktConnected = uiState.traktStatus.connected
+    // Only the selected sync source speaks for what has been watched: Trakt's history is ignored for
+    // a SyncDek profile, even with Trakt connected.
+    val traktIsSource = uiState.primarySyncService == SyncService.Trakt.id && uiState.traktStatus.connected
     nextUpJob?.cancel()
     nextUpJob = viewModelScope.launch {
+      // Trakt history is account-wide, so it is read once per refresh rather than once per series.
+      // A failed read falls back to this profile's own records instead of hiding every series.
+      val providerWatched = if (traktIsSource && session != null && profile != null) {
+        apiClient.fetchTraktWatchedEpisodeKeys(session, profile).getOrDefault(emptySet())
+      } else emptySet()
       val gate = Semaphore(4)
       val items = supervisorScope {
         anchors.map { anchor -> async {
@@ -11633,16 +11569,13 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
             val identities = setOf(anchor.entityId, detail.id)
             val targetRecords = records.filter { it.entityId in identities && it.seasonNumber == episode.seasonNumber && it.episodeNumber == episode.episodeNumber }
             val latest = targetRecords.maxByOrNull { it.updatedAt }
-            val locallyWatched = identities.any { id -> watchedEpisodeKey(id, episode.seasonNumber, episode.episodeNumber) in watchedEpisodeStore.load(owner, id) }
-            val providerWatched = if (traktConnected && session != null && profile != null) {
-              apiClient.fetchTraktWatchedEpisodeKeys(session, profile, detail.id).getOrNull()
-                ?: return@withPermit null
-            } else emptySet()
-            if (nextUpTargetIsWatched(latest, locallyWatched || watchedEpisodeKey(detail.id, episode.seasonNumber, episode.episodeNumber) in providerWatched)) return@withPermit null
+            val watchedKeys = identities.flatMapTo(providerWatched.toHashSet()) { id -> watchedEpisodeStore.load(owner, id) }
+            if (nextUpTargetIsWatched(latest, nextUpEpisodeIsMarkedWatched(identities, episode.seasonNumber, episode.episodeNumber, watchedKeys, includeTrakt = traktIsSource))) return@withPermit null
             MediaItem(detail.id, "tv", detail.title.ifBlank { anchor.title.orEmpty() }, detail.year ?: anchor.year,
               detail.poster ?: anchor.poster, episode.still ?: detail.backdrop ?: anchor.backdrop, detail.rating,
               episode.overview, updatedAt = anchor.updatedAt, cardSubtitle = episodeLabel(episode.seasonNumber, episode.episodeNumber),
-              resumeSeasonNumber = episode.seasonNumber, resumeEpisodeNumber = episode.episodeNumber, isNextUp = true)
+              resumeSeasonNumber = episode.seasonNumber, resumeEpisodeNumber = episode.episodeNumber, isNextUp = true,
+              nextUpAiredAt = nextUpReleaseMillis(episode.airDate))
           }
         } }.awaitAll().filterNotNull()
       }
@@ -11965,6 +11898,7 @@ private fun StreamDekNativeAppContent(
   // The same theme in its dark form, for the surfaces that are dark in every appearance because
   // they are pictures rather than pages. Only the player uses it today; see [LocalDarkColorScheme].
   val darkColorScheme = remember(uiState.themePreset) { appColorScheme(uiState.themePreset, darkMode = true) }
+  val themeColors = remember(uiState.themePreset, darkMode) { streamDekThemeColors(uiState.themePreset, darkMode) }
   // CloudStream plugin settings open in a window of their own; it paints with the same colours.
   androidx.compose.runtime.SideEffect { PluginSettingsTheme.colorScheme = colorScheme }
   // findActivity(), not a cast: ProvideAppLocale hands the composition a ContextWrapper, and a
@@ -12038,6 +11972,7 @@ private fun StreamDekNativeAppContent(
      LocalWindowSize provides windowSize,
      LocalStreamDekSpacing provides spacing,
      LocalDarkColorScheme provides darkColorScheme,
+     LocalStreamDekThemeColors provides themeColors,
      LocalCardRatingsEnabled provides uiState.ratingsEnabled,
    ) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -13230,7 +13165,7 @@ private fun MainScene(
   }
   CompositionLocalProvider(
     LocalScrollChrome provides scrollChrome,
-    LocalHeaderCollapseEnabled provides (uiState.navigationBehaviour == NavigationBehaviour.CollapseWhileScrolling),
+    LocalHeaderCollapseEnabled provides uiState.navigationBehaviour.headersScrollAware,
     LocalGlassContrast provides glassContrast,
   ) {
   Scaffold(
@@ -13264,7 +13199,9 @@ private fun MainScene(
           contentAlignment = Alignment.BottomEnd,
         ) {
           val lightNavigation = MaterialTheme.colorScheme.background.luminance() > 0.5f
-          val darkGlassNavigation = !lightNavigation && uiState.headerStyle != HeaderStyle.Modern
+          // A fixed Modern header is dark glass too, so the bar matches it rather than the light frost.
+          val darkGlassNavigation = !lightNavigation &&
+            (uiState.headerStyle != HeaderStyle.Modern || !uiState.navigationBehaviour.headersScrollAware)
           val activeProfile = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }
           val expandedNavIconSize by animateDpAsState(if (uiState.showNavLabels) 24.dp else 36.dp, label = "expanded_nav_icon_size")
           val expandedNavProfileSize by animateDpAsState(if (uiState.showNavLabels) 28.dp else 38.dp, label = "expanded_nav_profile_size")
@@ -13333,7 +13270,7 @@ private fun MainScene(
                   .width(navigationWidth)
                   .height(74.dp)
                   .blur(18.dp, BlurredEdgeTreatment.Unbounded)
-                  .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.42f), RoundedCornerShape(navigationCornerRadius)),
+                  .background(LocalStreamDekThemeColors.current.glow, RoundedCornerShape(navigationCornerRadius)),
               )
             }
             FrostedGlassSurface(
@@ -13342,7 +13279,7 @@ private fun MainScene(
                 .height(74.dp)
                 .then(
                   if (uiState.updateDownloading) {
-                    Modifier.border(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.72f), RoundedCornerShape(navigationCornerRadius))
+                    Modifier.border(1.5.dp, LocalStreamDekThemeColors.current.navSelectionBorder, RoundedCornerShape(navigationCornerRadius))
                   } else {
                     Modifier
                   },
@@ -13451,7 +13388,7 @@ private fun MainScene(
                             ProfileAvatarImage(avatarIndex = activeProfile.avatarIndex, modifier = Modifier.fillMaxSize())
                           }
                         } else {
-                          Icon(icon, contentDescription = stringResource(tab.labelRes), tint = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = navigationInkAlpha), modifier = Modifier.size(expandedNavIconSize))
+                          Icon(icon, contentDescription = stringResource(tab.labelRes), tint = if (selected) LocalStreamDekThemeColors.current.onSelectedContainer else MaterialTheme.colorScheme.onSurface.copy(alpha = navigationInkAlpha), modifier = Modifier.size(expandedNavIconSize))
                         }
                         if (uiState.showNavLabels) {
                           Text(stringResource(tab.labelRes), style = MaterialTheme.typography.labelSmall, color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = navigationInkAlpha), maxLines = 1)
@@ -13825,7 +13762,9 @@ private fun combinedContinueWatching(uiState: AppUiState): List<MediaItem> {
   }.map(TraktItem::toMediaItem)
   val liveChannelIds = (uiState.favouriteChannels.asSequence() + uiState.m3uChannels.asSequence()).mapTo(hashSetOf()) { it.id }
   val resume = mergeContinueWatchingItems(providerItems, uiState.localContinueWatching).filter { item ->
-    (item.progress ?: 0.0) < 95.0 && uiState.playbackProgressRecords.none { progressRecordSuppressesProviderItem(it, item) && it.updatedAt >= (item.updatedAt ?: 0L) }
+    (item.progress ?: 0.0) < 95.0 && uiState.playbackProgressRecords.none {
+      (progressRecordSuppressesProviderItem(it, item) && it.updatedAt >= (item.updatedAt ?: 0L)) || unwatchedMarkSupersedesResume(it, item)
+    }
   }
   val next = uiState.nextUpItems.takeIf { uiState.nextUpOwner == settingsOwnerKey(uiState) }.orEmpty().filterNot { item -> uiState.playbackProgressRecords.any { progressRecordSuppressesProviderItem(it, item) } }
   return mergeNextUpContinueWatching(resume, next)
@@ -14970,7 +14909,7 @@ private fun NetworkBrowseScreen(network: MediaItem, headerStyle: HeaderStyle, on
         { SearchDiscoverField("Year", year ?: "Year") { selectionSheet = "year" } },
       ),
     )
-    ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(2f))
+    if (!modernHeaderHeldFixed(modernHeader)) ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(2f))
     ScrollAwareHeader(
       surface = if (modernHeader) ScrollAwareHeaderSurface.Glass(headerHazeState)
         else ScrollAwareHeaderSurface.Solid(MaterialTheme.colorScheme.background, pillAroundAnchor = true, hazeState = headerHazeState),
@@ -14988,7 +14927,7 @@ private fun NetworkBrowseScreen(network: MediaItem, headerStyle: HeaderStyle, on
         onQueryChange = { query = it },
         columns = columns,
         onToggleColumns = { columns = if (columns == 3) 2 else 3 },
-        gridButtonHazeState = headerHazeState,
+        gridButtonHazeState = headerHazeState.takeIf { modernHeader },
       )
     }
   }
@@ -15013,7 +14952,11 @@ private fun ScrollAwareHeaderScope.NetworkCatalogHeaderContent(
   onQueryChange: (String) -> Unit,
   columns: Int,
   onToggleColumns: () -> Unit,
-  gridButtonHazeState: HazeState,
+  /**
+   * Glass behind the grid button, for the Modern style. Null for the Default style, which gives the
+   * button the Watchlist page's treatment: a solid 48dp circle with no blur.
+   */
+  gridButtonHazeState: HazeState?,
   modifier: Modifier = Modifier,
 ) {
   Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -15025,7 +14968,7 @@ private fun ScrollAwareHeaderScope.NetworkCatalogHeaderContent(
       // Stays when the title goes: it comes down to the end of the search field's row, on its own
       // circle beside the field's pill rather than inside it.
       GlassCircleButton(
-        modifier = Modifier.joinsAnchorRow(),
+        modifier = Modifier.joinsAnchorRow().then(if (gridButtonHazeState == null) Modifier.size(48.dp) else Modifier),
         hazeState = gridButtonHazeState,
         borderless = true,
         onClick = onToggleColumns,
@@ -15677,7 +15620,7 @@ private fun LiveChannelsBrowseScreen(
             }
           }
           // Stays when the title goes: it comes down to the end of the search field's row.
-          GlassCircleButton(modifier = Modifier.joinsAnchorRow(), hazeState = headerHazeState, borderless = true, onClick = { showsGrid = !showsGrid }) {
+          GlassCircleButton(modifier = Modifier.joinsAnchorRow().then(if (modernHeader) Modifier else Modifier.size(48.dp)), hazeState = headerHazeState.takeIf { modernHeader }, borderless = true, onClick = { showsGrid = !showsGrid }) {
             Icon(
               if (showsGrid) Icons.AutoMirrored.Rounded.ViewList else Icons.Rounded.ViewModule,
               contentDescription = stringResource(R.string.a11y_change_layout),
@@ -16348,7 +16291,7 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
         if (sideHeader) {
           PaddingValues(start = BrowseSideHeaderWidth + sideMargin, end = sideMargin, top = 20.dp, bottom = 126.dp)
         } else {
-          PaddingValues(start = sideMargin, end = sideMargin, top = if (modernHeader) modernContentTop else classicContentTop, bottom = 126.dp)
+          PaddingValues(start = sideMargin, end = sideMargin, top = if (modernHeader && !modernHeaderHeldFixed(modernHeader)) modernContentTop else classicContentTop, bottom = 126.dp)
         }
       },
       horizontalArrangement = Arrangement.spacedBy(LocalStreamDekSpacing.current.gridGap),
@@ -16431,6 +16374,8 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
         },
         panelHeight = if (sideHeader) null else modernHeaderHeight,
         contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = 14.dp),
+        // Nothing is pinned beneath this header, so it grounds itself when headers are fixed.
+        backdropWhenFixed = !sideHeader,
       ) {
         BrowseSectionHeaderContent(
           title = headerTitle,
@@ -16501,7 +16446,7 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
           },
           onClearAll = clearFavouritesAction,
           clearAllDescription = "Clear Live Favourites",
-          layoutButtonHazeState = browseHazeState,
+          layoutButtonHazeState = null,
         )
         }
       }
@@ -16595,7 +16540,8 @@ private fun ScrollAwareHeaderScope.BrowseSectionHeaderContent(
       }
       if (showLayoutToggle) {
         GlassCircleButton(
-          modifier = (if (joinSearchRow) Modifier.joinsAnchorRow() else Modifier).size(if (compact) 48.dp else 52.dp),
+          // Without glass (the Default style) it takes the Watchlist page's 48dp treatment.
+          modifier = (if (joinSearchRow) Modifier.joinsAnchorRow() else Modifier).size(if (compact || layoutButtonHazeState == null) 48.dp else 52.dp),
           hazeState = layoutButtonHazeState,
           borderless = true,
           onClick = onCycleLayout,
@@ -17551,7 +17497,7 @@ private fun LibraryPosterTile(item: MediaItem, modifier: Modifier = Modifier, sh
       CardImdbRatingBadge(rating = item.rating)
       if (favourite) FavouriteChannelBadge(modifier = Modifier.align(Alignment.TopEnd))
       Box(modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().height(4.dp).background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.055f))) {
-        Box(modifier = Modifier.fillMaxWidth(((item.progress ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f)).height(4.dp).background(Color(0xFF22C55E)))
+        Box(modifier = Modifier.fillMaxWidth(((item.progress ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f)).height(4.dp).background(LocalStreamDekThemeColors.current.progress))
       }
     }
     if (showMeta) {
@@ -17559,7 +17505,9 @@ private fun LibraryPosterTile(item: MediaItem, modifier: Modifier = Modifier, sh
         Text(item.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, lineHeight = 16.sp)
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
           Text(
-            item.cardSubtitle ?: item.year ?: item.type.replaceFirstChar(Char::uppercase),
+            (item.cardSubtitle ?: item.year ?: item.type.replaceFirstChar(Char::uppercase)).let {
+              if (item.isNextUp) "${stringResource(R.string.detail_next_up)} · $it" else it
+            },
             color = if (item.cardHighlight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.54f),
             fontWeight = if (item.cardHighlight) FontWeight.Bold else FontWeight.Normal,
             maxLines = 1,
@@ -17567,7 +17515,7 @@ private fun LibraryPosterTile(item: MediaItem, modifier: Modifier = Modifier, sh
             fontSize = 11.sp,
           )
           item.progress?.takeIf { it > 0.0 }?.let {
-        Text(AppFormats.percent(LocalAppLanguage.current, it / 100.0), color = Color(0xFF22C55E), fontWeight = FontWeight.Bold, fontSize = 10.sp)
+        Text(AppFormats.percent(LocalAppLanguage.current, it / 100.0), color = LocalStreamDekThemeColors.current.progress, fontWeight = FontWeight.Bold, fontSize = 10.sp)
       }
         }
       }
@@ -17841,7 +17789,7 @@ private fun LibraryPage(
         }
       },
     )
-    ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f))
+    if (!modernHeaderHeldFixed(modernHeader)) ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f))
     LibraryStreamDekHeader(
       title = title,
       subtitle = "",
@@ -17863,7 +17811,10 @@ private fun LibraryPage(
 @Composable
 private fun borderlessFilterChipColors() = androidx.compose.material3.FilterChipDefaults.filterChipColors(
   containerColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.055f),
-  selectedContainerColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.14f),
+  selectedContainerColor = LocalStreamDekThemeColors.current.chipSelected,
+  selectedLabelColor = LocalStreamDekThemeColors.current.onChipSelected,
+  selectedLeadingIconColor = LocalStreamDekThemeColors.current.onChipSelected,
+  selectedTrailingIconColor = LocalStreamDekThemeColors.current.onChipSelected,
 )
 
 @Composable
@@ -18422,7 +18373,9 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
     if (!sectionPins) 0f else listState.sectionPinProgress(sectionSlotIndex, collapseDistance)
   }
   val sectionFraction: (() -> Float)? = if (sectionPins) ({ sectionProgress() * ScrollChromeMachine.COMPACT }) else null
-  val searchContentTop = if (modernHeader) 236.dp else classicHeaderHeight + 20.dp
+  // A fixed Modern header is flat and measured, like the Default one; see [ScrollAwareHeader].
+  val flatModernHeader = modernHeaderHeldFixed(modernHeader)
+  val searchContentTop = if (modernHeader && !flatModernHeader) 236.dp else classicHeaderHeight + 20.dp
   ReportScrollTop { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
   Box(modifier = Modifier.fillMaxSize()) {
   LazyColumn(
@@ -18597,7 +18550,9 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
     defaultStyle = !modernHeader,
     fieldInset = HeaderSearchInset.content + if (modernHeader) HeaderSearchInset.modernPanel else 0.dp,
     onFullHeight = { sectionSlotHeight = with(density) { it.toDp() } },
-    modifier = Modifier.fillMaxWidth().zIndex(3f).pinnedBelowHeader(searchHeaderScope, statusTop) {
+    // Part of the page, not the header: with fixed headers it scrolls away with the results.
+    partOfHeader = false,
+    modifier = Modifier.fillMaxWidth().zIndex(3f).pinnedBelowHeader(searchHeaderScope, statusTop, pinned = LocalHeaderCollapseEnabled.current) {
       listState.sectionNaturalTop(sectionSlotIndex, searchContentTop.roundToPx())
     },
     filters = sectionFilters,
@@ -18607,13 +18562,15 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
     surface = if (modernHeader) ScrollAwareHeaderSurface.Glass(headerHazeState)
       else ScrollAwareHeaderSurface.Solid(MaterialTheme.colorScheme.background, pillAroundAnchor = true, hazeState = headerHazeState),
     modifier = Modifier.align(Alignment.TopCenter).zIndex(4f).fillMaxWidth().statusBarsPadding()
-      .onSizeChanged { if (!modernHeader) classicHeaderHeight = with(density) { it.height.toDp() } + statusTop },
+      .onSizeChanged { if (!modernHeader || flatModernHeader) classicHeaderHeight = with(density) { it.height.toDp() } + statusTop },
     keepAnchorVisible = true,
     panelPadding = if (modernHeader) PaddingValues(start = HeaderSearchInset.modernPanel, end = HeaderSearchInset.modernPanel, top = 12.dp, bottom = 6.dp) else PaddingValues(0.dp),
     panelHeight = if (modernHeader) 166.dp else null,
     contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = if (modernHeader) 12.dp else 10.dp),
     headerScope = searchHeaderScope,
     fractionOverride = sectionFraction,
+    // Its Discover section is page content, so with fixed headers this header grounds itself.
+    backdropWhenFixed = true,
   ) {
     SearchHeader(
       query = query,
@@ -18622,7 +18579,7 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
       onQueryChange = { query = it },
       onClear = { query = "" },
       onToggleColumns = { columns = if (columns == 3) 2 else 3 },
-      gridButtonHazeState = headerHazeState,
+      gridButtonHazeState = headerHazeState.takeIf { modernHeader },
       modifier = Modifier.fillMaxWidth(),
     )
   }
@@ -18673,15 +18630,25 @@ private fun androidx.compose.foundation.lazy.LazyListState.sectionNaturalTop(slo
 /**
  * Places pinned section chrome where the page puts it, but never above the bottom of the header, so
  * once the header has condensed the section rides just beneath it.
+ *
+ * With [pinned] false the section is page content instead: it scrolls with the list and slides under
+ * the header, clipped at the header's edge so it never shows through a translucent header.
  */
 private fun Modifier.pinnedBelowHeader(
   headerScope: ScrollAwareHeaderScope,
   statusTop: Dp,
+  pinned: Boolean = true,
   naturalTop: androidx.compose.ui.unit.Density.() -> Int,
-): Modifier = offset {
-  val headerBottom = statusTop.roundToPx() + headerScope.panelTopPx +
+): Modifier {
+  fun androidx.compose.ui.unit.Density.headerBottom(): Int = statusTop.roundToPx() + headerScope.panelTopPx +
     headerScope.surfaceBounds(0, headerScope.stageHeight).bottom - headerScope.translation()
-  IntOffset(0, maxOf(naturalTop(), headerBottom + 4.dp.roundToPx()))
+  if (pinned) return offset { IntOffset(0, maxOf(naturalTop(), headerBottom() + 4.dp.roundToPx())) }
+  return offset { IntOffset(0, naturalTop()) }
+    .drawWithContent {
+      val hidden = (headerBottom() - naturalTop()).coerceAtLeast(0).toFloat()
+      if (hidden >= size.height) return@drawWithContent
+      clipRect(top = hidden) { this@drawWithContent.drawContent() }
+    }
 }
 
 /**
@@ -18715,10 +18682,19 @@ private fun PinnedSectionChrome(
    */
   titleAtRest: Boolean = true,
   filterSpacing: Dp = 6.dp,
+  /**
+   * Whether this row belongs to the header. A header row grounds the whole header when headers are
+   * fixed; a page section — Search's Discover heading and its filters — is content, and leaves that
+   * to the header itself.
+   */
+  partOfHeader: Boolean = true,
   filters: List<@Composable () -> Unit>,
 ) {
   val motion = LocalMotionSettings.current
-  val target = progress().coerceIn(0f, 1f)
+  // Fixed headers keep their filters as they rest: nothing condenses, and the row grounds the whole
+  // header stack instead, so the page scrolls beneath it. See [FixedHeaderBackdrop].
+  val fixedHeaders = !LocalHeaderCollapseEnabled.current && LocalScrollChrome.current != null
+  val target = if (fixedHeaders) 0f else progress().coerceIn(0f, 1f)
   val springSpec = if (motion.motionless) androidx.compose.animation.core.snap<Float>() else
     androidx.compose.animation.core.spring<Float>(dampingRatio = 0.72f, stiffness = 240f / motion.scale.coerceAtLeast(0.1f))
   // Start at the trailing filter: each makes room for the one immediately before it. The leading
@@ -18744,6 +18720,7 @@ private fun PinnedSectionChrome(
     val shift = if (title == null) 0 else with(density) { (headingWidthPx + 20.dp.toPx()).roundToInt() }
     // Without a heading there is nothing to make room for, so the stagger is a short glide instead.
     val stagger = if (title == null) with(density) { 12.dp.roundToPx() } else shift
+    if (fixedHeaders && partOfHeader) FixedHeaderBackdrop(hazeState = hazeState, glass = !defaultStyle, modifier = Modifier.matchParentSize())
     HeaderGlassSurface(
       hazeState = hazeState,
       shape = StreamDekRadius.cardShape,
@@ -18933,7 +18910,11 @@ private fun ScrollAwareHeaderScope.SearchHeader(
   onQueryChange: (String) -> Unit,
   onClear: () -> Unit,
   onToggleColumns: () -> Unit,
-  gridButtonHazeState: HazeState,
+  /**
+   * Glass behind the grid button, for the Modern style. Null for the Default style, which gives the
+   * button the Watchlist page's treatment: a solid 48dp circle with no blur.
+   */
+  gridButtonHazeState: HazeState?,
   modifier: Modifier = Modifier,
 ) {
   Column(
@@ -18945,7 +18926,7 @@ private fun ScrollAwareHeaderScope.SearchHeader(
         AdaptivePageTitle(title = stringResource(R.string.nav_search))
       }
       // Stays when the title goes, coming down beside the narrowing field as on a network's page.
-      GlassCircleButton(modifier = Modifier.joinsAnchorRow(), hazeState = gridButtonHazeState, borderless = true, onClick = onToggleColumns) {
+      GlassCircleButton(modifier = Modifier.joinsAnchorRow().then(if (gridButtonHazeState == null) Modifier.size(48.dp) else Modifier), hazeState = gridButtonHazeState, borderless = true, onClick = onToggleColumns) {
         Icon(if (columns == 3) Icons.Rounded.ViewAgenda else Icons.Rounded.ViewModule, contentDescription = null, tint = MaterialTheme.colorScheme.onBackground)
       }
     }
@@ -22432,8 +22413,8 @@ private fun HomeDensityPicker(selected: HomeDensity, onSelected: (HomeDensity) -
           modifier = Modifier
             .weight(1f)
             .clip(StreamDekRadius.cardShape)
-            .background(if (chosen) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f))
-            .border(1.dp, if (chosen) MaterialTheme.colorScheme.primary.copy(alpha = 0.64f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f), StreamDekRadius.cardShape)
+            .background(if (chosen) LocalStreamDekThemeColors.current.selectedContainer else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f))
+            .border(1.dp, if (chosen) LocalStreamDekThemeColors.current.selectedBorder else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f), StreamDekRadius.cardShape)
             .clickable { onSelected(density) }
             .padding(12.dp),
           verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -22508,40 +22489,6 @@ private const val HomeDensitySkeletonCardsPerRow = 5
 private const val HomeDensitySkeletonSpacingScale = 0.5f
 
 @Composable
-private fun ThemePresetPicker(selected: AppThemePreset, onSelected: (AppThemePreset) -> Unit) {
-  Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(vertical = 10.dp)) {
-    Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
-      SettingsIcon("TH", Color(0xFFF59E0B))
-      Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(stringResource(R.string.settings_theme), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
-        Text(stringResource(R.string.settings_theme_description), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f))
-      }
-    }
-    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-      AppThemePreset.values().forEach { preset ->
-        val palette = themeAccentPalette(preset, darkMode = MaterialTheme.colorScheme.background.luminance() <= 0.5f)
-        Column(
-          modifier = Modifier
-            .width(104.dp)
-            .clip(StreamDekRadius.cardShape)
-            .background(if (selected == preset) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f))
-            .border(1.dp, if (selected == preset) MaterialTheme.colorScheme.primary.copy(alpha = 0.64f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f), StreamDekRadius.cardShape)
-            .clickable { onSelected(preset) }
-            .padding(12.dp),
-          verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-          Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(modifier = Modifier.weight(1f).height(28.dp).clip(StreamDekRadius.controlShape).background(palette.accent))
-            Box(modifier = Modifier.weight(1f).height(28.dp).clip(StreamDekRadius.controlShape).background(palette.tertiary))
-          }
-          Text(stringResource(preset.labelRes), color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, maxLines = 1)
-        }
-      }
-    }
-  }
-}
-
-@Composable
 private fun SettingsSwitchRow(icon: String, iconColor: Color, title: String, subtitle: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit, logoProvider: String? = null, enabled: Boolean = true) {
   Row(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
     if (logoProvider != null) {
@@ -22563,9 +22510,9 @@ private fun SettingsSwitchRow(icon: String, iconColor: Color, title: String, sub
       onCheckedChange = onCheckedChange,
       enabled = enabled,
       colors = SwitchDefaults.colors(
-        checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
-        checkedTrackColor = MaterialTheme.colorScheme.primary,
-        checkedBorderColor = MaterialTheme.colorScheme.primary,
+        checkedThumbColor = LocalStreamDekThemeColors.current.toggleThumb,
+        checkedTrackColor = LocalStreamDekThemeColors.current.toggleTrack,
+        checkedBorderColor = LocalStreamDekThemeColors.current.toggleTrack,
         uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
         uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant,
         uncheckedBorderColor = MaterialTheme.colorScheme.outline,
@@ -22718,8 +22665,8 @@ private fun LanguageChoiceSheet(
                 modifier = Modifier
                   .fillMaxWidth()
                   .clip(StreamDekRadius.cardShape)
-                  .background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f))
-                  .border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.86f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f), StreamDekRadius.cardShape)
+                  .background(if (isSelected) LocalStreamDekThemeColors.current.selectedContainer else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f))
+                  .border(1.dp, if (isSelected) LocalStreamDekThemeColors.current.selectedBorder else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f), StreamDekRadius.cardShape)
                   .clickable { onSelected(option) }
                   .padding(horizontal = 18.dp, vertical = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -22790,8 +22737,8 @@ private fun SettingsChoiceSheet(
                     modifier = Modifier
                       .weight(1f)
                       .clip(StreamDekRadius.cardShape)
-                      .background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f))
-                      .border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.86f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f), StreamDekRadius.cardShape)
+                      .background(if (isSelected) LocalStreamDekThemeColors.current.selectedContainer else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f))
+                      .border(1.dp, if (isSelected) LocalStreamDekThemeColors.current.selectedBorder else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f), StreamDekRadius.cardShape)
                       .clickable { onSelected(option) }
                       .padding(horizontal = 14.dp, vertical = 14.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -22828,7 +22775,7 @@ private fun SettingsChoiceSheet(
             options.forEach { option ->
               val isSelected = selected == option
               Row(
-                modifier = Modifier.fillMaxWidth().clip(StreamDekRadius.cardShape).background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f)).border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.86f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f), StreamDekRadius.cardShape).clickable { onSelected(option) }.padding(horizontal = 18.dp, vertical = 16.dp),
+                modifier = Modifier.fillMaxWidth().clip(StreamDekRadius.cardShape).background(if (isSelected) LocalStreamDekThemeColors.current.selectedContainer else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f)).border(1.dp, if (isSelected) LocalStreamDekThemeColors.current.selectedBorder else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f), StreamDekRadius.cardShape).clickable { onSelected(option) }.padding(horizontal = 18.dp, vertical = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
               ) {
@@ -23279,7 +23226,7 @@ private fun settingsOptionDescription(choice: SettingsChoice?, option: String): 
 }
 
 @Composable
-private fun SettingsIcon(icon: String, iconColor: Color) {
+internal fun SettingsIcon(icon: String, iconColor: Color) {
   Box(modifier = Modifier.size(42.dp).clip(StreamDekRadius.controlShape).background(iconColor.copy(alpha = 0.16f)), contentAlignment = Alignment.Center) {
     Icon(settingsGlyph(icon), contentDescription = null, tint = iconColor)
   }
@@ -30698,14 +30645,14 @@ private fun ContinueWatchingCard(item: MediaItem, style: ContinueWatchingStyle, 
         .fillMaxWidth()
         .height(home.card(5.dp))
         .clip(StreamDekRadius.pill)
-        .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.16f)),
+        .background(LocalStreamDekThemeColors.current.progressTrack),
     ) {
       Box(
         modifier = Modifier
           .fillMaxWidth(progressFraction)
           .height(home.card(5.dp))
           .clip(StreamDekRadius.pill)
-          .background(MaterialTheme.colorScheme.primary),
+          .background(LocalStreamDekThemeColors.current.progress),
       )
     }
   }
@@ -33718,14 +33665,14 @@ fun MediaHubScreen(
       fieldInset = fieldInset,
       onFullHeight = { filtersHeight = with(density) { it.toDp() } },
       filterSpacing = 10.dp,
-      modifier = Modifier.fillMaxWidth().zIndex(1f).pinnedBelowHeader(headerScope, statusTop, filtersNaturalTop),
+      modifier = Modifier.fillMaxWidth().zIndex(1f).pinnedBelowHeader(headerScope, statusTop, naturalTop = filtersNaturalTop),
       filters = filters,
     )
     // A thin bar just under the filters while anything is still arriving or being worked out: it
     // stays in view however far down the grid is, where the spinner at the end of the grid does not.
     if (updating && (!catalogsReady || catalogs.isNotEmpty())) {
       LinearProgressIndicator(
-        modifier = Modifier.fillMaxWidth().zIndex(1f).pinnedBelowHeader(headerScope, statusTop, filtersNaturalTop)
+        modifier = Modifier.fillMaxWidth().zIndex(1f).pinnedBelowHeader(headerScope, statusTop, naturalTop = filtersNaturalTop)
           .offset { IntOffset(0, (filtersHeight + 2.dp).roundToPx()) }
           .padding(horizontal = fieldInset + 16.dp).height(2.dp).clip(StreamDekRadius.pill),
       )
@@ -33733,7 +33680,7 @@ fun MediaHubScreen(
     resumeChannel?.let { channel ->
       val restInset = if (modernHeader) HeaderSearchInset.modernPanel else 0.dp
       Box(
-        Modifier.fillMaxWidth().zIndex(1f).pinnedBelowHeader(headerScope, statusTop, filtersNaturalTop)
+        Modifier.fillMaxWidth().zIndex(1f).pinnedBelowHeader(headerScope, statusTop, naturalTop = filtersNaturalTop)
           .offset { IntOffset(0, (filtersHeight + 8.dp).roundToPx()) }
           // The header's width at rest; once slimmed and pinned, the search field's and the pinned
           // filters' width. Moved on the card's own fraction, in layout, so it flows with the card.
@@ -33781,8 +33728,8 @@ fun MediaHubScreen(
           // including under All, where titles alone following the columns left channel rows unchanged.
           // Without channels it switches titles between three columns and two.
           GlassCircleButton(
-            modifier = Modifier.joinsAnchorRow(),
-            hazeState = headerHazeState,
+            modifier = Modifier.joinsAnchorRow().then(if (modernHeader) Modifier else Modifier.size(48.dp)),
+            hazeState = headerHazeState.takeIf { modernHeader },
             borderless = true,
             onClick = {
               when {

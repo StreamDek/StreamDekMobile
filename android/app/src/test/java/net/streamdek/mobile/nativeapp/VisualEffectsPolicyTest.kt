@@ -73,11 +73,23 @@ class VisualEffectsPolicyTest {
 
   @Test
   fun navigationBehaviourKeepsTheSyncedBooleanMeaning() {
-    assertEquals(NavigationBehaviour.AlwaysExpanded, NavigationBehaviour.from(collapsible = false, collapseOnScroll = true))
+    assertEquals(NavigationBehaviour.ExpandedFixedHeaders, NavigationBehaviour.from(collapsible = false, collapseOnScroll = true))
     assertEquals(NavigationBehaviour.CollapseAfterDelay, NavigationBehaviour.from(collapsible = true, collapseOnScroll = false))
     assertEquals(NavigationBehaviour.CollapseWhileScrolling, NavigationBehaviour.from(collapsible = true, collapseOnScroll = true))
-    assertFalse(NavigationBehaviour.AlwaysExpanded.collapses)
+    assertFalse(NavigationBehaviour.ExpandedFixedHeaders.collapses)
     assertTrue(NavigationBehaviour.CollapseAfterDelay.collapses)
     assertTrue(NavigationBehaviour.CollapseWhileScrolling.collapses)
+  }
+
+  @Test
+  fun onlyFullyFixedNavigationKeepsHeadersStill() {
+    assertEquals(NavigationBehaviour.ExpandedScrollAwareHeaders, NavigationBehaviour.from(collapsible = false, collapseOnScroll = false, expandedHeadersScrollAware = true))
+    // The expanded header choice never changes what a collapsing option is.
+    assertEquals(NavigationBehaviour.CollapseAfterDelay, NavigationBehaviour.from(collapsible = true, collapseOnScroll = false, expandedHeadersScrollAware = true))
+    assertFalse(NavigationBehaviour.ExpandedScrollAwareHeaders.collapses)
+    assertFalse(NavigationBehaviour.ExpandedFixedHeaders.headersScrollAware)
+    assertTrue(NavigationBehaviour.ExpandedScrollAwareHeaders.headersScrollAware)
+    assertTrue(NavigationBehaviour.CollapseAfterDelay.headersScrollAware)
+    assertTrue(NavigationBehaviour.CollapseWhileScrolling.headersScrollAware)
   }
 }

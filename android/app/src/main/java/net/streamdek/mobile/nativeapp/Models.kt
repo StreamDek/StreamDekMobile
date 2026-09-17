@@ -77,6 +77,8 @@ data class MediaItem(
   /** True when this title/episode was completed before the current resume session began. */
   val historicallyWatched: Boolean = false,
   val isNextUp: Boolean = false,
+  /** When a Next Up episode aired, which can move its series forward in Continue Watching. */
+  val nextUpAiredAt: Long? = null,
 )
 
 /**

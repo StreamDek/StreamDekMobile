@@ -71,6 +71,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Velocity
@@ -728,11 +729,24 @@ internal fun ScrollAwareHeader(
   headerScope: ScrollAwareHeaderScope = remember { ScrollAwareHeaderScope() },
   // A page may keep its header compact by absolute position instead of scroll direction.
   fractionOverride: (() -> Float)? = null,
+  /**
+   * Whether this header grounds itself when headers are fixed; see [FixedHeaderBackdrop]. Only for a
+   * header with nothing pinned beneath it: a pinned filter row draws the one backdrop for both.
+   */
+  backdropWhenFixed: Boolean = false,
   content: @Composable ScrollAwareHeaderScope.() -> Unit,
 ) {
   val chrome = LocalScrollChrome.current
   val density = LocalDensity.current
   val active = enabled && LocalHeaderCollapseEnabled.current && chrome != null
+  val fixedBackdrop = backdropWhenFixed && enabled && chrome != null && !LocalHeaderCollapseEnabled.current
+  // A fixed Modern header is one flat band, as the Default header is: the full-width glass behind it
+  // is its ground, so its own floating panel (which read as a second border inside the band), the
+  // panel's margins and its reserved height all go, and the content takes the Default spacing.
+  val flatModern = surface is ScrollAwareHeaderSurface.Glass && enabled && chrome != null && !LocalHeaderCollapseEnabled.current
+  val panelPadding = if (flatModern) PaddingValues(0.dp) else panelPadding
+  val panelHeight = if (flatModern) null else panelHeight
+  val contentPadding = if (flatModern) PaddingValues(horizontal = FlatHeaderContentInset, vertical = 12.dp) else contentPadding
   headerScope.keepAnchor = keepAnchorVisible && active
   headerScope.pill = when (surface) {
     is ScrollAwareHeaderSurface.Glass -> true
@@ -750,7 +764,17 @@ internal fun ScrollAwareHeader(
   }
   headerScope.fraction = if (active) (fractionOverride ?: { chrome!!.presentedFraction }) else ({ 0f })
 
-  Box(modifier = modifier.clipToBounds()) {
+  Box(modifier = modifier) {
+    if (fixedBackdrop) {
+      val hazeState = when (surface) {
+        is ScrollAwareHeaderSurface.Glass -> surface.hazeState
+        is ScrollAwareHeaderSurface.Solid -> surface.hazeState
+      }
+      if (hazeState != null) {
+        FixedHeaderBackdrop(hazeState = hazeState, glass = surface is ScrollAwareHeaderSurface.Glass, modifier = Modifier.matchParentSize())
+      }
+    }
+  Box(modifier = Modifier.clipToBounds()) {
     Box(
       modifier = Modifier
         .fillMaxWidth()
@@ -806,7 +830,7 @@ internal fun ScrollAwareHeader(
                 )
               }
             }
-            is ScrollAwareHeaderSurface.Glass -> {
+            is ScrollAwareHeaderSurface.Glass -> if (!flatModern) {
               val shape = remember(headerScope) { HeaderMorphShape(headerScope, StreamDekRadius.sheet, StreamDekRadius.card) }
               HeaderGlassSurface(hazeState = surface.hazeState, shape = shape, modifier = Modifier.fillMaxSize())
             }
@@ -815,6 +839,7 @@ internal fun ScrollAwareHeader(
         Box(modifier = Modifier.fillMaxWidth().padding(contentPadding)) { headerScope.content() }
       }
     }
+  }
   }
 }
 
@@ -847,6 +872,57 @@ internal fun HeaderGlassSurface(
     contrastZone = GlassContrastZone.TopChrome,
   ) {}
 }
+
+/**
+ * The ground behind a header that stays fixed: from the very top of the screen, under the status bar,
+ * down to the bottom of the node it is drawn in.
+ *
+ * With scroll-aware headers switched off, nothing condenses to make room, so the content scrolls
+ * beneath the whole header stack instead. Without a ground of its own that stack reads as loose
+ * controls floating over posters, with artwork running up behind the clock. The Default style gets an
+ * opaque band of the page colour; the Modern style gets its frosted glass, full width.
+ *
+ * Drawn by whichever node is lowest in the stack — a pinned filter row, or a header without one — so
+ * one surface covers the lot and glass is never layered over glass in the gap between them.
+ */
+@Composable
+internal fun FixedHeaderBackdrop(hazeState: HazeState, glass: Boolean, modifier: Modifier = Modifier) {
+  var topInWindow by remember { mutableIntStateOf(0) }
+  val extended = modifier
+    .onPlaced { topInWindow = it.positionInWindow().y.roundToInt().coerceAtLeast(0) }
+    .layout { measurable, constraints ->
+      val extra = topInWindow
+      val width = if (constraints.hasBoundedWidth) constraints.maxWidth else 0
+      val height = if (constraints.hasBoundedHeight) constraints.maxHeight else 0
+      val placeable = measurable.measure(Constraints.fixed(width, height + extra))
+      layout(width, height) { placeable.place(0, -extra) }
+    }
+  if (glass) {
+    // Dark in a dark theme, as the condensed Default header is; the light frost read as a pale band.
+    HeaderGlassSurface(hazeState = hazeState, shape = RectangleShape, darkInDarkTheme = true, modifier = extended)
+  } else {
+    Box(modifier = extended.background(MaterialTheme.colorScheme.background.copy(alpha = FixedHeaderBackdropAlpha)))
+  }
+}
+
+/**
+ * Whether a Modern header is being held fixed on this page.
+ *
+ * Its full-width glass then already sits behind the status bar, so a page with that header skips the
+ * status-bar scrim: the scrim would only darken the glass it is sitting on as titles pass beneath.
+ */
+@Composable
+internal fun modernHeaderHeldFixed(modernHeader: Boolean): Boolean =
+  modernHeader && !LocalHeaderCollapseEnabled.current && LocalScrollChrome.current != null
+
+/** A flat header's content inset from the screen edge: the Default header's, so the two styles align. */
+internal val FlatHeaderContentInset = 18.dp
+
+/**
+ * Fully opaque. Anything less let bright posters ghost through under the clock and behind the
+ * filters, and a fixed Default header has no blur to soften them.
+ */
+internal const val FixedHeaderBackdropAlpha = 1f
 
 /**
  * How opaque a Default header's background is at rest.

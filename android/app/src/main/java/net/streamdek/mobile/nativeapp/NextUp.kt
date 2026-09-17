@@ -4,6 +4,7 @@ import android.content.Context
 import java.time.Instant
 import java.time.LocalDate
 import java.time.OffsetDateTime
+import java.time.ZoneId
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -36,7 +37,9 @@ internal fun nextUpAnchors(records: List<PlaybackProgressRecord>): List<Playback
       // hide the invitation following the last completed episode (for example E4 -> unwatched E5).
       val current = events.groupBy { it.seasonNumber to it.episodeNumber }
         .map { (_, versions) -> versions.maxBy { it.updatedAt } }
-      val latest = current.filter { it.dismissed || (!it.unwatched && (it.completed || it.progress > 0.0)) }
+      // A start abandoned within the first 1% is dropped from the resume store, so it must not
+      // retire Next Up either, or backing out of the episode would empty the series card.
+      val latest = current.filter { it.dismissed || (!it.unwatched && (it.completed || it.progress > 1.0)) }
         .maxWithOrNull(compareBy<PlaybackProgressRecord> { it.updatedAt }
           .thenBy { it.seasonNumber ?: 0 }.thenBy { it.episodeNumber ?: 0 }) ?: return@mapNotNull null
       latest.takeIf { !it.dismissed && (it.completed || it.progress >= 95.0) &&
@@ -108,12 +111,61 @@ internal class NextUpResolver(private val api: StreamDekApiClient) {
   }
 }
 
-/** A real resume wins over Next Up; ambiguous provider placeholders do not block advancement. */
+/**
+ * A real resume wins over Next Up when it is the episode Next Up would open, or when it is at least
+ * as recent as the completion behind Next Up. An older half-watched episode does not hold a series
+ * back after the viewer has finished a later one. Ambiguous provider placeholders never block it.
+ */
 internal fun mergeNextUpContinueWatching(resume: List<MediaItem>, next: List<MediaItem>): List<MediaItem> {
-  val partial = resume.filter { (it.progress ?: 0.0) > 0.0 && (it.progress ?: 0.0) < 95.0 }
-  return (partial + next + resume).distinctBy { mediaIdentityOf(it.type, it.id).keys().firstOrNull() ?: "${it.type}:${it.id}" }
-    .sortedByDescending { it.updatedAt ?: 0L }
+  fun key(item: MediaItem) = mediaIdentityOf(item.type, item.id).keys().firstOrNull() ?: "${item.type}:${item.id}"
+  val nextBySeries = next.associateBy(::key)
+  val partial = resume.filter { item ->
+    val progress = item.progress ?: 0.0
+    val upNext = nextBySeries[key(item)]
+    progress > 0.0 && progress < 95.0 && (upNext == null ||
+      (item.resumeSeasonNumber == upNext.resumeSeasonNumber && item.resumeEpisodeNumber == upNext.resumeEpisodeNumber) ||
+      (item.updatedAt ?: 0L) >= (upNext.updatedAt ?: 0L))
+  }
+  return (partial + next + resume).distinctBy(::key)
+    .sortedByDescending(::continueWatchingRecency)
 }
+
+/**
+ * Continue Watching order: the latest meaningful moment for each card, newest first.
+ *
+ * A resume is as recent as its last playback. A Next Up card is as recent as the later of finishing
+ * the previous episode and the next one airing, so a series the viewer caught up on last week moves
+ * back to the front on the day its new episode lands, rather than waiting behind everything watched
+ * since.
+ */
+internal fun continueWatchingRecency(item: MediaItem): Long =
+  maxOf(item.updatedAt ?: 0L, item.nextUpAiredAt?.takeIf { item.isNextUp } ?: 0L)
+
+/** Start of the air date in the viewer's zone, or the exact instant when the source gives one. */
+internal fun nextUpReleaseMillis(date: String?, zone: ZoneId = ZoneId.systemDefault()): Long? {
+  val value = date?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+  return if (value.length == 10) runCatching { LocalDate.parse(value).atStartOfDay(zone).toInstant().toEpochMilli() }.getOrNull()
+  else runCatching { OffsetDateTime.parse(value).toInstant().toEpochMilli() }.getOrNull()
+}
+
+/**
+ * A provider's paused position loses to a newer explicit unwatched mark on the same episode.
+ *
+ * Trakt keeps a paused session after the episode is marked unwatched, so without this a few seconds
+ * of an old start come back as "Resume" and hold the series back from Next Up.
+ */
+internal fun unwatchedMarkSupersedesResume(record: PlaybackProgressRecord, item: MediaItem): Boolean =
+  record.unwatched && item.resumeSeasonNumber != null &&
+    record.seasonNumber == item.resumeSeasonNumber && record.episodeNumber == item.resumeEpisodeNumber &&
+    record.updatedAt >= (item.updatedAt ?: 0L) &&
+    sameMediaIdentity(mediaIdentityOf(record.entityType, record.entityId, record.tmdbId, record.imdbId), mediaIdentityOf(item.type, item.id))
+
+/**
+ * Watched stores hold the app's `episode:<id>:<s>:<e>` keys and, copied in by the detail page,
+ * Trakt's `<id>:s<s>:e<e>` keys. Trakt's only count for a profile that chose Trakt as its source.
+ */
+internal fun nextUpEpisodeIsMarkedWatched(ids: Set<String>, season: Int, episode: Int, watchedKeys: Set<String>, includeTrakt: Boolean): Boolean =
+  ids.any { id -> "episode:$id:$season:$episode" in watchedKeys || (includeTrakt && "$id:s$season:e$episode" in watchedKeys) }
 
 /** A newer explicit unwatched event overrides historical watched flags, but never a dismissal. */
 internal fun nextUpTargetIsWatched(latest: PlaybackProgressRecord?, historicalWatched: Boolean): Boolean =

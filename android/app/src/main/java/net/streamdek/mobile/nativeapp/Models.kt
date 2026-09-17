@@ -76,6 +76,7 @@ data class MediaItem(
   val resumeEpisodeNumber: Int? = null,
   /** True when this title/episode was completed before the current resume session began. */
   val historicallyWatched: Boolean = false,
+  val isNextUp: Boolean = false,
 )
 
 /**

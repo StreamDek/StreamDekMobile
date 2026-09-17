@@ -56,3 +56,22 @@ internal data class MediaHubPage(
   val end: Boolean = false,
   val failed: Boolean = false,
 )
+
+/** First visits discover every catalogue; explicit pagination advances a bounded batch. */
+internal fun mediaHubPendingCatalogs(
+  catalogs: List<MediaHubCatalog>,
+  loadMore: Boolean,
+  retry: Boolean,
+  searching: Boolean,
+  pageFor: (MediaHubCatalog) -> MediaHubPage?,
+): List<MediaHubCatalog> {
+  val pending = catalogs.filter { source ->
+    val page = pageFor(source)
+    source.localItems == null && (page == null ||
+      (loadMore && !page.end && (!page.failed || retry)))
+  }.sortedBy { pageFor(it)?.nextOffset ?: -1 }
+  // Never make an unseen source depend on the viewer requesting another page of titles.
+  val unseen = pending.filter { pageFor(it) == null }
+  val existing = pending.filter { pageFor(it) != null }
+  return unseen + if (searching) existing else existing.take(4)
+}

@@ -41,14 +41,14 @@ class ContinueWatchingMergeTest {
   }
 
   @Test
-  fun `different started episodes remain separate cards`() {
+  fun `one series keeps its most recent unfinished episode`() {
     val episodeTwo = item(season = 1, episode = 2, progress = 15.0)
     val episodeFive = item(season = 1, episode = 5, progress = 48.0)
 
     val merged = mergeContinueWatchingItems(emptyList(), listOf(episodeTwo, episodeFive))
 
-    assertEquals(2, merged.size)
-    assertEquals(setOf(2, 5), merged.mapNotNull { it.resumeEpisodeNumber }.toSet())
+    assertEquals(1, merged.size)
+    assertEquals(5, merged.single().resumeEpisodeNumber)
   }
 
   @Test

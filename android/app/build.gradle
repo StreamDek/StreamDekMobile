@@ -79,6 +79,7 @@ android {
 
     defaultConfig {
         applicationId = "net.streamdek.mobile"
+        testInstrumentationRunner "net.streamdek.mobile.nativeapp.NextUpDeviceInstrumentation"
         minSdkVersion 24
         targetSdkVersion 36
         versionCode = ciVersionCode

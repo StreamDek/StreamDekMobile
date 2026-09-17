@@ -4,6 +4,25 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MediaHubTest {
+  private val catalogs = (1..9).map { MediaHubCatalog("$it", "$it", "Source $it", "Titles", false) }
+
+  @Test fun firstVisitDiscoversEverySourceWithoutLoadMore() {
+    assertEquals(catalogs, mediaHubPendingCatalogs(catalogs, false, false, false) { null })
+  }
+
+  @Test fun returningToAllReusesLoadedPagesAndLoadsOnlyMissingSources() {
+    val pages = catalogs.take(6).associate { it.key to MediaHubPage(nextOffset = 40) }
+    assertEquals(catalogs.drop(6), mediaHubPendingCatalogs(catalogs, false, false, false) { pages[it.key] })
+    assertTrue(mediaHubPendingCatalogs(catalogs, false, false, false) { MediaHubPage(nextOffset = 40) }.isEmpty())
+  }
+
+  @Test fun deeperPagingIsBoundedAndFailuresRequireRetry() {
+    assertEquals(4, mediaHubPendingCatalogs(catalogs, true, false, false) { MediaHubPage(nextOffset = 40) }.size)
+    assertTrue(mediaHubPendingCatalogs(catalogs, true, false, false) { MediaHubPage(failed = true) }.isEmpty())
+    assertEquals(4, mediaHubPendingCatalogs(catalogs, true, true, false) { MediaHubPage(failed = true) }.size)
+    assertTrue(mediaHubPendingCatalogs(catalogs, true, true, false) { MediaHubPage(end = true) }.isEmpty())
+  }
+
   @Test fun homeRowsSwitchedOffAreLeftOutOfTheHub() {
     val switches = mediaHubRowSwitches(listOf(
       HomeCatalogRow("addon:iptv:tv:sports:3", "Sports", subtitleRes = null, builtin = false, enabled = false),

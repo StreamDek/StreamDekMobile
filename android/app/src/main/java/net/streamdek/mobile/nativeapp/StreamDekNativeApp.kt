@@ -913,6 +913,8 @@ private data class AppUiState(
   val addonSearchLoading: Boolean = false,
   val searchResultQuery: String = "",
   val localContinueWatching: List<MediaItem> = emptyList(),
+  val nextUpItems: List<MediaItem> = emptyList(),
+  val nextUpOwner: String? = null,
   val localResumeEntries: List<PlaybackMemoryEntry> = emptyList(),
   val playbackProgressRecords: List<PlaybackProgressRecord> = emptyList(),
   // Browse navigation lives in the view model so it survives the player screen
@@ -1138,6 +1140,8 @@ private data class AppUiState(
   val homeCardTextMode: HomeCardTextMode = HomeCardTextMode.Default,
   val networkCardStyle: NetworkCardStyle = NetworkCardStyle.Classic,
   val liveLandscapeCards: Boolean = true,
+  /** Home visibility only; episode notifications have independent settings. */
+  val showNewEpisodesRow: Boolean = true,
   /**
    * Wide cards showing the episode's own still, rather than posters of the series.
    *
@@ -2056,6 +2060,7 @@ private class AppSettingsStore(context: Context) {
     homeCardTextMode = HomeCardTextMode.fromKey(profilePrefs.getString("home_card_text_mode", null)),
     networkCardStyle = runCatching { NetworkCardStyle.valueOf(profilePrefs.getString("network_card_style", NetworkCardStyle.Classic.name) ?: NetworkCardStyle.Classic.name) }.getOrDefault(NetworkCardStyle.Classic),
     liveLandscapeCards = profilePrefs.getBoolean("live_landscape_cards", true),
+    showNewEpisodesRow = profilePrefs.getBoolean("show_new_episodes_row", true),
     newEpisodesLandscape = profilePrefs.getBoolean("new_episodes_landscape", true),
     liveCategoriesEnabled = profilePrefs.getBoolean("live_categories_enabled", true),
     liveProgressBarEnabled = profilePrefs.getBoolean("live_progress_bar", false),
@@ -2205,6 +2210,7 @@ private class AppSettingsStore(context: Context) {
   fun saveHomeCardTextMode(value: HomeCardTextMode) { profilePrefs.edit().putString("home_card_text_mode", value.key).apply() }
   fun saveNetworkCardStyle(value: NetworkCardStyle) { profilePrefs.edit().putString("network_card_style", value.name).apply() }
   fun saveLiveLandscapeCards(value: Boolean) { profilePrefs.edit().putBoolean("live_landscape_cards", value).apply() }
+  fun saveShowNewEpisodesRow(value: Boolean) { profilePrefs.edit().putBoolean("show_new_episodes_row", value).apply() }
   fun saveNewEpisodesLandscape(value: Boolean) { profilePrefs.edit().putBoolean("new_episodes_landscape", value).apply() }
   fun saveLiveCategoriesEnabled(value: Boolean) { profilePrefs.edit().putBoolean("live_categories_enabled", value).apply() }
   fun saveLiveProgressBarEnabled(value: Boolean) { profilePrefs.edit().putBoolean("live_progress_bar", value).apply() }
@@ -3693,6 +3699,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private val favouriteChannelStore = FavouriteChannelStore(application.applicationContext)
   private val authEntryStore = AuthEntryStore(application.applicationContext)
   private val appSettingsStore = AppSettingsStore(application.applicationContext)
+  private val nextUpHistory = NextUpHistory(application.applicationContext)
   private val playbackResumeStore = PlaybackResumeStore(application.applicationContext)
   private val watchedEpisodeStore = WatchedEpisodeStore(application.applicationContext)
   private val watchedMovieStore = WatchedMovieStore(application.applicationContext)
@@ -3777,6 +3784,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private var m3uLoadGeneration: Long = 0L
   private var liveChannelSwitchSnapshot: LiveChannelSwitchSnapshot? = null
   private var pendingStreamLoad: PendingStreamLoad? = null
+  private val nextUpResolver by lazy { NextUpResolver(apiClient) }
+  private var nextUpJob: kotlinx.coroutines.Job? = null
   private var pendingDirectContinueEntry: PlaybackMemoryEntry? = null
   private var pendingDirectContinueFallback: (() -> Unit)? = null
 
@@ -5116,7 +5125,11 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     if (isDownloadMediaId(item.id) && playSavedDownload(item.id, ownerKey)) return true
     val candidates = playbackResumeStore.loadAll(ownerKey)
       .filter { it.mediaId == item.id && normalizedMediaType(it.mediaType) == normalizedMediaType(item.type) && !it.isLive }
-    val entry = candidates.firstOrNull {
+    val entry = if (item.isNextUp) PlaybackMemoryEntry(
+      mediaId = item.id, mediaType = item.type, title = item.title, poster = item.poster, backdrop = item.backdrop,
+      seasonNumber = item.resumeSeasonNumber, episodeNumber = item.resumeEpisodeNumber,
+      progressPercent = 0.0, positionSeconds = 0.0,
+    ) else candidates.firstOrNull {
       item.resumeSeasonNumber != null && item.resumeEpisodeNumber != null &&
         it.seasonNumber == item.resumeSeasonNumber && it.episodeNumber == item.resumeEpisodeNumber
     } ?: candidates.maxByOrNull { it.updatedAt }
@@ -9117,6 +9130,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     // so recording the cleared titles there is what makes the clear stick.
     val traktItems = uiState.traktContinueWatching.map { MediaItem(it.tmdbId?.toString() ?: it.id, it.type, it.title, it.year, it.poster, it.backdrop, it.rating, it.description.orEmpty()) }
     watchedTitleStore.addAll(ownerKey, uiState.localContinueWatching + traktItems)
+    nextUpHistory.clear(ownerKey)
+    nextUpJob?.cancel()
+    uiState = uiState.copy(nextUpItems = emptyList())
     playbackResumeStore.clearResumable(ownerKey)
     // And on the account, or the rows come back: the television still lists them, and this
     // device's own store refills from the server the next time the app comes forward. Scoped to
@@ -10081,6 +10097,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setHomeCardTextMode(mode: HomeCardTextMode) { appSettingsStore.saveHomeCardTextMode(mode); uiState = uiState.copy(homeCardTextMode = mode); syncCloudPreferences() }
   fun setNetworkCardStyle(style: NetworkCardStyle) { appSettingsStore.saveNetworkCardStyle(style); uiState = uiState.copy(networkCardStyle = style); syncCloudPreferences() }
   fun setLiveLandscapeCards(value: Boolean) { appSettingsStore.saveLiveLandscapeCards(value); uiState = uiState.copy(liveLandscapeCards = value); syncCloudPreferences() }
+  fun setShowNewEpisodesRow(value: Boolean) { appSettingsStore.saveShowNewEpisodesRow(value); uiState = uiState.copy(showNewEpisodesRow = value) }
   fun setNewEpisodesLandscape(value: Boolean) { appSettingsStore.saveNewEpisodesLandscape(value); uiState = uiState.copy(newEpisodesLandscape = value) }
   fun setLiveCategoriesEnabled(value: Boolean) { appSettingsStore.saveLiveCategoriesEnabled(value); uiState = uiState.copy(liveCategoriesEnabled = value); syncCloudPreferences() }
 
@@ -10126,7 +10143,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     appSettingsStore.saveMediaHubEnabled(value)
     uiState = uiState.copy(mediaHubEnabled = value, mediaHubOpen = value && uiState.mediaHubOpen)
   }
-  fun setMediaHubOpen(value: Boolean) { uiState = uiState.copy(mediaHubOpen = value, mediaHubPages = if (value) uiState.mediaHubPages else emptyMap()) }
+  fun setMediaHubOpen(value: Boolean) { uiState = uiState.copy(mediaHubOpen = value) }
 
   suspend fun loadMediaHubPage(source: MediaHubCatalog, query: String, reset: Boolean = false) {
     val owner = activeOwnerKey()
@@ -10794,6 +10811,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
 
   private fun refreshProfileScopedData() {
     val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
+    nextUpJob?.cancel()
+    uiState = uiState.copy(nextUpItems = emptyList(), nextUpOwner = ownerKey, playbackProgressRecords = emptyList())
     // Sorted catalogues belong to the profile that owns the playlists and favourites behind them.
     BrowseCategoryCache.clear()
     appSettingsStore.selectProfileStorage(ownerKey)
@@ -11237,6 +11256,14 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
    * in the same pull.
    */
   private fun pushWatchedProgress(item: MediaItem, seasonNumber: Int? = null, episodeNumber: Int? = null) {
+    if (normalizedMediaType(item.type) == "tv" && seasonNumber != null && episodeNumber != null) {
+      val record = PlaybackProgressRecord("tv", item.id, playbackEpisodeKey(seasonNumber, episodeNumber), seasonNumber, episodeNumber,
+        item.title, item.poster, item.backdrop, item.year, 0.0, 0.0, 100.0, true, updatedAt = System.currentTimeMillis())
+      uiState = uiState.copy(playbackProgressRecords = uiState.playbackProgressRecords.filterNot {
+        normalizedMediaType(it.entityType) == "tv" && it.entityId == item.id && it.seasonNumber == seasonNumber && it.episodeNumber == episodeNumber
+      } + record, watchedEpisodeRevision = uiState.watchedEpisodeRevision + 1)
+      nextUpHistory.merge(activeOwnerKey() ?: GUEST_OWNER_KEY, uiState.playbackProgressRecords)
+    }
     val session = uiState.session ?: return
     val profileId = uiState.activeProfileId
     val type = if (item.type.equals("movie", true)) "movie" else "tv"
@@ -11313,8 +11340,9 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
         val key = listOf(normalizedMediaType(type), record.entityId, record.seasonNumber?.toString().orEmpty(), record.episodeNumber?.toString().orEmpty()).joinToString(":")
         seen += key
         val existing = local[key]
-        if (type == "movie" && uiState.playbackProgressRecords.any {
-            it.entityType.equals("movie", true) && it.entityId == record.entityId && it.updatedAt > record.updatedAt
+        if (uiState.playbackProgressRecords.any {
+            normalizedMediaType(it.entityType) == type && it.entityId == record.entityId &&
+              it.seasonNumber == record.seasonNumber && it.episodeNumber == record.episodeNumber && it.updatedAt > record.updatedAt
           }) return@forEach
         if (existing != null && (existing.updatedAt ?: 0L) >= record.updatedAt) return@forEach
         changed = true
@@ -11403,7 +11431,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       }
 
       // A pull started before a local movie checkpoint must not resurrect its old completion/position.
-      val recentMovies = uiState.playbackProgressRecords.filter { it.entityType.equals("movie", true) }
+      val recentMovies = uiState.playbackProgressRecords
       val mergedRecords = (remote + recentMovies).groupBy { listOf(it.entityType, it.entityId, it.episodeKey) }
         .map { (_, records) -> records.maxBy { it.updatedAt } }
       uiState = uiState.copy(playbackProgressRecords = mergedRecords)
@@ -11542,22 +11570,24 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       uiState = uiState.copy(localContinueWatching = loadLocalContinueWatching(), localResumeEntries = loadResumeEntries())
       return
     }
-    if (normalizedMediaType(player.mediaType) == "movie") {
-      if (normalizedProgress >= 95.0) {
+    if (normalizedMediaType(player.mediaType) in setOf("movie", "tv")) {
+      if (normalizedMediaType(player.mediaType) == "movie" && normalizedProgress >= 95.0) {
         watchedMovieStore.save(ownerKey, (watchedMovieStore.load(ownerKey) + player.mediaId).distinct())
       }
       val current = PlaybackProgressRecord(
-        entityType = "movie", entityId = player.mediaId, episodeKey = null,
-        seasonNumber = null, episodeNumber = null, title = player.title,
+        entityType = normalizedMediaType(player.mediaType), entityId = player.mediaId, episodeKey = playbackEpisodeKey(player.seasonNumber, player.episodeNumber),
+        seasonNumber = player.seasonNumber, episodeNumber = player.episodeNumber, title = player.title,
         poster = player.poster, backdrop = player.backdrop, year = player.year?.toString(),
         positionSec = lastPlaybackPositionSec, durationSec = lastPlaybackDurationSec,
         progress = normalizedProgress, completed = normalizedProgress >= 95.0,
         updatedAt = System.currentTimeMillis(), lastDevice = "StreamDek Mobile", lastPlatform = "mobile",
       )
       uiState = uiState.copy(playbackProgressRecords = uiState.playbackProgressRecords.filterNot {
-        it.entityType.equals("movie", true) && it.entityId == player.mediaId
+        normalizedMediaType(it.entityType) == normalizedMediaType(player.mediaType) && it.entityId == player.mediaId &&
+          it.seasonNumber == player.seasonNumber && it.episodeNumber == player.episodeNumber
       } + current, watchedEpisodeRevision = uiState.watchedEpisodeRevision + 1)
     }
+    nextUpHistory.merge(ownerKey, uiState.playbackProgressRecords)
     pushPlaybackProgress(player, normalizedProgress)
     if (normalizedProgress >= 95.0 || normalizedProgress <= 1.0) {
       playbackResumeStore.remove(ownerKey, player.mediaId, player.mediaType, player.seasonNumber, player.episodeNumber)
@@ -11582,6 +11612,42 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       )
     }
     uiState = uiState.copy(localContinueWatching = loadLocalContinueWatching(), localResumeEntries = loadResumeEntries())
+  }
+
+  fun refreshNextUp() {
+    val owner = activeOwnerKey() ?: GUEST_OWNER_KEY
+    if (uiState.nextUpOwner != owner) uiState = uiState.copy(nextUpItems = emptyList(), nextUpOwner = owner)
+    val records = nextUpHistory.merge(owner, uiState.playbackProgressRecords)
+    val anchors = nextUpAnchors(records).take(80)
+    val session = uiState.session
+    val profile = uiState.activeProfileId
+    val traktConnected = uiState.traktStatus.connected
+    nextUpJob?.cancel()
+    nextUpJob = viewModelScope.launch {
+      val gate = Semaphore(4)
+      val items = supervisorScope {
+        anchors.map { anchor -> async {
+          gate.withPermit {
+            val resolved = nextUpResolver.resolve(anchor) ?: return@withPermit null
+            val (detail, episode) = resolved
+            val identities = setOf(anchor.entityId, detail.id)
+            val targetRecords = records.filter { it.entityId in identities && it.seasonNumber == episode.seasonNumber && it.episodeNumber == episode.episodeNumber }
+            val latest = targetRecords.maxByOrNull { it.updatedAt }
+            val locallyWatched = identities.any { id -> watchedEpisodeKey(id, episode.seasonNumber, episode.episodeNumber) in watchedEpisodeStore.load(owner, id) }
+            val providerWatched = if (traktConnected && session != null && profile != null) {
+              apiClient.fetchTraktWatchedEpisodeKeys(session, profile, detail.id).getOrNull()
+                ?: return@withPermit null
+            } else emptySet()
+            if (nextUpTargetIsWatched(latest, locallyWatched || watchedEpisodeKey(detail.id, episode.seasonNumber, episode.episodeNumber) in providerWatched)) return@withPermit null
+            MediaItem(detail.id, "tv", detail.title.ifBlank { anchor.title.orEmpty() }, detail.year ?: anchor.year,
+              detail.poster ?: anchor.poster, episode.still ?: detail.backdrop ?: anchor.backdrop, detail.rating,
+              episode.overview, updatedAt = anchor.updatedAt, cardSubtitle = episodeLabel(episode.seasonNumber, episode.episodeNumber),
+              resumeSeasonNumber = episode.seasonNumber, resumeEpisodeNumber = episode.episodeNumber, isNextUp = true)
+          }
+        } }.awaitAll().filterNotNull()
+      }
+      if (activeOwnerKey() == owner) uiState = uiState.copy(nextUpItems = items)
+    }
   }
 
   private fun mergedContinueWatchingItems(): List<MediaItem> {
@@ -11846,6 +11912,16 @@ private fun StreamDekNativeAppContent(
   val context = androidx.compose.ui.platform.LocalContext.current.applicationContext as Application
   val viewModel = viewModel<NativeAppViewModel>(factory = NativeAppViewModelFactory(context))
   val uiState = viewModel.uiState
+  val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+  LaunchedEffect(uiState.session?.user?.uid, uiState.activeProfileId, uiState.playbackProgressRecords, uiState.localResumeEntries, uiState.watchedEpisodeRevision) {
+    viewModel.refreshNextUp()
+  }
+  LaunchedEffect(uiState.session?.user?.uid, uiState.activeProfileId, uiState.playerSession == null) {
+    while (true) {
+      delay(60_000)
+      if (uiState.playerSession == null && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) viewModel.refreshNextUp()
+    }
+  }
   val appVersionGate by AppVersionPolicyRuntime.state.collectAsState()
   LaunchedEffect(appVersionGate) {
     val ready = appVersionGate as? AppVersionGateState.Ready ?: return@LaunchedEffect
@@ -11857,7 +11933,6 @@ private fun StreamDekNativeAppContent(
   // Someone making a change in the portal and switching straight back to the app is the whole
   // reason plugin sync felt broken, so the plugin document is re-read whenever the app is
   // brought forward rather than only when a profile is chosen.
-  val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
   DisposableEffect(lifecycleOwner, uiState.session?.user?.uid, uiState.activeProfileId) {
     val observer = LifecycleEventObserver { _, event ->
       if (event == Lifecycle.Event.ON_START) {
@@ -11867,6 +11942,7 @@ private fun StreamDekNativeAppContent(
         // Air dates get revised and a reminder that has already fired leaves nothing behind, so
         // the next one is worked out each time the app comes forward rather than only on a change.
         viewModel.refreshEpisodeReminders()
+        viewModel.refreshNextUp()
         // Then keep watching while the app is in front, so an edit made in the portal lands here
         // without the viewer having to leave and come back for it.
         viewModel.startWatchingProfilePlugins()
@@ -13748,7 +13824,11 @@ private fun combinedContinueWatching(uiState: AppUiState): List<MediaItem> {
     uiState.playbackProgressRecords.any { record -> progressRecordSuppressesProviderItem(record, provider.toMediaItem()) }
   }.map(TraktItem::toMediaItem)
   val liveChannelIds = (uiState.favouriteChannels.asSequence() + uiState.m3uChannels.asSequence()).mapTo(hashSetOf()) { it.id }
-  return mergeContinueWatchingItems(providerItems, uiState.localContinueWatching)
+  val resume = mergeContinueWatchingItems(providerItems, uiState.localContinueWatching).filter { item ->
+    (item.progress ?: 0.0) < 95.0 && uiState.playbackProgressRecords.none { progressRecordSuppressesProviderItem(it, item) && it.updatedAt >= (item.updatedAt ?: 0L) }
+  }
+  val next = uiState.nextUpItems.takeIf { uiState.nextUpOwner == settingsOwnerKey(uiState) }.orEmpty().filterNot { item -> uiState.playbackProgressRecords.any { progressRecordSuppressesProviderItem(it, item) } }
+  return mergeNextUpContinueWatching(resume, next)
     .filterNot { isLiveChannelResumeItem(it, liveChannelIds) }
 }
 
@@ -13769,7 +13849,7 @@ private fun isLiveChannelResumeItem(item: MediaItem, liveChannelIds: Set<String>
     decodeCloudStreamMediaId(item.id)?.let { (provider, _) -> CloudStreamProviderBridge.isLiveSource(provider) } == true
 
 private fun continueWatchingTitleKey(item: MediaItem): String =
-  "${normalizedMediaType(item.type)}:${item.id}"
+  mediaIdentityOf(item.type, item.id).keys().firstOrNull() ?: "${normalizedMediaType(item.type)}:${item.id}"
 
 private fun continueWatchingItemKey(item: MediaItem): String = buildString {
   append(continueWatchingTitleKey(item))
@@ -13780,7 +13860,7 @@ private fun continueWatchingItemKey(item: MediaItem): String = buildString {
 
 /**
  * Combines provider and device resume rows without inventing a second, title-only series card.
- * Episode identity is deliberately part of the key: two episodes can both be in progress, while
+ * Episode writes merge first, then the most recent unfinished episode represents each series.
  * `tv`, `series`, and `show` are aliases for the same canonical title.
  */
 internal fun mergeContinueWatchingItems(providerItems: List<MediaItem>, localItems: List<MediaItem>): List<MediaItem> {
@@ -13806,12 +13886,14 @@ internal fun mergeContinueWatchingItems(providerItems: List<MediaItem>, localIte
     .map(::continueWatchingTitleKey)
     .toSet()
   return merged.values
+    .filter { (it.progress ?: 0.0) < 95.0 }
     .filterNot { item ->
       normalizedMediaType(item.type) == "tv" &&
         item.resumeSeasonNumber == null && item.resumeEpisodeNumber == null &&
         continueWatchingTitleKey(item) in episodeSpecificTitles
     }
     .sortedWith(compareByDescending<MediaItem> { it.updatedAt ?: 0L }.thenByDescending { it.progress ?: 0.0 })
+    .distinctBy(::continueWatchingTitleKey)
 }
 
 /**
@@ -13943,12 +14025,12 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
   if (uiState.homeLoading && uiState.homeSections.isEmpty()) {
     SplashScene(
       density = uiState.homeDensity,
-      showContinueWatching = uiState.traktContinueWatching.isNotEmpty() || uiState.localContinueWatching.isNotEmpty(),
+      showContinueWatching = uiState.traktContinueWatching.isNotEmpty() || uiState.localContinueWatching.isNotEmpty() || uiState.nextUpItems.isNotEmpty(),
     )
     return
   }
 
-  val continueWatching = remember(uiState.traktContinueWatching, uiState.localContinueWatching, uiState.favouriteChannels, uiState.m3uChannels) { combinedContinueWatching(uiState) }
+  val continueWatching = remember(uiState.traktContinueWatching, uiState.localContinueWatching, uiState.nextUpItems, uiState.playbackProgressRecords, uiState.favouriteChannels, uiState.m3uChannels) { combinedContinueWatching(uiState) }
   val rawHeroItems = remember(uiState.allHomeSections, uiState.homeSections, continueWatching, uiState.mergedWatchlist) {
     mixedHeroItems(uiState.allHomeSections.ifEmpty { uiState.homeSections }, continueWatching, uiState.mergedWatchlist)
   }
@@ -14028,12 +14110,12 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
   val liveFavouritesTitle = stringResource(R.string.home_row_live_favourites)
   val playlistLiveTitle = stringResource(R.string.home_row_playlist_live)
   val playlistVodTitle = stringResource(R.string.home_row_playlist_vod)
-  val rows = remember(uiState.homeSections, continueWatching, recommendations, trending, uiState.mergedWatchlist, uiState.favouriteChannels, uiState.m3uChannels, uiState.m3uVodItems, uiState.addonCatalogRatings, uiState.ratingsEnabled, uiState.newEpisodeItems, uiState.defaultAppCatalogsEnabled, uiState.homeCatalogRows, continueWatchingTitle, newEpisodesTitle, liveFavouritesTitle, playlistLiveTitle, playlistVodTitle) {
+  val rows = remember(uiState.homeSections, continueWatching, recommendations, trending, uiState.mergedWatchlist, uiState.favouriteChannels, uiState.m3uChannels, uiState.m3uVodItems, uiState.addonCatalogRatings, uiState.ratingsEnabled, uiState.newEpisodeItems, uiState.showNewEpisodesRow, uiState.defaultAppCatalogsEnabled, uiState.homeCatalogRows, continueWatchingTitle, newEpisodesTitle, liveFavouritesTitle, playlistLiveTitle, playlistVodTitle) {
     buildList {
       if (continueWatching.isNotEmpty()) add(HomeRow("continue", continueWatchingTitle, continueWatching))
       // Straight after Continue Watching, as on the television: both answer "what should I put on
       // now", and a feed of what has just aired is worth less further down the page.
-      if (uiState.newEpisodeItems.isNotEmpty()) add(HomeRow("new-episodes", newEpisodesTitle, uiState.newEpisodeItems))
+      if (uiState.showNewEpisodesRow && uiState.newEpisodeItems.isNotEmpty()) add(HomeRow("new-episodes", newEpisodesTitle, uiState.newEpisodeItems))
       // Live rows come next, whatever the saved layout says, and Streaming Networks follows them —
       // so Networks sits straight under New Episodes and is pushed down only by live rows that
       // actually have something in them. See [isLiveHomeRow].
@@ -17801,7 +17883,7 @@ private fun ContinueTab(
   var filter by rememberSaveable { mutableStateOf(MediaFilter.All) }
   var columns by rememberSaveable { mutableStateOf(3) }
   var showClearConfirm by rememberSaveable { mutableStateOf(false) }
-  val allItems = remember(uiState.traktContinueWatching, uiState.localContinueWatching, uiState.favouriteChannels, uiState.m3uChannels) { combinedContinueWatching(uiState) }
+  val allItems = remember(uiState.traktContinueWatching, uiState.localContinueWatching, uiState.nextUpItems, uiState.playbackProgressRecords, uiState.favouriteChannels, uiState.m3uChannels) { combinedContinueWatching(uiState) }
   val items = remember(allItems, filter) { allItems.filteredBy(filter) }
   val modernHeader = uiState.headerStyle == HeaderStyle.Modern
   val listState = rememberLazyListState()
@@ -19781,6 +19863,7 @@ private fun SettingsScene(
       onContinueWatchingStyleChange = viewModel::setContinueWatchingStyle,
       onNetworkCardStyleChange = viewModel::setNetworkCardStyle,
       onLiveLandscapeCardsChange = viewModel::setLiveLandscapeCards,
+      onShowNewEpisodesRowChange = viewModel::setShowNewEpisodesRow,
       onNewEpisodesLandscapeChange = viewModel::setNewEpisodesLandscape,
       onLiveCategoriesEnabledChange = viewModel::setLiveCategoriesEnabled,
       onLiveProgressBarEnabledChange = viewModel::setLiveProgressBarEnabled,
@@ -19953,6 +20036,7 @@ private fun SettingsTab(
   onContinueWatchingStyleChange: (ContinueWatchingStyle) -> Unit,
   onNetworkCardStyleChange: (NetworkCardStyle) -> Unit,
   onLiveLandscapeCardsChange: (Boolean) -> Unit,
+  onShowNewEpisodesRowChange: (Boolean) -> Unit,
   onNewEpisodesLandscapeChange: (Boolean) -> Unit,
   onLiveCategoriesEnabledChange: (Boolean) -> Unit,
   onLiveProgressBarEnabledChange: (Boolean) -> Unit,
@@ -20528,8 +20612,42 @@ private fun SettingsTab(
               }
               SettingsDivider()
               SettingsSwitchRow("DOC", Color(0xFF94A3B8), stringResource(R.string.settings_m_show_hero_synopsis), stringResource(R.string.settings_m_show_the_story_summary_in_the_home), uiState.showHeroSynopsis, onShowHeroSynopsisChange)
+            }
+          }
+          item {
+            SettingsSection(stringResource(R.string.settings_m_new_episodes)) {
+              SettingsSwitchRow("NEW", Color(0xFF0EA5E9), stringResource(R.string.settings_show_new_episodes_row), stringResource(R.string.settings_show_new_episodes_row_description), uiState.showNewEpisodesRow, onShowNewEpisodesRowChange)
               SettingsDivider()
               SettingsSwitchRow("NEW", Color(0xFFA78BFA), stringResource(R.string.settings_m_wide_new_episode_cards), stringResource(R.string.settings_m_show_new_episodes_as_wide_cards_using), uiState.newEpisodesLandscape, onNewEpisodesLandscapeChange)
+              SettingsDivider()
+              SettingsSwitchRow(
+                "NEW", Color(0xFF0EA5E9), stringResource(R.string.settings_m_new_episode_notifications),
+                if (!uiState.episodeRemindersPermitted && uiState.episodeRemindersEnabled) {
+                  stringResource(R.string.settings_notifications_off_notice)
+                } else {
+                  stringResource(R.string.settings_notify_new_episode)
+                },
+                uiState.episodeRemindersEnabled, onEpisodeRemindersChange,
+              )
+              SettingsDivider()
+              SettingsSwitchRow(
+                "SOON", Color(0xFF8B5CF6), stringResource(R.string.settings_m_upcoming_episode_notifications),
+                if (!uiState.episodeRemindersPermitted && uiState.upcomingEpisodeRemindersEnabled) {
+                  stringResource(R.string.settings_notifications_off_notice)
+                } else {
+                  stringResource(R.string.settings_notify_before_release)
+                },
+                uiState.upcomingEpisodeRemindersEnabled, onUpcomingEpisodeRemindersChange,
+              )
+              SettingsDivider()
+              SettingsChoiceRow(
+                "TIME", Color(0xFFF59E0B), stringResource(R.string.settings_row_notify_before_release),
+                stringResource(R.string.settings_m_choose_how_early_upcoming_episode_notifications_arrive),
+                listOf("1 day", "2 days", "1 week"),
+                when (uiState.upcomingEpisodeReminderDays) { 2 -> "2 days"; 7 -> "1 week"; else -> "1 day" },
+              choice = SettingsChoice.NotifyBeforeRelease) { selected ->
+                onUpcomingEpisodeReminderDaysChange(when (selected) { "2 days" -> 2; "1 week" -> 7; else -> 1 })
+              }
             }
           }
           item {
@@ -20640,38 +20758,6 @@ private fun SettingsTab(
                 surface = "title, media and episode pages",
                 onPercentChange = onDetailAmbientTintPercentChange,
               )
-            }
-          }
-          item {
-            SettingsSection(stringResource(R.string.settings_m_new_episodes)) {
-              SettingsSwitchRow(
-                "NEW", Color(0xFF0EA5E9), stringResource(R.string.settings_m_new_episode_notifications),
-                if (!uiState.episodeRemindersPermitted && uiState.episodeRemindersEnabled) {
-                  stringResource(R.string.settings_notifications_off_notice)
-                } else {
-                  stringResource(R.string.settings_notify_new_episode)
-                },
-                uiState.episodeRemindersEnabled, onEpisodeRemindersChange,
-              )
-              SettingsDivider()
-              SettingsSwitchRow(
-                "SOON", Color(0xFF8B5CF6), stringResource(R.string.settings_m_upcoming_episode_notifications),
-                if (!uiState.episodeRemindersPermitted && uiState.upcomingEpisodeRemindersEnabled) {
-                  stringResource(R.string.settings_notifications_off_notice)
-                } else {
-                  stringResource(R.string.settings_notify_before_release)
-                },
-                uiState.upcomingEpisodeRemindersEnabled, onUpcomingEpisodeRemindersChange,
-              )
-              SettingsDivider()
-              SettingsChoiceRow(
-                "TIME", Color(0xFFF59E0B), stringResource(R.string.settings_row_notify_before_release),
-                stringResource(R.string.settings_m_choose_how_early_upcoming_episode_notifications_arrive),
-                listOf("1 day", "2 days", "1 week"),
-                when (uiState.upcomingEpisodeReminderDays) { 2 -> "2 days"; 7 -> "1 week"; else -> "1 day" },
-              choice = SettingsChoice.NotifyBeforeRelease) { selected ->
-                onUpcomingEpisodeReminderDaysChange(when (selected) { "2 days" -> 2; "1 week" -> 7; else -> 1 })
-              }
             }
           }
           item {
@@ -21903,7 +21989,7 @@ internal fun settingsRouteKeywords(route: SettingsRoute): String = when (route) 
   SettingsRoute.Downloads -> "download downloads offline saved save storage remove delete watch offline"
   SettingsRoute.Appearance -> "appearance language theme colour color dark light mode header navigation labels collapse scroll scrolling behaviour behavior font motion animation animations speed transitions reduce reduced cinematic visual effects glass blur transparency performance battery"
   SettingsRoute.HomeScreen -> "streamdek fuse media hub unified live vod home screen rows spotlight hero synopsis continue watching streaming networks network cards branded logo ambient glow background " +
-    "layout density relaxed compact spacing card size smaller bigger tighter fit more"
+    "layout density relaxed compact spacing card size smaller bigger tighter fit more new episodes row hide show wide cards notifications reminders upcoming before release"
   SettingsRoute.HomeLayout -> "layout rows reorder drag order arrange home catalog sections which rows"
   SettingsRoute.TitlePages -> "title detail page style layout trailer autoplay season tabs episode artwork blur spoiler ratings trailer cache clear schedule stale"
   SettingsRoute.Ratings -> "rating ratings imdb tmdb rotten tomatoes metacritic mdblist badge score"
@@ -30597,6 +30683,8 @@ private fun PosterCard(
 
 @Composable
 private fun ContinueWatchingCard(item: MediaItem, style: ContinueWatchingStyle, onClick: () -> Unit, onLongPress: () -> Unit = {}) {
+  val statusLabel = stringResource(if (item.isNextUp) R.string.detail_next_up else R.string.action_resume)
+  val subtitle = listOfNotNull(statusLabel, item.cardSubtitle ?: item.year).joinToString(" · ")
   val watchedPercent = (item.progress ?: 0.0).toInt().coerceIn(0, 100)
   val progressFraction = (watchedPercent / 100f).coerceIn(0f, 1f)
   val imageModel = item.backdrop ?: item.poster
@@ -30605,7 +30693,7 @@ private fun ContinueWatchingCard(item: MediaItem, style: ContinueWatchingStyle, 
   // and the pressed animation are all untouched — a Compact card is the same card, smaller.
   val home = LocalHomeLayout.current
   val progressBar: @Composable () -> Unit = {
-    Box(
+    if (!item.isNextUp) Box(
       modifier = Modifier
         .fillMaxWidth()
         .height(home.card(5.dp))
@@ -30666,9 +30754,9 @@ private fun ContinueWatchingCard(item: MediaItem, style: ContinueWatchingStyle, 
           verticalArrangement = Arrangement.spacedBy(home.card(6.dp)),
         ) {
           Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.ExtraBold, style = home.text(MaterialTheme.typography.titleMedium), color = Color.White)
-          Text(item.cardSubtitle ?: item.year ?: item.type.replaceFirstChar(Char::uppercase), maxLines = 1, overflow = TextOverflow.Ellipsis, style = home.text(MaterialTheme.typography.bodySmall), color = Color.White.copy(alpha = 0.72f))
+          Text(subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis, style = home.text(MaterialTheme.typography.bodySmall), color = Color.White.copy(alpha = 0.72f))
           progressBar()
-          Text(stringResource(R.string.detail_watched_percent, AppFormats.percent(LocalAppLanguage.current, watchedPercent / 100.0)), style = home.text(MaterialTheme.typography.bodySmall), color = Color.White.copy(alpha = 0.78f))
+          if (!item.isNextUp) Text(stringResource(R.string.detail_watched_percent, AppFormats.percent(LocalAppLanguage.current, watchedPercent / 100.0)), style = home.text(MaterialTheme.typography.bodySmall), color = Color.White.copy(alpha = 0.78f))
         }
       }
     }
@@ -30690,9 +30778,9 @@ private fun ContinueWatchingCard(item: MediaItem, style: ContinueWatchingStyle, 
             // the box or a two-line title would squeeze the line below it harder here than it does
             // at Relaxed. See [HomeLayoutMetrics.cardText].
             Text(item.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.ExtraBold, style = home.cardText(MaterialTheme.typography.titleMedium), color = Color.White)
-            Text(item.cardSubtitle ?: listOfNotNull(item.year, item.rating?.takeIf { LocalCardRatingsEnabled.current }?.let { "%.1f".format(it) }).joinToString(" • ").ifBlank { item.type.replaceFirstChar(Char::uppercase) }, maxLines = 1, overflow = TextOverflow.Ellipsis, style = home.cardText(MaterialTheme.typography.bodySmall), color = Color.White.copy(alpha = 0.72f))
+            Text(subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis, style = home.cardText(MaterialTheme.typography.bodySmall), color = Color.White.copy(alpha = 0.72f))
           }
-          Text(AppFormats.percent(LocalAppLanguage.current, watchedPercent / 100.0), color = Color.White, fontWeight = FontWeight.Black, style = home.cardText(MaterialTheme.typography.bodyMedium))
+          if (!item.isNextUp) Text(AppFormats.percent(LocalAppLanguage.current, watchedPercent / 100.0), color = Color.White, fontWeight = FontWeight.Black, style = home.cardText(MaterialTheme.typography.bodyMedium))
         }
         Box(modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth()) { progressBar() }
       }
@@ -30710,7 +30798,7 @@ private fun ContinueWatchingCard(item: MediaItem, style: ContinueWatchingStyle, 
         AsyncImage(model = imageModel, contentDescription = item.title, modifier = Modifier.width(home.card(120.dp)).fillMaxSize(), contentScale = ContentScale.Crop)
         Column(modifier = Modifier.weight(1f).padding(horizontal = home.card(10.dp), vertical = home.card(9.dp)), verticalArrangement = Arrangement.SpaceBetween) {
           Text(item.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Bold, fontSize = home.text(12.sp), lineHeight = home.text(16.sp), color = Color.White)
-          Text(item.cardSubtitle ?: item.year ?: item.type.replaceFirstChar(Char::uppercase), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = home.text(10.sp), color = Color.White.copy(alpha = 0.66f))
+          Text(subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = home.text(10.sp), color = Color.White.copy(alpha = 0.66f))
           progressBar()
         }
       }
@@ -30734,8 +30822,8 @@ private fun ContinueWatchingCard(item: MediaItem, style: ContinueWatchingStyle, 
           // its neighbours and the row's bottom edge came out ragged. Every card now takes the
           // height of the tallest, and the artwork and progress bars line up across the row.
           Text(item.title, minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Bold, fontSize = home.text(12.sp), lineHeight = home.text(16.sp), color = Color.White)
-          Text(item.cardSubtitle ?: item.year ?: item.type.replaceFirstChar(Char::uppercase), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = home.text(10.sp), color = Color.White.copy(alpha = 0.66f))
-          Text(stringResource(R.string.detail_watched_percent, AppFormats.percent(LocalAppLanguage.current, watchedPercent / 100.0)), fontSize = home.text(10.sp), color = Color.White.copy(alpha = 0.72f))
+          Text(subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = home.text(10.sp), color = Color.White.copy(alpha = 0.66f))
+          if (!item.isNextUp) Text(stringResource(R.string.detail_watched_percent, AppFormats.percent(LocalAppLanguage.current, watchedPercent / 100.0)), fontSize = home.text(10.sp), color = Color.White.copy(alpha = 0.72f))
         }
       }
     }
@@ -33288,18 +33376,19 @@ fun MediaHubScreen(
   // Catalogue key to the request round loading it, so a cancelled round cannot clear a newer round's entry.
   var inFlight by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
   var rounds by remember { mutableIntStateOf(0) }
-  var requestRound by remember { mutableIntStateOf(0) }
-  var retry by remember { mutableStateOf(false) }
   val requestIdentity = remember(scoped, settledQuery) { scoped.map { it.key } to settledQuery }
+  var requestRound by remember(requestIdentity) { mutableIntStateOf(0) }
+  var retry by remember(requestIdentity) { mutableStateOf(false) }
   LaunchedEffect(requestIdentity, requestRound) {
     val round = ++rounds
     loading = true
     try {
-      val pending = scoped.filter { source ->
-        val page = state.mediaHubPages[mediaHubCacheKey(state, source, settledQuery)]
-        source.localItems == null && (page == null || (!page.end && (!page.failed || retry)))
-      }.sortedBy { source -> state.mediaHubPages[mediaHubCacheKey(state, source, settledQuery)]?.nextOffset ?: -1 }
-        .let { candidates -> if (settledQuery.isNotBlank()) candidates else candidates.take(4) }
+      val pending = mediaHubPendingCatalogs(scoped, requestRound > 0, retry, settledQuery.isNotBlank()) { source ->
+        state.mediaHubPages[mediaHubCacheKey(state, source, settledQuery)]
+      }
+      // Queue every unseen catalogue, but keep only four network requests active. Queued sources
+      // get a heading immediately; switching filters reuses pages instead of advancing them.
+      inFlight = inFlight + pending.associate { it.key to round }
       val gate = Semaphore(4)
       supervisorScope {
         pending.map { source ->
@@ -33312,6 +33401,7 @@ fun MediaHubScreen(
         }.awaitAll()
       }
     } finally {
+      inFlight = inFlight.filterValues { it != round }
       // A cancelled round must not hide the loading state of the round that replaced it.
       if (kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]?.isActive == true) { loading = false; retry = false }
     }

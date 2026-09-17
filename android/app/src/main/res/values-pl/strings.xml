@@ -1757,4 +1757,6 @@
   <string name="media_hub_updating">Aktualizowanie wyników…</string>
   <string name="media_hub_origin_playlist">Playlista</string>
   <string name="media_hub_favourites_empty">Brak ulubionych kanałów. Dotknij gwiazdki przy kanale, aby go tu zachować.</string>
+    <string name="settings_show_new_episodes_row">Pokaż wiersz nowych odcinków</string>
+    <string name="settings_show_new_episodes_row_description">Pokazuj nowe odcinki na ekranie głównym. Ukrycie tego wiersza nie wyłącza powiadomień o odcinkach.</string>
 </resources>

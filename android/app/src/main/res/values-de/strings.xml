@@ -1647,4 +1647,6 @@
   <string name="media_hub_updating">Ergebnisse werden aktualisiert…</string>
   <string name="media_hub_origin_playlist">Playlist</string>
   <string name="media_hub_favourites_empty">Noch keine Lieblingssender. Tippe bei einem Sender auf den Stern, um ihn hier zu behalten.</string>
+    <string name="settings_show_new_episodes_row">Zeile für neue Folgen anzeigen</string>
+    <string name="settings_show_new_episodes_row_description">Neue Folgen auf der Startseite anzeigen. Das Ausblenden dieser Zeile deaktiviert keine Folgenbenachrichtigungen.</string>
 </resources>

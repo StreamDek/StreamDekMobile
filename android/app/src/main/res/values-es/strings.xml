@@ -1661,4 +1661,6 @@
   <string name="media_hub_updating">Actualizando resultados…</string>
   <string name="media_hub_origin_playlist">Lista</string>
   <string name="media_hub_favourites_empty">Aún no hay canales favoritos. Toca la estrella de un canal para guardarlo aquí.</string>
+    <string name="settings_show_new_episodes_row">Mostrar fila de nuevos episodios</string>
+    <string name="settings_show_new_episodes_row_description">Mostrar nuevos episodios en Inicio. Ocultar esta fila no desactiva las notificaciones de episodios.</string>
 </resources>

@@ -1638,6 +1638,21 @@
   <string name="visual_effects_note_performance">Automatisch is overgeschakeld naar beperkte effecten omdat scrollen trager werd.</string>
   <string name="visual_effects_note_unsupported">Deze Android-versie kan niet vervagen, dus glas gebruikt getinte vlakken.</string>
   <string name="cloudstream_address">Adres</string>
+  <string name="sky_settings_address">Siteadres</string>
+  <string name="sky_settings_address_hint">De site waar deze bron van leest. Kies een mirror, of vul een nieuw adres in als de site is verhuisd.</string>
+  <string name="sky_settings_address_default">Laat leeg om het adres van de plug-in te gebruiken.</string>
+  <string name="sky_settings_address_default_named">Laat leeg om het adres van de plug-in te gebruiken: %1$s</string>
+  <string name="sky_settings_sub_providers">Bronnen in deze plug-in</string>
+  <string name="sky_settings_sub_providers_hint">%1$d van %2$d aan. Zet uit wat je niet op Home, in Fuse of in zoeken wilt.</string>
+  <string name="sky_settings_all_on">Alles aan</string>
+  <string name="sky_settings_all_off">Alles uit</string>
+  <string name="sky_source_details">Brondetails</string>
+  <string name="sky_detail_package">Pakket</string>
+  <string name="sky_detail_version">Versie</string>
+  <string name="sky_detail_categories">Categorieën</string>
+  <string name="sky_detail_languages">Talen</string>
+  <string name="sky_detail_authors">Auteurs</string>
+  <string name="sky_detail_mirrors">Mirrors</string>
   <string name="cloudstream_settings_failed">De instellingen van deze plugin konden niet worden geopend.</string>
 
   <string name="media_hub_title">StreamDek Fuse</string>

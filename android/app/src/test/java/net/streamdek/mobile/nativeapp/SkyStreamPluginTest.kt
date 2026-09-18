@@ -1,5 +1,6 @@
 package net.streamdek.mobile.nativeapp
 
+import com.lagradost.cloudstream3.TvType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -12,15 +13,6 @@ import java.util.zip.ZipOutputStream
 
 class SkyStreamPluginTest {
   @get:Rule val temporaryFolder = TemporaryFolder()
-
-  private val provider = SkyProvider(
-    repoUrl = "https://repo.test/repo.json",
-    packageName = "com.arranoust.torrentio",
-    name = "Torrentio",
-    version = 7,
-    downloadUrl = "https://repo.test/dist/com.arranoust.torrentio.sky",
-    description = null,
-  )
 
   private fun writeZip(name: String, entries: Map<String, String>): File {
     val file = temporaryFolder.newFile(name)
@@ -75,85 +67,104 @@ class SkyStreamPluginTest {
     assertTrue(error?.message.orEmpty().contains("No plugin.js"))
   }
 
-  // ── Result mapping ──────────────────────────────────────────────────────────────────────────
+  // ── Mapping onto CloudStream ────────────────────────────────────────────────────────────────
 
-  @Test fun `maps a magnet reply onto an info-hash stream`() {
-    val raw = """
-      {"success":true,"data":[
-        {"url":"magnet:?xt=urn:btih:C9E15763F722F23E98A29DECDFAE341B98D53056&dn=Movie","quality":"1080p","source":"Torrentio 1080p","headers":{}}
-      ]}
-    """.trimIndent()
-
-    val streams = parseSkyStreams(raw, provider)
-
-    assertEquals(1, streams.size)
-    val stream = streams.single()
-    // A magnet has to arrive as an info-hash so it flows through the same debrid resolution as an
-    // add-on torrent result rather than being handed to the player as a URL it cannot open.
-    assertEquals("C9E15763F722F23E98A29DECDFAE341B98D53056", stream.infoHash)
-    assertNull(stream.url)
-    assertEquals("1080p", stream.quality)
-    assertEquals("Torrentio 1080p", stream.name)
-    assertEquals("sky:com.arranoust.torrentio", stream.addonId)
-    assertEquals("Torrentio", stream.addonName)
+  @Test fun `reads skystream categories as cloudstream types`() {
+    assertEquals(setOf(TvType.Movie, TvType.TvSeries), skyProviderTypes(listOf("Movie", "TvSeries")))
+    assertEquals(setOf(TvType.Live), skyProviderTypes(listOf("LiveTv")))
+    assertEquals(setOf(TvType.Live), skyProviderTypes(listOf("Livestream", "Sports")))
+    assertTrue(TvType.Anime in skyProviderTypes(listOf("Anime")))
+    // A manifest that names nothing it knows is asked for films and series, not for nothing.
+    assertEquals(setOf(TvType.Movie, TvType.TvSeries), skyProviderTypes(listOf("Bollywood")))
   }
 
-  @Test fun `maps a direct link reply onto a url stream and keeps its headers`() {
-    val raw = """
-      {"success":true,"data":[
-        {"url":"https://cdn.test/file.mkv","quality":"2160p","source":"RD","headers":{"Referer":"https://cdn.test/"}}
-      ]}
-    """.trimIndent()
-
-    val stream = parseSkyStreams(raw, provider).single()
-
-    assertEquals("https://cdn.test/file.mkv", stream.url)
-    assertNull(stream.infoHash)
-    assertEquals("https://cdn.test/", stream.requestHeaders["Referer"])
+  @Test fun `reads an item's own type and leaves unknown ones unset`() {
+    assertEquals(TvType.TvSeries, skyItemType("series"))
+    assertEquals(TvType.TvSeries, skyItemType("TvSeries"))
+    assertEquals(TvType.Live, skyItemType("livestream"))
+    assertEquals(TvType.Anime, skyItemType("anime"))
+    assertNull(skyItemType(""))
+    assertNull(skyItemType("something"))
   }
 
-  @Test fun `drops entries with no url and treats Unknown quality as absent`() {
-    val raw = """
-      {"success":true,"data":[
-        {"quality":"1080p","source":"No URL"},
-        {"url":"https://cdn.test/a.mkv","quality":"Unknown","source":"Plain"}
-      ]}
-    """.trimIndent()
-
-    val streams = parseSkyStreams(raw, provider)
-
-    assertEquals(1, streams.size)
-    assertNull(streams.single().quality)
-  }
-
-  @Test fun `returns nothing for a declined or unreadable reply`() {
-    assertTrue(parseSkyStreams("""{"success":false,"error":"IMDB ID tidak tersedia"}""", provider).isEmpty())
-    assertTrue(parseSkyStreams("not json", provider).isEmpty())
-    assertTrue(parseSkyStreams("""{"success":true}""", provider).isEmpty())
-  }
-
-  @Test fun `surfaces the plugin's own reason separately from the streams`() {
-    assertEquals("IMDB ID tidak tersedia", skyStreamError("""{"success":false,"error":"IMDB ID tidak tersedia"}"""))
-    assertEquals("No streams returned", skyStreamError("""{"success":false}"""))
-    assertEquals("Unreadable plugin reply", skyStreamError("not json"))
-    assertNull(skyStreamError("""{"success":true,"data":[]}"""))
-  }
-
-  // ── Request shaping ─────────────────────────────────────────────────────────────────────────
-
-  @Test fun `treats every show spelling as series and everything else as movie`() {
-    assertEquals("series", normalizeSkyType("tv"))
-    assertEquals("series", normalizeSkyType("Series"))
-    assertEquals("series", normalizeSkyType("show"))
-    assertEquals("movie", normalizeSkyType("movie"))
-  }
-
-  @Test fun `only reads an info-hash out of a magnet`() {
+  @Test fun `reduces release names to the title a catalogue uses`() {
     assertEquals(
-      "C9E15763F722F23E98A29DECDFAE341B98D53056",
-      skyMagnetInfoHash("magnet:?xt=urn:btih:C9E15763F722F23E98A29DECDFAE341B98D53056&dn=x"),
+      "Avengers: Endgame" to 2019,
+      skyCleanTitle("Avengers: Endgame (2019) BluRay [Hindi (DD5.1) & English] 1080p 720p & 480p Dual Audio [x264/10Bit-HEVC]"),
     )
-    assertNull(skyMagnetInfoHash("https://cdn.test/file.mkv"))
-    assertNull(skyMagnetInfoHash("magnet:?xt=urn:sha1:nothing"))
+    assertEquals("Avengers: Endgame" to null, skyCleanTitle("Avengers: Endgame Hindi Dubbed"))
+    assertEquals("Never Dance with the Devil" to null, skyCleanTitle("Never Dance with the Devil Unofficial Hindi Dubbed"))
+    assertEquals("Daayra" to 2026, skyCleanTitle("Daayra (2026) V1 HDTC [Hindi (Clean)] 1080p"))
+    // A title that is a year, or holds one, is left whole.
+    assertEquals("1917" to 2019, skyCleanTitle("1917 (2019)"))
+    assertEquals("Blade Runner 2049" to null, skyCleanTitle("Blade Runner 2049"))
+    // Clean titles pass through untouched, including ones that merely contain a language word.
+    assertEquals("Hindi Medium" to null, skyCleanTitle("Hindi Medium"))
+    assertEquals("Naruto: Shippuden" to null, skyCleanTitle("Naruto: Shippuden"))
+  }
+
+  // ── Settings ────────────────────────────────────────────────────────────────────────────────
+
+  @Test fun `reads toggles whether sources declare them as booleans or as text`() {
+    assertTrue(settingIsOn(true))
+    assertTrue(settingIsOn("true"))
+    assertTrue(settingIsOn("1"))
+    assertTrue(!settingIsOn("false", fallback = true))
+    // SkyStream stores every value as text, so a saved toggle must read back as what was saved.
+    assertTrue(!settingIsOn("off", fallback = true))
+    assertTrue(settingIsOn(null, fallback = true))
+    assertTrue(settingIsOn("unreadable", fallback = true))
+  }
+
+  @Test fun `parses the settings shapes skystream accepts`() {
+    val fields = parseSkySettingsSchema(
+      """
+      {"settings":[
+        {"key":"external_subs","title":"Enable External Subs","type":"toggle","defaultValue":"true"},
+        {"key":"base_url","title":"Site","type":"text","defaultValue":"https://a.test"},
+        {"key":"mirror","name":"Mirror","type":"url","isBaseUrl":true},
+        {"key":"langs","title":"Languages","type":"toggle_group","options":[{"value":"en","label":"English","defaultValue":true},{"value":"hi","label":"Hindi"}]}
+      ]}
+      """.trimIndent(),
+    )
+    assertEquals(listOf("toggle", SKY_ADDRESS_FIELD_TYPE, SKY_ADDRESS_FIELD_TYPE, "toggleGroup"), fields.map { it.type })
+    assertEquals("true", fields[0].defaultValue)
+    assertEquals("Mirror", fields[2].label)
+    assertEquals(listOf(true, false), fields[3].options.map { it.defaultOn })
+  }
+
+  @Test fun `reads mirror lists written either way`() {
+    val domains = skyDomains(org.json.JSONArray("""["https://anisuge.tv/",{"name":"anikoto.net","url":"https://anikoto.net"},{"name":"bad","url":"ftp://x"}]"""))
+    assertEquals(listOf("https://anisuge.tv", "https://anikoto.net"), domains.map { it.url })
+    assertEquals("anikoto.net", domains[1].name)
+  }
+
+  @Test fun `keeps host setting keys apart from a script's own`() {
+    assertTrue(SkyStreamPluginManager.isHostSettingKey(SkyStreamPluginManager.ADDRESS_KEY))
+    assertTrue(SkyStreamPluginManager.isHostSettingKey("_provider_enabled_hotstar"))
+    assertTrue(!SkyStreamPluginManager.isHostSettingKey("debrid_api_key"))
+  }
+
+  @Test fun `finds a height in free text quality labels`() {
+    assertEquals(1080, skyQualityOf("HDHub 1080p [MKV]"))
+    assertEquals(2160, skyQualityOf("4K HDR"))
+    assertEquals(720, skyQualityOf("YTS 720p (1.1 GB)"))
+    assertEquals(0, skyQualityOf("Auto"))
+  }
+
+  @Test fun `decodes the base64 skystream wraps proxy urls in`() {
+    val url = "https://cdn.test/a.m3u8?t=1"
+    val encoded = java.util.Base64.getEncoder().encodeToString(url.toByteArray())
+    assertEquals(url, String(skyBase64(encoded)))
+    // URL-safe and unpadded forms both turn up.
+    assertEquals(url, String(skyBase64(encoded.trimEnd('=').replace('+', '-').replace('/', '_'))))
+  }
+
+  @Test fun `extracts json paths the way nativeJsonExtract reads them`() {
+    val root = org.json.JSONObject("""{"a":{"b":[{"c":1},{"c":2}]},"list":[{"x":"y"}]}""")
+    assertEquals(2, SkyStreamRuntime.extractJsonPath(root, "a.b[1].c"))
+    assertEquals("[1,2]", SkyStreamRuntime.extractJsonPath(root, "a.b[*].c").toString())
+    assertEquals("y", SkyStreamRuntime.extractJsonPath(root, "list[0].x"))
+    assertNull(SkyStreamRuntime.extractJsonPath(root, "a.missing.c"))
   }
 }

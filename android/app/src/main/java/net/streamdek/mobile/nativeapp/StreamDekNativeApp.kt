@@ -3277,6 +3277,27 @@ internal fun cloudStreamHomeCatalogCandidates(providers: List<com.lagradost.clou
     }
   }
 
+/**
+ * Every provider that answers as a CloudStream one: loaded `.cs3` providers, then switched-on
+ * SkyStream sources (see [SkyStreamMainApi]). Everything that reaches for CloudStream providers —
+ * Home rows, the Fuse page, detail pages, stream lookups — reads this, so a SkyStream source takes
+ * part in all of it the same way.
+ */
+internal fun catalogueProviders(): List<com.lagradost.cloudstream3.MainAPI> {
+  val cloudStream = if (CloudStreamPlugins.isInitialized) runCatching { CloudStreamPlugins.manager.activeProviders() }.getOrDefault(emptyList()) else emptyList()
+  return cloudStream + skyStreamProviders(cloudStream)
+}
+
+/** Switched-on SkyStream sources as CloudStream providers, named clear of [cloudStream]'s. */
+internal fun skyStreamProviders(
+  cloudStream: List<com.lagradost.cloudstream3.MainAPI> =
+    if (CloudStreamPlugins.isInitialized) runCatching { CloudStreamPlugins.manager.activeProviders() }.getOrDefault(emptyList()) else emptyList(),
+): List<com.lagradost.cloudstream3.MainAPI> =
+  if (!SkyStreamPlugins.isInitialized) emptyList()
+  else runCatching { SkyStreamPlugins.manager.mainApis(cloudStream.mapTo(hashSetOf()) { it.name }) }
+    .onFailure { Log.w("StreamDekSkyStream", "SkyStream sources could not be listed", it) }
+    .getOrDefault(emptyList())
+
 internal const val CLOUDSTREAM_ROW_SOURCE_PREFIX = "cloudstream."
 
 /** How many of a CloudStream row's titles Home shows; a main page can return hundreds. */
@@ -3567,15 +3588,21 @@ internal fun mergeHomeCatalogRows(
  * provider in a group of its own.
  */
 internal fun currentCloudStreamRowGroups(): Map<String, Pair<String, String>> {
-  if (!CloudStreamPlugins.isInitialized) return emptyMap()
-  return runCatching {
+  val cloudStream = if (!CloudStreamPlugins.isInitialized) emptyMap() else runCatching {
     CloudStreamPluginLoader.loadedPlugins().flatMap { plugin ->
       plugin.providers.map { provider ->
         cloudStreamRowSourceId(provider.name) to ("cloudstream-plugin:${plugin.filePath}" to plugin.name)
       }
     }.toMap()
   }.getOrDefault(emptyMap())
+  // A SkyStream plugin that splits into sub-providers groups them the same way.
+  val skyStream = skyStreamProviders().filterIsInstance<SkyStreamMainApi>().associate { provider ->
+    cloudStreamRowSourceId(provider.name) to (skyStreamRowGroupKey(provider.source) to provider.source.pluginName)
+  }
+  return cloudStream + skyStream
 }
+
+internal fun skyStreamRowGroupKey(source: SkySource): String = "skystream-plugin:${source.repoUrl}|${source.packageName}"
 
 internal fun applyHomeCatalogLayout(sections: List<MediaSection>, rows: List<HomeCatalogRow>, defaultBuiltinsEnabled: Boolean): List<MediaSection> {
   val sectionMap = sections.associateBy { it.id }
@@ -3829,9 +3856,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       state.providers.filter { it.repoUrl in repos }.mapTo(hashSetOf()) { "cloudstream:${it.name}" }
     } else emptySet()
     val favouriteSkyStreamIds = if (SkyStreamPlugins.isInitialized) {
-      val state = SkyStreamPlugins.manager.state
-      val repos = state.repos.filter { it.favourite }.mapTo(hashSetOf()) { it.url }
-      state.providers.filter { it.repoUrl in repos }.mapTo(hashSetOf()) { "sky:${it.packageName}" }
+      val repos = SkyStreamPlugins.manager.state.repos.filter { it.favourite }.mapTo(hashSetOf()) { it.url }
+      skyStreamProviders().filterIsInstance<SkyStreamMainApi>()
+        .filter { it.source.repoUrl in repos }
+        .mapTo(hashSetOf()) { cloudStreamAddonId(it) }
     } else emptySet()
     return rankedStreams(
       streams = streams,
@@ -4009,6 +4037,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     CloudStreamPlugins.initialize(application.applicationContext)
     CloudStreamPlugins.manager.onStateChanged = { _ -> syncActiveProfilePlugins() }
     SkyStreamPlugins.initialize(application.applicationContext)
+    SkyStreamPlugins.manager.onStateChanged = { _ -> syncActiveProfilePlugins() }
+    // A SkyStream source coming or going, or learning its Home rows, is the same news as a
+    // CloudStream provider loading: its rows are offered and the switched-on ones fetched.
+    SkyStreamPlugins.manager.onProvidersChanged = { viewModelScope.launch(Dispatchers.Main) { onCloudStreamProvidersChanged() } }
     // .cs3 providers only exist for as long as their classes are loaded, so anything the user
     // already enabled has to be re-loaded on every cold start before it can answer a stream request.
     refreshProfileCloudStreamPlugins()
@@ -4816,9 +4848,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
   }
 
-  private fun loadedCloudStreamProviders(): List<com.lagradost.cloudstream3.MainAPI> =
-    if (!CloudStreamPlugins.isInitialized) emptyList()
-    else runCatching { CloudStreamPlugins.manager.activeProviders() }.getOrDefault(emptyList())
+  private fun loadedCloudStreamProviders(): List<com.lagradost.cloudstream3.MainAPI> = catalogueProviders()
 
   /**
    * The CloudStream rows the viewer has switched on, each asked of the provider that offers it.
@@ -5908,20 +5938,13 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     // CloudStream providers scrape by title, so they need a resolved one; and like the JS plugins
     // they are movie/series scrapers rather than a source for live channels.
     val cloudStreamTitle = sanitizeDisplayText(detail.title)?.takeIf { it.isNotBlank() && !uiState.detailIsLive }
-    val cloudStreamProviders = if (cloudStreamTitle == null || !CloudStreamPlugins.isInitialized) {
-      emptyList()
-    } else {
-      runCatching { CloudStreamPlugins.manager.activeProviders() }.getOrDefault(emptyList())
-    }
+    // SkyStream sources are asked the same way, through the same bridge, but reported as a source
+    // of their own so the page can say which of the two is still working.
+    val allScrapers = if (cloudStreamTitle == null) emptyList() else catalogueProviders()
+    val skyStreamProviders = allScrapers.filterIsInstance<SkyStreamMainApi>()
+    val cloudStreamProviders = allScrapers.filterNot { it is SkyStreamMainApi }
     val cloudStreamSourceCount = if (cloudStreamProviders.isEmpty()) 0 else 1
-    // SkyStream plugins scrape by title, like the CloudStream ones — an IMDb id is only useful to
-    // the handful that proxy an id-keyed service, so it is passed along but not required.
-    val skyStreamImdbId = detail.imdbId?.let { Regex("tt\\d+", RegexOption.IGNORE_CASE).find(it)?.value }
-    val skyStreamSourceCount = if (
-      cloudStreamTitle == null ||
-      !SkyStreamPlugins.isInitialized ||
-      runCatching { SkyStreamPlugins.manager.activeProviders() }.getOrDefault(emptyList()).isEmpty()
-    ) 0 else 1
+    val skyStreamSourceCount = if (skyStreamProviders.isEmpty()) 0 else 1
     val totalSources = candidates.size * enabledAddons.size + pluginSourceCount + cloudStreamSourceCount + skyStreamSourceCount
     val generation = ++streamRequestGeneration
     val merged = linkedMapOf<String, AddonStream>()
@@ -6010,44 +6033,21 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           publish()
         }
       }
-      if (skyStreamSourceCount > 0 && cloudStreamTitle != null) {
-        launch {
-          val outcome = runCatching {
-            SkyStreamPlugins.manager.streams(
-              title = cloudStreamTitle,
-              year = detail.year?.toIntOrNull(),
-              imdbId = skyStreamImdbId,
-              type = detail.type,
-              season = episode?.seasonNumber,
-              episode = episode?.episodeNumber,
-            ) { providerStreams ->
-              withContext(Dispatchers.Main.immediate) {
-                if (generation == streamRequestGeneration) {
-                  providerStreams.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) }
-                  publish()
-                }
-              }
-            }.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) }
-          }.onFailure { Log.w("StreamDekSkyStream", "SkyStream providers failed for $skyStreamImdbId", it) }
-          endSource(SKYSTREAM_SOURCE_LABEL, outcome.isFailure)
-          publish()
-        }
-      }
-      if (cloudStreamSourceCount > 0 && cloudStreamTitle != null) {
-        launch {
-          val request = CloudStreamProviderBridge.StreamRequest(
-            title = cloudStreamTitle,
-            year = detail.year?.toIntOrNull(),
-            type = if (detail.type == "series") "tv" else detail.type,
-            season = episode?.seasonNumber,
-            episode = episode?.episodeNumber,
-          )
-          // The provider this title was opened from, when it came from one of its Home rows.
-          val origin = detailCloudStreamOrigin?.takeIf { !it.exclusive }
+      if (cloudStreamTitle != null) {
+        val request = CloudStreamProviderBridge.StreamRequest(
+          title = cloudStreamTitle,
+          year = detail.year?.toIntOrNull(),
+          type = if (detail.type == "series") "tv" else detail.type,
+          season = episode?.seasonNumber,
+          episode = episode?.episodeNumber,
+        )
+        // The provider this title was opened from, when it came from one of its Home rows.
+        val origin = detailCloudStreamOrigin?.takeIf { !it.exclusive }
+        fun launchScrapers(label: String, providers: List<com.lagradost.cloudstream3.MainAPI>) = launch {
           val outcome = runCatching {
             // That provider is asked by the title's own link, beside the title search, so its
             // sources are offered even when it names the title differently from the catalogue.
-            val originJob = origin?.let { source ->
+            val originJob = origin?.takeIf { source -> providers.any { it === source.provider } }?.let { source ->
               async(Dispatchers.IO) {
                 val found = runCatching {
                   CloudStreamProviderBridge.originStreams(source.provider, source.url, episode?.seasonNumber, episode?.episodeNumber)
@@ -6063,7 +6063,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
             }
             // Each provider publishes as it finishes rather than waiting for the slowest one,
             // matching how the add-on and JS plugin sources fill the list in.
-            CloudStreamProviderBridge.streams(cloudStreamProviders, request) { providerStreams ->
+            CloudStreamProviderBridge.streams(providers, request) { providerStreams ->
               withContext(Dispatchers.Main.immediate) {
                 if (generation == streamRequestGeneration) {
                   providerStreams.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) }
@@ -6072,10 +6072,12 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
               }
             }.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) }
             originJob?.await()
-          }.onFailure { Log.w("StreamDekCloudStream", "CloudStream providers failed for $cloudStreamTitle", it) }
-          endSource(CLOUDSTREAM_SOURCE_LABEL, outcome.isFailure)
+          }.onFailure { Log.w("StreamDekCloudStream", "$label providers failed for $cloudStreamTitle", it) }
+          endSource(label, outcome.isFailure)
           publish()
         }
+        if (skyStreamSourceCount > 0) launchScrapers(SKYSTREAM_SOURCE_LABEL, skyStreamProviders)
+        if (cloudStreamSourceCount > 0) launchScrapers(CLOUDSTREAM_SOURCE_LABEL, cloudStreamProviders)
       }
       for (id in candidates) {
         for (addon in enabledAddons) {
@@ -6316,8 +6318,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
    * to search for, so it simply returns nothing.
    */
   private suspend fun cloudStreamStreams(type: String, candidates: List<String>, live: Boolean, requestedDetail: MediaDetail?): List<AddonStream> {
-    if (!CloudStreamPlugins.isInitialized) return emptyList()
-    val providers = CloudStreamPlugins.manager.activeProviders()
+    val providers = catalogueProviders()
     if (providers.isEmpty()) return emptyList()
     val detail = requestedDetail ?: uiState.detailFallbackItem?.toFallbackDetail() ?: return emptyList()
     val title = sanitizeDisplayText(detail.title)?.takeIf { it.isNotBlank() } ?: return emptyList()
@@ -10514,7 +10515,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   private var homeLoadCloudStreamSignature: String? = null
 
   private fun cloudStreamProviderSignature(providers: List<com.lagradost.cloudstream3.MainAPI>): String =
-    providers.map { it.name }.sorted().joinToString("|")
+    providers.map { provider -> provider.name + CloudStreamProviderBridge.mainPageRows(provider).joinToString(",", "[", "]") { it.page.name } }
+      .sorted().joinToString("|")
 
   /**
    * A default row is only fetched while it is switched on, so switching one back on has nothing
@@ -11390,6 +11392,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
             maxOf(
               it.optLong("updatedAt", 0L),
               it.optJSONObject("cloudstream")?.optLong("updatedAt", 0L) ?: 0L,
+              it.optJSONObject("skystream")?.optLong("updatedAt", 0L) ?: 0L,
               // Source switches are stamped on their own, and the version the account reports counts them.
               csSourceSettingsLatest(parseCsSourceSettings(it.optJSONArray(CLOUDSTREAM_SOURCE_SETTINGS_KEY))),
             )
@@ -11423,6 +11426,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
         // engine on a different schedule, so tying it to the JS half's clock would let an edit to
         // one hold back an edit to the other.
         applyCloudStreamDocument(cloudJson, manual)
+        applySkyStreamDocument(cloudJson, manual)
         if (cloudHasState && (manual || !localIsNewer) && !(reconciliation.inSync && !manual)) {
           val reposNeedingScripts = withContext(Dispatchers.IO) {
             StreamDekPlugins.manager.restoreCloudState(cloudJson)
@@ -11463,6 +11467,29 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     cloudStreamLoadJob = viewModelScope.launch(Dispatchers.IO) {
       runCatching { CloudStreamPlugins.manager.loadEnabledProviders() }
         .onFailure { Log.w("StreamDekCloudStream", "Could not bring up synced CloudStream sources", it) }
+    }
+  }
+
+  /**
+   * Takes the `skystream` section of a profile document: the collections, what is switched on and
+   * each source's settings, arbitrated on the section's own stamp like the CloudStream half.
+   *
+   * A section this device is ahead of — or one the account has never had — is answered by pushing
+   * this device's copy, so collections that existed before sync did reach the other devices.
+   */
+  private fun applySkyStreamDocument(cloudJson: String, manual: Boolean) {
+    if (!SkyStreamPlugins.isInitialized) return
+    val manager = SkyStreamPlugins.manager
+    val section = runCatching { JSONObject(cloudJson).optJSONObject("skystream") }.getOrNull()
+    val incomingAt = section?.optLong("updatedAt", 0L) ?: 0L
+    val localAt = manager.state.updatedAt
+    when {
+      section == null -> if (manager.hasCollections()) syncActiveProfilePlugins()
+      manual || incomingAt > localAt -> viewModelScope.launch(Dispatchers.IO) {
+        runCatching { manager.restoreCloudState(section.toString()) }
+          .onFailure { Log.w("StreamDekSkyStream", "Could not take synced SkyStream collections", it) }
+      }
+      localAt > incomingAt -> syncActiveProfilePlugins()
     }
   }
 
@@ -11530,7 +11557,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
     // SkyStream collections are profile-scoped for the same reason: one household member's
     // sources should not answer stream requests under another's profile. Nothing to load ahead
-    // of time — a .sky is read from disk when it is asked for a stream, not held in the process.
+    // of time — a .sky is read from disk when it is first asked for something.
     if (SkyStreamPlugins.isInitialized) SkyStreamPlugins.manager.selectProfileStorage(ownerKey)
     if (!CloudStreamPlugins.isInitialized) return
     // Registered before the load it is waiting to hear about.
@@ -11544,7 +11571,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   }
 
   /**
-   * The whole plugin document: StreamDek's own collections, and the CloudStream ones beside them.
+   * The whole plugin document: StreamDek's own collections, and the CloudStream and SkyStream ones
+   * beside them.
    *
    * Composed from both managers every time rather than remembered, so a push triggered by one of
    * them always carries the other's current state. `cloudstream` is only written once there is
@@ -11564,6 +11592,10 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       if (CloudStreamPlugins.manager.hasSourceSettings()) {
         root.put(CLOUDSTREAM_SOURCE_SETTINGS_KEY, CloudStreamPlugins.manager.sourceSettingsJson())
       }
+    }
+    // SkyStream collections, switches and source settings, stamped on their own like CloudStream's.
+    if (SkyStreamPlugins.isInitialized && SkyStreamPlugins.manager.hasCollections()) {
+      runCatching { root.put("skystream", JSONObject(SkyStreamPlugins.manager.snapshotJson())) }
     }
     return root.toString()
   }
@@ -24331,7 +24363,7 @@ private fun AddonServiceCard(
 }
 
 @Composable
-private fun DetailRow(label: String, value: String) {
+internal fun DetailRow(label: String, value: String) {
   Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
     Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f))
     Text(value, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
@@ -24350,7 +24382,7 @@ private fun DetailRow(label: String, value: String) {
  * often the very end.
  */
 @Composable
-private fun DetailUrlRow(label: String, url: String) {
+internal fun DetailUrlRow(label: String, url: String) {
   val clipboard = LocalClipboardManager.current
   val context = LocalContext.current
   Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -24797,16 +24829,46 @@ private fun PluginProviderSettingsDialog(provider: PluginProvider, onDismiss: ()
   )
 }
 
-/** The same dialog for a SkyStream source — its `getSettings()` answers the same field model. */
+/**
+ * The same dialog for a SkyStream source. Its script's fields render like any other source's; below
+ * them come the two things SkyStream's own settings screen adds — the site address, with the
+ * mirrors its collection lists, and a switch for each source a plugin splits into.
+ */
 @Composable
 private fun SkyProviderSettingsDialog(provider: SkyProvider, onDismiss: () -> Unit) {
+  var schema by remember(provider.packageName) { mutableStateOf<SkySettingsSchema?>(null) }
+  var address by remember(provider.packageName) { mutableStateOf("") }
+  var subProvidersOn by remember(provider.packageName) { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
   ProviderSettingsDialog(
     providerKey = provider.packageName,
     providerName = provider.name,
-    loadSchema = { SkyStreamPlugins.manager.settingsSchema(provider) },
+    loadSchema = {
+      SkyStreamPlugins.manager.settingsSchema(provider)
+        .onSuccess { loaded ->
+          schema = loaded
+          address = loaded.address.orEmpty()
+          subProvidersOn = loaded.subProviders.associate { (id, _, on) -> id to on }
+        }
+        .map { it.fields }
+    },
     initialValues = { SkyStreamPlugins.manager.providerSettings(provider.packageName) },
-    onSave = { values -> SkyStreamPlugins.manager.saveProviderSettings(provider.packageName, values) },
+    onSave = { values ->
+      SkyStreamPlugins.manager.saveProviderSettings(provider.packageName, values)
+      if (schema != null) SkyStreamPlugins.manager.saveSourceOptions(provider.packageName, address.takeIf { it.isNotBlank() }, subProvidersOn)
+    },
     onDismiss = onDismiss,
+    hasExtraContent = schema?.let { it.addressField != null || it.domains.isNotEmpty() || it.subProviders.isNotEmpty() } == true,
+    extraContent = {
+      schema?.let { loaded ->
+        SkySourceOptions(
+          schema = loaded,
+          address = address,
+          onAddressChange = { address = it },
+          subProvidersOn = subProvidersOn,
+          onSubProviderChange = { id, on -> subProvidersOn = subProvidersOn + (id to on) },
+        )
+      }
+    },
   )
 }
 
@@ -24825,6 +24887,10 @@ private fun ProviderSettingsDialog(
   initialValues: () -> Map<String, Any>,
   onSave: suspend (Map<String, Any>) -> Unit,
   onDismiss: () -> Unit,
+  /** Whether [extraContent] has anything to show, so a source with no fields is not told it has none. */
+  hasExtraContent: Boolean = false,
+  /** Settings a plugin system adds beyond the declared fields, drawn below them. */
+  extraContent: @Composable () -> Unit = {},
 ) {
   val scope = rememberCoroutineScope()
   var loading by remember(providerKey) { mutableStateOf(true) }
@@ -24853,6 +24919,7 @@ private fun ProviderSettingsDialog(
         when {
           loading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
           error != null -> Text(error.orEmpty(), color = MaterialTheme.colorScheme.error)
+          fields.isEmpty() && hasExtraContent -> Unit
           fields.isEmpty() -> Text(
             stringResource(R.string.plugin_no_fields_described),
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
@@ -24867,7 +24934,29 @@ private fun ProviderSettingsDialog(
                     Text(field.label, fontWeight = FontWeight.SemiBold)
                     field.description?.let { Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall) }
                   }
-                  Switch(checked = values[key] as? Boolean ?: (field.defaultValue as? Boolean ?: false), onCheckedChange = { values = values + (key to it) })
+                  // Stored values come back as text, and some sources declare "true" rather than true.
+                  Switch(checked = settingIsOn(values[key], settingIsOn(field.defaultValue)), onCheckedChange = { values = values + (key to it) })
+                }
+              }
+              // Several switches stored as one JSON object of option -> on, as SkyStream stores them.
+              "toggleGroup" -> field.key?.let { key ->
+                val current = runCatching { JSONObject(values[key]?.toString() ?: field.defaultValue?.toString() ?: "{}") }.getOrDefault(JSONObject())
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                  Text(field.label, fontWeight = FontWeight.SemiBold)
+                  field.description?.let { Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall) }
+                  field.options.forEach { option ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                      Text(option.label, modifier = Modifier.weight(1f))
+                      Switch(
+                        checked = settingIsOn(current.opt(option.value), option.defaultOn),
+                        onCheckedChange = { on ->
+                          val next = JSONObject()
+                          field.options.forEach { other -> next.put(other.value, if (other.value == option.value) on else settingIsOn(current.opt(other.value), other.defaultOn)) }
+                          values = values + (key to next.toString())
+                        },
+                      )
+                    }
+                  }
                 }
               }
               "select" -> field.key?.let { key ->
@@ -24931,7 +25020,7 @@ private fun ProviderSettingsDialog(
           // Offered when the source described nothing, and once something has been added by hand,
           // so a source needing two tokens can be given both. A source that describes its own
           // fields properly does not get an invitation to invent more.
-          if (fields.isEmpty() || values.keys.any { it !in describedKeys }) {
+          if ((fields.isEmpty() && !hasExtraContent) || values.keys.any { it !in describedKeys }) {
             var newKey by remember(providerKey) { mutableStateOf("") }
             var newValue by remember(providerKey) { mutableStateOf("") }
             SettingsDivider()
@@ -24962,6 +25051,7 @@ private fun ProviderSettingsDialog(
             ) { Text(stringResource(R.string.action_add)) }
           }
         }
+        if (!loading && error == null) extraContent()
         Row(Modifier.align(Alignment.End), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
           TextButton(onClick = onDismiss, enabled = !saving) { Text(stringResource(R.string.action_cancel)) }
           Button(onClick = {
@@ -25397,6 +25487,16 @@ private fun SkyStreamCollectionsSection(refreshSignal: Int, highlightedSources: 
   var query by rememberSaveable { mutableStateOf("") }
   var pendingProvider by remember { mutableStateOf<String?>(null) }
   var settingsProvider by remember { mutableStateOf<SkyProvider?>(null) }
+  var detailsRepo by remember { mutableStateOf<SkyRepo?>(null) }
+  var detailsProvider by remember { mutableStateOf<SkyProvider?>(null) }
+  detailsRepo?.let { repo ->
+    SkyStreamDetailsDialog(repo.name, repo.description, repo.url, repo.enabled,
+      state.providers.filter { it.repoUrl == repo.url }, onDismiss = { detailsRepo = null })
+  }
+  detailsProvider?.let { provider ->
+    SkyStreamDetailsDialog(provider.name, provider.description, provider.downloadUrl, provider.enabled,
+      listOf(provider), onDismiss = { detailsProvider = null })
+  }
   LaunchedEffect(highlightedSources) {
     val key = highlightedSources.firstOrNull { it.startsWith("sky|") } ?: return@LaunchedEffect
     manager.state.providers.firstOrNull { skyPluginSourceKey(it.repoUrl, it.packageName) == key }?.let { expandedRepoUrl = it.repoUrl; query = "" }
@@ -25427,6 +25527,7 @@ private fun SkyStreamCollectionsSection(refreshSignal: Int, highlightedSources: 
           busy = busy,
           favourite = repo.favourite,
           onToggleFavourite = { manager.toggleRepoFavourite(repo.url); syncState() },
+          onDetails = { detailsRepo = repo },
           onToggleEnabled = { enabled -> manager.enableRepo(repo.url, enabled); syncState() },
           onToggleExpanded = { expandedRepoUrl = if (expandedRepoUrl == repo.url) null else repo.url },
           onRefresh = {
@@ -25470,6 +25571,9 @@ private fun SkyStreamCollectionsSection(refreshSignal: Int, highlightedSources: 
                   color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                   style = MaterialTheme.typography.bodySmall,
                 )
+              }
+              IconButton(onClick = { detailsProvider = provider }) {
+                Icon(Icons.Rounded.Info, contentDescription = stringResource(R.string.a11y_details_named, provider.name))
               }
               // Settings are declared at runtime, so the only way to know whether a source has
               // any is to load it and ask. The button is offered whenever the source is on, and
@@ -33558,7 +33662,7 @@ private fun mediaHubCatalogs(state: AppUiState): List<MediaHubCatalog> = buildLi
     }
   }
   // CloudStream rows start switched off in Home Rows, so one the layout has not listed yet is off too.
-  cloudStreamHomeCatalogCandidates(if (CloudStreamPlugins.isInitialized) runCatching { CloudStreamPlugins.manager.activeProviders() }.getOrDefault(emptyList()) else emptyList())
+  cloudStreamHomeCatalogCandidates(catalogueProviders())
     // Live providers only, for the reason [isMediaHubLiveCatalogType] gives: a plugin that scrapes
     // films is a catalogue, and its rows belong on Home rather than inside a page about channels.
     .filter { row -> isLiveCatalogRowId(row.id) && isMediaHubRowSwitchedOn(row.id, switches, offWhenUnlisted = true) }.forEach { row ->
@@ -34037,15 +34141,14 @@ fun MediaHubScreen(
       )
     }
     resumeChannel?.let { channel ->
-      val restInset = if (modernHeader) HeaderSearchInset.modernPanel else 0.dp
       Box(
         Modifier.fillMaxWidth().zIndex(1f).pinnedBelowHeader(headerScope, statusTop, naturalTop = filtersNaturalTop)
           .offset { IntOffset(0, (filtersHeight + 8.dp).roundToPx()) }
-          // The header's width at rest; once slimmed and pinned, the search field's and the pinned
-          // filters' width. Moved on the card's own fraction, in layout, so it flows with the card.
+          // The search field's width, at rest and once slimmed and pinned alike, so the card lines up
+          // with the field above it rather than running to the screen edges.
           // Only the resting height is kept for the grid, so the slim card cannot move the grid.
           .layout { measurable, constraints ->
-            val inset = androidx.compose.ui.unit.lerp(restInset, fieldInset, resumeFraction.value).roundToPx()
+            val inset = fieldInset.roundToPx()
             val width = (constraints.maxWidth - inset * 2).coerceAtLeast(0)
             val placeable = measurable.measure(constraints.copy(minWidth = width, maxWidth = width))
             layout(constraints.maxWidth, placeable.height) { placeable.placeRelative(inset, 0) }

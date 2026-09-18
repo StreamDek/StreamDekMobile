@@ -1652,6 +1652,21 @@
   <string name="visual_effects_note_performance">Automático cambió a efectos reducidos porque el desplazamiento se ralentizó.</string>
   <string name="visual_effects_note_unsupported">Esta versión de Android no puede desenfocar, así que el cristal usa superficies tintadas.</string>
   <string name="cloudstream_address">Dirección</string>
+  <string name="sky_settings_address">Dirección del sitio</string>
+  <string name="sky_settings_address_hint">El sitio del que lee esta fuente. Elige un espejo o introduce una dirección nueva si el sitio se ha mudado.</string>
+  <string name="sky_settings_address_default">Déjalo vacío para usar la dirección que trae el plugin.</string>
+  <string name="sky_settings_address_default_named">Déjalo vacío para usar la dirección del plugin: %1$s</string>
+  <string name="sky_settings_sub_providers">Fuentes de este plugin</string>
+  <string name="sky_settings_sub_providers_hint">%1$d de %2$d activadas. Desactiva las que no quieras en Inicio, en Fuse o en la búsqueda.</string>
+  <string name="sky_settings_all_on">Activar todas</string>
+  <string name="sky_settings_all_off">Desactivar todas</string>
+  <string name="sky_source_details">Detalles de la fuente</string>
+  <string name="sky_detail_package">Paquete</string>
+  <string name="sky_detail_version">Versión</string>
+  <string name="sky_detail_categories">Categorías</string>
+  <string name="sky_detail_languages">Idiomas</string>
+  <string name="sky_detail_authors">Autores</string>
+  <string name="sky_detail_mirrors">Espejos</string>
   <string name="cloudstream_settings_failed">No se pudieron abrir los ajustes de este complemento.</string>
 
   <string name="media_hub_title">StreamDek Fuse</string>

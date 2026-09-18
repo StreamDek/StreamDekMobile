@@ -1652,6 +1652,21 @@
   <string name="visual_effects_note_performance">Automatic switched to Reduced effects after scrolling slowed down.</string>
   <string name="visual_effects_note_unsupported">This version of Android can\'t blur, so glass uses tinted surfaces.</string>
   <string name="cloudstream_address">Address</string>
+  <string name="sky_settings_address">Site address</string>
+  <string name="sky_settings_address_hint">The site this source reads from. Pick a mirror, or enter a new address if the site has moved.</string>
+  <string name="sky_settings_address_default">Leave empty to use the address the plugin ships with.</string>
+  <string name="sky_settings_address_default_named">Leave empty to use the address the plugin ships with: %1$s</string>
+  <string name="sky_settings_sub_providers">Sources in this plugin</string>
+  <string name="sky_settings_sub_providers_hint">%1$d of %2$d on. Switch off the ones you do not want on Home, in Fuse or in search.</string>
+  <string name="sky_settings_all_on">All on</string>
+  <string name="sky_settings_all_off">All off</string>
+  <string name="sky_source_details">Source details</string>
+  <string name="sky_detail_package">Package</string>
+  <string name="sky_detail_version">Version</string>
+  <string name="sky_detail_categories">Categories</string>
+  <string name="sky_detail_languages">Languages</string>
+  <string name="sky_detail_authors">Authors</string>
+  <string name="sky_detail_mirrors">Mirrors</string>
   <string name="cloudstream_settings_failed">Could not open this plugin’s settings.</string>
 
   <string name="media_hub_title">StreamDek Fuse</string>

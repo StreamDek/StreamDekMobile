@@ -1748,6 +1748,21 @@
   <string name="visual_effects_note_performance">Tryb automatyczny przełączył się na ograniczone efekty, bo przewijanie zwolniło.</string>
   <string name="visual_effects_note_unsupported">Ta wersja Androida nie obsługuje rozmycia, więc szkło używa barwionych powierzchni.</string>
   <string name="cloudstream_address">Adres</string>
+  <string name="sky_settings_address">Adres strony</string>
+  <string name="sky_settings_address_hint">Strona, z której czyta to źródło. Wybierz serwer lustrzany albo wpisz nowy adres, jeśli strona się przeniosła.</string>
+  <string name="sky_settings_address_default">Zostaw puste, aby użyć adresu z wtyczki.</string>
+  <string name="sky_settings_address_default_named">Zostaw puste, aby użyć adresu wtyczki: %1$s</string>
+  <string name="sky_settings_sub_providers">Źródła w tej wtyczce</string>
+  <string name="sky_settings_sub_providers_hint">Włączone: %1$d z %2$d. Wyłącz te, których nie chcesz na stronie głównej, w Fuse ani w wyszukiwaniu.</string>
+  <string name="sky_settings_all_on">Włącz wszystkie</string>
+  <string name="sky_settings_all_off">Wyłącz wszystkie</string>
+  <string name="sky_source_details">Szczegóły źródła</string>
+  <string name="sky_detail_package">Pakiet</string>
+  <string name="sky_detail_version">Wersja</string>
+  <string name="sky_detail_categories">Kategorie</string>
+  <string name="sky_detail_languages">Języki</string>
+  <string name="sky_detail_authors">Autorzy</string>
+  <string name="sky_detail_mirrors">Serwery lustrzane</string>
   <string name="cloudstream_settings_failed">Nie udało się otworzyć ustawień tej wtyczki.</string>
 
   <string name="media_hub_title">StreamDek Fuse</string>

@@ -139,7 +139,9 @@ internal fun CatalogHomeLayoutSettings(
           ?.let { label -> "cloudstream-plugin:${plugin.filePath}" to label }
       }.toMap()
     }.getOrDefault(emptyMap())
-  }
+  } + skyStreamProviders().filterIsInstance<SkyStreamMainApi>().mapNotNull { provider ->
+    cloudStreamProviderOriginLabel(provider.name)?.takeIf { it.isNotBlank() }?.let { skyStreamRowGroupKey(provider.source) to it }
+  }.toMap()
   // A CloudStream row is offered only while its source is loaded. Switched off, in a collection
   // that is switched off, or failing to load, it has nothing to put on Home, so it is left out of
   // the list — but kept in the saved layout, so turning the source back on brings its rows back

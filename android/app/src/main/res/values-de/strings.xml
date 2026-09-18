@@ -1638,6 +1638,21 @@
   <string name="visual_effects_note_performance">Automatisch hat zu reduzierten Effekten gewechselt, weil das Scrollen langsamer wurde.</string>
   <string name="visual_effects_note_unsupported">Diese Android-Version kann nicht weichzeichnen, daher nutzt Glas getönte Flächen.</string>
   <string name="cloudstream_address">Adresse</string>
+  <string name="sky_settings_address">Seitenadresse</string>
+  <string name="sky_settings_address_hint">Die Seite, von der diese Quelle liest. Wähle einen Spiegel oder gib eine neue Adresse ein, falls die Seite umgezogen ist.</string>
+  <string name="sky_settings_address_default">Leer lassen, um die Adresse des Plugins zu verwenden.</string>
+  <string name="sky_settings_address_default_named">Leer lassen, um die Adresse des Plugins zu verwenden: %1$s</string>
+  <string name="sky_settings_sub_providers">Quellen in diesem Plugin</string>
+  <string name="sky_settings_sub_providers_hint">%1$d von %2$d an. Schalte die aus, die du nicht auf der Startseite, in Fuse oder in der Suche möchtest.</string>
+  <string name="sky_settings_all_on">Alle an</string>
+  <string name="sky_settings_all_off">Alle aus</string>
+  <string name="sky_source_details">Quellendetails</string>
+  <string name="sky_detail_package">Paket</string>
+  <string name="sky_detail_version">Version</string>
+  <string name="sky_detail_categories">Kategorien</string>
+  <string name="sky_detail_languages">Sprachen</string>
+  <string name="sky_detail_authors">Autoren</string>
+  <string name="sky_detail_mirrors">Spiegel</string>
   <string name="cloudstream_settings_failed">Die Einstellungen dieses Plugins konnten nicht geöffnet werden.</string>
 
   <string name="media_hub_title">StreamDek Fuse</string>

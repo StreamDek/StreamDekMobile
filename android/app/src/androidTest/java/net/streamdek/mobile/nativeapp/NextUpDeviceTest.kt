@@ -7,9 +7,23 @@ import kotlinx.coroutines.runBlocking
 
 /** Runs against Android storage and real episode metadata, without touching a viewer profile. */
 class NextUpDeviceInstrumentation : Instrumentation() {
-  override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); start() }
+  private var arguments: Bundle = Bundle()
+  override fun onCreate(arguments: Bundle?) { this.arguments = arguments ?: Bundle(); super.onCreate(arguments); start() }
   override fun onStart() {
     val result = Bundle()
+    // Gradle registers one runner, so the SkyStream plugin checks are chosen by argument.
+    if (arguments.getString("suite") == "skystream") {
+      val report = StringBuilder()
+      try {
+        val passed = SkyStreamDeviceChecks(targetContext, arguments).runAll(report)
+        result.putString("stream", report.append("\nSkyStream device run: $passed plugin(s) produced streams.\n").toString())
+        finish(if (passed > 0) Activity.RESULT_OK else Activity.RESULT_CANCELED, result)
+      } catch (error: Throwable) {
+        result.putString("stream", "$report\nSkyStream device run FAILED: ${error.stackTraceToString().take(3000)}\n")
+        finish(Activity.RESULT_CANCELED, result)
+      }
+      return
+    }
     try {
       testHistorySurvivesRecreationAndHonoursProfileAndClear()
       testRealMetadataResolvesImmediateAiredEpisode()

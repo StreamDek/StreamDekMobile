@@ -9,8 +9,10 @@ package net.streamdek.mobile.nativeapp
  * different things to trust, to disable and to go looking for when a source stops working, and the
  * name alone tells you none of it.
  *
- * The phone has two plugin systems where the television has one, so both prefixes are read here.
- * Everything else is an add-on, which is what the television assumes for anything unprefixed.
+ * The phone has more plugin systems than the television, so each prefix is read here. SkyStream
+ * sources run as CloudStream providers and share their prefix; which of the two a provider is comes
+ * from the SkyStream manager. Everything else is an add-on, which is what the television assumes for
+ * anything unprefixed.
  */
 private const val PLUGIN_ADDON_ID_PREFIX = "plugin:"
 private const val CLOUDSTREAM_ADDON_ID_PREFIX = "cloudstream:"
@@ -28,7 +30,11 @@ fun streamOriginLabel(stream: AddonStream?, addonFallback: String): String? = st
   if (CloudStreamPlugins.isInitialized) CloudStreamPlugins.manager.state else CsPluginState(),
   addonFallback,
   if (CloudStreamPlugins.isInitialized) CloudStreamPluginLoader.providerFiles() else emptyMap(),
+  skyStreamCollectionsByProvider(),
 )
+
+private fun skyStreamCollectionsByProvider(): Map<String, String> =
+  if (SkyStreamPlugins.isInitialized) SkyStreamPlugins.manager.collectionNamesByProvider() else emptyMap()
 
 /**
  * @param addonFallback what to call a stream that came from a plain add-on rather than a plugin or
@@ -36,6 +42,7 @@ fun streamOriginLabel(stream: AddonStream?, addonFallback: String): String? = st
  * and this file has no composition to read a resource from.
  * @param cloudStreamProviderFiles the plugin file each loaded CloudStream provider came from, by
  * provider name — see [CloudStreamPluginLoader.providerFiles].
+ * @param skyStreamCollections the collection each SkyStream source came from, by provider name.
  */
 fun streamOriginLabel(
   stream: AddonStream?,
@@ -43,6 +50,7 @@ fun streamOriginLabel(
   cloudStream: CsPluginState,
   addonFallback: String,
   cloudStreamProviderFiles: Map<String, String> = emptyMap(),
+  skyStreamCollections: Map<String, String> = emptyMap(),
 ): String? {
   val addonId = stream?.addonId?.trim().orEmpty()
   if (addonId.isEmpty()) return null
@@ -52,6 +60,11 @@ fun streamOriginLabel(
       val providerId = addonId.removePrefix(PLUGIN_ADDON_ID_PREFIX)
       val repoUrl = plugins.providers.firstOrNull { it.id == providerId }?.repoUrl.orEmpty()
       collectionOriginLabel(PLUGIN_ORIGIN, plugins.repos.firstOrNull { it.url == repoUrl }?.name, repoUrl)
+    }
+    addonId.startsWith(CLOUDSTREAM_ADDON_ID_PREFIX) &&
+      skyStreamCollections.containsKey(addonId.removePrefix(CLOUDSTREAM_ADDON_ID_PREFIX)) -> {
+      val collection = skyStreamCollections.getValue(addonId.removePrefix(CLOUDSTREAM_ADDON_ID_PREFIX))
+      collectionOriginLabel(SKYSTREAM_ORIGIN, collection.takeUnless { it.startsWith("http", true) }, collection)
     }
     addonId.startsWith(CLOUDSTREAM_ADDON_ID_PREFIX) -> {
       val providerName = addonId.removePrefix(CLOUDSTREAM_ADDON_ID_PREFIX)
@@ -72,10 +85,11 @@ fun streamOriginLabel(
 /**
  * "CloudStream · <collection>" for a loaded CloudStream provider, by name — the same words its
  * streams carry, so a Home row and the sources it leads to read as coming from the same place.
- * Null when CloudStream is not running or the provider is not one it has loaded.
+ * "SkyStream · <collection>" for a SkyStream source. Null when neither system knows the provider.
  */
 fun cloudStreamProviderOriginLabel(providerName: String): String? {
-  if (!CloudStreamPlugins.isInitialized) return null
+  val skyStreamCollections = skyStreamCollectionsByProvider()
+  if (!CloudStreamPlugins.isInitialized && providerName !in skyStreamCollections) return null
   return streamOriginLabel(
     stream = AddonStream(
       addonId = CLOUDSTREAM_ADDON_ID_PREFIX + providerName,
@@ -92,14 +106,16 @@ fun cloudStreamProviderOriginLabel(providerName: String): String? {
       cachedBy = emptyList(),
     ),
     plugins = StreamDekPlugins.manager.state,
-    cloudStream = CloudStreamPlugins.manager.state,
+    cloudStream = if (CloudStreamPlugins.isInitialized) CloudStreamPlugins.manager.state else CsPluginState(),
     addonFallback = "",
-    cloudStreamProviderFiles = CloudStreamPluginLoader.providerFiles(),
+    cloudStreamProviderFiles = if (CloudStreamPlugins.isInitialized) CloudStreamPluginLoader.providerFiles() else emptyMap(),
+    skyStreamCollections = skyStreamCollections,
   )
 }
 
 private const val PLUGIN_ORIGIN = "Plugin"
 private const val CLOUDSTREAM_ORIGIN = "CloudStream"
+private const val SKYSTREAM_ORIGIN = "SkyStream"
 
 /** "Plugin · Collection" or "CloudStream · Repo": which system, then which collection within it. */
 private fun collectionOriginLabel(kind: String, repoName: String?, repoUrl: String): String {

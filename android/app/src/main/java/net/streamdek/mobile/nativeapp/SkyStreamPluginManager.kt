@@ -143,6 +143,16 @@ class SkyStreamPluginManager(private val context: Context) {
   private val probeLock = Mutex()
   @Volatile private var adapters: Pair<String, List<MainAPI>>? = null
 
+  /**
+   * [activeSources], worked out once per change rather than per call: it is asked for every card and
+   * row on screen, on the main thread, and working it out parses each plugin's manifest and settings.
+   * Keyed on the state object (replaced on every change) and [configVersion], which moves whenever a
+   * stored value that shapes the sources does — sub-provider lists, host settings.
+   */
+  @Volatile private var sourcesCache: Triple<SkyPluginState, Int, List<SkySource>>? = null
+  private val configVersion = java.util.concurrent.atomic.AtomicInteger()
+  private fun configChanged() { configVersion.incrementAndGet() }
+
   private var storageKey = LEGACY_STORAGE_KEY
 
   @Volatile var state: SkyPluginState = load()
@@ -169,6 +179,7 @@ class SkyStreamPluginManager(private val context: Context) {
       }
     }
     state = load()
+    configChanged()
     // No onStateChanged here: that pushes this device's copy to the account, and on a profile
     // switch the account's copy has not been read yet — pushing first would overwrite changes made
     // on another device with whatever this one last had.
@@ -197,6 +208,7 @@ class SkyStreamPluginManager(private val context: Context) {
     // its sources have to come up now rather than at the next profile switch.
     if (committed && toKey == storageKey) {
       state = load()
+      configChanged()
       onStateChanged?.invoke(state)
       notifyProvidersChanged()
       restoreEnabledBundles()
@@ -383,7 +395,14 @@ class SkyStreamPluginManager(private val context: Context) {
   }
 
   /** Sources of switched-on providers: each provider itself, or the sub-providers it listed. */
-  internal fun activeSources(): List<SkySource> = activeProviders().flatMap { provider ->
+  internal fun activeSources(): List<SkySource> {
+    val current = state
+    val version = configVersion.get()
+    sourcesCache?.takeIf { it.first === current && it.second == version }?.let { return it.third }
+    return computeActiveSources().also { sourcesCache = Triple(current, version, it) }
+  }
+
+  private fun computeActiveSources(): List<SkySource> = activeProviders().flatMap { provider ->
     val path = provider.installedFilePath ?: return@flatMap emptyList()
     val manifest = bundleOrNull(path)?.manifestJson?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return@flatMap emptyList()
     val settings = providerPreferences(provider.packageName)
@@ -481,6 +500,7 @@ class SkyStreamPluginManager(private val context: Context) {
             ?.let { raw -> runCatching { JSONArray(raw) }.getOrNull() }
             ?: JSONArray()
           prefs.edit().putString(subProvidersKey(provider), subs.toString()).apply()
+          configChanged()
           if (subs.length() > 0) notifyProvidersChanged()
         }
         // Each source's settings, learnt once per version, so the web portal can offer them.
@@ -631,6 +651,7 @@ class SkyStreamPluginManager(private val context: Context) {
    * is stamped so it syncs to the profile's other devices.
    */
   private fun settingsChanged(packageName: String) {
+    configChanged()
     homeCache.keys.removeIf { it.split('|').getOrNull(1) == packageName || it.contains("|$packageName") }
     adapters = null
     save()
@@ -650,6 +671,7 @@ class SkyStreamPluginManager(private val context: Context) {
     val current = providerPreferences(packageName).toMutableMap()
     if (value.isNullOrBlank()) current.remove(key) else current[key] = value
     prefs.edit().putString("settings:$storageKey:$packageName", JSONObject(current as Map<*, *>).toString()).apply()
+    if (isHostSettingKey(key)) configChanged()
   }
 
   // ── Account sync ─────────────────────────────────────────────────────────────────────────────
@@ -708,6 +730,7 @@ class SkyStreamPluginManager(private val context: Context) {
       }
     }
     editor.apply()
+    if (settingsChanged) configChanged()
     if (merged.repos == state.repos && merged.providers == state.providers && !settingsChanged) return false
     val kept = merged.providers.mapNotNull { it.installedFilePath }.toSet()
     state.providers.mapNotNull { it.installedFilePath }.filterNot { it in kept }.forEach { path ->

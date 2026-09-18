@@ -771,6 +771,7 @@ internal enum class SettingsRoute(@StringRes val titleRes: Int, @StringRes val s
   // Account and app.
   Account(R.string.settings_dest_account, R.string.settings_route_account_subtitle),
   Profiles(R.string.nav_profiles, R.string.settings_route_profiles_subtitle),
+  BackupRestore(R.string.settings_m_backup_restore, R.string.settings_route_backup_restore_subtitle),
   AppUpdates(R.string.settings_m_app_updates, R.string.settings_route_app_updates_subtitle),
 }
 /** How a tracking service is connected. Trakt and SIMKL use a device code; MDBList uses a key. */
@@ -3844,6 +3845,66 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     // Wired once, here, because the HTTP layer is what discovers a session has ended and this is
     // the only object that can do anything about it.
     client.onSessionEnded = ::onSessionEnded
+  }
+
+  /** Settings > Backup & Restore. Everything it does lives in BackupRestoreController. */
+  val backupController: BackupRestoreController by lazy {
+    BackupRestoreController(getApplication(), apiClient, viewModelScope, BackupViewModelHost())
+  }
+
+  /**
+   * What a restore needs from this view model. An inner class rather than more methods here: this
+   * class is close to the size the dex verifier will take.
+   */
+  private inner class BackupViewModelHost : BackupHost {
+    override fun profiles(): List<BackupProfileRef> {
+      val userId = uiState.session?.user?.uid
+      val activeId = uiState.activeProfileId
+      val refs = uiState.profiles.map { profile ->
+        BackupProfileRef(profile.id, profile.name, profile.avatarIndex, backupOwnerKey(userId, profile.id), profile.id == activeId)
+      }
+      if (refs.any { it.active }) return refs
+      // No profile selected: the data is kept under the account (or the device's guest identity) itself.
+      val owner = activeOwnerKey() ?: GUEST_OWNER_KEY
+      return refs + BackupProfileRef(null, strings.getString(R.string.profile_default_name), 0, owner, active = true)
+    }
+
+    override fun session(): AuthSession? = uiState.session
+
+    override fun activeProfileId(): String? = uiState.activeProfileId
+
+    override fun currentAddons(): List<InstalledAddon> = uiState.addons
+
+    override fun restoreDebridKeys(keys: List<DebridKeyStore.StoredKey>) {
+      val existing = DebridKeyStore.load(getApplication())
+      val restoredProviders = keys.mapTo(HashSet()) { it.provider }
+      if (!uiState.debridCloudSync || uiState.session == null) {
+        applyLocalDebridKeys(keys.sortedBy { it.priority } + existing.filterNot { it.provider in restoredProviders })
+        return
+      }
+      // Keys that renew themselves are only ever kept on the device (see syncDebridKeys); the rest
+      // are added to the account, which is where a signed-in device takes its keys from.
+      val selfRenewing = keys.filter { it.refreshToken != null }
+      if (selfRenewing.isNotEmpty()) {
+        val renewingProviders = selfRenewing.mapTo(HashSet()) { it.provider }
+        DebridKeyStore.save(getApplication(), selfRenewing + existing.filterNot { it.provider in renewingProviders })
+      }
+      val connected = uiState.debridAccounts.mapTo(HashSet()) { it.provider }
+      keys.filter { it.refreshToken == null && it.provider !in connected }.forEach { addDebridAccount(it.provider, it.apiKey) }
+    }
+
+    /** The guest migration's reload, for the same reason: see [runGuestDataMigration]. */
+    override suspend fun reloadAfterRestore() {
+      PlaybackCodecOptions.initialize(getApplication())
+      uiState = appSettingsStore.applyTo(uiState)
+      applyAppNightMode(getApplication())
+      // Before the refresh below, which takes the account's preferences over the local ones.
+      pushCloudPreferencesNow()
+      refreshProfileScopedData()
+      activeOwnerKey()?.let { uploadMigratedGuestData(it) }
+      loadHome(force = true, silent = true)
+      loadDebridAccounts()
+    }
   }
 
   /** Keeps the viewer's normal quality/debrid ordering inside two collection-priority groups. */
@@ -21054,6 +21115,8 @@ private fun SettingsTab(
           // The row above switches profile. Managing them was only reachable through the picker,
           // so creating one or setting a PIN had no obvious way in from here.
           SettingsNavRow("PRO", Color(0xFF60A5FA), stringResource(R.string.settings_m_manage_profiles), pluralStringResource(R.plurals.settings_summary_profiles, uiState.profiles.size, uiState.profiles.size), onClick = { onRouteChange(SettingsRoute.Profiles) })
+          SettingsDivider()
+          SettingsNavRow("BAK", Color(0xFF22C55E), stringResource(R.string.settings_m_backup_restore), backupRestoreSummary(playerSettingsViewModel.backupController), onClick = { onRouteChange(SettingsRoute.BackupRestore) })
         }
       }
       item {
@@ -21850,6 +21913,12 @@ private fun SettingsTab(
         SettingsRoute.Profiles -> item { ProfilesSettingsSummary(uiState, profileCreateRequest, onSwitchProfile, onSelectProfile, onSubmitProfilePin, onCancelProfilePin, onCreateProfile, onUpdateProfile, onDeleteProfile, onMakeDefaultProfile, onRememberLastProfileAtStartupChange, onUpdateProfilePin) }
         SettingsRoute.Account -> item { AccountSettingsSummary(uiState, onSignOut, onSignIn, onRefreshSync, onMigrateGuestData) }
         SettingsRoute.AppUpdates -> item { AppUpdatesSettingsSummary(uiState, onAutoUpdateChecksChange, onCheckForUpdates, onStartUpdate) }
+        SettingsRoute.BackupRestore -> item {
+          BackupRestoreSettings(
+            playerSettingsViewModel.backupController,
+            uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }?.name ?: stringResource(R.string.profile_default_name),
+          )
+        }
       }
     }
   }
@@ -22769,6 +22838,7 @@ internal fun settingsRouteKeywords(route: SettingsRoute): String = when (route) 
   SettingsRoute.Account -> "account sign in sign out email sync services subscription"
   SettingsRoute.Profiles -> "profile switch kids pin default avatar family"
   SettingsRoute.AppUpdates -> "update version apk install release changelog about"
+  SettingsRoute.BackupRestore -> "backup back up restore export import save file transfer move new phone device reinstall migrate recovery undo"
 }
 
 @Composable
@@ -22921,7 +22991,7 @@ private fun SettingsSubtitle(text: String, collapsedMaxLines: Int = 3) {
 }
 
 @Composable
-private fun SettingsNavRow(icon: String, iconColor: Color, title: String, subtitle: String, value: String? = null, onClick: () -> Unit) {
+internal fun SettingsNavRow(icon: String, iconColor: Color, title: String, subtitle: String, value: String? = null, onClick: () -> Unit) {
   Row(modifier = Modifier.fillMaxWidth().clip(StreamDekRadius.cardShape).clickable(onClick = onClick).padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
     SettingsIcon(icon, iconColor)
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {

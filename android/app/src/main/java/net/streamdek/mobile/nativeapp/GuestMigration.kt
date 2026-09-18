@@ -338,15 +338,7 @@ internal fun mergePluginStateDocuments(
   mergeJsonObjectArrays(
     targetRaw = target.optJSONArray("providers")?.toString(),
     sourceRaw = source.optJSONArray("providers")?.toString(),
-    // Each plugin engine names these fields its own way - the JS document writes `repo`/`id`, the
-    // CloudStream and SkyStream documents `repoUrl` with `internalName` or `packageName` - and one
-    // merge serves all three, so it accepts whichever pair a document actually uses.
-    identity = {
-      val repo = it.optString("repo").takeIf(String::isNotBlank) ?: it.optString("repoUrl").takeIf(String::isNotBlank)
-      val id = listOf("id", "packageName", "internalName")
-        .firstNotNullOfOrNull { field -> it.optString(field).takeIf(String::isNotBlank) }
-      if (repo != null && id != null) "$repo:$id" else id
-    },
+    identity = ::pluginProviderIdentity,
   )?.let { merged.put("providers", JSONArray(it)) }
 
   // CloudStream source switches merge value by value, newest first, like they do with the account:
@@ -373,6 +365,20 @@ internal fun mergePluginStateDocuments(
     if (!merged.has(key)) merged.put(key, source.opt(key))
   }
   return merged.toString()
+}
+
+/**
+ * What identifies one source inside a plugin document: its collection and its id.
+ *
+ * Each plugin engine names these fields its own way - the JS document writes `repo`/`id`, the
+ * CloudStream and SkyStream documents `repoUrl` with `internalName` or `packageName` - and one
+ * merge serves all three, so it accepts whichever pair a document actually uses.
+ */
+internal fun pluginProviderIdentity(provider: JSONObject): String? {
+  val repo = provider.optString("repo").takeIf(String::isNotBlank) ?: provider.optString("repoUrl").takeIf(String::isNotBlank)
+  val id = listOf("id", "packageName", "internalName")
+    .firstNotNullOfOrNull { field -> provider.optString(field).takeIf(String::isNotBlank) }
+  return if (repo != null && id != null) "$repo:$id" else id
 }
 
 /**

@@ -45,6 +45,7 @@ class SettingsSearchTest {
     SettingsRoute.Network to "Network",
     SettingsRoute.Account to "Account",
     SettingsRoute.Profiles to "Profiles",
+    SettingsRoute.BackupRestore to "Backup & Restore",
     SettingsRoute.AppUpdates to "App Updates",
   )
 

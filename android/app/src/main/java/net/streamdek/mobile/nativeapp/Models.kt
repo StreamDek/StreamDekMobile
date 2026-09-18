@@ -317,6 +317,10 @@ data class CloudPlaybackPreferences(
   val detailAmbientTintPercent: Int? = null,
   val defaultAppCatalogsEnabled: Boolean? = null,
   val homeCatalogRowsJson: String? = null,
+  /** [HomeRowMode]'s stored key: whether Home groups its rows by source or arranges them one by one. */
+  val homeRowMode: String? = null,
+  /** The source keys in the viewer's order, for the grouped mode. */
+  val homeRowSourceOrder: List<String>? = null,
   val seasonTabStyle: String? = null,
   val episodeLayout: String? = null,
   val heroTrailerAutoplay: Boolean? = null,

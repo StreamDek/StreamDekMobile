@@ -54,20 +54,37 @@ internal class NextUpHistory(context: Context) {
     prefs.edit().remove(owner).putLong("cleared:$owner", System.currentTimeMillis()).apply()
   }
 
+  /**
+   * Joins one owner's Next Up history into another's, for the guest migration.
+   *
+   * [merge] already collapses the two sides on series, season and episode and keeps the newer
+   * write, so handing it the incoming owner's records against the destination's is the whole merge.
+   * The destination's own "cleared" line is respected, which is what stops a guest's history
+   * resurrecting episodes the profile has deliberately cleared away.
+   */
+  fun mergeOwner(fromOwner: String, toOwner: String) {
+    if (fromOwner == toOwner) return
+    val incoming = runCatching { JSONArray(prefs.getString(fromOwner, "[]")).length() }.getOrDefault(0)
+    if (incoming == 0) return
+    merge(toOwner, read(fromOwner))
+  }
+
+  private fun read(owner: String): List<PlaybackProgressRecord> = runCatching {
+    val array = JSONArray(prefs.getString(owner, "[]"))
+    (0 until array.length()).map { index ->
+      val o = array.getJSONObject(index)
+      fun text(key: String) = o.optString(key).takeIf { it.isNotBlank() && it != "null" }
+      PlaybackProgressRecord("tv", o.getString("id"), text("key"),
+        o.optInt("season").takeIf { it > 0 }, o.optInt("episode").takeIf { it > 0 },
+        text("title"), text("poster"), text("backdrop"), text("year"), 0.0, 0.0,
+        o.optDouble("progress", 0.0), o.optBoolean("completed"),
+        unwatched = o.optBoolean("unwatched"), dismissed = o.optBoolean("dismissed"),
+        tmdbId = o.optInt("tmdb").takeIf { it > 0 }, imdbId = text("imdb"), updatedAt = o.getLong("at"))
+    }
+  }.getOrDefault(emptyList())
+
   fun merge(owner: String, incoming: List<PlaybackProgressRecord>): List<PlaybackProgressRecord> {
-    val saved = runCatching {
-      val array = JSONArray(prefs.getString(owner, "[]"))
-      (0 until array.length()).map { index ->
-        val o = array.getJSONObject(index)
-        fun text(key: String) = o.optString(key).takeIf { it.isNotBlank() && it != "null" }
-        PlaybackProgressRecord("tv", o.getString("id"), text("key"),
-          o.optInt("season").takeIf { it > 0 }, o.optInt("episode").takeIf { it > 0 },
-          text("title"), text("poster"), text("backdrop"), text("year"), 0.0, 0.0,
-          o.optDouble("progress", 0.0), o.optBoolean("completed"),
-          unwatched = o.optBoolean("unwatched"), dismissed = o.optBoolean("dismissed"),
-          tmdbId = o.optInt("tmdb").takeIf { it > 0 }, imdbId = text("imdb"), updatedAt = o.getLong("at"))
-      }
-    }.getOrDefault(emptyList())
+    val saved = read(owner)
     val cleared = prefs.getLong("cleared:$owner", 0L)
     val records = (saved + incoming).filter { canonicalMediaIdentityType(it.entityType) == "tv" && it.updatedAt > cleared }
       .groupBy { listOf(nextUpSeriesKey(it), it.seasonNumber, it.episodeNumber) }

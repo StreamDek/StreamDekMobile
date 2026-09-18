@@ -788,6 +788,38 @@ class StreamDekPluginManager(context: Context) {
     // switch, for a byte-for-byte identical result.
   }
 
+  /** How many sources one owner's collections hold, without selecting that owner. */
+  fun providerCountFor(ownerKey: String): Int = countProviders(prefs.getString("state:${ownerKey.ifBlank { "guest" }}", null))
+
+  /**
+   * Joins one owner's plugin document into another's, without disturbing the selected profile.
+   *
+   * Collections and sources are merged by identity, with the destination's copy of anything shared
+   * kept ([mergePluginStateDocuments] explains why). The per-source settings - the cookie or key a
+   * scraper needs before it can answer at all - come across for sources the destination did not
+   * already have, so a migrated collection arrives working rather than switched on and mute.
+   *
+   * Written straight to storage rather than through [state]: the profile in play is not this one,
+   * and loading it here would switch the running app's sources underneath it.
+   */
+  fun mergeProfileStorageInto(fromOwnerKey: String, toOwnerKey: String): Boolean {
+    val fromKey = "state:${fromOwnerKey.ifBlank { "guest" }}"
+    val toKey = "state:${toOwnerKey.ifBlank { "guest" }}"
+    if (fromKey == toKey) return false
+    val incoming = prefs.getString(fromKey, null)?.takeIf { it.isNotBlank() && it != "{}" } ?: return false
+    val merged = mergePluginStateDocuments(prefs.getString(toKey, null), incoming) ?: return false
+    val editor = prefs.edit().putString(toKey, merged)
+    // Only where the destination is silent: a value it already holds is the one its other devices
+    // have been syncing, and replacing it with a guest's would be a downgrade, not a merge.
+    listOf("settings", "schema").forEach { prefix ->
+      prefs.all.keys.filter { it.startsWith("$prefix:$fromKey:") }.forEach { key ->
+        val targetKey = "$prefix:$toKey:" + key.removePrefix("$prefix:$fromKey:")
+        if (!prefs.contains(targetKey)) prefs.getString(key, null)?.let { editor.putString(targetKey, it) }
+      }
+    }
+    return editor.commit()
+  }
+
   fun restoreCloudState(raw: String) {
     val cachedProviders = state.providers.associateBy { "${it.repoUrl}:${it.id}" }
     val cloudState = parse(raw)

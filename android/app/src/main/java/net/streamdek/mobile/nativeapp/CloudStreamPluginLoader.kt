@@ -75,6 +75,9 @@ object CloudStreamPluginLoader {
   fun load(context: Context, file: File): Result<LoadedCsPlugin> = runCatching {
     val filePath = file.absolutePath
     synchronized(loaded) { loaded[filePath] }?.let { return@runCatching it }
+    // Any preference store opened from here to the end of load() is this extension's; see
+    // CloudStreamSourcePrefs. Constructors read their switches too, so it is set before one runs.
+    CloudStreamSourcePrefs.loadingPath = filePath
 
     CloudStreamRuntime.initialize(context)
     // Plugins can read CommonActivity.activity in their constructor, before load() runs.
@@ -130,7 +133,8 @@ object CloudStreamPluginLoader {
     generation += 1
     Log.i(TAG, "Loaded $name (v$version) with ${registered.size} provider(s): ${registered.joinToString { it.name }}")
     record
-  }.onFailure { Log.e(TAG, "Failed to load CloudStream plugin ${file.name}", it) }
+  }.also { CloudStreamSourcePrefs.loadingPath = null }
+    .onFailure { Log.e(TAG, "Failed to load CloudStream plugin ${file.name}", it) }
 
   @Synchronized
   fun unload(filePath: String) {
@@ -282,5 +286,11 @@ object CloudStreamRuntime {
 private class CloudStreamPluginHost(base: Context) : AppCompatActivity() {
   init {
     attachBaseContext(base)
+  }
+
+  // How StreamDek learns which preference stores an extension keeps its source switches in.
+  override fun getSharedPreferences(name: String?, mode: Int): android.content.SharedPreferences {
+    CloudStreamSourcePrefs.noteOpened(this, name)
+    return super.getSharedPreferences(name, mode)
   }
 }

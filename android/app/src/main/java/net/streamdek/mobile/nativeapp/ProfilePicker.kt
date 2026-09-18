@@ -180,6 +180,9 @@ private object PickerCue {
  */
 private const val ProfilePickerHeroGraceMs = 700L
 
+/** How long each spotlight title stays up before the next one crossfades in. */
+private const val ProfilePickerHeroRotationMs = 2500L
+
 /**
  * The outside edge of the loading state, measured from the page appearing.
  *
@@ -384,8 +387,12 @@ internal fun ProfilePickerScreen(
   val profileForeground = MaterialTheme.colorScheme.onBackground
 
   val heroItems = remember(heroSections) { profileSwitcherHeroItems(heroSections) }
-  var heroIndex by rememberSaveable(heroItems.map { it.id }.joinToString("|")) { mutableStateOf(0) }
-  val heroItem = heroItems.getOrNull(heroIndex.coerceIn(0, (heroItems.size - 1).coerceAtLeast(0)))
+  // One index for the life of the page, read modulo the current list. It used to be keyed on the
+  // items' ids, which minted a fresh state whenever Home's sections refreshed with different titles
+  // - while the rotation below, whose keys had not changed, went on advancing the old one that
+  // nothing read any more. The hero then sat on its first title for as long as the page was open.
+  var heroIndex by rememberSaveable { mutableStateOf(0) }
+  val heroItem = if (heroItems.isEmpty()) null else heroItems[heroIndex.floorMod(heroItems.size)]
   var pin by rememberSaveable(pinPromptProfileId) { mutableStateOf("") }
 
   // Whether the artwork has finished doing whatever it is going to do. Failure counts: the page
@@ -435,10 +442,16 @@ internal fun ProfilePickerScreen(
 
   // Rotation is part of the page at rest, not part of its entrance: starting it earlier would let
   // the hero change out from under a reveal that is still fading the first one in.
-  LaunchedEffect(heroItems.size, heroIndex, reveal.started) {
-    if (heroItems.size <= 1 || !reveal.started) return@LaunchedEffect
-    delay(3500)
-    heroIndex = (heroIndex + 1) % heroItems.size
+  // A loop rather than an effect re-keyed on the index, so nothing about the list changing can
+  // leave it waiting on a key that will never move again. The size is read fresh on every beat.
+  val heroCount by rememberUpdatedState(heroItems.size)
+  val rotates = heroItems.size > 1 && reveal.started
+  LaunchedEffect(rotates) {
+    if (!rotates) return@LaunchedEffect
+    while (true) {
+      delay(ProfilePickerHeroRotationMs)
+      if (heroCount > 1) heroIndex = (heroIndex.floorMod(heroCount) + 1) % heroCount
+    }
   }
 
   Box(
@@ -467,13 +480,13 @@ internal fun ProfilePickerScreen(
           alpha = reveal.progress(PickerCue.HeroStart, PickerCue.HeroDuration) * heroGate.value
         },
       transitionSpec = {
-        // The reveal owns the first appearance; only the 3.5s rotation crossfades here. Without
+        // The reveal owns the first appearance; only the 2.5s rotation crossfades here. Without
         // this the artwork arriving would fire its own 720ms fade on top of the timeline's, which
         // is exactly the disconnected double-transition the page used to have.
         if (initialState == null) {
           fadeIn(animationSpec = tween(0)) togetherWith fadeOut(animationSpec = tween(0))
         } else {
-          // Three crossfades long. A hero that sits for three and a half seconds should change
+          // Three crossfades long. A hero that sits for two and a half seconds should change
           // over languidly rather than at the speed of a badge, and expressing that as a multiple
           // of the shared token keeps it moving with the viewer's setting instead of being a
           // number of its own.
@@ -1090,13 +1103,19 @@ internal fun profileAvatarColor(index: Int): Color {
 internal fun Int.floorMod(divisor: Int): Int = ((this % divisor) + divisor) % divisor
 
 internal fun profileSwitcherHeroItems(sections: List<MediaSection>): List<MediaItem> {
+  // Channels are not spotlight artwork - see [isLiveHeroSection]. Applied before anything else,
+  // because the fallback below is "any section at all", which is how a live TV add-on's station
+  // idents ended up filling this page on a device with several of them installed.
+  val titleSections = sections.filterNot { isLiveHeroSection(it.id, it.title) }
   // Preferred sources first, then any remaining sections as a fallback, so the
   // hero keeps working even when the user disables or re-arranges builtin rows.
   val preferred = listOf("trending_movies", "trending_series", "new_movies", "in_theatres", "new_series")
-    .flatMap { sectionId -> sections.firstOrNull { it.id == sectionId }?.items.orEmpty() }
-  val fallback = sections.flatMap { it.items }
+    .flatMap { sectionId -> titleSections.firstOrNull { it.id == sectionId }?.items.orEmpty() }
+  val fallback = titleSections.flatMap { it.items }
   return (preferred + fallback)
     .filter { item -> item.type == "movie" || isSeriesType(item.type) }
+    // A channel can be typed "tv" like a series, so the item has to be asked as well as its section.
+    .filter { item -> !item.isLiveCatalogItem() }
     .filter { item -> !item.backdrop.isNullOrBlank() || !item.poster.isNullOrBlank() }
     .distinctBy { item -> "${item.type}:${item.id}" }
     .take(12)

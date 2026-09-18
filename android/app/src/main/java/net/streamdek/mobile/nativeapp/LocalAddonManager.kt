@@ -136,19 +136,45 @@ object LocalAddonManager {
 
   fun isLocalAddonId(id: String): Boolean = id.startsWith(ID_PREFIX)
 
-  /** Copies raw add-on records from one owner's storage to another's, without disturbing
-   * whichever owner is currently selected. Used to move a guest's locally-added add-ons
-   * into a newly-registered account. Never overwrites a target that already has add-ons. */
-  fun copyProfileStorageTo(fromOwnerKey: String, toOwnerKey: String) {
-    val storage = prefs ?: return
+  /**
+   * Joins one owner's locally-added add-ons into another's, without disturbing whichever owner is
+   * currently selected. Used to move a guest's add-ons into the profile they signed into.
+   *
+   * A union on the manifest URL, which is what identifies a local add-on - the same manifest added
+   * under both identities is one add-on, and the destination's record of it wins, since that is the
+   * copy whose enabled flag and position the profile has been using. Positions are renumbered so
+   * the merged list is one continuous sequence, in the destination's order with the incoming
+   * add-ons behind it.
+   *
+   * Idempotent: running it twice adds nothing the first run did not, because the second run finds
+   * every manifest URL already present.
+   *
+   * @return how many add-ons were actually carried over.
+   */
+  fun mergeProfileStorageInto(fromOwnerKey: String, toOwnerKey: String): Int {
+    val storage = prefs ?: return 0
     val fromKey = "$KEY_ADDONS:${fromOwnerKey.ifBlank { "guest" }}"
     val toKey = "$KEY_ADDONS:${toOwnerKey.ifBlank { "guest" }}"
-    if (fromKey == toKey || !storage.getString(toKey, null).isNullOrBlank()) return
-    storage.getString(fromKey, null)?.takeIf { it.isNotBlank() }?.let { raw -> storage.edit().putString(toKey, raw).apply() }
+    if (fromKey == toKey) return 0
+    val incoming = readAll(storage.getString(fromKey, null))
+    if (incoming.isEmpty()) return 0
+    val existing = readAll(storage.getString(toKey, null)).sortedBy { it.position }
+    val known = existing.mapTo(HashSet()) { it.manifestUrl.lowercase() }
+    val added = incoming.filter { known.add(it.manifestUrl.lowercase()) }
+    if (added.isEmpty()) return 0
+    val merged = (existing + added).mapIndexed { index, record -> record.copy(position = index) }
+    storage.edit().putString(toKey, serialize(merged)).commit()
+    return added.size
   }
 
-  private fun readAll(): List<LocalAddonRecord> {
-    val raw = prefs?.getString(addonsKey(), null) ?: return emptyList()
+  /** The manifest URLs one owner has added locally, for a caller that has to register them elsewhere. */
+  fun manifestUrlsFor(ownerKey: String): List<String> =
+    readAll(prefs?.getString("$KEY_ADDONS:${ownerKey.ifBlank { "guest" }}", null)).map { it.manifestUrl }
+
+  private fun readAll(): List<LocalAddonRecord> = readAll(prefs?.getString(addonsKey(), null))
+
+  private fun readAll(raw: String?): List<LocalAddonRecord> {
+    if (raw.isNullOrBlank()) return emptyList()
     return runCatching {
       val array = JSONArray(raw)
       List(array.length()) { index ->
@@ -166,6 +192,10 @@ object LocalAddonManager {
   }
 
   private fun writeAll(records: List<LocalAddonRecord>) {
+    prefs?.edit()?.putString(addonsKey(), serialize(records))?.apply()
+  }
+
+  private fun serialize(records: List<LocalAddonRecord>): String {
     val array = JSONArray()
     records.forEach { record ->
       array.put(
@@ -178,7 +208,7 @@ object LocalAddonManager {
           .put("manifestJson", record.manifestJson),
       )
     }
-    prefs?.edit()?.putString(addonsKey(), array.toString())?.apply()
+    return array.toString()
   }
 
   private fun addonsKey(): String = "$KEY_ADDONS:$ownerKey"

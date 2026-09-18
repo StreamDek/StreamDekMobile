@@ -6,6 +6,7 @@ import kotlinx.coroutines.ensureActive
 import android.app.Activity
 import android.app.Application
 import android.content.Context
+import android.content.SharedPreferences
 import android.content.Intent
 import android.content.res.Configuration
 import android.content.res.Resources
@@ -163,7 +164,9 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlayCircleOutline
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.QrCodeScanner
+import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Reorder
 import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.material.icons.rounded.Restaurant
@@ -229,6 +232,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -288,7 +292,9 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -644,6 +650,24 @@ internal object UserSubtitleSourceStore {
 
   fun remove(context: Context, ownerKey: String, id: String) {
     save(context, ownerKey, load(context, ownerKey).filterNot { it.id == id })
+  }
+
+  /**
+   * Unions one owner's custom subtitle sources into another's, on the add-on's base URL.
+   *
+   * The destination's copy of a shared source wins, since its enabled flag is the one that profile
+   * has been using; sources it has never seen arrive switched to whatever the guest had them at.
+   */
+  fun mergeOwner(context: Context, fromOwnerKey: String, toOwnerKey: String): Int {
+    if (fromOwnerKey == toOwnerKey) return 0
+    val incoming = load(context, fromOwnerKey)
+    if (incoming.isEmpty()) return 0
+    val existing = load(context, toOwnerKey)
+    val known = existing.mapTo(HashSet()) { it.baseUrl.lowercase() }
+    val added = incoming.filter { known.add(it.baseUrl.lowercase()) }
+    if (added.isEmpty()) return 0
+    save(context, toOwnerKey, existing + added)
+    return added.size
   }
 
   private fun save(context: Context, ownerKey: String, sources: List<UserSubtitleSource>) {
@@ -1054,10 +1078,8 @@ private data class AppUiState(
   val playbackNotice: String? = null,
   val liveChannelSwitching: Boolean = false,
   val liveChannelSwitchingLabel: String? = null,
-  // Owner key of a guest identity with local data (watchlist/favourites/add-ons) found
-  // right before a successful registration - non-null while the merge-into-account prompt
-  // should be offered.
-  val pendingGuestMerge: String? = null,
+  /** Moving a guest identity's StreamDek into this profile; see [GuestSetupTransfer]. */
+  val guestTransfer: GuestSetupTransfer = GuestSetupTransfer(),
   val returnToDetailAfterPlayer: Boolean = false,
   val playerReturnEpisodeId: String? = null,
   val showProfilePicker: Boolean = false,
@@ -1293,6 +1315,13 @@ private data class AppUiState(
   val detailAmbientTintPercent: Int = 50,
   val defaultAppCatalogsEnabled: Boolean = true,
   val homeCatalogRows: List<HomeCatalogRow> = emptyList(),
+  /**
+   * How [homeCatalogRows] is read: grouped under the source that offers each row, or as one freely
+   * arranged list, and the source order the grouped reading uses. Profile-scoped, so two people on
+   * the same phone can hold different answers, and carried through cloud preferences so the answer
+   * follows the profile.
+   */
+  val homeRows: HomeRowArrangement = HomeRowArrangement(),
   /** The default catalogs the backend offers, in its preferred order. */
   val catalogDefinitions: List<CatalogDefinition> = fallbackCatalogDefinitions,
   /** Where each default row's "View All" carries on from, by row id. */
@@ -1729,7 +1758,7 @@ private fun looksLikeSeriesDatabaseId(id: String): Boolean {
 private fun ambientTintAlpha(base: Float, percent: Int): Float =
   (base * (percent.coerceIn(20, 100) / 100f)).coerceIn(0f, 1f)
 
-private fun MediaItem.isLiveCatalogItem(): Boolean {
+internal fun MediaItem.isLiveCatalogItem(): Boolean {
   val catalogText = listOfNotNull(sourceAddonName, sourceCatalogType, sourceCatalogId, sourceCatalogName).joinToString(" ").lowercase()
   val isLiveTvChannel = sourceCatalogType == "tv" && !looksLikeSeriesDatabaseId(id)
   return sourceCatalogType in liveMediaTypes ||
@@ -1965,6 +1994,17 @@ internal val SUBTITLE_FILL_CHOICES: List<Pair<String, String>> = listOf("Transpa
 internal fun subtitleColorLabel(value: String): String =
   SUBTITLE_FILL_CHOICES.firstOrNull { it.second.equals(value, ignoreCase = true) }?.first ?: value
 
+/**
+ * Where one owner's profile settings live.
+ *
+ * The hash is a storage contract - it names an existing file on every installed device - so it is
+ * written once here rather than being spelled out wherever a second owner's settings are reached
+ * for. [GUEST_OWNER_KEY] stands in for a blank key so a nameless owner cannot be given a file of
+ * its own that nothing else can find again.
+ */
+internal fun profileSettingsStorageName(ownerKey: String): String =
+  "streamdek_native_profile_settings_" + ownerKey.ifBlank { GUEST_OWNER_KEY }.hashCode().toUInt().toString(16)
+
 private class AppSettingsStore(context: Context) {
   private val prefs = context.getSharedPreferences(APP_SETTINGS_PREFERENCES, Context.MODE_PRIVATE)
   private val appContext = context.applicationContext
@@ -1985,16 +2025,13 @@ private class AppSettingsStore(context: Context) {
     "timing_provider", "timing_provider_fallback_enabled",
     "ratings_enabled", "external_ratings_enabled", "enabled_rating_providers", "vivid_ambient", "ambient_tint_percent",
     "detail_ambient_tint_percent",
-    "default_app_catalogs_enabled", "home_catalog_rows", "fusion_badges", "show_size_badges",
+    "default_app_catalogs_enabled", "home_catalog_rows", HOME_ROW_MODE_PREFERENCE, HOME_ROW_SOURCE_ORDER_PREFERENCE,
+    "fusion_badges", "show_size_badges",
     "preferred_quality", "max_file_size_gb", "badge_position", "fusion_badge_urls", "active_fusion_badge_url",
   )
 
   fun selectProfileStorage(ownerKey: String) {
-    val safeOwner = ownerKey.ifBlank { GUEST_OWNER_KEY }
-    profilePrefs = appContext.getSharedPreferences(
-      "streamdek_native_profile_settings_" + safeOwner.hashCode().toUInt().toString(16),
-      Context.MODE_PRIVATE,
-    )
+    profilePrefs = appContext.getSharedPreferences(profileSettingsStorageName(ownerKey), Context.MODE_PRIVATE)
     if (profilePrefs.all.isEmpty()) {
       val editor = profilePrefs.edit()
       profileSettingKeys.forEach { key ->
@@ -2036,7 +2073,9 @@ private class AppSettingsStore(context: Context) {
     showNavLabels = prefs.getBoolean("show_nav_labels", true),
     collapsibleNavigationEnabled = prefs.getBoolean("collapsible_navigation_enabled", false),
     navigationCollapsesOnScroll = prefs.getString(NavigationBehaviour.TRIGGER_PREFERENCE, null) == NavigationBehaviour.TRIGGER_SCROLL,
-    expandedHeadersScrollAware = prefs.getString(NavigationBehaviour.EXPANDED_HEADERS_PREFERENCE, null) == NavigationBehaviour.EXPANDED_HEADERS_SCROLL,
+    // Absent means scroll-aware: a header that makes room while scrolling is what the rest of the
+    // app does, and only a viewer who has deliberately asked for fixed headers gets them.
+    expandedHeadersScrollAware = prefs.getString(NavigationBehaviour.EXPANDED_HEADERS_PREFERENCE, null) != NavigationBehaviour.EXPANDED_HEADERS_FIXED,
     visualEffectsMode = VisualEffectsMode.fromKey(prefs.getString(VISUAL_EFFECTS_PREFERENCE, null)),
     downloadsEnabled = prefs.getBoolean("downloads_enabled", false),
     dv7HevcFallback = prefs.getBoolean("dv7_hevc_fallback", false),
@@ -2052,9 +2091,9 @@ private class AppSettingsStore(context: Context) {
     showHeroSynopsis = profilePrefs.getBoolean("show_hero_synopsis", false),
     continueWatchingStyle = runCatching { ContinueWatchingStyle.valueOf(profilePrefs.getString("continue_watching_style", ContinueWatchingStyle.Mini.name) ?: ContinueWatchingStyle.Mini.name) }.getOrDefault(ContinueWatchingStyle.Mini),
     homeCardTextMode = HomeCardTextMode.fromKey(profilePrefs.getString("home_card_text_mode", null)),
-    networkCardStyle = runCatching { NetworkCardStyle.valueOf(profilePrefs.getString("network_card_style", NetworkCardStyle.Classic.name) ?: NetworkCardStyle.Classic.name) }.getOrDefault(NetworkCardStyle.Classic),
+    networkCardStyle = runCatching { NetworkCardStyle.valueOf(profilePrefs.getString("network_card_style", NetworkCardStyle.Branded.name) ?: NetworkCardStyle.Branded.name) }.getOrDefault(NetworkCardStyle.Branded),
     liveLandscapeCards = profilePrefs.getBoolean("live_landscape_cards", true),
-    showNewEpisodesRow = profilePrefs.getBoolean("show_new_episodes_row", true),
+    showNewEpisodesRow = profilePrefs.getBoolean("show_new_episodes_row", false),
     newEpisodesLandscape = profilePrefs.getBoolean("new_episodes_landscape", true),
     liveCategoriesEnabled = profilePrefs.getBoolean("live_categories_enabled", true),
     liveProgressBarEnabled = profilePrefs.getBoolean("live_progress_bar", false),
@@ -2135,15 +2174,19 @@ private class AppSettingsStore(context: Context) {
     mediaHubEnabled = prefs.getBoolean(MEDIA_HUB_PREFERENCE, false),
     homeDensity = HomeDensity.fromKey(prefs.getString(HOME_DENSITY_PREFERENCE, null)),
     trailerCacheClearHours = profilePrefs.getInt("trailer_cache_clear_hours", DEFAULT_TRAILER_CACHE_CLEAR_HOURS),
-    ambientTintPercent = profilePrefs.getInt("ambient_tint_percent", 50).coerceIn(20, 100),
+    ambientTintPercent = profilePrefs.getInt("ambient_tint_percent", DEFAULT_AMBIENT_TINT_PERCENT).coerceIn(20, 100),
     // Seeded from the single value the two pages used to share, so an account that had already
     // chosen a strength keeps it on both pages rather than snapping back to full on one of them.
     detailAmbientTintPercent = profilePrefs.getInt(
       "detail_ambient_tint_percent",
-      profilePrefs.getInt("ambient_tint_percent", 50),
+      profilePrefs.getInt("ambient_tint_percent", DEFAULT_AMBIENT_TINT_PERCENT),
     ).coerceIn(20, 100),
     defaultAppCatalogsEnabled = profilePrefs.getBoolean("default_app_catalogs_enabled", true),
     homeCatalogRows = parseHomeCatalogRows(profilePrefs.getString("home_catalog_rows", null)),
+    homeRows = HomeRowArrangement(
+      mode = HomeRowMode.fromKey(profilePrefs.getString(HOME_ROW_MODE_PREFERENCE, null)),
+      sourceOrder = parseHomeRowSourceOrder(profilePrefs.getString(HOME_ROW_SOURCE_ORDER_PREFERENCE, null)),
+    ),
     fusionBadgesEnabled = profilePrefs.getBoolean("fusion_badges", true),
     streamDekFormattingEnabled = profilePrefs.getBoolean("streamdek_stream_formatting", false),
     showSizeBadges = profilePrefs.getBoolean("show_size_badges", true),
@@ -2297,6 +2340,55 @@ private class AppSettingsStore(context: Context) {
   fun saveDefaultAppCatalogsEnabled(value: Boolean) { profilePrefs.edit().putBoolean("default_app_catalogs_enabled", value).apply() }
   fun saveTrailerCacheClearHours(value: Int) { profilePrefs.edit().putInt("trailer_cache_clear_hours", value).apply() }
   fun saveHomeCatalogRows(rows: List<HomeCatalogRow>) { profilePrefs.edit().putString("home_catalog_rows", serializeHomeCatalogRows(rows)).apply() }
+  fun saveHomeRowMode(mode: HomeRowMode) { profilePrefs.edit().putString(HOME_ROW_MODE_PREFERENCE, mode.key).apply() }
+  fun saveHomeRowSourceOrder(order: List<String>) {
+    profilePrefs.edit().putString(HOME_ROW_SOURCE_ORDER_PREFERENCE, serializeHomeRowSourceOrder(order)).apply()
+  }
+
+  /**
+   * Fills a profile's settings in from another owner's, for the guest migration.
+   *
+   * Only settings the destination has never answered - see [copyMissingPreferences] for why - and
+   * never the profile currently selected, which is read through [profilePrefs] and would be left
+   * disagreeing with what is on screen. The caller re-reads state afterwards ([applyTo]).
+   *
+   * @return how many settings were carried over.
+   */
+  fun migrateProfileSettings(fromOwnerKey: String, toOwnerKey: String, overwrite: Boolean): Int {
+    if (fromOwnerKey == toOwnerKey) return 0
+    return copyMissingPreferences(profileStorageFor(fromOwnerKey), profileStorageFor(toOwnerKey), overwrite)
+  }
+
+  /**
+   * Points a profile's saved Home layout at the ids its add-ons have under that profile.
+   *
+   * See [remapHomeRowAddonIds]: add-ons carried over from a guest are installed again and come back
+   * with new ids, and a layout still naming the old ones has lost every add-on row it arranged.
+   * Only ids in [addonIds] are touched, and those are guest ids no profile layout can otherwise
+   * contain, so a profile's own arrangement is left exactly as it was.
+   */
+  fun remapAddonIds(ownerKey: String, addonIds: Map<String, String>) {
+    if (addonIds.isEmpty()) return
+    val storage = profileStorageFor(ownerKey)
+    val rows = storage.getString("home_catalog_rows", null)
+    val order = storage.getString(HOME_ROW_SOURCE_ORDER_PREFERENCE, null)
+    val remappedRows = remapHomeRowAddonIds(rows, addonIds)
+    val remappedOrder = remapHomeRowSourceOrder(order, addonIds)
+    if (remappedRows == rows && remappedOrder == order) return
+    storage.edit()
+      .putString("home_catalog_rows", remappedRows)
+      .putString(HOME_ROW_SOURCE_ORDER_PREFERENCE, remappedOrder)
+      .commit()
+  }
+
+  /** Whether an owner has ever had profile settings written for it. */
+  fun hasProfileSettings(ownerKey: String): Boolean = profileStorageFor(ownerKey).all.isNotEmpty()
+
+
+  private fun profileStorageFor(ownerKey: String): SharedPreferences = appContext.getSharedPreferences(
+    profileSettingsStorageName(ownerKey),
+    Context.MODE_PRIVATE,
+  )
   fun saveFusionBadges(value: Boolean) { profilePrefs.edit().putBoolean("fusion_badges", value).apply() }
   fun saveStreamDekFormatting(value: Boolean) { profilePrefs.edit().putBoolean("streamdek_stream_formatting", value).apply() }
   fun saveShowSizeBadges(value: Boolean) { profilePrefs.edit().putBoolean("show_size_badges", value).apply() }
@@ -2487,6 +2579,14 @@ internal fun appInfoNoticeDuration(message: String): Long =
 
 /** Trailer cache housekeeping: daily, at nine in the morning. */
 internal const val DEFAULT_TRAILER_CACHE_CLEAR_HOURS = 24
+
+/**
+ * How strongly a page's artwork tints it behind the content, before anyone touches the slider.
+ *
+ * Cinematic backgrounds are the default on both Home and a title page, and at half strength the
+ * effect reads as a slightly lighter background rather than as the artwork being there at all.
+ */
+internal const val DEFAULT_AMBIENT_TINT_PERCENT = 80
 internal const val TRAILER_CACHE_CLEAR_HOUR_OF_DAY = 9
 
 /** The intervals offered for automatic trailer-cache clearing. Hours; the words come from resources. */
@@ -2559,10 +2659,14 @@ internal fun savedAppColorScheme(context: Context, systemDarkMode: Boolean) =
     appColorScheme(preset, darkMode)
   }
 
-private class WatchedEpisodeStore(context: Context) {
+internal class WatchedEpisodeStore(context: Context) {
   private val prefs = context.getSharedPreferences("streamdek_native_watched_episodes", Context.MODE_PRIVATE)
 
   private fun storageKey(ownerKey: String, showId: String): String = "watched:$ownerKey:$showId"
+
+  /** Unions one owner's watched episodes into another's, for every series either of them has. */
+  fun mergeOwner(fromOwnerKey: String, toOwnerKey: String) =
+    mergeOwnerScopedStringSets(prefs, "watched", fromOwnerKey, toOwnerKey)
 
   fun load(ownerKey: String, showId: String): List<String> {
     val raw = prefs.getString(storageKey(ownerKey, showId), null) ?: return emptyList()
@@ -2581,10 +2685,13 @@ private class WatchedEpisodeStore(context: Context) {
   }
 }
 
-private class WatchedMovieStore(context: Context) {
+internal class WatchedMovieStore(context: Context) {
   private val prefs = context.getSharedPreferences("streamdek_native_watched_movies", Context.MODE_PRIVATE)
 
   private fun storageKey(ownerKey: String): String = "watched_movies:$ownerKey"
+
+  fun mergeOwner(fromOwnerKey: String, toOwnerKey: String) =
+    mergeOwnerScopedStringSets(prefs, "watched_movies", fromOwnerKey, toOwnerKey)
 
   fun load(ownerKey: String): List<String> {
     val raw = prefs.getString(storageKey(ownerKey), null) ?: return emptyList()
@@ -2603,9 +2710,12 @@ private class WatchedMovieStore(context: Context) {
   }
 }
 
-private class WatchedTitleStore(context: Context) {
+internal class WatchedTitleStore(context: Context) {
   private val prefs = context.getSharedPreferences("streamdek_native_watched_titles", Context.MODE_PRIVATE)
   private fun storageKey(ownerKey: String): String = "watched_titles:$ownerKey"
+
+  fun mergeOwner(fromOwnerKey: String, toOwnerKey: String) =
+    mergeOwnerScopedStringSets(prefs, "watched_titles", fromOwnerKey, toOwnerKey)
 
   fun load(ownerKey: String): Set<String> = runCatching {
     val source = JSONArray(prefs.getString(storageKey(ownerKey), "[]"))
@@ -2624,7 +2734,7 @@ private class WatchedTitleStore(context: Context) {
   }
 }
 
-private data class PlaybackMemoryEntry(
+internal data class PlaybackMemoryEntry(
   val mediaId: String,
   val mediaType: String,
   val title: String,
@@ -2666,7 +2776,7 @@ private fun resumePositionLabel(entry: PlaybackMemoryEntry): String? {
  */
 private const val RESUMABLE_ENTRY_LIMIT = 250
 
-private class PlaybackResumeStore(context: Context) {
+internal class PlaybackResumeStore(context: Context) {
   private val prefs = context.getSharedPreferences("streamdek_native_playback_resume", Context.MODE_PRIVATE)
 
   private fun storageKey(ownerKey: String): String = "resume:$ownerKey"
@@ -2728,6 +2838,18 @@ private class PlaybackResumeStore(context: Context) {
   }
 
   /**
+   * Replaces an owner's entries outright, for callers that have merged the list themselves.
+   *
+   * The per-entry [save] is the ordinary way in and stamps what it writes; a merge has already
+   * decided which copy of each title wins and must not have those stamps rewritten underneath it.
+   * The same two budgets [save] applies are applied here.
+   */
+  fun replaceAll(ownerKey: String, entries: List<PlaybackMemoryEntry>) {
+    val (live, resumable) = entries.sortedByDescending { it.updatedAt }.partition { it.isLive }
+    persist(ownerKey, resumable.take(RESUMABLE_ENTRY_LIMIT) + live.take(40))
+  }
+
+  /**
    * Drops every resume position that Continue Watching can show. Live entries are kept: they hold
    * the remembered source for a channel (see rememberLiveSource) and never appear in Continue
    * Watching anyway, so clearing that list should not forget which live source last worked.
@@ -2741,7 +2863,7 @@ private class PlaybackResumeStore(context: Context) {
   }
 }
 
-private fun playbackMemoryKey(mediaId: String, mediaType: String, seasonNumber: Int?, episodeNumber: Int?): String =
+internal fun playbackMemoryKey(mediaId: String, mediaType: String, seasonNumber: Int?, episodeNumber: Int?): String =
   listOf(mediaType, mediaId, seasonNumber ?: -1, episodeNumber ?: -1).joinToString(":")
 
 private fun playbackMemoryToJson(entry: PlaybackMemoryEntry): JSONObject = JSONObject()
@@ -2845,7 +2967,7 @@ private fun parseAddonStreamJson(json: JSONObject): AddonStream = AddonStream(
 private fun JSONObject.toStringMap(): Map<String, String> = buildMap {
   keys().forEach { key -> optString(key).trim().takeIf { it.isNotBlank() }?.let { put(key, it) } }
 }
-private fun normalizedMediaType(type: String): String = when (type.trim().lowercase()) {
+internal fun normalizedMediaType(type: String): String = when (type.trim().lowercase()) {
   "tv", "series", "show" -> "tv"
   else -> type.trim().lowercase()
 }
@@ -2969,7 +3091,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     else -> "$userId:$activeProfileId"
   }
 }
-private const val GUEST_OWNER_KEY = "guest"
+internal const val GUEST_OWNER_KEY = "guest"
 
 private fun serializeHomeCatalogRows(rows: List<HomeCatalogRow>): String = JSONArray().apply {
   rows.forEach { row ->
@@ -3214,6 +3336,28 @@ internal fun homeCatalogRowMatchKey(id: String): String {
 internal fun homeCatalogRowAddonId(id: String): String? =
   if (id.startsWith("addon:")) id.split(":").getOrNull(1)?.takeIf { it.isNotBlank() } else null
 
+/**
+ * Whether a Home section is a source of *channels* rather than of titles.
+ *
+ * Both spotlights - Home's and the profile picker's - are built from whatever the catalogues
+ * returned, and a live TV add-on returns channels: a wall of station idents where the artwork of a
+ * film should be, with a "Play" that tunes into whatever happens to be on. The two screens used to
+ * decide this separately and neither decided it well - one matched a handful of English words in
+ * the section's title, the other did not look at all - so a live add-on named "UK" or "Sports 24"
+ * walked straight into both.
+ *
+ * The row id is what actually knows: an add-on or plugin catalogue declares its type there, and
+ * that is the same test Fuse uses to decide what is a channel source. The word matching is kept
+ * behind it for sections that carry no type, and Streaming Networks stays out for its own reason -
+ * it is a row of service tiles, which is not spotlight artwork either.
+ */
+internal fun isLiveHeroSection(sectionId: String, sectionTitle: String): Boolean {
+  if (isLiveCatalogRowId(sectionId) || sectionId.startsWith("m3u_playlists_") || sectionId == "favourites") return true
+  val identity = "$sectionId $sectionTitle".lowercase()
+  return listOf("streaming_network", "streaming network", "live tv", "live_tv", "live-tv", "iptv", "channel")
+    .any { it in identity }
+}
+
 private val LiveHomeRowTitle = Regex("""\b(live|sports?)\b""", RegexOption.IGNORE_CASE)
 
 /**
@@ -3230,7 +3374,7 @@ private fun isLiveHomeRow(row: HomeRow): Boolean =
     row.items.asSequence().take(12).any(MediaItem::isLiveCatalogItem)
 
 /** Catalogue and source types that mean channels or live events rather than titles. */
-private val liveCatalogTypes = setOf("tv", "channel", "live", "iptv", "sport", "sports", "events")
+internal val liveCatalogTypes = setOf("tv", "channel", "live", "iptv", "sport", "sports", "events")
 
 private fun isLiveHomeCatalogRowId(id: String): Boolean {
   if (!id.startsWith("addon:")) return false
@@ -3411,6 +3555,26 @@ internal fun mergeHomeCatalogRows(
     merged.add(insertAt, candidate)
   }
   return if (merged.isEmpty()) candidates.values.toList() else merged
+}
+
+/**
+ * Which CloudStream plugin each loaded provider belongs to, as a group key and a title.
+ *
+ * One plugin registers several providers - CNC Verse brings Netflix, Prime Video and more - and
+ * their rows belong together under the plugin, the way an add-on's catalogues sit under the add-on.
+ * Worked out from what is loaded right now rather than remembered: plugins come up after Home and
+ * the settings screen can first be drawn, and a map cached from before they had would leave every
+ * provider in a group of its own.
+ */
+internal fun currentCloudStreamRowGroups(): Map<String, Pair<String, String>> {
+  if (!CloudStreamPlugins.isInitialized) return emptyMap()
+  return runCatching {
+    CloudStreamPluginLoader.loadedPlugins().flatMap { plugin ->
+      plugin.providers.map { provider ->
+        cloudStreamRowSourceId(provider.name) to ("cloudstream-plugin:${plugin.filePath}" to plugin.name)
+      }
+    }.toMap()
+  }.getOrDefault(emptyMap())
 }
 
 internal fun applyHomeCatalogLayout(sections: List<MediaSection>, rows: List<HomeCatalogRow>, defaultBuiltinsEnabled: Boolean): List<MediaSection> {
@@ -3621,6 +3785,25 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private val watchedEpisodeStore = WatchedEpisodeStore(application.applicationContext)
   private val watchedMovieStore = WatchedMovieStore(application.applicationContext)
   private val watchedTitleStore = WatchedTitleStore(application.applicationContext)
+  private val guestMigrationJournal = GuestMigrationJournal(application.applicationContext)
+  /** Everything about moving a guest identity into a profile; see [GuestDataMigrator]. */
+  private val guestMigrator = GuestDataMigrator(
+    context = application.applicationContext,
+    journal = guestMigrationJournal,
+    watchlistStore = watchlistStore,
+    favouriteChannelStore = favouriteChannelStore,
+    playbackResumeStore = playbackResumeStore,
+    watchedEpisodeStore = watchedEpisodeStore,
+    watchedMovieStore = watchedMovieStore,
+    watchedTitleStore = watchedTitleStore,
+    nextUpHistory = nextUpHistory,
+    // Two operations rather than the store itself: everything else about it - the enums it reads
+    // and writes - belongs to this file and has no business in the migrator.
+    migrateSettings = appSettingsStore::migrateProfileSettings,
+    hasSettings = appSettingsStore::hasProfileSettings,
+  )
+  /** Guards [createDefaultProfileForAccount], which several post-sign-in refreshes can reach at once. */
+  private var creatingDefaultProfile = false
   private var torrentStatusRefreshJob: Job? = null
   private var pluginSyncJob: Job? = null
   private var episodeReminderJob: Job? = null
@@ -3629,6 +3812,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private var lastKnownPluginVersion: Long = 0L
   private var pluginRefreshJob: Job? = null
   private var cloudStreamLoadJob: Job? = null
+  private var sourceSettingsSyncJob: Job? = null
   private val apiClient = StreamDekApiClient(application.applicationContext).also { client ->
     // Wired once, here, because the HTTP layer is what discovers a session has ended and this is
     // the only object that can do anything about it.
@@ -3955,22 +4139,28 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   fun signIn(email: String, password: String, rememberSession: Boolean) {
     rememberAuthEmail(email)
-    submitAuth { apiClient.login(email, password) }
+    // A sign-in leaves a guest identity behind exactly as a registration does. This device may have
+    // been somebody's StreamDek for months before the account it is about to be pointed at existed,
+    // and that setup is no less theirs for the account having been made on a different device.
+    submitAuth(guestDataOwnerKey = departingGuestOwnerKey()) { apiClient.login(email, password) }
   }
 
   fun signUp(email: String, password: String, rememberSession: Boolean) {
     rememberAuthEmail(email)
-    // Capture the guest identity being left behind *before* auth changes activeOwnerKey().
-    val guestKey = if (uiState.session == null) activeOwnerKey() else null
-    val mergeSourceKey = guestKey?.takeIf(::hasGuestDataFor)
-    submitAuth(guestDataOwnerKey = mergeSourceKey) { apiClient.register(email, password) }
+    submitAuth(guestDataOwnerKey = departingGuestOwnerKey()) { apiClient.register(email, password) }
   }
 
-  private fun hasGuestDataFor(ownerKey: String): Boolean =
-    watchlistStore.load(ownerKey).isNotEmpty() ||
-      favouriteChannelStore.load(ownerKey).isNotEmpty() ||
-      playbackResumeStore.loadAll(ownerKey).isNotEmpty() ||
-      LocalAddonManager.list().isNotEmpty()
+  /**
+   * The guest identity about to stop being read from.
+   *
+   * Captured *before* the sign-in, because authenticating is what changes [activeOwnerKey] - after
+   * it there is no way left to ask which identity the device had been using. Whether it actually
+   * holds anything is answered later, off the main thread: this runs inside the tap on Sign in, and
+   * reading every owner-scoped store there - one of which can hold a plugin's whole script - would
+   * be a stutter on the one screen where the app is asking someone to wait already.
+   */
+  private fun departingGuestOwnerKey(): String? =
+    if (uiState.session != null) null else activeOwnerKey()
 
   fun requestPasswordReset(email: String) {
     launchWork(
@@ -4676,7 +4866,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       mergeHomeCatalogRows(uiState.homeCatalogRows, uiState.addons, definitions, cloudStreamHomeCatalogCandidates(loadedCloudStreamProviders()))
     }
     homeLoadGeneration += 1
-    val layout = applyHomeCatalogLayout(sections, mergedRows, uiState.defaultAppCatalogsEnabled)
+    val layout = homeLayoutSections(sections, mergedRows)
     // A reload that brings back exactly what is on screen changes nothing a viewer can see, so it
     // should not cost them anything either: publishing equal rows still recomposed all of Home.
     if (sections == uiState.allHomeSections && mergedRows == uiState.homeCatalogRows && layout == uiState.homeSections) {
@@ -4835,7 +5025,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
    */
   private fun homeLayoutSignature(): String =
     uiState.homeCatalogRows.joinToString(",") { row -> row.id + ":" + row.enabled } +
-      "|" + uiState.defaultAppCatalogsEnabled
+      "|" + uiState.defaultAppCatalogsEnabled +
+      // The arrangement counts as the layout too: an account that asks for a different row mode or
+      // a different source order is asking for a different Home, even with the same rows on it.
+      "|" + uiState.homeRows.mode.key + "|" + uiState.homeRows.sourceOrder.joinToString(",")
 
   fun resolveHomeHeroTitleLogos(items: List<MediaItem>) {
     val requests = items
@@ -5288,7 +5481,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     if (merged != uiState.homeCatalogRows) {
       uiState = uiState.copy(
         homeCatalogRows = merged,
-        homeSections = applyHomeCatalogLayout(uiState.allHomeSections, merged, uiState.defaultAppCatalogsEnabled),
+        homeSections = homeLayoutSections(rows = merged),
       )
       appSettingsStore.saveHomeCatalogRows(merged)
     }
@@ -5301,6 +5494,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private fun listenForCloudStreamProviders() {
     if (!CloudStreamPlugins.isInitialized) return
     CloudStreamPlugins.manager.onProvidersChanged = { viewModelScope.launch(Dispatchers.Main) { onCloudStreamProvidersChanged() } }
+    CloudStreamPlugins.manager.onSourceSettingsChanged = { viewModelScope.launch(Dispatchers.Main) { syncCloudStreamSourceSettings() } }
   }
 
   fun loadDetail(type: String, id: String, fallbackItem: MediaItem? = null, preservePendingContinue: Boolean = false) {
@@ -6701,6 +6895,11 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         // the form stays up until this line, and what replaces it is already the right scene.
         uiState = uiState.copy(authSubmitting = false, profilesLoading = false, profiles = profiles, activeProfileId = selected?.id ?: uiState.activeProfileId, showProfilePicker = showPicker, profileTransitioning = landingHome || uiState.profileTransitioning)
         selected?.id?.let { profileSelectionStore.save(session.user.uid, it) }
+        // An account can exist without a profile - registering makes one and nothing else - and
+        // everything profile-scoped, from the Home layout to the watch history, has nowhere to live
+        // until there is one. Rather than showing an empty picker to somebody who has just signed
+        // up, StreamDek makes the profile itself.
+        if (profiles.isEmpty()) createDefaultProfileForAccount(session)
         if (refreshScopedData) refreshProfileScopedData()
       },
       onFailure = { message ->
@@ -6708,6 +6907,44 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         // Released on failure too, or a sign-in whose profile fetch fails leaves the form on
         // screen with a dead spinner and no way past it.
         uiState = uiState.copy(authSubmitting = false, profilesLoading = false, errorMessage = message)
+      },
+    )
+  }
+
+  /**
+   * Gives an account with no profile one, named after the address it signed up with.
+   *
+   * `henry.okwuenu@example.com` becomes "Henry Okwuenu" - a name rather than an address, and one
+   * the viewer can rename like any other profile. Guarded because [refreshProfiles] runs on several
+   * beats after a sign-in and two of them arriving together would make two profiles.
+   *
+   * Once it exists the guest migration applies to it exactly as it would to one made by hand: the
+   * prompt is waiting on an active profile, and this is what settles that.
+   */
+  private fun createDefaultProfileForAccount(session: AuthSession) {
+    if (creatingDefaultProfile) return
+    creatingDefaultProfile = true
+    val name = defaultProfileNameFromEmail(session.user.email)
+      ?: session.user.displayName?.trim()?.takeIf { it.isNotBlank() }
+      ?: strings.getString(R.string.profile_default_name)
+    launchWork(
+      onStart = { uiState = uiState.copy(profilesLoading = true, errorMessage = null) },
+      block = { apiClient.createProfile(session, name) },
+      onSuccess = { profile ->
+        creatingDefaultProfile = false
+        guestMigrationJournal.markFreshProfile(watchedOwnerKey(session, profile.id))
+        profileSelectionStore.save(session.user.uid, profile.id)
+        uiState = uiState.copy(
+          profilesLoading = false,
+          profiles = listOf(profile),
+          activeProfileId = profile.id,
+          showProfilePicker = false,
+        )
+        refreshProfileScopedData()
+      },
+      onFailure = { message ->
+        creatingDefaultProfile = false
+        uiState = uiState.copy(profilesLoading = false, errorMessage = message)
       },
     )
   }
@@ -6782,6 +7019,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       block = { apiClient.createProfile(session, normalized, avatarIndex) },
       onSuccess = { profile ->
         val profiles = uiState.profiles + profile
+        // Made here and never opened: a guest setup brought into it may replace its defaults.
+        guestMigrationJournal.markFreshProfile(watchedOwnerKey(session, profile.id))
         profileSelectionStore.save(session.user.uid, profile.id)
         uiState = uiState.copy(profilesLoading = false, profiles = profiles, activeProfileId = profile.id, showProfilePicker = false)
         refreshProfileScopedData()
@@ -6879,7 +7118,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           addonsLoading = false,
           addons = merged,
           homeCatalogRows = mergedRows,
-          homeSections = applyHomeCatalogLayout(uiState.allHomeSections, mergedRows, uiState.defaultAppCatalogsEnabled),
+          homeSections = homeLayoutSections(rows = mergedRows),
         )
         appSettingsStore.saveHomeCatalogRows(mergedRows)
         // Only when the add-ons behind Home's rows actually changed. This runs on every profile
@@ -8649,6 +8888,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val fusionBadgeUrls = preferences.fusionBadgeUrls?.distinct()?.take(MAX_FUSION_BADGE_URLS)
     val activeFusionBadgeUrl = preferences.activeFusionBadgeUrl?.takeIf { it in (fusionBadgeUrls ?: uiState.fusionBadgeUrls) }
     val homeCatalogRows = preferences.homeCatalogRowsJson?.let(::parseHomeCatalogRows)
+    val homeRowMode = preferences.homeRowMode?.let(HomeRowMode::fromKey)
+    val homeRowSourceOrder = preferences.homeRowSourceOrder?.filter { it.isNotBlank() }?.distinct()
 
     appAppearance?.let {
       appSettingsStore.saveAppAppearance(it)
@@ -8676,6 +8917,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     (preferences.detailAmbientTintPercent ?: preferences.ambientTintPercent)?.let(appSettingsStore::saveDetailAmbientTintPercent)
     preferences.defaultAppCatalogsEnabled?.let(appSettingsStore::saveDefaultAppCatalogsEnabled)
     homeCatalogRows?.let(appSettingsStore::saveHomeCatalogRows)
+    homeRowMode?.let(appSettingsStore::saveHomeRowMode)
+    homeRowSourceOrder?.let(appSettingsStore::saveHomeRowSourceOrder)
     seasonTabStyle?.let(appSettingsStore::saveSeasonTabStyle)
     episodeLayout?.let(appSettingsStore::saveEpisodeLayout)
     preferences.heroTrailerAutoplay?.let(appSettingsStore::saveHeroTrailerAutoplay)
@@ -8762,6 +9005,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       detailAmbientTintPercent = (preferences.detailAmbientTintPercent ?: preferences.ambientTintPercent ?: uiState.detailAmbientTintPercent).coerceIn(20, 100),
       defaultAppCatalogsEnabled = preferences.defaultAppCatalogsEnabled ?: uiState.defaultAppCatalogsEnabled,
       homeCatalogRows = homeCatalogRows ?: uiState.homeCatalogRows,
+      homeRows = HomeRowArrangement(
+        mode = homeRowMode ?: uiState.homeRows.mode,
+        sourceOrder = homeRowSourceOrder ?: uiState.homeRows.sourceOrder,
+      ),
       seasonTabStyle = seasonTabStyle ?: uiState.seasonTabStyle,
       episodeLayout = episodeLayout ?: uiState.episodeLayout,
       heroTrailerAutoplay = preferences.heroTrailerAutoplay ?: uiState.heroTrailerAutoplay,
@@ -8818,7 +9065,11 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       activeFusionBadgeUrl = if (fusionBadgeUrls != null) activeFusionBadgeUrl else uiState.activeFusionBadgeUrl,
       autoUpdateChecksEnabled = preferences.autoUpdateChecksEnabled ?: uiState.autoUpdateChecksEnabled,
     )
-    if (homeCatalogRows != null) uiState = uiState.copy(homeSections = applyHomeCatalogLayout(uiState.allHomeSections, homeCatalogRows, uiState.defaultAppCatalogsEnabled))
+    // A row list, a row mode or a source order from the account all describe the same thing - how
+    // Home is arranged - so any of them arriving is a reason to lay it out again.
+    if (homeCatalogRows != null || homeRowMode != null || homeRowSourceOrder != null) {
+      uiState = uiState.copy(homeSections = homeLayoutSections())
+    }
     // Another device may have switched rows on that this one never fetched.
     refreshHomeIfCatalogsMissing()
     if (fusionBadgeUrls != null) refreshFusionBadgeSources()
@@ -9820,7 +10071,20 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   private fun syncCloudPreferences(force: Boolean = false) {
     val session = uiState.session ?: return
     if (!force && !cloudSyncAllowed()) return
-    val preferences = CloudPlaybackPreferences(
+    val preferences = cloudPreferencesSnapshot()
+    viewModelScope.launch { apiClient.patchCloudPreferences(session, preferences, uiState.activeProfileId) }
+  }
+
+  /** [syncCloudPreferences] for a caller that must know the account has the result before going on. */
+  private suspend fun pushCloudPreferencesNow() {
+    val session = uiState.session ?: return
+    apiClient.patchCloudPreferences(session, cloudPreferencesSnapshot(), uiState.activeProfileId)
+      .onFailure { Log.w("StreamDekMigration", "Could not push the migrated preferences", it) }
+  }
+
+  /** The profile's preferences as the account stores them. */
+  private fun cloudPreferencesSnapshot(): CloudPlaybackPreferences {
+    return CloudPlaybackPreferences(
       appAppearance = uiState.appAppearance.name,
       themePreset = uiState.themePreset.name,
       headerStyle = uiState.headerStyle.name,
@@ -9842,6 +10106,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       detailAmbientTintPercent = uiState.detailAmbientTintPercent,
       defaultAppCatalogsEnabled = uiState.defaultAppCatalogsEnabled,
       homeCatalogRowsJson = serializeHomeCatalogRows(uiState.homeCatalogRows),
+      homeRowMode = uiState.homeRows.mode.key,
+      homeRowSourceOrder = uiState.homeRows.sourceOrder,
       seasonTabStyle = uiState.seasonTabStyle.name,
       episodeLayout = uiState.episodeLayout.name,
       heroTrailerAutoplay = uiState.heroTrailerAutoplay,
@@ -9901,7 +10167,6 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       activeFusionBadgeUrl = uiState.activeFusionBadgeUrl,
       autoUpdateChecksEnabled = uiState.autoUpdateChecksEnabled,
     )
-    viewModelScope.launch { apiClient.patchCloudPreferences(session, preferences, uiState.activeProfileId) }
   }
   fun setAppAppearance(value: AppAppearance) {
     appSettingsStore.saveAppAppearance(value)
@@ -10286,16 +10551,85 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     if (missingAddonRow) reload()
   }
 
+  /**
+   * The sections Home should draw, from a saved layout read through the row mode.
+   *
+   * Every caller that used to reach for [applyHomeCatalogLayout] goes through here, so there is one
+   * place that knows the arrangement is the saved list *ordered* rather than the saved list itself.
+   * The defaults make the common call - "re-lay-out what is in state" - a call with no arguments.
+   */
+  private fun homeLayoutSections(
+    sections: List<MediaSection> = uiState.allHomeSections,
+    rows: List<HomeCatalogRow> = uiState.homeCatalogRows,
+    defaultBuiltinsEnabled: Boolean = uiState.defaultAppCatalogsEnabled,
+    mode: HomeRowMode = uiState.homeRows.mode,
+    sourceOrder: List<String> = uiState.homeRows.sourceOrder,
+  ): List<MediaSection> = applyHomeCatalogLayout(
+    sections,
+    orderedHomeCatalogRows(rows, mode, sourceOrder, currentCloudStreamRowGroups()),
+    defaultBuiltinsEnabled,
+  )
+
+  /**
+   * Switches between keeping rows under their source and arranging them one at a time.
+   *
+   * Moving to Mixed flattens the saved list into the order Home is showing *now*. Without that the
+   * viewer would open Mixed and find their rows in a different order than the screen they just
+   * left - the grouped view is a sort over the saved list, and the saved list underneath it can be
+   * arranged quite differently. Flattening is lossless in both directions: grouping a list that is
+   * already grouped changes nothing, so going back to By source restores exactly the same screen.
+   */
+  fun setHomeRowMode(mode: HomeRowMode) {
+    if (mode == uiState.homeRows.mode) return
+    val rows = if (mode == HomeRowMode.Mixed) {
+      orderedHomeCatalogRows(uiState.homeCatalogRows, HomeRowMode.BySource, uiState.homeRows.sourceOrder, currentCloudStreamRowGroups())
+    } else {
+      uiState.homeCatalogRows
+    }
+    // Pinned down as it stands, so that the order the viewer had been looking at is what By source
+    // returns to rather than something re-derived from whichever sources happen to be loaded then.
+    val sourceOrder = homeRowSourceOrder(rows, uiState.homeRows.sourceOrder, currentCloudStreamRowGroups())
+    appSettingsStore.saveHomeRowMode(mode)
+    appSettingsStore.saveHomeCatalogRows(rows)
+    appSettingsStore.saveHomeRowSourceOrder(sourceOrder)
+    uiState = uiState.copy(
+      homeRows = HomeRowArrangement(mode, sourceOrder),
+      homeCatalogRows = rows,
+      homeSections = homeLayoutSections(rows = rows, mode = mode, sourceOrder = sourceOrder),
+    )
+    syncCloudPreferences()
+  }
+
+  /**
+   * Moves a whole source [delta] places through the source order.
+   *
+   * Only meaningful in [HomeRowMode.BySource], and only the *order* changes: the rows themselves,
+   * their switches and their arrangement inside the source are untouched, which is why dragging a
+   * source about cannot cost anyone the layout inside it.
+   */
+  fun moveHomeRowSource(sourceKey: String, delta: Int) {
+    val groups = currentCloudStreamRowGroups()
+    val current = homeRowSourceOrder(uiState.homeCatalogRows, uiState.homeRows.sourceOrder, groups)
+    val reordered = moveHomeRowSource(current, sourceKey, delta)
+    if (reordered == uiState.homeRows.sourceOrder) return
+    appSettingsStore.saveHomeRowSourceOrder(reordered)
+    uiState = uiState.copy(
+      homeRows = uiState.homeRows.copy(sourceOrder = reordered),
+      homeSections = homeLayoutSections(sourceOrder = reordered),
+    )
+    syncCloudPreferences()
+  }
+
   fun setDefaultAppCatalogsEnabled(value: Boolean) {
     appSettingsStore.saveDefaultAppCatalogsEnabled(value)
-    uiState = uiState.copy(defaultAppCatalogsEnabled = value, homeSections = applyHomeCatalogLayout(uiState.allHomeSections, uiState.homeCatalogRows, value))
+    uiState = uiState.copy(defaultAppCatalogsEnabled = value, homeSections = homeLayoutSections(defaultBuiltinsEnabled = value))
     refreshHomeIfCatalogsMissing()
     syncCloudPreferences()
   }
   fun setHomeCatalogRowEnabled(rowId: String, enabled: Boolean) {
     val rows = uiState.homeCatalogRows.map { if (it.id == rowId) it.copy(enabled = enabled) else it }
     appSettingsStore.saveHomeCatalogRows(rows)
-    uiState = uiState.copy(homeCatalogRows = rows, homeSections = applyHomeCatalogLayout(uiState.allHomeSections, rows, uiState.defaultAppCatalogsEnabled))
+    uiState = uiState.copy(homeCatalogRows = rows, homeSections = homeLayoutSections(rows = rows))
     if (enabled) refreshHomeIfCatalogsMissing()
     syncCloudPreferences()
   }
@@ -10307,7 +10641,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     val item = current.removeAt(index)
     current.add(target, item)
     appSettingsStore.saveHomeCatalogRows(current)
-    uiState = uiState.copy(homeCatalogRows = current, homeSections = applyHomeCatalogLayout(uiState.allHomeSections, current, uiState.defaultAppCatalogsEnabled))
+    uiState = uiState.copy(homeCatalogRows = current, homeSections = homeLayoutSections(rows = current))
     syncCloudPreferences()
   }
   /**
@@ -10325,7 +10659,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     appSettingsStore.saveHomeCatalogRows(rows)
     uiState = uiState.copy(
       homeCatalogRows = rows,
-      homeSections = applyHomeCatalogLayout(uiState.allHomeSections, rows, uiState.defaultAppCatalogsEnabled),
+      homeSections = homeLayoutSections(rows = rows),
     )
     syncCloudPreferences()
   }
@@ -10665,36 +10999,220 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
         // the form here would show the picker to everyone for as long as that took, including the
         // viewer with one profile who is about to be sent straight home. refreshProfiles clears
         // it once, when there is an answer.
-        uiState = appSettingsStore.applyTo(uiState.copy(session = session, profilesLoading = true, showProfilePicker = true, pendingGuestMerge = guestDataOwnerKey))
+        uiState = appSettingsStore.applyTo(
+          uiState.copy(
+            session = session,
+            profilesLoading = true,
+            showProfilePicker = true,
+            guestTransfer = GuestSetupTransfer(pendingOwnerKey = guestDataOwnerKey),
+          ),
+        )
+        guestDataOwnerKey?.let(::describeGuestData)
         bootstrapAfterAuth(forceHome = true)
       },
       onFailure = { message -> uiState = uiState.copy(authSubmitting = false, errorMessage = message) },
     )
   }
 
-  fun dismissGuestMergePrompt() {
-    uiState = uiState.copy(pendingGuestMerge = null)
+  // ── Guest to profile migration ───────────────────────────────────────
+
+  /**
+   * Reads what the departing guest identity holds, and keeps the prompt only if it holds something.
+   *
+   * Off the main thread, and separately from the sign-in it follows: the prompt is waiting on the
+   * profile list either way, so there is time in hand, and an identity that turns out to be empty
+   * simply never asks the question.
+   */
+  private fun describeGuestData(ownerKey: String) {
+    viewModelScope.launch {
+      val summary = withContext(Dispatchers.IO) { guestMigrator.summaryFor(ownerKey) }
+      if (uiState.guestTransfer.pendingOwnerKey != ownerKey) return@launch
+      uiState = uiState.copy(
+        guestTransfer = uiState.guestTransfer.copy(
+          pendingOwnerKey = ownerKey.takeIf { !summary.isEmpty },
+          summary = summary.takeIf { !summary.isEmpty },
+          availableOwnerKey = ownerKey.takeIf { !summary.isEmpty },
+        ),
+      )
+    }
   }
 
-  /** Moves a just-left-behind guest identity's watchlist, favourites, continue-watching
-   * progress, and locally-added add-ons into the profile the user just registered/landed
-   * on. General app settings need no migration - most of them already live in a single
-   * shared preferences file rather than being keyed per owner. */
-  fun mergeGuestDataIntoAccount() {
-    val sourceKey = uiState.pendingGuestMerge ?: return
-    uiState = uiState.copy(pendingGuestMerge = null)
-    val targetKey = activeOwnerKey() ?: return
-    if (targetKey == sourceKey) return
-    val mergedWatchlist = (watchlistStore.load(targetKey) + watchlistStore.load(sourceKey)).distinctBy { "${it.type}:${it.id}" }
-    watchlistStore.save(targetKey, mergedWatchlist)
-    // Channel id alone, matching how favourites are identified everywhere else — the same channel
-    // is stored as "tv" or "live" depending on which catalog it came through.
-    val mergedFavourites = (favouriteChannelStore.load(targetKey) + favouriteChannelStore.load(sourceKey)).distinctBy { it.id }
-    favouriteChannelStore.save(targetKey, mergedFavourites)
-    playbackResumeStore.loadAll(sourceKey).forEach { entry -> playbackResumeStore.save(targetKey, entry) }
-    LocalAddonManager.copyProfileStorageTo(sourceKey, targetKey)
-    refreshProfileScopedData()
-    uiState = uiState.copy(infoMessage = strings.getString(R.string.notice_moved_into_account))
+  /** Whether the prompt is owed right now: data found, a profile settled on, nothing in the way. */
+  fun guestMigrationPromptDue(): Boolean =
+    uiState.guestTransfer.summary != null &&
+      uiState.guestTransfer.pendingOwnerKey != null &&
+      uiState.session != null &&
+      uiState.activeProfileId != null &&
+      !uiState.profilesLoading &&
+      !uiState.showProfilePicker &&
+      !uiState.profileTransitioning
+
+  /**
+   * "Start fresh".
+   *
+   * Recorded so the prompt does not reappear on every launch, and deliberately not destructive: the
+   * guest data stays exactly where it is, and Settings > Account keeps offering to bring it over.
+   * Nobody should be able to lose a year of watch history by tapping the wrong button once.
+   */
+  fun declineGuestMigration() {
+    val sourceKey = uiState.guestTransfer.pendingOwnerKey
+    val targetKey = activeOwnerKey()
+    if (sourceKey != null && targetKey != null) {
+      guestMigrationJournal.markDeclined(guestMigrationToken(sourceKey, targetKey))
+      // Starting fresh is a choice about this profile, and whatever is set up in it from here on is
+      // the viewer's own - a later migration from Settings must not treat it as blank any more.
+      guestMigrationJournal.clearFreshProfile(targetKey)
+    }
+    uiState = uiState.copy(guestTransfer = uiState.guestTransfer.copy(pendingOwnerKey = null, summary = null))
+  }
+
+  /** "Move to this profile", from the prompt. */
+  fun acceptGuestMigration() {
+    val sourceKey = uiState.guestTransfer.pendingOwnerKey ?: return
+    uiState = uiState.copy(guestTransfer = uiState.guestTransfer.copy(pendingOwnerKey = null, summary = null))
+    runGuestDataMigration(sourceKey)
+  }
+
+  /** The same migration, started from Settings > Account rather than from the prompt. */
+  fun migrateGuestDataFromSettings() {
+    val sourceKey = uiState.guestTransfer.availableOwnerKey ?: return
+    runGuestDataMigration(sourceKey)
+  }
+
+  /**
+   * Moves one guest identity's StreamDek into the profile in play.
+   *
+   * Every step merges, none deletes, and each is recorded as it lands so an interrupted run resumes
+   * where it stopped ([runGuestMigration]). The local merge happens off the main thread - it reads
+   * and rewrites a dozen preference files, one of which can hold a plugin's whole script - and only
+   * once it is done is the result handed to the account.
+   */
+  private fun runGuestDataMigration(sourceOwnerKey: String) {
+    if (uiState.guestTransfer.running) return
+    val targetOwnerKey = activeOwnerKey() ?: return
+    if (targetOwnerKey == sourceOwnerKey) return
+    uiState = uiState.copy(guestTransfer = uiState.guestTransfer.copy(running = true))
+    viewModelScope.launch {
+      val outcome = withContext(Dispatchers.IO) { guestMigrator.migrate(sourceOwnerKey, targetOwnerKey) }
+      // The add-ons first, because the Home layout names them: a guest's add-ons come back under
+      // the profile with new ids, and the layout carried over has to be pointed at those before
+      // anything reads it.
+      val addonIds = migrateGuestAddons()
+      withContext(Dispatchers.IO) { appSettingsStore.remapAddonIds(targetOwnerKey, addonIds) }
+      if (activeOwnerKey() == targetOwnerKey) {
+        uiState = appSettingsStore.applyTo(uiState)
+        // Awaited, and before the refresh below. That refresh takes the account's copy of the
+        // preferences over the local one, and until this lands the account's copy is the set of
+        // defaults the new profile pushed on its first load - which would quietly put the Home
+        // layout that was just migrated straight back to the default one.
+        pushCloudPreferencesNow()
+      }
+      // Re-read everything the steps touched, which is also what pushes the merged favourites,
+      // playlists and preferences up to the account: each of those has an existing sync path that
+      // sends whatever is local, and local is now the merged result.
+      refreshProfileScopedData()
+      uploadMigratedGuestData(sourceOwnerKey)
+      loadHome(force = true, silent = true)
+      if (outcome.completed) guestMigrationJournal.clearFreshProfile(targetOwnerKey)
+      uiState = uiState.copy(
+        guestTransfer = uiState.guestTransfer.copy(
+          running = false,
+          // Kept on offer when a step did not land, so the viewer can simply ask again - the retry
+          // skips everything that already worked.
+          availableOwnerKey = if (outcome.completed) null else sourceOwnerKey,
+        ),
+        infoMessage = strings.getString(
+          if (outcome.completed) R.string.notice_guest_migration_done else R.string.notice_guest_migration_partial,
+        ),
+      )
+    }
+  }
+
+  /**
+   * Installs the guest's add-ons under the profile, and says which new id each old one became.
+   *
+   * A guest's add-ons are held by the backend against this *device* rather than an account, so they
+   * are not a local store to merge - they have to be installed again. Matched on the manifest URL,
+   * which is what an add-on is, and compared against the profile's list as the backend has it now:
+   * the list in memory can still be the guest's own at this point, which is how every add-on used
+   * to look "already installed" and none of them moved.
+   *
+   * Only add-ons the profile did not have are installed, and only those have their off switch
+   * carried across; an add-on the profile already had keeps its own state. Every failure is
+   * logged and skipped - the rest still move, and the migration can be run again.
+   *
+   * @return guest add-on id to profile add-on id, for [AppSettingsStore.remapAddonIds].
+   */
+  private suspend fun migrateGuestAddons(): Map<String, String> {
+    val session = uiState.session ?: return emptyMap()
+    val profileId = uiState.activeProfileId ?: return emptyMap()
+    val guestAddons = apiClient.fetchAddons(null, null)
+      .onFailure { Log.w("StreamDekMigration", "Could not read the guest add-ons", it) }
+      .getOrNull().orEmpty()
+      .sortedBy { it.position }
+    if (guestAddons.isEmpty()) return emptyMap()
+    fun urlOf(addon: InstalledAddon) = guestMigrator.addonManifestUrl(addon)?.lowercase()
+    val before = apiClient.fetchAddons(session, profileId).getOrElse {
+      Log.w("StreamDekMigration", "Could not read the profile add-ons", it)
+      return emptyMap()
+    }
+    val existing = before.mapNotNullTo(HashSet(), ::urlOf)
+    val installed = HashSet<String>()
+    guestAddons.forEach { addon ->
+      val url = guestMigrator.addonManifestUrl(addon) ?: return@forEach
+      if (url.lowercase() in existing || url.lowercase() in installed) return@forEach
+      apiClient.installAddon(session, url, profileId)
+        .onSuccess { installed += url.lowercase() }
+        .onFailure { Log.w("StreamDekMigration", "Could not move add-on $url", it) }
+    }
+    val after = if (installed.isEmpty()) before else apiClient.fetchAddons(session, profileId).getOrDefault(before)
+    val profileByUrl = after.associateBy(::urlOf)
+    guestAddons.filter { !it.enabled }.forEach { addon ->
+      val url = urlOf(addon) ?: return@forEach
+      val moved = profileByUrl[url] ?: return@forEach
+      if (url in installed && moved.enabled) apiClient.toggleAddon(session, moved.id, false, profileId)
+    }
+    Log.i("StreamDekMigration", "Guest add-ons: ${guestAddons.size} found, ${installed.size} installed under profile $profileId")
+    return guestAddons.mapNotNull { addon ->
+      val moved = urlOf(addon)?.let(profileByUrl::get) ?: return@mapNotNull null
+      (addon.id to moved.id).takeIf { addon.id != moved.id }
+    }.toMap()
+  }
+
+  /**
+   * Hands the merged result to the account.
+   *
+   * Favourites, playlists and preferences ride their own existing sync paths out of
+   * [refreshProfileScopedData]; these have nowhere else to go. Each is best-effort: the data is
+   * safely on the device either way, and every one of these paths is retried on later launches.
+   */
+  private suspend fun uploadMigratedGuestData(sourceOwnerKey: String) {
+    val session = uiState.session ?: return
+    val profileId = uiState.activeProfileId ?: return
+    val ownerKey = activeOwnerKey() ?: return
+
+    // Positions the account has never seen. An entry that already carries a syncedAt has been up
+    // there before, under this profile, and sending it again would only re-stamp it.
+    runCatching {
+      val records = playbackResumeStore.loadAll(ownerKey)
+        .filter { !it.isLive && it.syncedAt == null }
+        .map(guestMigrator::playbackProgressRecordOf)
+      if (records.isNotEmpty()) apiClient.putPlaybackProgressBatch(session, profileId, records)
+    }
+
+    // The watchlist StreamDek keeps for the account, so the titles carried over are on it rather
+    // than only in this device's copy of it.
+    runCatching {
+      watchlistStore.load(ownerKey).forEach { item ->
+        apiClient.syncDekWatchlist(session, profileId, item, remove = false)
+      }
+    }
+
+    // The plugin document, which the merge stamped as newly written so the account takes it rather
+    // than handing back the copy it was merged with.
+    runCatching { apiClient.putProfilePlugins(session, profileId, profilePluginDocument()) }
+
+    Log.i("StreamDekMigration", "Guest setup from $sourceOwnerKey handed to profile $profileId")
   }
 
   private fun bootstrapAfterAuth(forceHome: Boolean = false) {
@@ -10733,6 +11251,19 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
 
   private fun refreshProfileScopedData() {
     val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
+    // Off the main thread for the same reason [describeGuestData] is: answering it reads every
+    // owner-scoped store, and this runs on every profile switch.
+    if (uiState.session != null) {
+      viewModelScope.launch {
+        val guestProfileIds = uiState.profiles.takeIf { uiState.session == null }.orEmpty().map { it.id }
+        val leftover = withContext(Dispatchers.IO) {
+          guestMigrator.leftoverGuestOwnerKey(ownerKey, guestProfileStore.load().map { it.id } + guestProfileIds)
+        }
+        if (activeOwnerKey() == ownerKey) {
+          uiState = uiState.copy(guestTransfer = uiState.guestTransfer.copy(availableOwnerKey = leftover))
+        }
+      }
+    }
     nextUpJob?.cancel()
     uiState = uiState.copy(nextUpItems = emptyList(), nextUpOwner = ownerKey, playbackProgressRecords = emptyList())
     // Sorted catalogues belong to the profile that owns the playlists and favourites behind them.
@@ -10855,7 +11386,14 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
         val previousVersion = lastKnownPluginVersion
         val reconciliation = withContext(Dispatchers.IO) {
           val root = runCatching { JSONObject(cloudJson) }.getOrNull()
-          val version = root?.let { maxOf(it.optLong("updatedAt", 0L), it.optJSONObject("cloudstream")?.optLong("updatedAt", 0L) ?: 0L) } ?: previousVersion
+          val version = root?.let {
+            maxOf(
+              it.optLong("updatedAt", 0L),
+              it.optJSONObject("cloudstream")?.optLong("updatedAt", 0L) ?: 0L,
+              // Source switches are stamped on their own, and the version the account reports counts them.
+              csSourceSettingsLatest(parseCsSourceSettings(it.optJSONArray(CLOUDSTREAM_SOURCE_SETTINGS_KEY))),
+            )
+          } ?: previousVersion
           val cloudHasState = root?.let { it.has("enabled") || it.has("repos") || it.has("providers") } ?: false
           val manager = StreamDekPlugins.manager
           val cloudAt = manager.snapshotUpdatedAt(cloudJson)
@@ -10913,6 +11451,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
    */
   private fun applyCloudStreamDocument(cloudJson: String, manual: Boolean) {
     if (!CloudStreamPlugins.isInitialized) return
+    applyCloudStreamSourceSettings(cloudJson)
     val section = runCatching { JSONObject(cloudJson).optJSONObject("cloudstream") }.getOrNull() ?: return
     val incomingAt = section.optLong("updatedAt", 0L)
     val localAt = CloudStreamPlugins.manager.state.updatedAt
@@ -10924,6 +11463,61 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     cloudStreamLoadJob = viewModelScope.launch(Dispatchers.IO) {
       runCatching { CloudStreamPlugins.manager.loadEnabledProviders() }
         .onFailure { Log.w("StreamDekCloudStream", "Could not bring up synced CloudStream sources", it) }
+    }
+  }
+
+  /**
+   * Takes the account's CloudStream source switches, and hands back any this device is ahead on.
+   *
+   * Run on every pull, whatever the collections' own stamps say: the switches are merged value by
+   * value (see CloudStreamSourceSettings.kt), so there is no "which copy is newer" to decide - a
+   * television that has been off for a week takes the phone's choices, and a choice it made itself
+   * before the account was reachable is pushed rather than overwritten.
+   */
+  private fun applyCloudStreamSourceSettings(cloudJson: String) {
+    if (!CloudStreamPlugins.isInitialized) return
+    val incoming = runCatching { JSONObject(cloudJson).optJSONArray(CLOUDSTREAM_SOURCE_SETTINGS_KEY) }.getOrNull()
+    val merge = CloudStreamPlugins.manager.mergeCloudSourceSettings(incoming)
+    if (merge.reloadNeeded) {
+      cloudStreamLoadJob?.cancel()
+      cloudStreamLoadJob = viewModelScope.launch(Dispatchers.IO) {
+        runCatching { CloudStreamPlugins.manager.loadEnabledProviders() }
+          .onFailure { Log.w("StreamDekCloudStream", "Could not reload sources after a switch changed elsewhere", it) }
+      }
+    }
+    if (merge.localAhead) syncCloudStreamSourceSettings()
+  }
+
+  /**
+   * Sends this profile's CloudStream source switches to the account.
+   *
+   * A read-modify-write of that one field rather than a push of the whole plugin document: the
+   * document also carries the collections, and a device whose copy of those is behind must not put
+   * them back over a newer one just because a switch changed. The server merges the field value by
+   * value as well, so two devices pushing at once both land.
+   */
+  private fun syncCloudStreamSourceSettings() {
+    val session = uiState.session ?: return
+    val profileId = uiState.activeProfileId ?: return
+    if (!CloudStreamPlugins.isInitialized) return
+    sourceSettingsSyncJob?.cancel()
+    sourceSettingsSyncJob = viewModelScope.launch {
+      delay(500)
+      val cloudJson = apiClient.fetchProfilePlugins(session, profileId).getOrNull() ?: return@launch
+      if (uiState.activeProfileId != profileId) return@launch
+      val root = runCatching { JSONObject(cloudJson) }.getOrNull() ?: return@launch
+      // Taken first, so what goes back up is the union rather than this device's half of it.
+      val merge = withContext(Dispatchers.IO) {
+        CloudStreamPlugins.manager.mergeCloudSourceSettings(root.optJSONArray(CLOUDSTREAM_SOURCE_SETTINGS_KEY))
+      }
+      if (merge.reloadNeeded) {
+        cloudStreamLoadJob?.cancel()
+        cloudStreamLoadJob = viewModelScope.launch(Dispatchers.IO) { runCatching { CloudStreamPlugins.manager.loadEnabledProviders() } }
+      }
+      if (!merge.localAhead) return@launch
+      root.put(CLOUDSTREAM_SOURCE_SETTINGS_KEY, CloudStreamPlugins.manager.sourceSettingsJson())
+      apiClient.putProfilePlugins(session, profileId, root.toString())
+        .onFailure { Log.w("StreamDekCloudStream", "Could not sync CloudStream source switches", it) }
     }
   }
 
@@ -10964,6 +11558,11 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       val cloudStream = CloudStreamPlugins.manager.state
       if (cloudStream.repos.isNotEmpty() || cloudStream.providers.isNotEmpty()) {
         runCatching { root.put("cloudstream", JSONObject(CloudStreamPlugins.manager.snapshotJson())) }
+      }
+      // Beside the section rather than inside it, so it outlives the section being replaced or
+      // left out; the server merges it rather than taking this copy whole.
+      if (CloudStreamPlugins.manager.hasSourceSettings()) {
+        root.put(CLOUDSTREAM_SOURCE_SETTINGS_KEY, CloudStreamPlugins.manager.sourceSettingsJson())
       }
     }
     return root.toString()
@@ -13117,14 +13716,14 @@ private fun MainScene(
     )
   }
 
-  if (uiState.pendingGuestMerge != null && !uiState.profilesLoading) {
-    AlertDialog(
-      onDismissRequest = viewModel::dismissGuestMergePrompt,
-      icon = { Icon(Icons.Rounded.CloudUpload, contentDescription = null) },
-      title = { Text(stringResource(R.string.guest_merge_title)) },
-      text = { Text(stringResource(R.string.guest_merge_detail)) },
-      confirmButton = { Button(onClick = viewModel::mergeGuestDataIntoAccount) { Text(stringResource(R.string.guest_merge_confirm)) } },
-      dismissButton = { TextButton(onClick = viewModel::dismissGuestMergePrompt) { Text(stringResource(R.string.action_not_now)) } },
+  // Held until the profile is actually settled on: over the picker, or mid-switch, this would be
+  // asking about a profile the viewer has not arrived at yet.
+  if (viewModel.guestMigrationPromptDue()) {
+    GuestMigrationPrompt(
+      summary = uiState.guestTransfer.summary ?: GuestDataSummary(),
+      profileName = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }?.name,
+      onMove = viewModel::acceptGuestMigration,
+      onStartFresh = viewModel::declineGuestMigration,
     )
   }
 
@@ -13542,6 +14141,7 @@ private fun MainScene(
             MediaHubUi.MediaHubScreen(uiState, onBack = { viewModel.setMediaHubOpen(false) },
               onLoad = viewModel::loadMediaHubPage,
               onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) },
+              onPlayChannel = viewModel::playLiveChannel,
               onToggleFavourite = viewModel::toggleFavouriteChannel,
               onToggleWatchlist = viewModel::toggleWatchlist)
           }
@@ -13736,6 +14336,95 @@ private fun UpdatePromptDialog(uiState: AppUiState, policy: AppVersionPolicy? = 
   )
 }
 
+/**
+ * "Bring your StreamDek setup with you?"
+ *
+ * Shown once, when a device that has been used as a guest is pointed at a profile for the first
+ * time. It names what was actually found rather than describing the idea of data - somebody who has
+ * built up forty hours of viewing should be able to see that this is about those forty hours - and
+ * it says plainly that nothing is deleted either way, because the alternative reads as a choice
+ * between two things you cannot undo.
+ *
+ * Not dismissible by tapping outside: the two answers lead to different StreamDeks, and a prompt
+ * that can be dismissed by accident is one where "Start fresh" happens without being chosen. Both
+ * answers are non-destructive, so neither needs a confirmation of its own.
+ */
+@Composable
+private fun GuestMigrationPrompt(
+  summary: GuestDataSummary,
+  profileName: String?,
+  onMove: () -> Unit,
+  onStartFresh: () -> Unit,
+) {
+  val found = buildList {
+    if (summary.inProgressTitles > 0) {
+      add(pluralStringResource(R.plurals.guest_migration_found_progress, summary.inProgressTitles, summary.inProgressTitles))
+    }
+    if (summary.watchlistItems > 0) {
+      add(pluralStringResource(R.plurals.guest_migration_found_watchlist, summary.watchlistItems, summary.watchlistItems))
+    }
+    if (summary.favouriteChannels > 0) {
+      add(pluralStringResource(R.plurals.guest_migration_found_channels, summary.favouriteChannels, summary.favouriteChannels))
+    }
+    if (summary.sources > 0) {
+      add(pluralStringResource(R.plurals.guest_migration_found_sources, summary.sources, summary.sources))
+    }
+    if (summary.hasPreferences) add(stringResource(R.string.guest_migration_found_preferences))
+  }
+  AlertDialog(
+    // Deliberately inert: see above.
+    onDismissRequest = {},
+    icon = { Icon(Icons.Rounded.CloudUpload, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+    title = { Text(stringResource(R.string.guest_migration_title), fontWeight = FontWeight.Black) },
+    text = {
+      Column(modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text(
+          profileName?.takeIf { it.isNotBlank() }
+            ?.let { stringResource(R.string.guest_migration_detail_named, it) }
+            ?: stringResource(R.string.guest_migration_detail),
+          color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
+        )
+        if (found.isNotEmpty()) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .clip(StreamDekRadius.cardShape)
+              .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+              .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            found.forEach { line ->
+              Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                  Icons.Rounded.Check,
+                  contentDescription = null,
+                  tint = MaterialTheme.colorScheme.primary,
+                  modifier = Modifier.size(18.dp),
+                )
+                Text(line, style = MaterialTheme.typography.bodyMedium)
+              }
+            }
+          }
+        }
+        // The sentence that makes this a safe choice rather than a fork in the road.
+        Text(
+          stringResource(R.string.guest_migration_nothing_deleted),
+          color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+          style = MaterialTheme.typography.bodySmall,
+        )
+      }
+    },
+    confirmButton = {
+      Button(
+        onClick = onMove,
+        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary),
+      ) { Text(stringResource(R.string.guest_migration_move), fontWeight = FontWeight.Black) }
+    },
+    dismissButton = { TextButton(onClick = onStartFresh) { Text(stringResource(R.string.guest_migration_start_fresh)) } },
+    containerColor = MaterialTheme.colorScheme.surface,
+  )
+}
+
 private fun TraktItem.toMediaItem(): MediaItem {
   val isSeries = normalizedMediaType(type) == "tv"
   return MediaItem(
@@ -13919,10 +14608,7 @@ private fun mixedHeroItems(sections: List<MediaSection>, continueWatching: List<
   fun eligibleItems(items: List<MediaItem>): List<MediaItem> = items.filter { item ->
     (item.type.equals("movie", true) || isSeriesType(item.type)) && !item.isLiveCatalogItem()
   }
-  fun eligibleSection(section: MediaSection): Boolean {
-    val identity = "${section.id} ${section.title}".lowercase()
-    return listOf("streaming_network", "streaming network", "live tv", "live_tv", "live-tv", "iptv", "channel").none { it in identity }
-  }
+  fun eligibleSection(section: MediaSection): Boolean = !isLiveHeroSection(section.id, section.title)
   fun section(id: String): List<MediaItem> = sections.firstOrNull { it.id == id && eligibleSection(it) }
     ?.items
     ?.let(::eligibleItems)
@@ -14049,7 +14735,7 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
   val liveFavouritesTitle = stringResource(R.string.home_row_live_favourites)
   val playlistLiveTitle = stringResource(R.string.home_row_playlist_live)
   val playlistVodTitle = stringResource(R.string.home_row_playlist_vod)
-  val rows = remember(uiState.homeSections, continueWatching, recommendations, trending, uiState.mergedWatchlist, uiState.favouriteChannels, uiState.m3uChannels, uiState.m3uVodItems, uiState.addonCatalogRatings, uiState.ratingsEnabled, uiState.newEpisodeItems, uiState.showNewEpisodesRow, uiState.defaultAppCatalogsEnabled, uiState.homeCatalogRows, continueWatchingTitle, newEpisodesTitle, liveFavouritesTitle, playlistLiveTitle, playlistVodTitle) {
+  val rows = remember(uiState.homeSections, continueWatching, recommendations, trending, uiState.mergedWatchlist, uiState.favouriteChannels, uiState.m3uChannels, uiState.m3uVodItems, uiState.addonCatalogRatings, uiState.ratingsEnabled, uiState.newEpisodeItems, uiState.showNewEpisodesRow, uiState.defaultAppCatalogsEnabled, uiState.homeCatalogRows, uiState.homeRows.mode, uiState.homeRows.sourceOrder, continueWatchingTitle, newEpisodesTitle, liveFavouritesTitle, playlistLiveTitle, playlistVodTitle) {
     buildList {
       if (continueWatching.isNotEmpty()) add(HomeRow("continue", continueWatchingTitle, continueWatching))
       // Straight after Continue Watching, as on the television: both answer "what should I put on
@@ -14084,9 +14770,17 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
       )
       // Before the first merge the layout is empty, and falling through to it would leave Home
       // blank; the fetched order is the right answer until the viewer has arranged one.
-      val layout = uiState.homeCatalogRows.ifEmpty {
-        uiState.homeSections.map { HomeCatalogRow(it.id, it.title, subtitleRes = null, builtin = true) }
-      }
+      //
+      // Read through the row mode, so this walk is over the order the settings screen was showing:
+      // grouped under each source, or exactly as the viewer arranged it row by row.
+      val layout = orderedHomeCatalogRows(
+        uiState.homeCatalogRows.ifEmpty {
+          uiState.homeSections.map { HomeCatalogRow(it.id, it.title, subtitleRes = null, builtin = true) }
+        },
+        uiState.homeRows.mode,
+        uiState.homeRows.sourceOrder,
+        currentCloudStreamRowGroups(),
+      )
       layout.forEach { row ->
         if (!row.enabled) return@forEach
         if (row.builtin && !uiState.defaultAppCatalogsEnabled) return@forEach
@@ -14100,6 +14794,11 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
           ?: return@forEach
         if (built.items.isEmpty()) return@forEach
         when {
+          // Mixed means what it says: the order on the settings screen is the order on Home, with
+          // nothing lifted out of it. Live rows and Streaming Networks are gathered to the top only
+          // in By source, where the arrangement is a grouping rather than a placement and hoisting
+          // them is what has always kept "what's on now" above the catalogues.
+          uiState.homeRows.mode == HomeRowMode.Mixed -> laterRows += built
           built.id == "streaming_networks" -> networksRow = built
           row.id !in assembled && isLiveHomeRow(built) -> liveRows += built
           else -> laterRows += built
@@ -14113,7 +14812,24 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
   val hubTitle = stringResource(R.string.media_hub_title)
   val displayRows = remember(rows, uiState.mediaHubEnabled, hubTitle) {
     val byId = rows.associateBy { it.id }
-    val eligible = rows.filter { it.id == "favourites" || it.id.startsWith("m3u_playlists_") || (it.id.startsWith("addon:") && isMediaHubCatalogType(it.id.split(":").getOrNull(2).orEmpty())) }.mapTo(hashSetOf()) { it.id }
+    /**
+     * The rows StreamDek Fuse stands in for on Home: live channels, playlist libraries, favourites.
+     *
+     * Fuse is where the viewer's *sources of channels* live - add-ons and plugins that serve live
+     * TV, the playlists they have loaded, and the channels they have starred - so leaving those
+     * rows on Home beside it would be the same list twice. A playlist counts whole: its VOD section
+     * is part of the library it brought, and Fuse has a VOD view to show it in.
+     *
+     * An ordinary catalogue add-on does not count, however many films it lists. A discovery
+     * catalogue is a row of titles like StreamDek's own, and a viewer who switched one on and
+     * placed it above StreamDek's rows meant it to be on Home. It used to vanish the moment Fuse
+     * was switched on, with nothing to say why, because the test here was the *type* of catalogue
+     * rather than the kind of source behind it. Fuse's page still lists those titles; what it no
+     * longer does is take their rows off Home.
+     */
+    val eligible = rows.filter { row ->
+      row.id == "favourites" || row.id.startsWith("m3u_playlists_") || isLiveCatalogRowId(row.id)
+    }.mapTo(hashSetOf()) { it.id }
     mediaHubHomeOrder(rows.map { it.id }, eligible, uiState.mediaHubEnabled).mapNotNull { id ->
       if (id == MEDIA_HUB_ROW_ID) HomeRow(id, hubTitle, rows.filter { it.id in eligible }.flatMap { it.items.take(3) }.take(12)) else byId[id]
     }
@@ -15750,9 +16466,18 @@ private fun LiveChannelRow(
   lightPage: Boolean,
   onPlay: () -> Unit,
   onToggleFavourite: () -> Unit,
+  /**
+   * Where the row itself leads, when that is somewhere other than straight into the channel.
+   *
+   * On pages that are lists of channels to watch, the whole row plays - that is what the page is
+   * for. On StreamDek Fuse, which mixes channels with films and series, the row opens the channel's
+   * page like every other entry on it does, and the play button beside it is what puts it on. Left
+   * null, the row plays, which is what every page but Fuse wants.
+   */
+  onOpenDetails: (() -> Unit)? = null,
 ) {
   Card(
-    modifier = Modifier.fillMaxWidth().clickable(onClick = onPlay),
+    modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenDetails ?: onPlay),
     colors = CardDefaults.cardColors(
       containerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = if (lightPage) 0.07f else 0.05f),
     ),
@@ -19397,7 +20122,7 @@ private fun LibraryTabScreen(viewModel: NativeAppViewModel) {
 }
 
 @Composable
-private fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+internal fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
   Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
     Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
     Card(
@@ -19424,7 +20149,7 @@ private fun SettingsRow(icon: String, iconColor: Color, title: String, subtitle:
 }
 
 @Composable
-private fun SettingsDivider() {
+internal fun SettingsDivider() {
   Box(modifier = Modifier.fillMaxWidth().padding(start = 66.dp).height(1.dp).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.09f)))
 }
 @Composable
@@ -19748,6 +20473,21 @@ private fun SettingsDetailPanePlaceholder() {
  * behaviour moved with it.
  */
 @OptIn(ExperimentalMaterial3Api::class)
+/**
+ * The Home rows page's actions, built here rather than among the settings screen's own arguments.
+ *
+ * Those arguments are several dozen method references built in one generated method, and it sits
+ * close enough to the JVM's 64KB ceiling that six more do not fit. See [HomeRowsSettingsActions].
+ */
+private fun homeRowsSettingsActions(viewModel: NativeAppViewModel) = HomeRowsSettingsActions(
+  onDefaultAppCatalogsEnabledChange = viewModel::setDefaultAppCatalogsEnabled,
+  onRowEnabledChange = viewModel::setHomeCatalogRowEnabled,
+  onMoveRow = viewModel::moveHomeCatalogRow,
+  onRemoveRows = viewModel::removeHomeCatalogRows,
+  onModeChange = viewModel::setHomeRowMode,
+  onMoveSource = viewModel::moveHomeRowSource,
+)
+
 @Composable
 private fun SettingsScene(
   uiState: AppUiState,
@@ -19870,10 +20610,8 @@ private fun SettingsScene(
       onRemoveFusionBadgeUrl = viewModel::removeFusionBadgeUrl,
       onRefreshFusionBadgeUrl = { viewModel.refreshFusionBadgeUrl(it) },
       onSetActiveFusionBadgeUrl = viewModel::setActiveFusionBadgeUrl,
-      onDefaultAppCatalogsEnabledChange = viewModel::setDefaultAppCatalogsEnabled,
-      onHomeCatalogRowEnabledChange = viewModel::setHomeCatalogRowEnabled,
-      onMoveHomeCatalogRow = viewModel::moveHomeCatalogRow,
-      onRemoveHomeCatalogRows = viewModel::removeHomeCatalogRows,
+      homeRowsActions = remember(viewModel) { homeRowsSettingsActions(viewModel) },
+      onMigrateGuestData = viewModel::migrateGuestDataFromSettings,
       onRefreshHome = { viewModel.loadHome(force = true) },
       onRefreshAddons = viewModel::refreshAddons,
       onRefreshPlugins = { viewModel.refreshProfilePlugins(manual = true) },
@@ -20043,10 +20781,9 @@ private fun SettingsTab(
   onRemoveFusionBadgeUrl: (String) -> Unit,
   onRefreshFusionBadgeUrl: (String) -> Unit,
   onSetActiveFusionBadgeUrl: (String) -> Unit,
-  onDefaultAppCatalogsEnabledChange: (Boolean) -> Unit,
-  onHomeCatalogRowEnabledChange: (String, Boolean) -> Unit,
-  onMoveHomeCatalogRow: (String, Int) -> Unit,
-  onRemoveHomeCatalogRows: (Set<String>) -> Unit,
+  /** Everything the Home rows page can change, as one object - see [HomeRowsSettingsActions]. */
+  homeRowsActions: HomeRowsSettingsActions,
+  onMigrateGuestData: () -> Unit,
   onRefreshHome: () -> Unit,
   onRefreshAddons: () -> Unit,
   onRefreshPlugins: () -> Unit,
@@ -20712,7 +21449,16 @@ private fun SettingsTab(
             }
           }
         }
-        SettingsRoute.HomeLayout -> item { CatalogHomeLayoutSettings(uiState, onDefaultAppCatalogsEnabledChange, onHomeCatalogRowEnabledChange, onMoveHomeCatalogRow, onRemoveHomeCatalogRows, dragScrollBy = { delta -> settingsListState.scrollBy(delta) }) }
+        SettingsRoute.HomeLayout -> item {
+          CatalogHomeLayoutSettings(
+            rows = uiState.homeCatalogRows,
+            addons = uiState.addons,
+            defaultAppCatalogsEnabled = uiState.defaultAppCatalogsEnabled,
+            rowMode = uiState.homeRows.mode,
+            sourceOrder = uiState.homeRows.sourceOrder,
+            actions = homeRowsActions,
+          ) { delta -> settingsListState.scrollBy(delta) }
+        }
         SettingsRoute.TitlePages -> {
           item {
             // Lives here rather than under Home Screen, which is where it used to sit: it only ever
@@ -21070,7 +21816,7 @@ private fun SettingsTab(
         SettingsRoute.Punchplay -> item { DeviceCodeSyncServiceSummary(SyncService.Punchplay, uiState, onRequestSyncServiceDeviceCode, onPollSyncServiceAuthorization, onDisconnectSyncService, onRefreshSyncServices) }
         SettingsRoute.Mdblist -> item { ApiKeySyncServiceSummary(SyncService.Mdblist, uiState, uiState.contentServices.mdblist.maskedKey.orEmpty(), onConnectSyncServiceApiKey, onDisconnectSyncService, onRefreshSyncServices) }
         SettingsRoute.Profiles -> item { ProfilesSettingsSummary(uiState, profileCreateRequest, onSwitchProfile, onSelectProfile, onSubmitProfilePin, onCancelProfilePin, onCreateProfile, onUpdateProfile, onDeleteProfile, onMakeDefaultProfile, onRememberLastProfileAtStartupChange, onUpdateProfilePin) }
-        SettingsRoute.Account -> item { AccountSettingsSummary(uiState, onSignOut, onSignIn, onRefreshSync) }
+        SettingsRoute.Account -> item { AccountSettingsSummary(uiState, onSignOut, onSignIn, onRefreshSync, onMigrateGuestData) }
         SettingsRoute.AppUpdates -> item { AppUpdatesSettingsSummary(uiState, onAutoUpdateChecksChange, onCheckForUpdates, onStartUpdate) }
       }
     }
@@ -21971,7 +22717,7 @@ internal fun settingsRouteKeywords(route: SettingsRoute): String = when (route) 
   SettingsRoute.Appearance -> "appearance language theme colour color dark light mode header navigation labels collapse scroll scrolling behaviour behavior font motion animation animations speed transitions reduce reduced cinematic visual effects glass blur transparency performance battery"
   SettingsRoute.HomeScreen -> "streamdek fuse media hub unified live vod home screen rows spotlight hero synopsis continue watching streaming networks network cards branded logo ambient glow background " +
     "layout density relaxed compact spacing card size smaller bigger tighter fit more new episodes row hide show wide cards notifications reminders upcoming before release"
-  SettingsRoute.HomeLayout -> "layout rows reorder drag order arrange home catalog sections which rows"
+  SettingsRoute.HomeLayout -> "layout rows reorder drag order arrange home catalog sections which rows mode by source mixed group interleave"
   SettingsRoute.TitlePages -> "title detail page style layout trailer autoplay season tabs episode artwork blur spoiler ratings trailer cache clear schedule stale"
   SettingsRoute.Ratings -> "rating ratings imdb tmdb rotten tomatoes metacritic mdblist badge score"
   SettingsRoute.LiveTv -> "live tv channel channels iptv category categories group landscape cards favourite favorite drawer progress bar"
@@ -22060,6 +22806,9 @@ private fun settingsGlyph(icon: String): ImageVector = when (icon) {
   "PRO" -> Icons.Rounded.AccountCircle
   "VFX" -> Icons.Rounded.BlurOn
   "NVB" -> Icons.Rounded.SwipeVertical
+  // The mark StreamDek Fuse carries on the television, so one feature looks like itself on both.
+  "HUB" -> Icons.Outlined.Hub
+  "ORD" -> Icons.Rounded.Reorder
   else -> Icons.Rounded.Security
 }
 
@@ -22489,7 +23238,7 @@ private const val HomeDensitySkeletonCardsPerRow = 5
 private const val HomeDensitySkeletonSpacingScale = 0.5f
 
 @Composable
-private fun SettingsSwitchRow(icon: String, iconColor: Color, title: String, subtitle: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit, logoProvider: String? = null, enabled: Boolean = true) {
+internal fun SettingsSwitchRow(icon: String, iconColor: Color, title: String, subtitle: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit, logoProvider: String? = null, enabled: Boolean = true) {
   Row(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
     if (logoProvider != null) {
       Image(
@@ -22522,7 +23271,7 @@ private fun SettingsSwitchRow(icon: String, iconColor: Color, title: String, sub
 }
 
 @Composable
-private fun SettingsChoiceRow(
+internal fun SettingsChoiceRow(
   icon: String,
   iconColor: Color,
   title: String,
@@ -23058,7 +23807,7 @@ private fun PageStyleSkeletonPreview(style: DetailPageStyle, selected: Boolean) 
  *
  * A row with no labelling of its own passes no kind and shows its option values as they are.
  */
-private enum class SettingsChoice {
+internal enum class SettingsChoice {
   Appearance,
   BackgroundMode,
   BadgePosition,
@@ -23068,6 +23817,7 @@ private enum class SettingsChoice {
   EpisodeLayout,
   FullscreenStatusBar,
   HeaderStyle,
+  HomeRowMode,
   MaxFileSize,
   MpvDisplay,
   CardTitleText,
@@ -23094,6 +23844,7 @@ private enum class SettingsChoice {
  */
 @Composable
 private fun settingsOptionLabel(choice: SettingsChoice?, option: String): String = when (choice) {
+  SettingsChoice.HomeRowMode -> HomeRowMode.entries.firstOrNull { it.name == option }?.let { stringResource(it.labelRes) } ?: option
   SettingsChoice.BackgroundMode -> BackgroundMode.entries.firstOrNull { it.name == option }?.let { backgroundModeLabel(it) } ?: option
   SettingsChoice.DefaultPlayer -> when (option) {
     "Auto" -> "Auto"
@@ -23186,6 +23937,7 @@ private fun settingsOptionLabel(choice: SettingsChoice?, option: String): String
  */
 @Composable
 private fun settingsOptionDescription(choice: SettingsChoice?, option: String): String? = when (choice) {
+  SettingsChoice.HomeRowMode -> HomeRowMode.entries.firstOrNull { it.name == option }?.let { stringResource(it.descriptionRes) }
   SettingsChoice.DoHProvider -> StreamDekDoHProviders.firstOrNull { it.label == option }?.let { provider ->
     provider.endpoint ?: stringResource(R.string.settings_opt_doh_not_configured)
   }
@@ -23229,451 +23981,6 @@ private fun settingsOptionDescription(choice: SettingsChoice?, option: String): 
 internal fun SettingsIcon(icon: String, iconColor: Color) {
   Box(modifier = Modifier.size(42.dp).clip(StreamDekRadius.controlShape).background(iconColor.copy(alpha = 0.16f)), contentAlignment = Alignment.Center) {
     Icon(settingsGlyph(icon), contentDescription = null, tint = iconColor)
-  }
-}
-
-@Composable
-private fun CatalogHomeLayoutSettings(
-  uiState: AppUiState,
-  onDefaultAppCatalogsEnabledChange: (Boolean) -> Unit,
-  onHomeCatalogRowEnabledChange: (String, Boolean) -> Unit,
-  onMoveHomeCatalogRow: (String, Int) -> Unit,
-  onRemoveHomeCatalogRows: (Set<String>) -> Unit,
-  dragScrollBy: suspend (Float) -> Float,
-) {
-  val density = LocalDensity.current
-  val reorderThresholdPx = with(density) { 56.dp.toPx() }
-  // Read outside the remember below, which is not a composable, and keyed into it so the grouping
-  // re-forms when the interface language changes.
-  val orphanGroupTitle = stringResource(R.string.home_row_group_no_longer_installed)
-  val fallbackAddonName = stringResource(R.string.home_row_group_unknown_addon)
-  var localRows by remember { mutableStateOf(uiState.homeCatalogRows) }
-  LaunchedEffect(uiState.homeCatalogRows) {
-    localRows = uiState.homeCatalogRows
-  }
-  // Each loaded CloudStream provider's rows go under the plugin that registered it. Worked out on
-  // every pass rather than inside the remember below: plugins load after this screen can first be
-  // composed, and a map remembered from before they had would leave every provider in a group of
-  // its own for as long as the rows themselves did not change.
-  val cloudStreamGroups = if (!CloudStreamPlugins.isInitialized) {
-    emptyMap()
-  } else {
-    runCatching {
-      CloudStreamPluginLoader.loadedPlugins().flatMap { plugin ->
-        plugin.providers.map { provider -> cloudStreamRowSourceId(provider.name) to ("cloudstream-plugin:${plugin.filePath}" to plugin.name) }
-      }.toMap()
-    }.getOrDefault(emptyMap())
-  }
-  // Where each CloudStream plugin comes from ("CloudStream · CNC Repo"), for its group's header.
-  // Every provider a plugin registers shares its collection, so any one of them answers for it.
-  val cloudStreamGroupLabels = if (!CloudStreamPlugins.isInitialized) {
-    emptyMap()
-  } else {
-    runCatching {
-      CloudStreamPluginLoader.loadedPlugins().mapNotNull { plugin ->
-        plugin.providers.firstOrNull()
-          ?.let { provider -> cloudStreamProviderOriginLabel(provider.name) }
-          ?.takeIf { it.isNotBlank() }
-          ?.let { label -> "cloudstream-plugin:${plugin.filePath}" to label }
-      }.toMap()
-    }.getOrDefault(emptyMap())
-  }
-  val groups = remember(localRows, uiState.addons, uiState.defaultAppCatalogsEnabled, orphanGroupTitle, fallbackAddonName, cloudStreamGroups) {
-    // A CloudStream row is offered only while its source is loaded. Switched off, in a collection
-    // that is switched off, or failing to load, it has nothing to put on Home, so it is left out of
-    // the list — but kept in the saved layout, so turning the source back on brings its rows back
-    // exactly as they were. Moving rows still works on the full layout, so their places hold too.
-    val offeredRows = localRows.filter { row ->
-      !isCloudStreamHomeRowId(row.id) || homeCatalogRowAddonId(row.id) in cloudStreamGroups
-    }
-    buildHomeRowGroups(
-      offeredRows,
-      uiState.addons,
-      uiState.defaultAppCatalogsEnabled,
-      orphanGroupTitle = orphanGroupTitle,
-      fallbackAddonName = fallbackAddonName,
-      cloudStreamGroups = cloudStreamGroups,
-    )
-  }
-  var expandedGroups by rememberSaveable { mutableStateOf(emptySet<String>()) }
-  // Dropping a whole group's rows in one tap is worth asking about, and the count is the part the
-  // viewer needs to see before they agree to it.
-  var confirmClearCount by remember { mutableStateOf<Int?>(null) }
-
-  confirmClearCount?.let { count ->
-    AlertDialog(
-      onDismissRequest = { confirmClearCount = null },
-      title = { Text(stringResource(R.string.home_rows_remove_orphans_title)) },
-      text = {
-        Text(
-          pluralStringResource(R.plurals.home_rows_remove_orphans_detail, count, count),
-        )
-      },
-      confirmButton = {
-        TextButton(onClick = {
-          confirmClearCount = null
-          val orphaned = groups.firstOrNull { it.key == ORPHAN_ROW_GROUP_KEY }?.rows.orEmpty().map { it.id }.toSet()
-          localRows = localRows.filterNot { it.id in orphaned }
-          onRemoveHomeCatalogRows(orphaned)
-        }) { Text(stringResource(R.string.action_remove)) }
-      },
-      dismissButton = { TextButton(onClick = { confirmClearCount = null }) { Text(stringResource(R.string.action_keep)) } },
-    )
-  }
-
-  Column(verticalArrangement = Arrangement.spacedBy(22.dp)) {
-    SettingsSection(stringResource(R.string.settings_m_home_rows)) {
-      SettingsSwitchRow("GRID", Color(0xFF22C55E), stringResource(R.string.settings_m_streamdek_home_rows), stringResource(R.string.settings_m_show_the_rows_that_come_with_streamdek), uiState.defaultAppCatalogsEnabled, onDefaultAppCatalogsEnabledChange)
-    }
-    SettingsSection(stringResource(R.string.settings_m_choose_and_reorder_rows)) {
-      Text(
-        stringResource(R.string.home_rows_reorder_hint),
-        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
-        style = MaterialTheme.typography.bodySmall,
-      )
-      groups.forEachIndexed { groupIndex, group ->
-        key(group.key) {
-          if (groupIndex > 0) SettingsDivider()
-          val expanded = group.gatedNoteRes == null && group.key in expandedGroups
-          HomeRowGroupHeader(
-            title = group.title,
-            rowCount = group.rows.size,
-            enabledCount = group.rows.count { it.enabled },
-            expanded = expanded,
-            gatedNote = group.gatedNoteRes?.let { stringResource(it) },
-            sourceLabel = cloudStreamGroupLabels[group.key],
-            onClear = if (group.key == ORPHAN_ROW_GROUP_KEY && group.rows.isNotEmpty()) {
-              { confirmClearCount = group.rows.size }
-            } else {
-              null
-            },
-            onToggle = {
-              expandedGroups = if (group.key in expandedGroups) expandedGroups - group.key else expandedGroups + group.key
-            },
-          )
-          if (expanded) {
-            group.rows.forEach { row ->
-              key(row.id) {
-                HomeCatalogRowItem(
-                  row = row,
-                  onEnabledChange = { enabled ->
-                    localRows = localRows.map { current -> if (current.id == row.id) current.copy(enabled = enabled) else current }
-                    onHomeCatalogRowEnabledChange(row.id, enabled)
-                  },
-                  onMove = { direction ->
-                    // Reordering stays inside the group the viewer can see. The underlying list is
-                    // one flat arrangement shared with Home, and a group's rows need not be
-                    // adjacent in it, so the step is the distance to the neighbour within this
-                    // group rather than a fixed one: everything else keeps its place.
-                    val from = localRows.indexOfFirst { it.id == row.id }
-                    if (from >= 0) {
-                      val siblingPositions = group.rows
-                        .mapNotNull { sibling -> localRows.indexOfFirst { it.id == sibling.id }.takeIf { it >= 0 } }
-                        .sorted()
-                      val neighbour = siblingPositions.getOrNull(siblingPositions.indexOf(from) + direction)
-                      if (neighbour != null) {
-                        val reordered = localRows.toMutableList()
-                        val moved = reordered.removeAt(from)
-                        reordered.add(neighbour, moved)
-                        localRows = reordered
-                        onMoveHomeCatalogRow(row.id, neighbour - from)
-                      }
-                    }
-                  },
-                  reorderThresholdPx = reorderThresholdPx,
-                  dragScrollBy = dragScrollBy,
-                )
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-/** The key StreamDek's own rows group under; no add-on id can collide with it. */
-internal const val STREAMDEK_ROW_GROUP_KEY = "__streamdek__"
-
-/** Rows whose add-on is no longer installed, kept together rather than one nameless group each. */
-internal const val ORPHAN_ROW_GROUP_KEY = "__orphaned__"
-
-internal data class HomeRowGroup(
-  val key: String,
-  val title: String,
-  /** Why this group's rows cannot reach Home, as a resource, or null when they can. */
-  @StringRes val gatedNoteRes: Int?,
-  val rows: List<HomeCatalogRow>,
-)
-
-/**
- * Splits the saved layout into one group per source, in the order the sources first appear in it.
- *
- * The saved layout is only a list of ids and on/off flags -- a row's title and the add-on it came
- * from are reconstructed at load time from whichever add-ons are currently installed. So the name
- * has to come from [addons] here, not from the row: a row belonging to an add-on that is switched
- * off has no candidate to be rebuilt from and arrives carrying an empty subtitle.
- *
- * That same lookup is what tells the group whether its add-on is switched off, which is the other
- * reason its rows would not be on Home.
- */
-internal fun buildHomeRowGroups(
-  rows: List<HomeCatalogRow>,
-  addons: List<InstalledAddon>,
-  streamDekRowsEnabled: Boolean,
-  /**
-   * What to call the group of rows whose add-on is gone, already in the interface language.
-   *
-   * Passed in rather than resolved here: this function is pure and unit-tested, and giving it a
-   * Context to look a string up with would be the only reason it needed one.
-   */
-  orphanGroupTitle: String,
-  /** What to call an add-on whose manifest gives no name. */
-  fallbackAddonName: String,
-  /**
-   * The group a CloudStream row belongs in, keyed by its row-id source (one provider), as a group
-   * key and title. One plugin can register several providers — CNC Verse registers Netflix, Prime
-   * Video and more — and their rows belong together under the plugin, the way an add-on's
-   * catalogues sit under the add-on. A provider missing here keeps a group of its own.
-   */
-  cloudStreamGroups: Map<String, Pair<String, String>> = emptyMap(),
-): List<HomeRowGroup> {
-  val addonsById = addons.associateBy { it.id }
-  val cloudStreamGroupTitles = cloudStreamGroups.values.associate { (key, title) -> key to title }
-  // Until the add-on list has arrived there is nothing to say a row is orphaned, and routing every
-  // add-on row into "no longer installed" for the second the list takes to load would be alarming
-  // and wrong. While it is empty, rows keep their own add-on's group and simply go unnamed.
-  val addonsKnown = addons.isNotEmpty()
-  return rows
-    .groupBy { row ->
-      val addonId = if (row.builtin) null else homeCatalogRowAddonId(row.id)
-      when {
-        row.builtin -> STREAMDEK_ROW_GROUP_KEY
-        addonId == null -> ORPHAN_ROW_GROUP_KEY
-        // A CloudStream provider is not an add-on, so the add-on list cannot vouch for it; its rows
-        // are grouped under the provider rather than as "no longer installed".
-        isCloudStreamHomeRowId(row.id) -> cloudStreamGroups[addonId]?.first ?: addonId
-        addonsKnown && addonId !in addonsById -> ORPHAN_ROW_GROUP_KEY
-        else -> addonId
-      }
-    }
-    .map { (key, groupRows) ->
-      val addon = addonsById[key]
-      val title = when {
-        key == STREAMDEK_ROW_GROUP_KEY -> "StreamDek"
-        key == ORPHAN_ROW_GROUP_KEY -> orphanGroupTitle
-        else -> cloudStreamGroupTitles[key]?.trim()?.takeIf { it.isNotEmpty() }
-          ?: addon?.manifest?.name?.trim()?.takeIf { it.isNotEmpty() }
-          // The add-on's own name, read from the row that carries it. This used to strip "From "
-          // off the front of the subtitle, which recovered the right answer only for as long as
-          // that subtitle was English.
-          ?: groupRows.firstNotNullOfOrNull { row -> row.subtitleArg?.trim()?.takeIf { it.isNotEmpty() } }
-          // A saved CloudStream row whose provider has not loaded yet carries no name; its slug does.
-          ?: key.takeIf { it.startsWith(CLOUDSTREAM_ROW_SOURCE_PREFIX) }?.removePrefix(CLOUDSTREAM_ROW_SOURCE_PREFIX)
-          ?: fallbackAddonName
-      }
-      val gatedNoteRes = when {
-        key == STREAMDEK_ROW_GROUP_KEY && !streamDekRowsEnabled -> R.string.home_row_group_hidden_streamdek_rows
-        key == ORPHAN_ROW_GROUP_KEY -> R.string.home_row_group_addon_not_installed
-        addon != null && !addon.enabled -> R.string.home_row_group_hidden_addon_off
-        else -> null
-      }
-      HomeRowGroup(key = key, title = title, gatedNoteRes = gatedNoteRes, rows = groupRows)
-    }
-}
-
-/**
- * One source in the Home rows list, collapsed by default.
- *
- * [gatedNote] says why the group's rows cannot currently reach Home: the master switch is off, the
- * add-on they come from is off, or that add-on is gone. A gated group is greyed and does not open.
- * It stays listed rather than being removed, so the viewer can see their rows are kept and why
- * they are not showing.
- *
- * [onClear] is offered only where the rows can never come back on their own -- the add-on they came
- * from is gone, so there is nothing left to switch on and no reason to keep the entries.
- */
-@Composable
-private fun HomeRowGroupHeader(
-  title: String,
-  rowCount: Int,
-  enabledCount: Int,
-  expanded: Boolean,
-  gatedNote: String?,
-  /**
-   * Where the source itself comes from — "CloudStream · CNC Repo" for a CloudStream plugin — shown
-   * beside its name. It belongs to the source, so it is said once here rather than on every row.
-   */
-  sourceLabel: String? = null,
-  onClear: (() -> Unit)? = null,
-  onToggle: () -> Unit,
-) {
-  val gatedOff = gatedNote != null
-  val contentAlpha = if (gatedOff) 0.38f else 1f
-  Row(
-    modifier = Modifier
-      .fillMaxWidth()
-      .clip(StreamDekRadius.thumbShape)
-      .then(if (gatedOff) Modifier else Modifier.clickable(onClick = onToggle))
-      .padding(vertical = 12.dp),
-    verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(12.dp),
-  ) {
-    Icon(
-      if (expanded) Icons.Rounded.KeyboardArrowDown else Icons.AutoMirrored.Rounded.KeyboardArrowRight,
-      contentDescription = stringResource(if (expanded) R.string.a11y_collapse_named else R.string.a11y_expand_named, title),
-      tint = MaterialTheme.colorScheme.onBackground.copy(alpha = contentAlpha * 0.7f),
-    )
-    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-      Text(
-        title,
-        color = MaterialTheme.colorScheme.onBackground.copy(alpha = contentAlpha),
-        style = MaterialTheme.typography.bodyLarge,
-        fontWeight = FontWeight.SemiBold,
-      )
-      // On its own line under the name, so the name keeps the full width rather than sharing it.
-      sourceLabel?.let {
-        Text(
-          it,
-          color = MaterialTheme.colorScheme.onBackground.copy(alpha = contentAlpha * 0.48f),
-          style = MaterialTheme.typography.labelSmall,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-        )
-      }
-      Text(
-        if (gatedNote != null) {
-          stringResource(
-            R.string.home_rows_kept_with_reason,
-            pluralStringResource(R.plurals.home_rows_kept_count, rowCount, rowCount),
-            gatedNote,
-          )
-        } else {
-          pluralStringResource(R.plurals.home_rows_on_of_count, rowCount, enabledCount, rowCount)
-        },
-        color = MaterialTheme.colorScheme.onSurface.copy(alpha = contentAlpha * 0.68f),
-        style = MaterialTheme.typography.bodySmall,
-      )
-    }
-    if (onClear != null) {
-      TextButton(onClick = onClear) { Text(stringResource(R.string.action_remove)) }
-    }
-  }
-}
-
-@Composable
-private fun HomeCatalogRowItem(
-  row: HomeCatalogRow,
-  onEnabledChange: (Boolean) -> Unit,
-  onMove: (Int) -> Unit,
-  reorderThresholdPx: Float,
-  dragScrollBy: suspend (Float) -> Float,
-) {
-  val latestOnMove by rememberUpdatedState(onMove)
-  var dragging by remember(row.id) { mutableStateOf(false) }
-  var dragOffsetY by remember(row.id) { mutableFloatStateOf(0f) }
-  var itemTopInRoot by remember(row.id) { mutableFloatStateOf(0f) }
-  var autoScrollStep by remember(row.id) { mutableFloatStateOf(0f) }
-  val density = LocalDensity.current
-  val configuration = LocalConfiguration.current
-  val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
-  val topEdgePx = with(density) { 172.dp.toPx() }
-  val bottomEdgePx = screenHeightPx - with(density) { 132.dp.toPx() }
-  val maxAutoScrollStepPx = with(density) { 9.dp.toPx() }
-
-  fun applyDragDelta(delta: Float) {
-    dragOffsetY += delta
-    while (dragOffsetY > reorderThresholdPx) {
-      dragOffsetY -= reorderThresholdPx
-      latestOnMove(1)
-    }
-    while (dragOffsetY < -reorderThresholdPx) {
-      dragOffsetY += reorderThresholdPx
-      latestOnMove(-1)
-    }
-  }
-
-  // Auto-scroll the settings list while dragging near the screen edges. The scroll
-  // amount is fed back into the drag offset so the row stays pinned under the
-  // finger and keeps stepping through positions as the list moves.
-  LaunchedEffect(dragging) {
-    while (dragging) {
-      val step = autoScrollStep
-      if (step != 0f) {
-        val consumed = dragScrollBy(step)
-        if (consumed != 0f) applyDragDelta(consumed)
-      }
-      delay(16)
-    }
-  }
-
-  Row(
-    modifier = Modifier
-      .fillMaxWidth()
-      .onGloballyPositioned { itemTopInRoot = it.positionInRoot().y }
-      .zIndex(if (dragging) 2f else 0f)
-      .graphicsLayer {
-        translationY = dragOffsetY
-        scaleX = if (dragging) 1.02f else 1f
-        scaleY = if (dragging) 1.02f else 1f
-        shadowElevation = if (dragging) 18f else 0f
-      }
-      .clip(StreamDekRadius.cardShape)
-      .background(if (dragging) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.96f) else Color.Transparent)
-      .padding(horizontal = 8.dp, vertical = 10.dp),
-    horizontalArrangement = Arrangement.spacedBy(12.dp),
-    verticalAlignment = Alignment.CenterVertically,
-  ) {
-    Box(
-      modifier = Modifier
-        .size(44.dp)
-        .clip(StreamDekRadius.thumbShape)
-        .background(MaterialTheme.colorScheme.onSurface.copy(alpha = if (dragging) 0.14f else 0.06f))
-        .pointerInput(row.id) {
-          detectDragGestures(
-            onDragStart = {
-              dragging = true
-              dragOffsetY = 0f
-              autoScrollStep = 0f
-            },
-            onDragEnd = {
-              dragging = false
-              dragOffsetY = 0f
-              autoScrollStep = 0f
-            },
-            onDragCancel = {
-              dragging = false
-              dragOffsetY = 0f
-              autoScrollStep = 0f
-            },
-            onDrag = { change, dragAmount ->
-              change.consume()
-              applyDragDelta(dragAmount.y)
-              val pointerRootY = itemTopInRoot + dragOffsetY + change.position.y
-              autoScrollStep = when {
-                pointerRootY < topEdgePx -> -((topEdgePx - pointerRootY) / 6f).coerceIn(0f, maxAutoScrollStepPx)
-                pointerRootY > bottomEdgePx -> ((pointerRootY - bottomEdgePx) / 6f).coerceIn(0f, maxAutoScrollStepPx)
-                else -> 0f
-              }
-            },
-          )
-        },
-      contentAlignment = Alignment.Center,
-    ) {
-      Icon(Icons.Rounded.DragHandle, contentDescription = stringResource(R.string.a11y_drag_to_reorder), tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (dragging) 0.92f else 0.54f))
-    }
-    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-      Text(row.titleRes?.let { stringResource(it) } ?: row.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
-      Text(
-        when {
-          dragging -> stringResource(R.string.home_rows_moving_release)
-          row.subtitleRes == null -> ""
-          row.subtitleArg != null -> stringResource(row.subtitleRes, row.subtitleArg)
-          else -> stringResource(row.subtitleRes)
-        },
-        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (dragging) 0.88f else 0.68f), maxLines = 2, overflow = TextOverflow.Ellipsis)
-    }
-    Switch(checked = row.enabled, onCheckedChange = onEnabledChange)
   }
 }
 
@@ -26739,7 +27046,13 @@ private fun RatingsSettingsSummary(
 }
 
 @Composable
-private fun AccountSettingsSummary(uiState: AppUiState, onSignOut: () -> Unit, onSignIn: () -> Unit, onRefreshSync: () -> Unit) {
+private fun AccountSettingsSummary(
+  uiState: AppUiState,
+  onSignOut: () -> Unit,
+  onSignIn: () -> Unit,
+  onRefreshSync: () -> Unit,
+  onMigrateGuestData: () -> Unit = {},
+) {
   var emailVisible by rememberSaveable { mutableStateOf(false) }
   Column(verticalArrangement = Arrangement.spacedBy(24.dp)) {
     SettingsSection(stringResource(R.string.settings_m_account_and_services)) {
@@ -26759,6 +27072,14 @@ val accountEmail = uiState.session?.user?.email
         SettingsDivider()
         RefreshSyncRow(refreshing = uiState.syncRefreshing, onClick = onRefreshSync)
       }
+      // The second chance at the migration prompt. It appears only while there is genuinely
+      // something left on this device that this profile has not been given - the guest data is
+      // never deleted, so "Start fresh" earlier, or a prompt dismissed in a hurry, is recoverable
+      // for as long as the data exists.
+      if (uiState.session != null && uiState.guestTransfer.availableOwnerKey != null) {
+        SettingsDivider()
+        MigrateGuestDataRow(running = uiState.guestTransfer.running, onClick = onMigrateGuestData)
+      }
     }
     if (uiState.session == null) {
       Button(onClick = onSignIn, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary), shape = StreamDekRadius.pill) {
@@ -26768,6 +27089,32 @@ val accountEmail = uiState.session?.user?.email
       Button(onClick = onSignOut, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC9352D), contentColor = Color.White), shape = StreamDekRadius.pill) {
         Text(stringResource(R.string.account_sign_out), fontWeight = FontWeight.SemiBold)
       }
+    }
+  }
+}
+
+/**
+ * "Bring your device setup here" - the migration, offered from Settings rather than from the prompt.
+ *
+ * Deliberately worded as bringing rather than moving: nothing leaves the device it is on, and
+ * running this twice does nothing the first run did not, so there is no confirmation in front of it.
+ */
+@Composable
+private fun MigrateGuestDataRow(running: Boolean, onClick: () -> Unit) {
+  Row(
+    modifier = Modifier.fillMaxWidth().clip(StreamDekRadius.cardShape).clickable(enabled = !running, onClick = onClick).padding(vertical = 10.dp),
+    horizontalArrangement = Arrangement.spacedBy(14.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    SettingsIcon("REF", MaterialTheme.colorScheme.primary)
+    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+      Text(stringResource(R.string.guest_migration_settings_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+      Text(stringResource(R.string.guest_migration_settings_detail), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), maxLines = 3)
+    }
+    if (running) {
+      CircularProgressIndicator(modifier = Modifier.size(19.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.primary)
+    } else {
+      Icon(Icons.Rounded.CloudUpload, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
     }
   }
 }
@@ -33199,7 +33546,7 @@ private fun mediaHubCatalogs(state: AppUiState): List<MediaHubCatalog> = buildLi
     }
   }
   state.addons.filter { it.enabled }.forEach { addon ->
-    addon.manifest.catalogs.filter { catalog -> isMediaHubCatalogType(catalog.type) &&
+    addon.manifest.catalogs.filter { catalog -> isMediaHubLiveCatalogType(catalog.type) &&
       isMediaHubRowSwitchedOn(mediaHubAddonRowId(addon.id, catalog.type, catalog.id), switches, offWhenUnlisted = false) }.forEach { catalog ->
       val genres = if (catalog.genreOptions.isEmpty()) listOf<String?>(null) else catalog.genreOptions
       genres.forEach { genre ->
@@ -33212,7 +33559,9 @@ private fun mediaHubCatalogs(state: AppUiState): List<MediaHubCatalog> = buildLi
   }
   // CloudStream rows start switched off in Home Rows, so one the layout has not listed yet is off too.
   cloudStreamHomeCatalogCandidates(if (CloudStreamPlugins.isInitialized) runCatching { CloudStreamPlugins.manager.activeProviders() }.getOrDefault(emptyList()) else emptyList())
-    .filter { row -> isMediaHubRowSwitchedOn(row.id, switches, offWhenUnlisted = true) }.forEach { row ->
+    // Live providers only, for the reason [isMediaHubLiveCatalogType] gives: a plugin that scrapes
+    // films is a catalogue, and its rows belong on Home rather than inside a page about channels.
+    .filter { row -> isLiveCatalogRowId(row.id) && isMediaHubRowSwitchedOn(row.id, switches, offWhenUnlisted = true) }.forEach { row ->
     val source = homeCatalogRowAddonId(row.id).orEmpty()
     add(MediaHubCatalog(row.id, source, row.subtitleArg ?: source, row.title,
       isLiveCatalogRowId(row.id), cloudRowId = row.id))
@@ -33234,7 +33583,7 @@ fun MediaHubPortal(items: List<MediaItem>, onClick: () -> Unit) {
       }
       Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-          Icon(Icons.Rounded.LiveTv, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+          Icon(Icons.Outlined.Hub, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
           Text(stringResource(R.string.media_hub_title), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
         }
         Text(stringResource(R.string.media_hub_portal_description), style = MaterialTheme.typography.bodyMedium,
@@ -33277,7 +33626,10 @@ fun MediaHubScreen(
   state: AppUiState,
   onBack: () -> Unit,
   onLoad: suspend (MediaHubCatalog, String, Boolean) -> Unit,
+  /** Opens a title's page. Every entry on this page leads here, channels included. */
   onOpen: (MediaItem) -> Unit,
+  /** Puts a channel on directly, from the play button on its row. */
+  onPlayChannel: (MediaItem) -> Unit,
   onToggleFavourite: (MediaItem) -> Unit,
   onToggleWatchlist: (MediaItem) -> Unit,
 ) {
@@ -33528,7 +33880,14 @@ fun MediaHubScreen(
     items(lines, key = { line -> mediaHubItemKey(line.first()) }, contentType = { line -> if (isChannelRow(line.first())) "channel" else "tiles" }) { line ->
       val first = line.first()
       if (isChannelRow(first)) {
-        LiveChannelRow(first, first.id in favouriteKeys, light, { onOpen(first) }, { onToggleFavourite(first) })
+        LiveChannelRow(
+          channel = first,
+          favourite = first.id in favouriteKeys,
+          lightPage = light,
+          onPlay = { onPlayChannel(first) },
+          onToggleFavourite = { onToggleFavourite(first) },
+          onOpenDetails = { onOpen(first) },
+        )
       } else {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(tileGap)) {
           line.forEach { item ->

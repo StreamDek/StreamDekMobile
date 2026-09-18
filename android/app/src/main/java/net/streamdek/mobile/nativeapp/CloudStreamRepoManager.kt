@@ -103,7 +103,18 @@ data class CsProviderEntry(
   val enabled: Boolean = false,
   val installedFilePath: String? = null,
 )
-data class CsPluginState(val repos: List<CsRepo> = emptyList(), val providers: List<CsProviderEntry> = emptyList(), val updatedAt: Long = 0L)
+data class CsPluginState(
+  val repos: List<CsRepo> = emptyList(),
+  val providers: List<CsProviderEntry> = emptyList(),
+  val updatedAt: Long = 0L,
+  /**
+   * Which sources each extension has switched on, as recorded for the account; see
+   * CloudStreamSourceSettings.kt. Kept beside the collections but synced apart from them, and never
+   * part of [updatedAt]: a switch flipped inside one extension is not a reason for this device's
+   * copy of the collections to win over the account's.
+   */
+  val sourceSettings: List<CsSourceSettings> = emptyList(),
+)
 
 class CloudStreamRepoManager(private val context: Context) {
   private companion object {
@@ -155,7 +166,34 @@ class CloudStreamRepoManager(private val context: Context) {
       }
     }
     state = load()
+    // The stores extensions keep their switches in belong to the device, not to a profile, so the
+    // incoming profile's choices are written back into them before any of its extensions load.
+    applySourceSettings(state.sourceSettings)
     onStateChanged?.invoke(state)
+  }
+
+  /** How many sources one owner's collections hold, without switching to that owner. */
+  fun providerCountFor(ownerKey: String): Int = countProviders(prefs.getString("state:${ownerKey.ifBlank { "guest" }}", null))
+
+  /**
+   * Joins one owner's collections into another's, without switching the selected profile.
+   *
+   * By collection URL and by the internal name inside it, destination first. The downloaded `.cs3`
+   * files are shared - a provider record carries the path it was installed to, and both owners can
+   * point at the same file - so a migrated collection needs no second download.
+   */
+  fun mergeProfileStorageInto(fromOwnerKey: String, toOwnerKey: String): Boolean {
+    val fromKey = "state:${fromOwnerKey.ifBlank { "guest" }}"
+    val toKey = "state:${toOwnerKey.ifBlank { "guest" }}"
+    if (fromKey == toKey) return false
+    val incoming = prefs.getString(fromKey, null)?.takeIf { it.isNotBlank() && it != "{}" } ?: return false
+    val merged = mergePluginStateDocuments(prefs.getString(toKey, null), incoming) ?: return false
+    val committed = prefs.edit().putString(toKey, merged).commit()
+    if (committed && toKey == storageKey) {
+      state = load()
+      onStateChanged?.invoke(state)
+    }
+    return committed
   }
 
   suspend fun addRepo(rawUrl: String): Result<Unit> = withContext(Dispatchers.IO) {
@@ -289,6 +327,7 @@ class CloudStreamRepoManager(private val context: Context) {
     }
     Log.i(TAG, "CloudStream sources ready: ${activeProviders().size} provider(s) from ${wanted.size} enabled source(s)")
     notifyProvidersChanged()
+    recordObservedSourceSettings()
   }
 
   /** The providers usable right now — loaded, and belonging to an enabled source in an enabled repo. */
@@ -398,29 +437,140 @@ class CloudStreamRepoManager(private val context: Context) {
 
   private fun save() {
     state = state.copy(updatedAt = System.currentTimeMillis())
-    val root = JSONObject().put("updatedAt", state.updatedAt)
-    root.put("repos", JSONArray().apply {
-      state.repos.forEach { put(JSONObject().put("url", it.url).put("name", it.name).put("description", it.description).put("iconUrl", it.iconUrl).put("enabled", it.enabled).put("favourite", it.favourite)) }
-    })
-    root.put("providers", JSONArray().apply {
-      state.providers.forEach {
-        put(
-          JSONObject()
-            .put("repoUrl", it.repoUrl)
-            .put("internalName", it.internalName)
-            .put("name", it.name)
-            .put("version", it.version)
-            .put("downloadUrl", it.downloadUrl)
-            .put("tvTypes", JSONArray(it.tvTypes))
-            .put("language", it.language)
-            .put("description", it.description)
-            .put("enabled", it.enabled)
-            .put("installedFilePath", it.installedFilePath),
-        )
-      }
-    })
-    prefs.edit().putString(storageKey, root.toString()).apply()
+    persist()
+  }
+
+  /** Writes the state as it stands, without restamping it. */
+  private fun persist() {
+    prefs.edit().putString(storageKey, localDocument()).apply()
     onStateChanged?.invoke(state)
+  }
+
+  /** The on-disk form: the account's copy plus this device's file paths and its source switches. */
+  private fun localDocument(): String =
+    JSONObject(snapshotJsonWithPaths()).put("sourceSettings", csSourceSettingsJson(state.sourceSettings)).toString()
+
+  // ── Source switches inside extensions (see CloudStreamSourceSettings.kt) ──────────────────
+
+  /**
+   * Told when this device has a source switch the account may not have yet - one the viewer just
+   * changed, or one found on an extension's first load - so the caller can push the document.
+   */
+  @Volatile var onSourceSettingsChanged: (() -> Unit)? = null
+
+  /** What happened when the account's switches were taken. */
+  data class SourceSettingsMerge(
+    /** Something was written into an extension's store, and that extension was unloaded to re-read it. */
+    val reloadNeeded: Boolean,
+    /** This device holds switches newer than the account's, which it should push. */
+    val localAhead: Boolean,
+  )
+
+  /** This profile's switches as the account stores them, under `cloudstreamSourceSettings`. */
+  fun sourceSettingsJson(): JSONArray = csSourceSettingsJson(state.sourceSettings)
+
+  fun hasSourceSettings(): Boolean = state.sourceSettings.any { it.values.isNotEmpty() }
+
+  /**
+   * Takes the account's source switches, value by value, and writes whatever changed into the
+   * extensions' own stores.
+   *
+   * Never a replacement: see [mergeCsSourceSettings]. Anything recorded here that the account does
+   * not have survives the merge and is reported through [SourceSettingsMerge.localAhead], so local
+   * choices made before the account was reachable are pushed rather than lost. An extension whose
+   * switches changed is unloaded, because it decides which sources to register when it loads; the
+   * caller follows a [SourceSettingsMerge.reloadNeeded] with [loadEnabledProviders].
+   */
+  @Synchronized
+  fun mergeCloudSourceSettings(array: JSONArray?): SourceSettingsMerge {
+    val incoming = parseCsSourceSettings(array)
+    val local = state.sourceSettings
+    val localAhead = csSourceSettingsAhead(local, incoming)
+    val merged = mergeCsSourceSettings(local, incoming)
+    if (merged == local) return SourceSettingsMerge(reloadNeeded = false, localAhead = localAhead)
+    val before = local.associateBy { it.identity }
+    state = state.copy(sourceSettings = merged)
+    persist()
+    val reload = applySourceSettings(merged.filter { before[it.identity] != it })
+    return SourceSettingsMerge(reloadNeeded = reload, localAhead = localAhead)
+  }
+
+  /**
+   * Records one visit to an extension's settings screen; see [recordCsSourceVisit].
+   *
+   * [before] was taken as the screen opened and is compared with the stores as they are now, so
+   * only what the viewer actually changed there is stamped as a decision.
+   */
+  @Synchronized
+  fun recordSourceVisit(installedFilePath: String, before: Map<String, Map<String, Any>>) {
+    val provider = state.providers.firstOrNull { it.installedFilePath == installedFilePath } ?: return
+    val after = CloudStreamSourcePrefs.snapshot(context)
+    val identity = csSourceIdentity(provider.repoUrl, provider.internalName)
+    val existing = state.sourceSettings.firstOrNull { it.identity == identity }
+      ?: CsSourceSettings(provider.repoUrl, provider.internalName)
+    val updated = recordCsSourceVisit(
+      existing = existing.copy(name = provider.name),
+      before = before,
+      after = after,
+      ownedStores = CloudStreamSourcePrefs.storesOwnedBy(installedFilePath),
+      now = System.currentTimeMillis(),
+    ) ?: return
+    state = state.copy(sourceSettings = state.sourceSettings.filterNot { it.identity == identity } + updated)
+    persist()
+    Log.i(TAG, "Recorded source switches for ${provider.name}: ${updated.values.size} value(s)")
+    notifySourceSettingsChanged()
+  }
+
+  /**
+   * Records, as observed rather than chosen, the switches every loaded extension already has in the
+   * stores it owns. Only keys not recorded yet, and only at stamp zero, so this can seed the account
+   * from a device that was set up before this sync existed without ever overruling a real choice.
+   */
+  @Synchronized
+  private fun recordObservedSourceSettings() {
+    var settings = state.sourceSettings
+    var changed = false
+    state.providers.filter { it.enabled && it.installedFilePath != null }.forEach { provider ->
+      val stores = CloudStreamSourcePrefs.storesOwnedBy(provider.installedFilePath)
+      if (stores.isEmpty()) return@forEach
+      val identity = csSourceIdentity(provider.repoUrl, provider.internalName)
+      val existing = settings.firstOrNull { it.identity == identity } ?: CsSourceSettings(provider.repoUrl, provider.internalName, provider.name)
+      val known = existing.values.mapTo(HashSet()) { it.id }
+      // A store someone has chosen for is settled; what this device happens to hold is not news.
+      val chosen = existing.wholeStores.keys
+      val observed = stores.filterNot { it in chosen }.flatMap { store ->
+        CloudStreamSourcePrefs.switches(context, store).mapNotNull { (key, raw) ->
+          val (type, typed) = csSwitchValue(raw) ?: return@mapNotNull null
+          CsSourceValue(store, key, type, typed, updatedAt = 0L).takeIf { it.id !in known }
+        }
+      }
+      if (observed.isEmpty()) return@forEach
+      settings = settings.filterNot { it.identity == identity } + existing.copy(values = existing.values + observed)
+      changed = true
+    }
+    if (!changed) return
+    state = state.copy(sourceSettings = settings)
+    persist()
+    notifySourceSettingsChanged()
+  }
+
+  /** Writes [entries] into the extensions' stores and unloads any extension whose switches changed. */
+  private fun applySourceSettings(entries: List<CsSourceSettings>): Boolean {
+    var wrote = false
+    entries.forEach { entry ->
+      val changed = runCatching { CloudStreamSourcePrefs.apply(context, entry) }
+        .onFailure { Log.w(TAG, "Could not apply source switches for ${entry.name ?: entry.internalName}", it) }
+        .getOrDefault(false)
+      if (!changed) return@forEach
+      wrote = true
+      state.providers.firstOrNull { it.repoUrl == entry.repoUrl && it.internalName == entry.internalName }
+        ?.installedFilePath?.let(CloudStreamPluginLoader::unload)
+    }
+    return wrote
+  }
+
+  private fun notifySourceSettingsChanged() {
+    runCatching { onSourceSettingsChanged?.invoke() }.onFailure { Log.w(TAG, "Source settings listener failed", it) }
   }
 
   /**
@@ -476,18 +626,22 @@ class CloudStreamRepoManager(private val context: Context) {
       providers = incoming.providers.map { provider ->
         provider.copy(installedFilePath = localPaths[provider.repoUrl to provider.internalName])
       },
+      // Not part of the section: they arrive separately, through mergeCloudSourceSettings.
+      sourceSettings = state.sourceSettings,
     )
     if (merged.repos == state.repos && merged.providers == state.providers) return false
 
     // A source that has gone, or been switched off elsewhere, must stop answering here too --
     // a .cs3 stays live in the process until it is explicitly dropped.
-    val keep = merged.providers.filter { it.enabled }.mapNotNull { it.installedFilePath }.toSet()
+    // A collection switched off elsewhere takes its sources with it, whatever their own switches say.
+    val enabledRepos = merged.repos.filter { it.enabled }.mapTo(HashSet()) { it.url }
+    val keep = merged.providers.filter { it.enabled && it.repoUrl in enabledRepos }.mapNotNull { it.installedFilePath }.toSet()
     state.providers.mapNotNull { it.installedFilePath }.distinct()
       .filterNot { it in keep }
       .forEach(CloudStreamPluginLoader::unload)
 
     state = merged
-    prefs.edit().putString(storageKey, snapshotJsonWithPaths()).apply()
+    prefs.edit().putString(storageKey, localDocument()).apply()
     return true
   }
 
@@ -560,6 +714,7 @@ class CloudStreamRepoManager(private val context: Context) {
         }
       },
       updatedAt = root.optLong("updatedAt", 0L),
+      sourceSettings = parseCsSourceSettings(root.optJSONArray("sourceSettings")),
     )
   }.getOrDefault(CsPluginState())
 }

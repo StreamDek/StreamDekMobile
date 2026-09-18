@@ -66,10 +66,21 @@ class MediaHubTest {
     assertNotEquals(mediaHubItemKey(item), mediaHubItemKey(item.copy(type = "series")))
   }
 
-  @Test fun metadataAndSubtitleCataloguesAreNotHiddenAsVod() {
-    assertTrue(isMediaHubCatalogType("movie"))
-    assertTrue(isMediaHubCatalogType("LIVE"))
-    assertFalse(isMediaHubCatalogType("subtitle"))
-    assertFalse(isMediaHubCatalogType("network"))
+  /**
+   * What Fuse is for. It gathers the viewer's *channel* sources; a discovery catalogue is a row of
+   * titles like StreamDek's own and belongs on Home, which is where it now stays.
+   */
+  @Test fun onlyChannelCataloguesBelongInFuse() {
+    // Channels, whatever a provider calls them.
+    assertTrue(isMediaHubLiveCatalogType("LIVE"))
+    assertTrue(isMediaHubLiveCatalogType("tv"))
+    assertTrue(isMediaHubLiveCatalogType(" iptv "))
+    assertTrue(isMediaHubLiveCatalogType("sports"))
+    // Catalogues of titles, and everything that is not a catalogue at all.
+    assertFalse(isMediaHubLiveCatalogType("movie"))
+    assertFalse(isMediaHubLiveCatalogType("series"))
+    assertFalse(isMediaHubLiveCatalogType("anime"))
+    assertFalse(isMediaHubLiveCatalogType("subtitle"))
+    assertFalse(isMediaHubLiveCatalogType("network"))
   }
 }

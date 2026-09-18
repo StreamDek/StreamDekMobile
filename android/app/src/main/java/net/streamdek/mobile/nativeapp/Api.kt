@@ -2405,6 +2405,10 @@ class StreamDekApiClient(context: Context? = null) {
         .put("ambientTintPercent", preferences.ambientTintPercent)
         .put("defaultAppCatalogsEnabled", preferences.defaultAppCatalogsEnabled)
         .put("homeCatalogRows", preferences.homeCatalogRowsJson?.let(::JSONArray))
+        // Beside the rows they arrange, so one profile document carries the whole Home layout: the
+        // rows, the order of the sources they came from, and which of the two the viewer reads.
+        .put("homeRowMode", preferences.homeRowMode)
+        .put("homeRowSourceOrder", preferences.homeRowSourceOrder?.let(::JSONArray))
       val detail = JSONObject()
         .put("seasonTabStyle", preferences.seasonTabStyle)
         .put("episodeLayout", preferences.episodeLayout)
@@ -2608,6 +2612,8 @@ class StreamDekApiClient(context: Context? = null) {
         ambientTintPercent = optionalInt(home, "ambientTintPercent"),
         defaultAppCatalogsEnabled = optionalBoolean(home, "defaultAppCatalogsEnabled"),
         homeCatalogRowsJson = home.optJSONArray("homeCatalogRows")?.toString(),
+        homeRowMode = optionalString(home, "homeRowMode"),
+        homeRowSourceOrder = optionalStringList(home, "homeRowSourceOrder"),
         seasonTabStyle = optionalString(detail, "seasonTabStyle"),
         episodeLayout = optionalString(detail, "episodeLayout"),
         heroTrailerAutoplay = optionalBoolean(platform, "heroTrailerAutoplay") ?: optionalBoolean(detail, "heroTrailerAutoplay"),

@@ -128,6 +128,32 @@ class SkyStreamPluginManager(private val context: Context) {
     onStateChanged?.invoke(state)
   }
 
+  /** How many sources one owner's collections hold, without switching to that owner. */
+  fun providerCountFor(ownerKey: String): Int = countProviders(prefs.getString("state:${ownerKey.ifBlank { "guest" }}", null))
+
+  /**
+   * Joins one owner's collections into another's, without switching the selected profile.
+   *
+   * The same merge the JS collections use: by collection URL and by the package name inside it,
+   * with the destination's copy of anything shared kept. A `.sky` already on disk is referenced by
+   * path from both sides, so nothing is downloaded again.
+   */
+  fun mergeProfileStorageInto(fromOwnerKey: String, toOwnerKey: String): Boolean {
+    val fromKey = "state:${fromOwnerKey.ifBlank { "guest" }}"
+    val toKey = "state:${toOwnerKey.ifBlank { "guest" }}"
+    if (fromKey == toKey) return false
+    val incoming = prefs.getString(fromKey, null)?.takeIf { it.isNotBlank() && it != "{}" } ?: return false
+    val merged = mergePluginStateDocuments(prefs.getString(toKey, null), incoming) ?: return false
+    val committed = prefs.edit().putString(toKey, merged).commit()
+    // The running profile is the destination when a migration happens right after signing in, so
+    // its sources have to come up now rather than at the next profile switch.
+    if (committed && toKey == storageKey) {
+      state = load()
+      onStateChanged?.invoke(state)
+    }
+    return committed
+  }
+
   // ── Collections ────────────────────────────────────────────────────────────────────────────
 
   suspend fun addRepo(rawUrl: String): Result<Unit> = withContext(Dispatchers.IO) {

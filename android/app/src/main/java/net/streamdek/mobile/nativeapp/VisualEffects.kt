@@ -61,7 +61,14 @@ enum class VisualEffectsMode(
   Reduced("reduced", R.string.visual_effects_reduced, R.string.visual_effects_reduced_description);
 
   companion object {
-    val Default = Automatic
+    /**
+     * Full, not Automatic. Automatic reads the device's own power and accessibility state and
+     * quietly drops the blurs and the motion on a phone that is merely in battery saver, which
+     * looks like the app having a plainer day rather than like a setting. Full is what StreamDek
+     * is meant to look like; a viewer who wants less can say so, and the accessibility overrides
+     * still apply on top.
+     */
+    val Default = Full
 
     fun fromKey(key: String?): VisualEffectsMode {
       val normalized = key?.trim()?.lowercase().orEmpty()

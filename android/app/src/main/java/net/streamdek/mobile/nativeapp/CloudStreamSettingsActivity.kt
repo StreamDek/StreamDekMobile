@@ -103,6 +103,8 @@ class CloudStreamSettingsActivity : AppCompatActivity() {
   private var changed = false
   private var closing = false
   private var suppressPluginDialogs = false
+  /** The extensions' switches as they were when this screen opened; see [onCreate]. */
+  private var switchesBefore: Map<String, Map<String, Any>>? = null
 
   override fun attachBaseContext(newBase: Context) {
     // The app's language and appearance, as MainActivity has them.
@@ -119,6 +121,9 @@ class CloudStreamSettingsActivity : AppCompatActivity() {
       .firstOrNull { it.installedFilePath == path && it.enabled } else null
     if (entry == null || path == null) { finish(); return }
     pluginPath = path
+    // Taken before the extension is loaded here, so everything the visit changes - and only that -
+    // is recorded as the viewer's choice when the screen closes. See CloudStreamSourceSettings.kt.
+    switchesBefore = CloudStreamSourcePrefs.snapshot(this)
 
     setContent { PluginSettingsScreen(sourceName = entry.name) }
 
@@ -175,6 +180,11 @@ class CloudStreamSettingsActivity : AppCompatActivity() {
    * window manager and throws, which the caller catches. Only held around presses StreamDek makes on
    * the plugin's behalf, so its "restart the app to apply" prompt never appears.
    */
+  override fun getSharedPreferences(name: String?, mode: Int): android.content.SharedPreferences {
+    CloudStreamSourcePrefs.noteOpened(this, name)
+    return super.getSharedPreferences(name, mode)
+  }
+
   override fun getSystemService(name: String): Any? =
     if (suppressPluginDialogs && name == Context.WINDOW_SERVICE) null else super.getSystemService(name)
 
@@ -240,7 +250,14 @@ class CloudStreamSettingsActivity : AppCompatActivity() {
     super.onDestroy()
     if (path != null && isFinishing) {
       // Registration is decided at load time. Re-read saved switches and notify the Home layout.
+      val before = switchesBefore
       reloadScope.launch {
+        // Recorded before the reload, and from the stores rather than the screen: the extension's
+        // own Save is what wrote them, and what it wrote is what the other devices should get.
+        if (before != null && CloudStreamPlugins.isInitialized) {
+          runCatching { CloudStreamPlugins.manager.recordSourceVisit(path, before) }
+            .onFailure { Log.w(TAG, "Could not record source switches", it) }
+        }
         CloudStreamPluginLoader.unload(path)
         if (CloudStreamPlugins.isInitialized) CloudStreamPlugins.manager.loadEnabledProviders()
       }

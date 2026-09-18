@@ -4,9 +4,19 @@ package net.streamdek.mobile.nativeapp
 internal fun mediaHubItemKey(item: MediaItem): String =
   listOf(item.sourceAddonId.orEmpty(), item.type, item.id).joinToString("\u001f")
 
-internal fun isMediaHubCatalogType(type: String): Boolean = type.lowercase() in setOf(
-  "movie", "movies", "series", "tv", "live", "channel", "iptv", "sport", "sports", "events", "anime", "livestream",
-)
+/**
+ * Whether a source's catalogue belongs in StreamDek Fuse.
+ *
+ * Live channels only. Fuse is where the viewer's channel sources live - the add-ons and plugins
+ * that serve live TV, the playlists they have loaded, and the channels they have starred - and a
+ * playlist's own VOD section rides along with the playlist that brought it.
+ *
+ * An ordinary catalogue add-on does not belong here however many films it lists: a discovery
+ * catalogue is a row of titles like StreamDek's own, and treating one as Fuse material both buried
+ * it in a page about channels and took its row off Home. This used to accept every media type,
+ * which is exactly what it did.
+ */
+internal fun isMediaHubLiveCatalogType(type: String): Boolean = type.trim().lowercase() in liveCatalogTypes
 
 /** Keeps the personal rows first and replaces source rows without changing the disabled layout. */
 internal fun mediaHubHomeOrder(ids: List<String>, eligible: Set<String>, enabled: Boolean): List<String> {

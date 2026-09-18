@@ -1673,4 +1673,49 @@
   <string name="media_hub_favourites_empty">No favourite channels here yet. Tap the star on a channel to keep it here.</string>
     <string name="settings_show_new_episodes_row">Show New Episodes row</string>
     <string name="settings_show_new_episodes_row_description">Show new episodes on Home. Hiding this row does not turn off episode notifications.</string>
+
+  <!-- Home row organisation -->
+  <string name="settings_m_home_row_mode">Row Organisation</string>
+  <string name="settings_m_home_row_mode_detail">Keep the rows from each source together, or arrange every row yourself.</string>
+  <string name="home_row_mode_by_source">By source</string>
+  <string name="home_row_mode_by_source_description">Rows stay grouped under the source that offers them. Drag a source to move all of its rows at once.</string>
+  <string name="home_row_mode_mixed">Mixed</string>
+  <string name="home_row_mode_mixed_description">Every row moves on its own, so rows from different sources can sit side by side.</string>
+  <string name="home_rows_mixed_hint">Drag a row by its handle to place it exactly where you want it on Home. Rows from any source can go anywhere.</string>
+  <string name="home_rows_filter_placeholder">Find a row or source</string>
+  <string name="home_rows_filter_enabled_only">Only rows that are on</string>
+  <string name="home_rows_filter_no_matches">No rows match that.</string>
+  <string name="a11y_drag_source_to_reorder">Drag to reorder this source</string>
+  <string name="a11y_move_up">Move up</string>
+  <string name="a11y_move_down">Move down</string>
+
+  <!-- Guest to profile migration -->
+  <string name="guest_migration_title">Bring your StreamDek setup with you?</string>
+  <string name="guest_migration_detail">We found the watch progress, watchlist, sources and preferences already on this device. Would you like to move them to your new profile?</string>
+  <string name="guest_migration_detail_named">We found the watch progress, watchlist, sources and preferences already on this device. Would you like to move them to %1$s?</string>
+  <string name="guest_migration_nothing_deleted">Nothing is deleted either way, and anything already on this profile is kept.</string>
+  <string name="guest_migration_move">Move to this profile</string>
+  <string name="guest_migration_start_fresh">Start fresh</string>
+  <string name="guest_migration_found_preferences">Your settings and Home screen layout</string>
+  <plurals name="guest_migration_found_progress">
+    <item quantity="one">%1$d title you are part-way through</item>
+    <item quantity="other">%1$d titles you are part-way through</item>
+  </plurals>
+  <plurals name="guest_migration_found_watchlist">
+    <item quantity="one">%1$d watchlist title</item>
+    <item quantity="other">%1$d watchlist titles</item>
+  </plurals>
+  <plurals name="guest_migration_found_channels">
+    <item quantity="one">%1$d favourite channel</item>
+    <item quantity="other">%1$d favourite channels</item>
+  </plurals>
+  <plurals name="guest_migration_found_sources">
+    <item quantity="one">%1$d add-on, plugin or playlist</item>
+    <item quantity="other">%1$d add-ons, plugins and playlists</item>
+  </plurals>
+  <string name="guest_migration_settings_title">Bring your device setup here</string>
+  <string name="guest_migration_settings_detail">Move the watch progress, watchlist, sources and settings saved on this device into this profile. Nothing is deleted.</string>
+  <string name="notice_guest_migration_done">Your StreamDek setup was moved into this profile.</string>
+  <string name="notice_guest_migration_partial">Most of your setup was moved. Some of it could not be, so you can try again from Settings.</string>
+  <string name="profile_default_name">My StreamDek</string>
 </resources>

@@ -65,10 +65,13 @@ class VisualEffectsPolicyTest {
 
   @Test
   fun modeKeysAreStable() {
-    assertEquals(VisualEffectsMode.Automatic, VisualEffectsMode.fromKey(null))
     assertEquals(VisualEffectsMode.Full, VisualEffectsMode.fromKey("full"))
     assertEquals(VisualEffectsMode.Reduced, VisualEffectsMode.fromKey("Reduced"))
-    assertEquals(VisualEffectsMode.Automatic, VisualEffectsMode.fromKey("something-else"))
+    assertEquals(VisualEffectsMode.Automatic, VisualEffectsMode.fromKey("automatic"))
+    // Nothing stored, and anything unreadable, is the default - which is Full rather than
+    // Automatic; see the enum, and DefaultSettingsTest, which is where that decision is pinned.
+    assertEquals(VisualEffectsMode.Default, VisualEffectsMode.fromKey(null))
+    assertEquals(VisualEffectsMode.Default, VisualEffectsMode.fromKey("something-else"))
   }
 
   @Test

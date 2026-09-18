@@ -91,6 +91,34 @@ object M3uPlaylistManager {
     this.ownerKey = ownerKey.ifBlank { "guest" }
   }
 
+  /**
+   * Joins one owner's playlists into another's, without disturbing whichever owner is selected.
+   *
+   * A union on the playlist URL, which carries the panel's credentials and is what identifies a
+   * playlist everywhere else (see [localIdFor]). The destination's copy of a shared URL wins: it
+   * holds the name and the on/off state the profile has been syncing, and it may already be
+   * registered with the account under an id this device does not own.
+   *
+   * Idempotent, and non-destructive: the source owner's list is left exactly as it was.
+   *
+   * @return how many playlists were carried over.
+   */
+  fun mergeProfileStorageInto(fromOwnerKey: String, toOwnerKey: String): Int {
+    val storage = prefs ?: return 0
+    val fromKey = "$KEY_SOURCES:${fromOwnerKey.ifBlank { "guest" }}"
+    val toKey = "$KEY_SOURCES:${toOwnerKey.ifBlank { "guest" }}"
+    if (fromKey == toKey) return 0
+    val incoming = parse(storage.getString(fromKey, null))
+    if (incoming.isEmpty()) return 0
+    val existing = parse(storage.getString(toKey, null)).sortedBy { it.position }
+    val known = existing.mapTo(HashSet()) { it.url.lowercase() }
+    val added = incoming.filter { known.add(it.url.lowercase()) }
+    if (added.isEmpty()) return 0
+    val merged = (existing + added).mapIndexed { index, source -> source.copy(position = index) }
+    storage.edit().putString(toKey, serialize(merged)).commit()
+    return added.size
+  }
+
   fun isM3uSourceId(id: String): Boolean = id.startsWith(ID_PREFIX)
 
   fun list(): List<M3uPlaylistSource> = readAll().sortedBy { it.position }
@@ -123,6 +151,10 @@ object M3uPlaylistManager {
       M3uAddResult(summarizedSource, items.toM3uPlaylistItems())
     }
   }
+
+  /** How many playlists one owner has, without selecting it. For describing what a guest holds. */
+  fun playlistCountFor(ownerKey: String): Int =
+    parse(prefs?.getString("$KEY_SOURCES:${ownerKey.ifBlank { "guest" }}", null)).size
 
   /** The local id for a playlist URL. Deterministic, so the same playlist lines up across devices. */
   fun localIdFor(url: String): String = ID_PREFIX + Integer.toHexString(url.trim().hashCode())
@@ -355,8 +387,10 @@ object M3uPlaylistManager {
 
   private fun sourcesKey(): String = "$KEY_SOURCES:$ownerKey"
 
-  private fun readAll(): List<M3uPlaylistSource> {
-    val raw = prefs?.getString(sourcesKey(), null) ?: return emptyList()
+  private fun readAll(): List<M3uPlaylistSource> = parse(prefs?.getString(sourcesKey(), null))
+
+  private fun parse(raw: String?): List<M3uPlaylistSource> {
+    if (raw.isNullOrBlank()) return emptyList()
     return runCatching {
       val array = JSONArray(raw)
       List(array.length()) { index ->
@@ -375,6 +409,10 @@ object M3uPlaylistManager {
   }
 
   private fun writeAll(sources: List<M3uPlaylistSource>) {
+    prefs?.edit()?.putString(sourcesKey(), serialize(sources))?.apply()
+  }
+
+  private fun serialize(sources: List<M3uPlaylistSource>): String {
     val array = JSONArray()
     sources.forEach { source ->
       array.put(
@@ -390,7 +428,7 @@ object M3uPlaylistManager {
           },
       )
     }
-    prefs?.edit()?.putString(sourcesKey(), array.toString())?.apply()
+    return array.toString()
   }
 }
 

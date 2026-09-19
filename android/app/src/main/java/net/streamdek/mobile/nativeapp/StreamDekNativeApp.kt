@@ -927,6 +927,8 @@ private data class AppUiState(
    * channels can be found, since TMDB does not carry them. */
   val addonSearchResults: List<MediaItem> = emptyList(),
   val addonSearchLoading: Boolean = false,
+  /** Matches from enabled plugin catalogues; see [PluginSearchState]. */
+  val pluginSearch: PluginSearchState = PluginSearchState(),
   val searchResultQuery: String = "",
   val localContinueWatching: List<MediaItem> = emptyList(),
   val nextUpItems: List<MediaItem> = emptyList(),
@@ -1167,6 +1169,8 @@ private data class AppUiState(
   val newEpisodesLandscape: Boolean = true,
   val liveCategoriesEnabled: Boolean = true,
   val liveProgressBarEnabled: Boolean = false,
+  /** Whether the player draws its Live / VOD badge. On unless switched off; visual only. */
+  val liveBadgeEnabled: Boolean = true,
   /** When false (the default) the device queries add-ons itself rather than asking StreamDek's
    * servers to do it, so an add-on sees this user's IP and never the shared server one. */
   val serverSideStreamsEnabled: Boolean = false,
@@ -2014,7 +2018,7 @@ private class AppSettingsStore(context: Context) {
     "detail_page_style", "season_tab_style", "show_streams_list", "hero_trailer_autoplay", "hero_trailer_resolution",
     "hero_trailer_delay_seconds",
     "hero_trailer_muted", "show_hero_synopsis", "continue_watching_style", "home_card_text_mode", "live_landscape_cards", "live_favourite_drawer_cards",
-    "live_categories_enabled", "live_progress_bar", "mdblist_api_key", "primary_sync_service",
+    "live_categories_enabled", "live_progress_bar", "live_badge", "mdblist_api_key", "primary_sync_service",
     "remember_last_source", "skip_intro_enabled", "skip_segments_enabled", "skip_recap_enabled", "skip_ending_enabled",
     "auto_skip_intro_enabled", "auto_skip_recap_enabled", "auto_skip_ending_enabled",
     "introdb_api_key",
@@ -2098,6 +2102,7 @@ private class AppSettingsStore(context: Context) {
     newEpisodesLandscape = profilePrefs.getBoolean("new_episodes_landscape", true),
     liveCategoriesEnabled = profilePrefs.getBoolean("live_categories_enabled", true),
     liveProgressBarEnabled = profilePrefs.getBoolean("live_progress_bar", false),
+    liveBadgeEnabled = profilePrefs.getBoolean("live_badge", true),
     primarySyncService = normalizedPrimarySyncService(profilePrefs.getString("primary_sync_service", null)),
     liveFavouriteDrawerCards = profilePrefs.getBoolean("live_favourite_drawer_cards", false),
     favoriteSourceKeys = profilePrefs.getStringSet("favorite_source_keys", emptySet()).orEmpty(),
@@ -2259,6 +2264,7 @@ private class AppSettingsStore(context: Context) {
   fun saveNewEpisodesLandscape(value: Boolean) { profilePrefs.edit().putBoolean("new_episodes_landscape", value).apply() }
   fun saveLiveCategoriesEnabled(value: Boolean) { profilePrefs.edit().putBoolean("live_categories_enabled", value).apply() }
   fun saveLiveProgressBarEnabled(value: Boolean) { profilePrefs.edit().putBoolean("live_progress_bar", value).apply() }
+  fun saveLiveBadgeEnabled(value: Boolean) { profilePrefs.edit().putBoolean("live_badge", value).apply() }
   fun savePrimarySyncService(value: String) { profilePrefs.edit().putString("primary_sync_service", value).apply() }
   fun saveLiveFavouriteDrawerCards(value: Boolean) { profilePrefs.edit().putBoolean("live_favourite_drawer_cards", value).apply() }
   fun saveFavoriteSourceKeys(value: Set<String>) { profilePrefs.edit().putStringSet("favorite_source_keys", value).apply() }
@@ -5209,6 +5215,40 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         }
     }
     searchInstalledAddons(normalized, generation)
+    searchPluginCatalogs(normalized, generation)
+  }
+
+  private var pluginSearchJob: kotlinx.coroutines.Job? = null
+
+  /**
+   * Asks every enabled plugin catalogue the same query, alongside TMDB and the add-ons.
+   *
+   * Only loaded providers are asked, which is exactly the set switched on: a disabled plugin, a
+   * disabled collection or a SkyStream sub-provider turned off is never loaded. Each provider's
+   * matches are shown as it answers, and a new query cancels the old one outright.
+   */
+  private fun searchPluginCatalogs(query: String, generation: Long) {
+    pluginSearchJob?.cancel()
+    val providers = catalogueProviders()
+    if (providers.isEmpty()) {
+      uiState = uiState.copy(pluginSearch = PluginSearchState())
+      return
+    }
+    uiState = uiState.copy(pluginSearch = PluginSearchState(loading = true))
+    pluginSearchJob = viewModelScope.launch {
+      try {
+        PluginCatalogSearch.searchAll(providers, query).collect { outcomes ->
+          if (generation != searchRequestGeneration) return@collect
+          uiState = uiState.copy(pluginSearch = uiState.pluginSearch.copy(results = outcomes.flatMap { it.items }.distinctBy { it.id }))
+        }
+      } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+      } catch (failure: Throwable) {
+        Log.w("StreamDekPluginSearch", "plugin catalogue search failed", failure)
+      } finally {
+        if (generation == searchRequestGeneration) uiState = uiState.copy(pluginSearch = uiState.pluginSearch.copy(loading = false))
+      }
+    }
   }
 
   /**
@@ -10359,6 +10399,14 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       playerSession = uiState.playerSession?.copy(showLiveProgressBar = value),
     )
   }
+  /**
+   * The Live / VOD badge, from Player settings or from the switch in the live controls - the same
+   * value either way, so each shows what the other set. Takes effect on the picture at once.
+   */
+  fun setLiveBadgeEnabled(value: Boolean) {
+    appSettingsStore.saveLiveBadgeEnabled(value)
+    uiState = uiState.copy(liveBadgeEnabled = value)
+  }
   fun setLiveFavouriteDrawerCards(value: Boolean) { appSettingsStore.saveLiveFavouriteDrawerCards(value); uiState = uiState.copy(liveFavouriteDrawerCards = value); syncCloudPreferences() }
   fun setRememberLastSource(value: Boolean) { appSettingsStore.saveRememberLastSource(value); uiState = uiState.copy(rememberLastSource = value); syncCloudPreferences() }
   fun toggleFavoriteSource(key: String) {
@@ -10406,8 +10454,15 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
           source.cloudRowId != null -> {
             val target = resolveCloudStreamHomeRow(source.cloudRowId, loadedCloudStreamProviders())
               ?: error("Provider unavailable")
-            val found = if (query.isNotBlank()) CloudStreamProviderBridge.hubSearch(target.provider, query, previous.nextOffset + 1)
-              else CloudStreamProviderBridge.mainPageItems(target.provider, target.page, previous.nextOffset + 1)
+            val found = when {
+              // The first page of a query comes from the shared plugin search: the provider's own
+              // search when it has one, the rows already loaded from it when it does not.
+              query.isNotBlank() && previous.nextOffset == 0 -> PluginCatalogSearch.searchProvider(target.provider, query).items
+              // Later pages only exist for a provider with search of its own.
+              query.isNotBlank() && PluginCatalogSearch.capability(target.provider.name) == PluginCatalogSearch.Capability.CatalogueOnly -> emptyList()
+              query.isNotBlank() -> CloudStreamProviderBridge.hubSearch(target.provider, query, previous.nextOffset + 1)
+              else -> CloudStreamProviderBridge.mainPageItems(target.provider, target.page, previous.nextOffset + 1)
+            }
             found.map { it.copy(sourceAddonName = source.sourceName, sourceCatalogName = if (query.isBlank()) source.title else source.sourceName,
               sourceCatalogType = if (source.live) "live" else it.type) }
           }
@@ -12506,6 +12561,8 @@ fun StreamDekNativeApp(
   onAddonManifestConsumed: () -> Unit = {},
   pendingEpisodeNotification: EpisodeNotificationTarget? = null,
   onEpisodeNotificationConsumed: () -> Unit = {},
+  pendingTvLinkCode: String? = null,
+  onTvLinkCodeConsumed: () -> Unit = {},
 ) {
   val application = androidx.compose.ui.platform.LocalContext.current.applicationContext as Application
   // The very instance StreamDekNativeAppContent goes on to resolve: viewModel() is keyed on the
@@ -12520,6 +12577,8 @@ fun StreamDekNativeApp(
       onAddonManifestConsumed = onAddonManifestConsumed,
       pendingEpisodeNotification = pendingEpisodeNotification,
       onEpisodeNotificationConsumed = onEpisodeNotificationConsumed,
+      pendingTvLinkCode = pendingTvLinkCode,
+      onTvLinkCodeConsumed = onTvLinkCodeConsumed,
     )
   }
 }
@@ -12533,6 +12592,8 @@ private fun StreamDekNativeAppContent(
   onAddonManifestConsumed: () -> Unit = {},
   pendingEpisodeNotification: EpisodeNotificationTarget? = null,
   onEpisodeNotificationConsumed: () -> Unit = {},
+  pendingTvLinkCode: String? = null,
+  onTvLinkCodeConsumed: () -> Unit = {},
 ) {
   val context = androidx.compose.ui.platform.LocalContext.current.applicationContext as Application
   val viewModel = viewModel<NativeAppViewModel>(factory = NativeAppViewModelFactory(context))
@@ -12707,6 +12768,9 @@ private fun StreamDekNativeAppContent(
                   exists = nextEpisodeAvailable,
                   airDate = nextEpisodePreview?.airDate ?: nextSeasonPreview?.airDate,
                 )
+                CompositionLocalProvider(
+                  LocalPlayerBadgeSetting provides PlayerBadgeSetting(uiState.liveBadgeEnabled) { viewModel.setLiveBadgeEnabled(!uiState.liveBadgeEnabled) },
+                ) {
                 NativePlayerScreen(
                 session = rootPlayerSession,
                 resolving = uiState.playerSession == null,
@@ -12762,9 +12826,10 @@ private fun StreamDekNativeAppContent(
                 downloadsEnabled = uiState.downloadsEnabled,
                 onDownloadStream = { stream -> viewModel.downloadStream(stream, uiState.detail?.title ?: uiState.playerSession?.title ?: "Download") },
               )
+                }
               }
               else -> rootStateHolder.SaveableStateProvider("main_scene") {
-                MainScene(viewModel, pendingSetupDestination, onSetupDestinationConsumed, pendingAddonManifestUrl, onAddonManifestConsumed, pendingEpisodeNotification, onEpisodeNotificationConsumed)
+                MainScene(viewModel, pendingSetupDestination, onSetupDestinationConsumed, pendingAddonManifestUrl, onAddonManifestConsumed, pendingEpisodeNotification, onEpisodeNotificationConsumed, pendingTvLinkCode, onTvLinkCodeConsumed)
               }
           }
           // Sits above the scene rather than inside it so it reads the same over the launch screen,
@@ -13467,6 +13532,8 @@ private fun MainScene(
   onAddonManifestConsumed: () -> Unit,
   pendingEpisodeNotification: EpisodeNotificationTarget?,
   onEpisodeNotificationConsumed: () -> Unit,
+  pendingTvLinkCode: String? = null,
+  onTvLinkCodeConsumed: () -> Unit = {},
 ) {
   val launchContext = androidx.compose.ui.platform.LocalContext.current
   val uiState = viewModel.uiState
@@ -13639,6 +13706,33 @@ private fun MainScene(
     val destination = pendingSetupDestination ?: return@LaunchedEffect
     setupDestination = destination
     onSetupDestinationConsumed()
+  }
+
+  // A television's QR code, opened by the phone's camera or any link to /link-tv. Held here until
+  // there is an account to approve it with: signed out, the sign-in screen comes up first and the
+  // approval resumes on its own once it closes signed in.
+  var tvLinkCode by rememberSaveable { mutableStateOf<String?>(null) }
+  LaunchedEffect(pendingTvLinkCode) {
+    val code = pendingTvLinkCode ?: return@LaunchedEffect
+    tvLinkCode = code
+    onTvLinkCodeConsumed()
+  }
+  LaunchedEffect(tvLinkCode, uiState.session == null, uiState.booting) {
+    if (tvLinkCode == null || uiState.booting || uiState.session != null) return@LaunchedEffect
+    setupAuthMode = "signin"
+    showAuth = true
+    android.widget.Toast.makeText(launchContext, launchContext.getString(R.string.tv_link_sign_in_first), android.widget.Toast.LENGTH_LONG).show()
+  }
+  val tvLinkSession = uiState.session
+  val tvLinkApiClient = remember { StreamDekApiClient() }
+  val pendingLinkCode = tvLinkCode
+  if (pendingLinkCode != null && tvLinkSession != null && !uiState.booting && !uiState.authSubmitting && !showAuth) {
+    TvLinkApprovalDialog(
+      code = pendingLinkCode,
+      session = tvLinkSession,
+      apiClient = tvLinkApiClient,
+      onDismiss = { tvLinkCode = null },
+    )
   }
 
   LaunchedEffect(
@@ -19060,6 +19154,11 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
   val addonMatches = remember(uiState.addonSearchResults) {
     uiState.addonSearchResults.distinctBy { "${it.type}-${it.id}" }
   }
+  // One section per provider, in the order the providers are listed, so each result says where it
+  // is from and a title two plugins both carry is offered from both.
+  val pluginMatches = remember(uiState.pluginSearch.results) {
+    uiState.pluginSearch.results.groupBy { it.cardSubtitle.orEmpty() }.toList()
+  }
 
   // Read outside the remember: a calculation block is not a composable, and keying on the label
   // is what makes the sheet re-read it when the interface language changes.
@@ -19247,10 +19346,11 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
       // Reserve the original section's space; animation never changes grid geometry.
       item(key = "search-results-header") { Spacer(Modifier.height(sectionSlotHeight)) }
       when {
-        uiState.searchLoading && searchResults.isEmpty() && !hasPlaylistMatches && addonMatches.isEmpty() -> {
+        uiState.searchLoading && searchResults.isEmpty() && !hasPlaylistMatches && addonMatches.isEmpty() && pluginMatches.isEmpty() -> {
           item { SearchGridSkeleton(columns = columns) }
         }
-        searchResults.isEmpty() && !hasPlaylistMatches && addonMatches.isEmpty() && !uiState.addonSearchLoading -> {
+        searchResults.isEmpty() && !hasPlaylistMatches && addonMatches.isEmpty() && pluginMatches.isEmpty() &&
+          !uiState.addonSearchLoading && !uiState.pluginSearch.loading -> {
           item {
             LibraryEmptyState(
               icon = { Icon(Icons.Rounded.Search, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.70f), modifier = Modifier.size(54.dp)) },
@@ -19273,6 +19373,27 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
         item { PlaylistResultsHeader("From your add-ons", addonMatches.size) }
         item {
           MediaGrid(addonMatches.take(60), onOpen, columns = columns, showMeta = true, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched)
+        }
+      }
+
+      pluginMatches.forEach { (provider, items) ->
+        item(key = "plugin-results-$provider") {
+          PlaylistResultsHeader(provider.ifBlank { stringResource(R.string.search_from_your_plugins) }, items.size)
+        }
+        item(key = "plugin-grid-$provider") {
+          MediaGrid(items.take(60), onOpen, columns = columns, showMeta = true, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched)
+        }
+      }
+      if (uiState.pluginSearch.loading && pluginMatches.isEmpty() && (searchResults.isNotEmpty() || addonMatches.isNotEmpty())) {
+        item(key = "plugin-results-loading") {
+          Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            Text(stringResource(R.string.search_searching_plugins), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.70f))
+          }
         }
       }
 
@@ -20681,6 +20802,7 @@ private fun SettingsScene(
       onNewEpisodesLandscapeChange = viewModel::setNewEpisodesLandscape,
       onLiveCategoriesEnabledChange = viewModel::setLiveCategoriesEnabled,
       onLiveProgressBarEnabledChange = viewModel::setLiveProgressBarEnabled,
+      onLiveBadgeEnabledChange = viewModel::setLiveBadgeEnabled,
       onLiveFavouriteDrawerCardsChange = viewModel::setLiveFavouriteDrawerCards,
       onRememberLastSourceChange = viewModel::setRememberLastSource,
       onBlurUnwatchedEpisodesChange = viewModel::setBlurUnwatchedEpisodes,
@@ -20852,6 +20974,7 @@ private fun SettingsTab(
   onNewEpisodesLandscapeChange: (Boolean) -> Unit,
   onLiveCategoriesEnabledChange: (Boolean) -> Unit,
   onLiveProgressBarEnabledChange: (Boolean) -> Unit,
+  onLiveBadgeEnabledChange: (Boolean) -> Unit = {},
   onLiveFavouriteDrawerCardsChange: (Boolean) -> Unit,
   onRememberLastSourceChange: (Boolean) -> Unit,
   onBlurUnwatchedEpisodesChange: (Boolean) -> Unit,
@@ -21709,6 +21832,8 @@ private fun SettingsTab(
               choice = SettingsChoice.DefaultPlayer)
               SettingsDivider()
               SettingsSwitchRow("PIP", Color(0xFF6366F1), stringResource(R.string.settings_m_floating_player), stringResource(R.string.settings_m_keep_the_video_in_a_small_window), uiState.pictureInPictureEnabled, onPictureInPictureEnabledChange)
+              SettingsDivider()
+              SettingsSwitchRow("LIVE", Color(0xFFE11D48), stringResource(R.string.settings_live_badge), stringResource(R.string.settings_live_badge_description), uiState.liveBadgeEnabled, onLiveBadgeEnabledChange)
             }
           }
           item {
@@ -22407,40 +22532,23 @@ private fun ConnectToTvSettings(uiState: AppUiState, onDeviceRenamed: () -> Unit
     )
   }
 
+  // The same review-and-approve screen a phone camera's QR link opens, so both ways in show which
+  // television is asking, offer Decline as well as Approve, and explain an expired or used code.
   pendingCode?.let { confirmationCode ->
-    AlertDialog(
-      onDismissRequest = { if (!busy) pendingCode = null },
-      icon = { Icon(Icons.Rounded.Tv, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-      title = { Text(stringResource(R.string.pairing_authorize_title)) },
-      text = {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-          Text(stringResource(R.string.pairing_authorize_detail))
-          Text(confirmationCode, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
-        }
-      },
-      confirmButton = {
-        Button(
-          enabled = !busy,
-          onClick = {
-            val activeSession = session ?: return@Button
-            busy = true
-            status = authorizingTv
-            scope.launch {
-              apiClient.activateTvCode(activeSession, confirmationCode)
-                .onSuccess { deviceName ->
-                  status = "${deviceName ?: "TV"} linked successfully."
-                  pendingCode = null
-                  code = ""
-                  refreshKey += 1
-                }
-                .onFailure { status = it.message ?: couldNotLinkTv }
-              busy = false
-            }
-          },
-        ) { if (busy) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp) else Text(stringResource(R.string.pairing_authorize_tv)) }
-      },
-      dismissButton = { TextButton(enabled = !busy, onClick = { pendingCode = null }) { Text(stringResource(R.string.action_cancel)) } },
-    )
+    val activeSession = session
+    if (activeSession != null) {
+      TvLinkApprovalDialog(
+        code = confirmationCode,
+        session = activeSession,
+        apiClient = apiClient,
+        onDismiss = { pendingCode = null },
+        onLinked = { deviceName ->
+          status = "${deviceName ?: "TV"} linked successfully."
+          code = ""
+          refreshKey += 1
+        },
+      )
+    }
   }
 
   Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
@@ -33904,9 +34012,21 @@ fun MediaHubScreen(
       }
       val grouped = if (scoped.isNotEmpty() && scoped.all { it.live } && state.liveCategoriesEnabled) buildBrowseCategories(items) else emptyList()
       val base = if (category == null) items else grouped.firstOrNull { it.name == category }?.items.orEmpty()
+      // What a plugin's own search returned is already an answer to the query - it may match on a
+      // title it does not show - so it is kept to the view's kind rather than filtered again.
+      val searched = if (settledQuery.isBlank()) emptySet() else scoped
+        .filter { it.cloudRowId != null }
+        .flatMap { state.mediaHubPages[mediaHubCacheKey(state, it, settledQuery)]?.items.orEmpty() }
+        .mapTo(hashSetOf(), ::mediaHubItemKey)
       val matches = base.filter { item ->
+        val fromSearch = mediaHubItemKey(item) in searched
         (!favouritesOnly || item.id in favouriteKeys) &&
-          (settledQuery.isBlank() || item.title.contains(settledQuery, true) || item.description.contains(settledQuery, true))
+          (!fromSearch || modeAllows(item.isLiveCatalogItem())) &&
+          (
+            settledQuery.isBlank() || fromSearch ||
+              PluginCatalogSearch.matchRank(item.title, settledQuery) != null ||
+              item.description.contains(settledQuery, true)
+            )
       }
       val live = scoped.filter { it.live }.flatMap { source ->
         source.localItems ?: state.mediaHubPages[mediaHubCacheKey(state, source, settledQuery)]?.items.orEmpty()
@@ -33922,7 +34042,14 @@ fun MediaHubScreen(
   val pages = scoped.mapNotNull { state.mediaHubPages[mediaHubCacheKey(state, it, settledQuery)] }
   val hasMore = scoped.any { source -> source.localItems == null && state.mediaHubPages[mediaHubCacheKey(state, source, settledQuery)]?.let { !it.end && !it.failed } != false }
   val failed = pages.any { it.failed }
-  val searchLimited = settledQuery.isNotBlank() && scoped.any { !it.supportsSearch }
+  // Sources that genuinely cannot answer a query - add-on catalogues without search - matched only
+  // against what has loaded so far. One already loaded to its end is complete, so it is not worth a
+  // warning; plugins and playlists are searched in full. Named, so the viewer knows which they are.
+  val searchLimitedSources = if (settledQuery.isBlank()) emptyList() else scoped
+    .filter { !it.supportsSearch && state.mediaHubPages[mediaHubCacheKey(state, it, settledQuery)]?.end != true }
+    .map { it.sourceName }
+    .distinct()
+  val searchLimited = searchLimitedSources.isNotEmpty()
   val updating = loading || filtering || query.trim() != settledQuery
 
   // All sources: each source is a collapsible section, as a title's stream results are. The first
@@ -34090,7 +34217,11 @@ fun MediaHubScreen(
       verticalArrangement = Arrangement.spacedBy(if (gridColumns == 1) 12.dp else MediaGridRowGap),
     ) {
       if (searchLimited) item(key = "search_limited") {
-        Text(stringResource(R.string.media_hub_search_limited), style = MaterialTheme.typography.bodySmall)
+        Text(
+          if (searchLimitedSources.size == 1) stringResource(R.string.fuse_search_limited_one, searchLimitedSources.first())
+          else stringResource(R.string.fuse_search_limited_many, searchLimitedSources.take(3).joinToString(", "), searchLimitedSources.size),
+          style = MaterialTheme.typography.bodySmall,
+        )
       }
       when {
         catalogsReady && catalogs.isEmpty() -> item(key = "no_sources") {

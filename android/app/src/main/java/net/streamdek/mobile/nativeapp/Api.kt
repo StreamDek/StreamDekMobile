@@ -3818,6 +3818,65 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
 
+  /**
+   * Which television is asking to be linked, for the approval screen, without approving anything.
+   * Fails with a [TvLinkException] whose [TvLinkException.reason] says why a code cannot be used.
+   */
+  suspend fun lookupTvCode(session: AuthSession, userCode: String): Result<TvLinkRequestInfo> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = executeJson("/auth/tv/lookup", JSONObject().put("user_code", userCode), session = session)
+      ensureTvLinkOk(response, "Could not find that TV")
+      val request = response.json.optJSONObject("request") ?: throw TvLinkException(TvLinkFailure.Invalid, "Could not find that TV")
+      TvLinkRequestInfo(
+        code = userCode,
+        deviceName = request.optString("deviceName").ifBlank { null },
+        clientName = request.optString("clientName").ifBlank { null },
+        platform = request.optString("clientPlatform").ifBlank { null },
+        appVersion = request.optString("appVersion").ifBlank { null },
+        expiresAtMillis = runCatching { java.time.Instant.parse(request.optString("expiresAt")).toEpochMilli() }.getOrNull(),
+      )
+    }
+  }
+
+  /** Says no to a television's request, so it stops waiting and offers a fresh code. */
+  suspend fun denyTvCode(session: AuthSession, userCode: String): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = executeJson("/auth/tv/deny", JSONObject().put("user_code", userCode), session = session)
+      ensureTvLinkOk(response, "Could not decline this TV")
+    }
+  }
+
+  /** As [activateTvCode], but failing with a reason the approval screen can act on. */
+  suspend fun approveTvCode(session: AuthSession, userCode: String): Result<String?> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = executeJson("/auth/tv/activate", JSONObject().put("user_code", userCode), session = session)
+      ensureTvLinkOk(response, "Could not link this TV")
+      response.json.optString("deviceName").ifBlank { null }
+    }
+  }
+
+  private fun ensureTvLinkOk(response: JsonResponse, fallback: String) {
+    if (response.ok) return
+    val message = response.json.optString("error").ifBlank { fallback }
+    val reason = when (response.json.optString("code")) {
+      "expired" -> TvLinkFailure.Expired
+      "already_used", "already_approved" -> TvLinkFailure.AlreadyUsed
+      "denied" -> TvLinkFailure.Declined
+      "rate_limited" -> TvLinkFailure.RateLimited
+      "invalid" -> TvLinkFailure.Invalid
+      // A server from before these codes existed still says why in its message.
+      else -> when {
+        response.statusCode == 429 -> TvLinkFailure.RateLimited
+        message.contains("expired", ignoreCase = true) -> TvLinkFailure.Expired
+        message.contains("already", ignoreCase = true) -> TvLinkFailure.AlreadyUsed
+        message.contains("invalid", ignoreCase = true) -> TvLinkFailure.Invalid
+        response.statusCode <= 0 || response.statusCode >= 500 -> TvLinkFailure.Network
+        else -> TvLinkFailure.Other
+      }
+    }
+    throw TvLinkException(reason, message)
+  }
+
   suspend fun disconnectAccountDevice(session: AuthSession, deviceId: String): Result<Unit> = withContext(Dispatchers.IO) {
     runCatching {
       val request = Request.Builder()

@@ -56,6 +56,18 @@
         <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="stremio"/>
       </intent-filter>
+      <!-- A television's QR code. The phone's own camera opens this https link, and once the site's
+           /.well-known/assetlinks.json lists this app's signing key, Android verifies the link and
+           hands it here instead of to a browser. Only /link-tv: the rest of the site stays a site. -->
+      <intent-filter android:autoVerify="true">
+        <action android:name="android.intent.action.VIEW"/>
+        <category android:name="android.intent.category.DEFAULT"/>
+        <category android:name="android.intent.category.BROWSABLE"/>
+        <data android:scheme="https"/>
+        <data android:host="www.streamdek.net"/>
+        <data android:host="streamdek.net"/>
+        <data android:path="/link-tv"/>
+      </intent-filter>
     </activity>
     <activity android:name=".nativeapp.CloudStreamSettingsActivity" android:exported="false" android:theme="@style/Theme.StreamDek.PluginSettings" android:configChanges="orientation|screenSize|keyboardHidden" />
     <service

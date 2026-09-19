@@ -109,6 +109,19 @@ class ExoPlaybackView @JvmOverloads constructor(
   private var lastLoggedCueCount = -1
   private val audioSelections = mutableMapOf<Int, Pair<Tracks.Group, Int>>()
   private val subtitleSelections = mutableMapOf<Int, Pair<Tracks.Group, Int>>()
+
+  /** See [setCaptionProbe]. */
+  private var captionProbeEnabled = false
+
+  /**
+   * The viewer has asked for no subtitles, but a speculative caption track may be decoding so its
+   * data can be noticed. The subtitle view is hidden while this is set, whatever else draws into it.
+   */
+  private var subtitlesHidden = false
+
+  /** Speculative caption tracks, by [captionTrackKey], that have delivered at least one cue. */
+  private val confirmedCaptionKeys = HashSet<String>()
+  private var lastTracks: Tracks? = null
   private val progressTicker = object : Runnable {
     override fun run() {
       exoPlayer?.let { active ->
@@ -307,6 +320,8 @@ class ExoPlaybackView @JvmOverloads constructor(
   fun setAudioTrack(trackId: Int) = applyTrackSelection(audioSelections[trackId])
 
   fun setSubtitleTrack(trackId: Int) {
+    subtitlesHidden = false
+    applySubtitleVisibility()
     val active = exoPlayer ?: return
     // A track chosen by hand is as explicit as a file chosen by hand, and stops the side-loaded
     // one being re-selected the next time the track list is reported.
@@ -319,12 +334,99 @@ class ExoPlaybackView @JvmOverloads constructor(
   }
 
   fun disableSubtitleTrack() {
+    subtitlesHidden = true
+    applySubtitleVisibility()
     val active = exoPlayer ?: return
     clearExternalSubtitleOverlay()
+    // Still listening for a live channel's captions: the unconfirmed track keeps decoding, unseen,
+    // so the captions control can appear the moment the broadcast carries some.
+    if (probeUnconfirmedCaptions(active)) {
+      lastTracks?.let(::dispatchTracks)
+      return
+    }
     active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
       .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
       .clearOverridesOfType(C.TRACK_TYPE_TEXT)
       .build()
+    lastTracks?.let(::dispatchTracks)
+  }
+
+  /**
+   * Whether to confirm speculative caption tracks by listening for their data. Live channels only.
+   * A confirmed track stops being speculative and the tracks are reported again, which is how the
+   * player learns, mid-broadcast, that a channel has captions. Nothing is shown that was not asked for.
+   */
+  fun setCaptionProbe(enabled: Boolean) {
+    if (captionProbeEnabled == enabled) return
+    captionProbeEnabled = enabled
+    val active = exoPlayer ?: return
+    if (enabled) {
+      if (currentTextSelection(lastTracks) == null) subtitlesHidden = true
+      applySubtitleVisibility()
+      probeUnconfirmedCaptions(active)
+    }
+    lastTracks?.let(::dispatchTracks)
+  }
+
+  private fun applySubtitleVisibility() {
+    // A side-loaded file draws into the same view and is always something the viewer chose.
+    subtitleView?.visibility = if (subtitlesHidden && externalSubtitleCues == null) INVISIBLE else VISIBLE
+  }
+
+  /** Starts decoding an unconfirmed caption track, unseen, when there is one. True when probing. */
+  private fun probeUnconfirmedCaptions(active: ExoPlayer): Boolean {
+    if (!captionProbeEnabled || !subtitlesHidden) return false
+    val tracks = lastTracks ?: return false
+    val candidate = tracks.groups.asSequence()
+      .filter { it.type == C.TRACK_TYPE_TEXT }
+      .flatMap { group -> (0 until group.length).asSequence().map { group to it } }
+      .firstOrNull { (group, index) -> group.isTrackSupported(index) && isSpeculativeCaption(group, index) }
+      ?: return false
+    val (group, index) = candidate
+    if (!group.isTrackSelected(index)) {
+      active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
+        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+        .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, index))
+        .build()
+    }
+    return true
+  }
+
+  private fun captionTrackKey(group: Tracks.Group, index: Int): String = "${group.mediaTrackGroup.id}#$index"
+
+  /**
+   * An in-band CEA-608/708 track no metadata vouches for. HLS names the caption renditions it really
+   * carries, and those come with a label or a language; Media3's placeholder has neither.
+   */
+  private fun isSpeculativeCaption(group: Tracks.Group, index: Int): Boolean {
+    val format = group.getTrackFormat(index)
+    val inBand = format.sampleMimeType == MimeTypes.APPLICATION_CEA608 || format.sampleMimeType == MimeTypes.APPLICATION_CEA708
+    return inBand && format.label.isNullOrBlank() && format.language.isNullOrBlank() &&
+      captionTrackKey(group, index) !in confirmedCaptionKeys
+  }
+
+  private fun currentTextSelection(tracks: Tracks?): Pair<Tracks.Group, Int>? = tracks?.groups
+    ?.asSequence()
+    ?.filter { it.type == C.TRACK_TYPE_TEXT }
+    ?.flatMap { group -> (0 until group.length).asSequence().map { group to it } }
+    ?.firstOrNull { (group, index) -> group.isTrackSelected(index) }
+
+  /** The selected caption track just produced text, so it is real. Reported, and - if it was only
+   * being listened to - no longer decoded. */
+  private fun confirmSelectedCaptionTrack() {
+    val tracks = lastTracks ?: return
+    val (group, index) = currentTextSelection(tracks) ?: return
+    if (!isSpeculativeCaption(group, index)) return
+    confirmedCaptionKeys += captionTrackKey(group, index)
+    Log.i(TAG, "Captions confirmed in stream data: ${group.getTrackFormat(index).sampleMimeType}")
+    if (subtitlesHidden) {
+      exoPlayer?.let { active ->
+        active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
+          .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+          .build()
+      }
+    }
+    post { lastTracks?.let(::dispatchTracks) }
   }
 
   /** Parses and presents a sidecar independently; the active ExoPlayer is never prepared again. */
@@ -336,6 +438,9 @@ class ExoPlaybackView @JvmOverloads constructor(
         if (subtitleRequestGeneration.get() != generation) return@post
         parsed.onSuccess { timeline ->
           externalSubtitleCues = timeline
+          // A file chosen by hand is shown whatever was hidden before it.
+          subtitlesHidden = false
+          applySubtitleVisibility()
           exoPlayer?.let { active ->
             active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
               .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
@@ -514,6 +619,9 @@ class ExoPlaybackView @JvmOverloads constructor(
   private fun prepareSource(url: String, startPositionMs: Long = 0L) {
     releasePendingPlayer()
     releasePlayer()
+    // A new source is a new broadcast; what the last one proved about its captions says nothing here.
+    confirmedCaptionKeys.clear()
+    lastTracks = null
     val active = try {
       buildPlayer(url, startPositionMs)
     } catch (error: Throwable) {
@@ -581,6 +689,8 @@ class ExoPlaybackView @JvmOverloads constructor(
     awaitingFirstFrameAfterPromotion = true
     candidate.addListener(listener)
     player = candidate
+    confirmedCaptionKeys.clear()
+    lastTracks = null
     dispatchTracks(candidate.currentTracks)
   }
 
@@ -625,6 +735,7 @@ class ExoPlaybackView @JvmOverloads constructor(
 
     override fun onCues(cueGroup: CueGroup) {
       if (externalSubtitleCues != null) return
+      if (cueGroup.cues.isNotEmpty()) confirmSelectedCaptionTrack()
       // The one thing that separates "the file was chosen but never decoded" from "it is decoding
       // and this passage has no dialogue". Both look identical on screen, and only one is a bug.
       if (cueGroup.cues.isNotEmpty() && cueGroup.cues.size != lastLoggedCueCount) {
@@ -671,6 +782,7 @@ class ExoPlaybackView @JvmOverloads constructor(
   private fun dispatchTracks(tracks: Tracks) {
     // Before the list is reported, so the selection this makes is the one the viewer is told about
     // rather than one that arrives a frame later and leaves the panel showing the wrong row.
+    lastTracks = tracks
     audioSelections.clear()
     subtitleSelections.clear()
     val audio = mutableListOf<MpvTrackInfo>()
@@ -681,7 +793,18 @@ class ExoPlaybackView @JvmOverloads constructor(
         if (!group.isTrackSupported(index)) continue
         val format = group.getTrackFormat(index)
         val id = nextId++
-        val info = MpvTrackInfo(id, if (group.type == C.TRACK_TYPE_AUDIO) "audio" else "sub", format.label, format.language, format.codecs, group.isTrackSelected(index))
+        val speculative = group.type == C.TRACK_TYPE_TEXT && isSpeculativeCaption(group, index)
+        val inBandCaption = format.sampleMimeType == MimeTypes.APPLICATION_CEA608 || format.sampleMimeType == MimeTypes.APPLICATION_CEA708
+        val info = MpvTrackInfo(
+          id = id,
+          type = if (group.type == C.TRACK_TYPE_AUDIO) "audio" else "sub",
+          title = format.label,
+          language = format.language,
+          codec = format.codecs ?: format.sampleMimeType?.takeIf { inBandCaption }?.substringAfter('/'),
+          // A track decoding only so its captions can be noticed is not one the viewer turned on.
+          selected = group.isTrackSelected(index) && !(group.type == C.TRACK_TYPE_TEXT && subtitlesHidden),
+          speculative = speculative,
+        )
         when (group.type) {
           C.TRACK_TYPE_AUDIO -> { audio += info; audioSelections[id] = group to index }
           C.TRACK_TYPE_TEXT -> { subtitles += info; subtitleSelections[id] = group to index }
@@ -690,6 +813,8 @@ class ExoPlaybackView @JvmOverloads constructor(
     }
     onTracksChangedCallback?.invoke(audio, subtitles, audio.firstOrNull { it.selected }?.id, subtitles.firstOrNull { it.selected }?.id)
     reportDolbyVisionProfile7(tracks)
+    // A live stream's tracks can arrive after playback starts; the probe is reconsidered each time.
+    exoPlayer?.let(::probeUnconfirmedCaptions)
   }
 
   private fun applyTrackSelection(selection: Pair<Tracks.Group, Int>?) {

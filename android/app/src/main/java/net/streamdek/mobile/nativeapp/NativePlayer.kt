@@ -80,6 +80,9 @@ import androidx.compose.material.icons.rounded.Brightness6
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.HideSource
+import androidx.compose.material.icons.rounded.ClosedCaption
+import androidx.compose.material.icons.rounded.ClosedCaptionDisabled
+import androidx.compose.material.icons.rounded.LiveTv
 import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lock
@@ -193,7 +196,18 @@ import androidx.compose.material.icons.rounded.FastRewind
 import kotlin.math.roundToInt
 import android.widget.Toast
 
-private enum class PlayerPanel { None, Sources, Audio, Subtitles, Speed, Engine, Info }
+private enum class PlayerPanel { None, Sources, Audio, Subtitles, Speed, Engine, Info, Captions }
+
+/**
+ * Whether the player draws its Live / VOD badge, and the in-player switch for it.
+ *
+ * Provided around the player by the app, from the Player settings value, so the switch in the live
+ * controls and the one in Settings are the same setting. Visual only: a stream is still classified
+ * as live or on-demand exactly as before, and everything that hangs off that is untouched.
+ */
+internal data class PlayerBadgeSetting(val visible: Boolean = true, val onToggle: () -> Unit = {})
+
+internal val LocalPlayerBadgeSetting = androidx.compose.runtime.compositionLocalOf { PlayerBadgeSetting() }
 private enum class PlayerAdjustmentKind { Brightness, Volume }
 
 /** A slightly softened play mark; the stock triangle has visibly sharp corners at player scale. */
@@ -1140,7 +1154,7 @@ fun NativePlayerScreen(
       selectedSubtitleTrackId = subtitleId
       val allowedLanguages = preferredSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage)
       val preferredSubtitle = subtitles.firstOrNull {
-        normalizeSubtitleLanguage(it.language ?: it.title) in allowedLanguages
+        !(session.isLive && it.speculative) && normalizeSubtitleLanguage(it.language ?: it.title) in allowedLanguages
       }
       when {
         session.autoLoadSubtitles && subtitleSourceAllowsOrigin(session.subtitleDefaultSource, ExternalSubtitleOrigin.BuiltIn) &&
@@ -1493,6 +1507,7 @@ private fun PlayerSurface(
             setPreferredAudioLanguage(session.preferredAudioLanguage)
             setSecondaryAudioLanguage(session.secondaryAudioLanguage)
             setSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage, session.useForcedSubtitles)
+            setCaptionProbe(session.isLive)
             setSource(session.url)
             setPaused(false)
           }
@@ -1516,6 +1531,7 @@ private fun PlayerSurface(
           view.setPreferredAudioLanguage(session.preferredAudioLanguage)
           view.setSecondaryAudioLanguage(session.secondaryAudioLanguage)
           view.setSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage, session.useForcedSubtitles)
+          view.setCaptionProbe(session.isLive)
           view.setSource(session.url)
           view.setPaused(isPaused)
           view.setResizeMode(if (resizeMode == "custom") "contain" else resizeMode)
@@ -2119,7 +2135,12 @@ private fun PlayerBottomControls(
   onInfo: () -> Unit,
   showLabels: Boolean,
   layout: String,
+  /** A live channel's captions, once the stream has been seen to carry some. */
+  captionsAvailable: Boolean = false,
+  captionsOn: Boolean = false,
+  onCaptions: () -> Unit = {},
 ) {
+  val badge = LocalPlayerBadgeSetting.current
   // A live channel with no seekable window reports no duration, so there is no bar to draw and
   // nothing to drag. The elapsed time and a LIVE marker still answer what the toggle was asked
   // for - how long this has been playing - rather than showing a slider pinned at zero.
@@ -2178,8 +2199,10 @@ private fun PlayerBottomControls(
             }
           }
         }
-        Spacer(Modifier.weight(0.075f))
-        Box(
+        // With the badge switched off a window-less channel has nothing to put in this pill, so the
+        // pill goes too and the rule takes its room, rather than leaving an empty capsule behind.
+        if (!liveWithoutWindow || badge.visible) Spacer(Modifier.weight(0.075f))
+        if (!liveWithoutWindow || badge.visible) Box(
           modifier = Modifier.width(96.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.44f)).padding(vertical = 8.dp),
           contentAlignment = Alignment.Center,
         ) {
@@ -2220,11 +2243,33 @@ private fun PlayerBottomControls(
       ) {
         PlayerDockButton(stringResource(R.string.player_zoom), Icons.Rounded.SettingsOverscan, onZoom, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
         if (isLive) {
+          // A channel's own captions, first after zoom as a film's subtitles are; only once the
+          // stream has actually carried some, so the button never offers nothing.
+          if (captionsAvailable) {
+            PlayerDockButton(
+              stringResource(R.string.player_captions),
+              if (captionsOn) Icons.Rounded.ClosedCaption else Icons.Rounded.ClosedCaptionDisabled,
+              onCaptions,
+              active = captionsOn,
+              showLabel = showLabels && !minimal,
+              compact = layout == "Compact",
+              minimal = minimal,
+            )
+          }
           PlayerDockButton(
             stringResource(R.string.player_progress),
             if (showLiveProgress) Icons.Rounded.Timeline else Icons.Rounded.HideSource,
             onToggleLiveProgress,
             active = showLiveProgress,
+            showLabel = showLabels && !minimal,
+            compact = layout == "Compact",
+            minimal = minimal,
+          )
+          PlayerDockButton(
+            stringResource(R.string.player_live_badge),
+            Icons.Rounded.LiveTv,
+            badge.onToggle,
+            active = badge.visible,
             showLabel = showLabels && !minimal,
             compact = layout == "Compact",
             minimal = minimal,
@@ -2686,6 +2731,19 @@ private fun PlayerOptionRow(label: String, selected: Boolean, supportingText: St
  * not recognise is left as it was written — a track labelled with something private to one encoder
  * is still better identified by that than by "Unknown".
  */
+/** "CEA-608" and the like, for a caption row, from whatever the engine called the format. */
+private fun captionFormatLabel(codec: String?): String? {
+  val value = codec?.lowercase() ?: return null
+  return when {
+    "608" in value -> "CEA-608"
+    "708" in value -> "CEA-708"
+    "webvtt" in value || "vtt" in value -> "WebVTT"
+    "ttml" in value || "stpp" in value -> "TTML"
+    "dvb" in value -> "DVB"
+    else -> null
+  }
+}
+
 private fun trackLanguageName(raw: String?): String? {
   val value = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
   val normalized = Languages.normalize(value)
@@ -3603,6 +3661,42 @@ private fun PlayerPanels(
         }
       }
     }
+    PlayerPanel.Captions -> PlayerModalPanel(title = stringResource(R.string.player_captions), onClose = { activePanel = PlayerPanel.None }, compact = true) {
+      // Only what the stream has been seen to carry: a placeholder track would be a row that does
+      // nothing when chosen.
+      val captionTracks = subtitleTracks.filterNot { it.speculative }
+      val captionsOff = selectedSubtitleTrackId == null && selectedExternalSubtitleId == null
+      Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+        PlayerOptionRow(stringResource(R.string.player_captions_off_option), selected = captionsOff) {
+          subtitleDisabledByUser = true
+          userPickedSubtitle = false
+          selectedSubtitleTrackId = null
+          selectedExternalSubtitleId = null
+          activeDisableSubtitleTrack()
+          activePanel = PlayerPanel.None
+        }
+        captionTracks.forEachIndexed { index, track ->
+          val format = captionFormatLabel(track.codec)
+          PlayerOptionRow(
+            trackLanguageName(track.language) ?: track.title ?: stringResource(R.string.player_caption_track_fallback, index + 1),
+            selected = !captionsOff && selectedSubtitleTrackId == track.id,
+            supportingText = listOfNotNull(format, track.title.takeIf { trackLanguageName(track.language) != null }).joinToString(" • ").ifBlank { null },
+          ) {
+            subtitleDisabledByUser = false
+            userPickedSubtitle = true
+            selectedExternalSubtitleId = null
+            selectedSubtitleTrackId = track.id
+            preferredSubtitleTrackKey = trackPreferenceKey(track)
+            activeSetSubtitleTrack(track.id)
+            activePanel = PlayerPanel.None
+          }
+        }
+        if (captionTracks.isEmpty()) {
+          Text(stringResource(R.string.player_captions_none_now), color = Color.White.copy(alpha = 0.66f), style = MaterialTheme.typography.bodySmall)
+        }
+        Text(stringResource(R.string.player_captions_detected_note), color = Color.White.copy(alpha = 0.52f), style = MaterialTheme.typography.bodySmall)
+      }
+    }
     PlayerPanel.Info -> PlayerModalPanel(title = stringResource(R.string.player_stream_info), onClose = { activePanel = PlayerPanel.None }) {
       PlayerStreamInfo(
         session = session,
@@ -3914,6 +4008,9 @@ private fun BoxScope.PlayerOverlays(
       onInfo = { keepControlsVisible(); activePanel = PlayerPanel.Info },
       showLabels = session.showPlayerControlLabels,
       layout = controlLayout,
+      captionsAvailable = session.isLive && source.subtitleTracks.any { !it.speculative },
+      captionsOn = source.selectedSubtitleTrackId.value != null || source.selectedExternalSubtitleId.value != null,
+      onCaptions = { keepControlsVisible(); activePanel = PlayerPanel.Captions },
     )
   }
 }
@@ -4906,7 +5003,7 @@ private fun BoxScope.PlayerLiveOverlays(
       )
     }
   }
-  if (session.isLive && hasLoaded && !isLoading && error.isNullOrBlank() && !showLiveChannels && !showFavouriteDrawer) {
+  if (session.isLive && LocalPlayerBadgeSetting.current.visible && hasLoaded && !isLoading && error.isNullOrBlank() && !showLiveChannels && !showFavouriteDrawer) {
     Surface(
       modifier = Modifier.align(Alignment.BottomEnd).padding(end = 20.dp, bottom = 20.dp).zIndex(12f),
       color = if (session.isVod) Color(0xFF2563EB) else Color(0xFFE11D48),

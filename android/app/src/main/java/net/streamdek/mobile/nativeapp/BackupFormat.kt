@@ -179,7 +179,7 @@ internal object BackupSettingsRegistry {
     addAll(
       profile(
         BackupCategory.Playlists,
-        "live_landscape_cards", "live_favourite_drawer_cards", "live_categories_enabled", "live_progress_bar",
+        "live_landscape_cards", "live_favourite_drawer_cards", "live_categories_enabled", "live_progress_bar", "live_badge",
       ),
     )
     addAll(

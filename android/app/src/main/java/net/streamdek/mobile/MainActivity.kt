@@ -34,6 +34,8 @@ class MainActivity : ComponentActivity() {
   private val pendingAddonManifestUrl = mutableStateOf<String?>(null)
   private val pendingSetupDestination = mutableStateOf<String?>(null)
   private val pendingEpisodeNotification = mutableStateOf<EpisodeNotificationTarget?>(null)
+  /** A television's pairing code from its QR link, waiting to be reviewed and approved. */
+  private val pendingTvLinkCode = mutableStateOf<String?>(null)
 
   companion object {
     @JvmStatic
@@ -138,6 +140,8 @@ class MainActivity : ComponentActivity() {
           onAddonManifestConsumed = { pendingAddonManifestUrl.value = null },
           pendingEpisodeNotification = pendingEpisodeNotification.value,
           onEpisodeNotificationConsumed = { pendingEpisodeNotification.value = null },
+          pendingTvLinkCode = pendingTvLinkCode.value,
+          onTvLinkCodeConsumed = { pendingTvLinkCode.value = null },
         )
       }
     }
@@ -160,6 +164,10 @@ class MainActivity : ComponentActivity() {
     }
     if (intent?.action != Intent.ACTION_VIEW) return
     val link = intent.dataString ?: return
+    net.streamdek.mobile.nativeapp.parseTvLinkCode(link)?.let { code ->
+      pendingTvLinkCode.value = code
+      return
+    }
     normalizeSetupDestination(link)?.let { destination ->
       pendingSetupDestination.value = destination
       return

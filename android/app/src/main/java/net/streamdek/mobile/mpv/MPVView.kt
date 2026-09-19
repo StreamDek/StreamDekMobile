@@ -24,6 +24,13 @@ data class MpvTrackInfo(
     val language: String?,
     val codec: String?,
     val selected: Boolean,
+    /**
+     * A caption track the stream's metadata only allows for, not one it has been seen to carry.
+     * Media3 lists an in-band CEA-608 track for every H.264 transport stream whether or not a caption
+     * ever arrives; see ExoPlaybackView.setCaptionProbe. mpv adds its caption track lazily, on the
+     * first caption packet, so its tracks are never speculative.
+     */
+    val speculative: Boolean = false,
 )
 
 class MPVView @JvmOverloads constructor(

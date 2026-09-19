@@ -247,6 +247,8 @@ data class MediaDetail(
   val similarTitles: List<MediaItem> = emptyList(),
   val availableOn: List<WatchProvider> = emptyList(),
   val traktComments: List<TraktComment> = emptyList(),
+  val certification: String? = null,
+  val certificationCountry: String? = null,
 )
 
 data class MediaSection(

@@ -1721,4 +1721,5 @@
   <string name="fuse_search_limited_many">%1$s e outras (%2$d fontes) não oferecem pesquisa, por isso só os títulos carregados até agora são comparados. Carregue mais para procurar além.</string>
   <string name="search_from_your_plugins">Dos seus plugins</string>
   <string name="search_searching_plugins">Pesquisando seus plugins…</string>
+    <string name="detail_fact_age_rating">CLASSIFICAÇÃO ETÁRIA</string>
 </resources>

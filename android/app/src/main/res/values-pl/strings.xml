@@ -1817,4 +1817,5 @@
   <string name="fuse_search_limited_many">%1$s i inne (%2$d źródeł) nie oferują wyszukiwania, więc przeszukiwane są tylko dotąd wczytane tytuły. Wczytaj więcej, aby szukać dalej.</string>
   <string name="search_from_your_plugins">Z Twoich wtyczek</string>
   <string name="search_searching_plugins">Przeszukiwanie wtyczek…</string>
+    <string name="detail_fact_age_rating">KATEGORIA WIEKOWA</string>
 </resources>

@@ -1707,4 +1707,5 @@
   <string name="fuse_search_limited_many">%1$s und weitere (%2$d Quellen) bieten keine Suche an, daher werden nur die bisher geladenen Titel durchsucht. Mit „Mehr laden“ weitersuchen.</string>
   <string name="search_from_your_plugins">Aus deinen Plugins</string>
   <string name="search_searching_plugins">Plugins werden durchsucht…</string>
+    <string name="detail_fact_age_rating">ALTERSFREIGABE</string>
 </resources>

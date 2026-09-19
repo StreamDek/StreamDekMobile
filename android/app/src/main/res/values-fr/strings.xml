@@ -1757,4 +1757,5 @@
   <string name="fuse_search_limited_many">%1$s et d’autres (%2$d sources) ne proposent pas de recherche : seuls les titres déjà chargés sont comparés. Chargez-en plus pour chercher plus loin.</string>
   <string name="search_from_your_plugins">De vos plugins</string>
   <string name="search_searching_plugins">Recherche dans vos plugins…</string>
+    <string name="detail_fact_age_rating">CLASSIFICATION PAR ÂGE</string>
 </resources>

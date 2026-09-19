@@ -1872,4 +1872,5 @@
   <string name="fuse_search_limited_many">%1$s and others (%2$d sources) don’t offer search, so only the titles loaded from them so far are matched. Load more to look further.</string>
   <string name="search_from_your_plugins">From your plugins</string>
   <string name="search_searching_plugins">Searching your plugins…</string>
+    <string name="detail_fact_age_rating">AGE RATING</string>
 </resources>

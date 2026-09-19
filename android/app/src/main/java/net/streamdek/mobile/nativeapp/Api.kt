@@ -4976,6 +4976,8 @@ private fun parseMediaDetail(json: JSONObject): MediaDetail {
     similarTitles = (json.optJSONArray("similarTitles") ?: json.optJSONArray("similar") ?: json.optJSONArray("recommendations")).toMediaItems(),
     availableOn = parseWatchProviders(json),
     traktComments = parseTraktComments(json),
+    certification = json.optString("certification").takeUnless { it.isBlank() || it == "null" },
+    certificationCountry = json.optString("certificationCountry").takeUnless { it.isBlank() || it == "null" },
   )
 }
 

@@ -30067,6 +30067,10 @@ private fun DetailFactsSection(detail: MediaDetail) {
   Column(modifier = Modifier.padding(horizontal = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
     Text(stringResource(R.string.detail_movie_details), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onBackground)
     val facts = listOf(
+      stringResource(R.string.detail_fact_age_rating) to
+        (detail.certification?.takeIf { it.isNotBlank() }?.let { rating ->
+          listOfNotNull(rating, detail.certificationCountry?.takeIf { it.isNotBlank() }).joinToString(" · ")
+        } ?: stringResource(R.string.value_not_available)),
       stringResource(R.string.detail_fact_release_date) to formatReleaseDate(detail.releaseDate),
       stringResource(R.string.detail_fact_status) to movieStatusLabel(detail),
       stringResource(R.string.detail_fact_duration) to

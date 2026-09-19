@@ -1707,4 +1707,5 @@
   <string name="fuse_search_limited_many">%1$s en andere (%2$d bronnen) bieden geen zoekfunctie, dus alleen de tot nu toe geladen titels worden doorzocht. Laad meer om verder te zoeken.</string>
   <string name="search_from_your_plugins">Uit je plug-ins</string>
   <string name="search_searching_plugins">Je plug-ins doorzoeken…</string>
+    <string name="detail_fact_age_rating">LEEFTIJDSCLASSIFICATIE</string>
 </resources>

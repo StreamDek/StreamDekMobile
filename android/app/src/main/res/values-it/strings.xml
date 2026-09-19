@@ -1721,4 +1721,5 @@
   <string name="fuse_search_limited_many">%1$s e altre (%2$d fonti) non offrono la ricerca, quindi vengono confrontati solo i titoli caricati finora. Carica altro per cercare oltre.</string>
   <string name="search_from_your_plugins">Dai tuoi plugin</string>
   <string name="search_searching_plugins">Ricerca nei tuoi plugin…</string>
+    <string name="detail_fact_age_rating">CLASSIFICAZIONE PER ETÀ</string>
 </resources>

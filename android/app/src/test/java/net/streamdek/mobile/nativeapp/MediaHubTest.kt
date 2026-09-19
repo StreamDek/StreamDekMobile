@@ -50,6 +50,14 @@ class MediaHubTest {
       mediaHubHomeOrder(listOf("continue", "new-episodes", "live", "streaming_networks", "vod", "trending"), setOf("live", "vod"), true))
   }
 
+  @Test fun newMoviesAndNewSeriesStayAboveTheHub() {
+    assertEquals(listOf("continue", "new_movies", "new_series", MEDIA_HUB_ROW_ID, "streaming_networks", "trending"),
+      mediaHubHomeOrder(listOf("continue", "new_movies", "new_series", "live", "streaming_networks", "trending"), setOf("live"), true))
+    // Placed further down by the viewer (Mixed), New Movies does not pull the hub down with it.
+    assertEquals(listOf("continue", MEDIA_HUB_ROW_ID, "trending", "new_movies"),
+      mediaHubHomeOrder(listOf("continue", "trending", "new_movies"), emptySet(), true))
+  }
+
   @Test fun emptyLibraryStillOffersHubAndKeepsNetworksBelowIt() {
     assertEquals(listOf(MEDIA_HUB_ROW_ID, "streaming_networks"), mediaHubHomeOrder(listOf("streaming_networks"), emptySet(), true))
     assertEquals(listOf(MEDIA_HUB_ROW_ID), mediaHubHomeOrder(emptyList(), emptySet(), true))

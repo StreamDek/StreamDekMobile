@@ -18,11 +18,23 @@ internal fun mediaHubItemKey(item: MediaItem): String =
  */
 internal fun isMediaHubLiveCatalogType(type: String): Boolean = type.trim().lowercase() in liveCatalogTypes
 
-/** Keeps the personal rows first and replaces source rows without changing the disabled layout. */
+/**
+ * The StreamDek catalogue rows that lead Home, straight after the viewer's own rows and ahead of the
+ * live rows, the Fuse and Streaming Networks. Their artwork is what Home opens on; with a channel row
+ * first, Home looked empty until the viewer scrolled. The television places them the same way.
+ */
+internal val LEADING_HOME_CATALOG_IDS = listOf("new_movies", "new_series")
+
+/**
+ * Keeps the personal rows and the leading catalogue rows first and replaces source rows without
+ * changing the disabled layout. The hub goes after the unbroken run of those rows at the top - so in
+ * Mixed, where New Movies may sit anywhere the viewer put it, it still does not drag the hub down.
+ */
 internal fun mediaHubHomeOrder(ids: List<String>, eligible: Set<String>, enabled: Boolean): List<String> {
   if (!enabled) return ids
   val remaining = ids.filterNot { it in eligible || it == MEDIA_HUB_ROW_ID }.toMutableList()
-  val position = remaining.indexOfLast { it == "new-episodes" || it == "continue" } + 1
+  val leading = setOf("continue", "new-episodes") + LEADING_HOME_CATALOG_IDS
+  val position = remaining.indexOfFirst { it !in leading }.takeIf { it >= 0 } ?: remaining.size
   remaining.add(position, MEDIA_HUB_ROW_ID)
   return remaining
 }

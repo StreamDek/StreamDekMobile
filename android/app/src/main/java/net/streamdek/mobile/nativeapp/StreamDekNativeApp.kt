@@ -14931,6 +14931,8 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
       // Live rows come next, whatever the saved layout says, and Streaming Networks follows them —
       // so Networks sits straight under New Episodes and is pushed down only by live rows that
       // actually have something in them. See [isLiveHomeRow].
+      // New Movies and New Series lead even the live rows (see [LEADING_HOME_CATALOG_IDS]).
+      val leadingRows = mutableListOf<HomeRow>()
       val liveRows = mutableListOf<HomeRow>()
       var networksRow: HomeRow? = null
       val laterRows = mutableListOf<HomeRow>()
@@ -14986,11 +14988,13 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
           // in By source, where the arrangement is a grouping rather than a placement and hoisting
           // them is what has always kept "what's on now" above the catalogues.
           uiState.homeRows.mode == HomeRowMode.Mixed -> laterRows += built
+          row.builtin && built.id in LEADING_HOME_CATALOG_IDS -> leadingRows += built
           built.id == "streaming_networks" -> networksRow = built
           row.id !in assembled && isLiveHomeRow(built) -> liveRows += built
           else -> laterRows += built
         }
       }
+      addAll(leadingRows.sortedBy { LEADING_HOME_CATALOG_IDS.indexOf(it.id) })
       addAll(liveRows)
       networksRow?.let(::add)
       addAll(laterRows)

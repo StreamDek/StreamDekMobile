@@ -277,7 +277,7 @@
   <string name="animation_speed_standard_description">De aanbevolen balans tussen soepelheid en snelheid.</string>
   <string name="animation_speed_cinematic">Filmisch</string>
   <string name="animation_speed_cinematic_description">Langzamere, volledig zichtbare overgangen voor de complete visuele ervaring.</string>
-  <string name="settings_animation_speed_description">Hoe lang overgangen in de app duren. Alleen op dit apparaat opgeslagen.</string>
+  <string name="settings_animation_speed_description">Hoe lang overgangen in de app duren. Geldt voor je telefoons, niet voor je tv.</string>
   <string name="home_row_kind_networks">Streamingdiensten</string>
   <string name="home_row_kind_series">Series</string>
   <string name="home_row_kind_films">Films</string>
@@ -613,7 +613,7 @@
   <string name="storage_clear_detail_sized">Dit maakt %1$s aan tijdelijke gegevens vrij. Niets wat je offline hebt opgeslagen wordt geraakt, en wat nu speelt blijft behouden.</string>
   <string name="storage_clear_detail_unsized">Dit verwijdert de tijdelijke peer-to-peer- en streamgegevens op dit apparaat. Niets wat je offline hebt opgeslagen wordt geraakt, en wat nu speelt blijft behouden.</string>
   <string name="settings_home_layout">Startindeling</string>
-  <string name="settings_home_layout_description">Kies hoeveel van Start er tegelijk op het scherm past. Alleen op dit apparaat opgeslagen.</string>
+  <string name="settings_home_layout_description">Kies hoeveel van Start er tegelijk op het scherm past. Geldt voor je telefoons, niet voor je tv.</string>
   <string name="settings_theme">Thema</string>
   <string name="settings_theme_description">Kies het kleurthema voor de hele app.</string>
   <string name="languages_search_placeholder">Talen zoeken</string>

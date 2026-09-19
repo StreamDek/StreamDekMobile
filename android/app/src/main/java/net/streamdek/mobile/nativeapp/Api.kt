@@ -2404,6 +2404,8 @@ class StreamDekApiClient(context: Context? = null) {
         .put("homeBackgroundMode", preferences.homeBackgroundMode)
         .put("ambientTintPercent", preferences.ambientTintPercent)
         .put("defaultAppCatalogsEnabled", preferences.defaultAppCatalogsEnabled)
+        .put("showNewEpisodesRow", preferences.showNewEpisodesRow)
+        .put("newEpisodesLandscape", preferences.newEpisodesLandscape)
         .put("homeCatalogRows", preferences.homeCatalogRowsJson?.let(::JSONArray))
         // Beside the rows they arrange, so one profile document carries the whole Home layout: the
         // rows, the order of the sources they came from, and which of the two the viewer reads.
@@ -2458,6 +2460,16 @@ class StreamDekApiClient(context: Context? = null) {
         .put("useForcedSubtitles", preferences.useForcedSubtitles)
         .put("showOnlyPreferredSubtitleLanguages", preferences.showOnlyPreferredSubtitleLanguages)
         .put("addonSubtitleLoading", preferences.addonSubtitleLoading)
+        .put("subtitleDefaultSource", preferences.subtitleDefaultSource)
+        .put("liveProgressBarEnabled", preferences.liveProgressBarEnabled)
+        .put("liveBadgeEnabled", preferences.liveBadgeEnabled)
+        .put("subtitleTextSize", preferences.subtitleTextSize)
+        .put("subtitleVerticalOffset", preferences.subtitleVerticalOffset)
+        .put("subtitleBold", preferences.subtitleBold)
+        .put("subtitleTextColor", preferences.subtitleTextColor)
+        .put("subtitleBackgroundColor", preferences.subtitleBackgroundColor)
+        .put("subtitleOutline", preferences.subtitleOutline)
+        .put("subtitleOutlineColor", preferences.subtitleOutlineColor)
         .put("nextEpisodeThresholdMode", preferences.nextEpisodeThresholdMode)
         .put("nextEpisodeThresholdPercent", preferences.nextEpisodeThresholdPercent)
         .put("nextEpisodeThresholdMinutes", preferences.nextEpisodeThresholdMinutes)
@@ -2487,7 +2499,27 @@ class StreamDekApiClient(context: Context? = null) {
           JSONObject()
             .put("heroTrailerAutoplay", preferences.heroTrailerAutoplay)
             .put("heroTrailerResolution", preferences.heroTrailerResolution)
-            .put("heroTrailerDelaySeconds", preferences.heroTrailerDelaySeconds),
+            .put("heroTrailerDelaySeconds", preferences.heroTrailerDelaySeconds)
+            .put("heroTrailerMuted", preferences.heroTrailerMuted)
+            // Once device-local, now carried here so the portal can set them. Still this kind of
+            // device's own: the television keeps separate values under its own key.
+            .put("animationSpeed", preferences.animationSpeed)
+            .put("appLanguage", preferences.appLanguage)
+            .put("visualEffects", preferences.visualEffects)
+            .put("navigationBehaviour", preferences.navigationBehaviour)
+            .put("homeDensity", preferences.homeDensity)
+            .put("mediaHubEnabled", preferences.mediaHubEnabled)
+            .put("playerControlLayout", preferences.playerControlLayout)
+            .put("showPlayerControlLabels", preferences.showPlayerControlLabels)
+            .put("playerTitleDisplay", preferences.playerTitleDisplay)
+            .put("fullscreenStatusBar", preferences.fullscreenStatusBar)
+            .put("holdToSpeedEnabled", preferences.holdToSpeedEnabled)
+            .put("holdToSpeedMultiplier", preferences.holdToSpeedMultiplier?.toDouble())
+            .put("swipeToSeekEnabled", preferences.swipeToSeekEnabled)
+            .put("doubleTapSeekEnabled", preferences.doubleTapSeekEnabled)
+            .put("doubleTapSeekSeconds", preferences.doubleTapSeekSeconds)
+            .put("doubleTapPlayPauseEnabled", preferences.doubleTapPlayPauseEnabled)
+            .put("playerLevelGesturesEnabled", preferences.playerLevelGesturesEnabled),
         )
       val payload = JSONObject()
         .put("app", app)
@@ -2521,6 +2553,21 @@ class StreamDekApiClient(context: Context? = null) {
           .put("autoplayNextEpisode", preferences.autoPlayNextEpisode)
           .put("preferBingeGroupNextEpisode", preferences.preferBingeGroup)
           .put("autoLoadSubtitles", preferences.autoLoadSubtitles)
+          // The same profile-scoped set the television writes (PreferenceScopes.kt there). A key
+          // one client scopes to the profile and the other writes only to the account ends up
+          // shadowed: the profile copy wins on read, so the account-only write never shows.
+          .put("showOnlyPreferredSubtitleLanguages", preferences.showOnlyPreferredSubtitleLanguages)
+          .put("secondarySubtitleLanguage", preferences.secondarySubtitleLanguage)
+          .put("addonSubtitleLoading", preferences.addonSubtitleLoading)
+          .put("liveProgressBarEnabled", preferences.liveProgressBarEnabled)
+          .put("liveBadgeEnabled", preferences.liveBadgeEnabled)
+          .put("subtitleTextSize", preferences.subtitleTextSize)
+          .put("subtitleVerticalOffset", preferences.subtitleVerticalOffset)
+          .put("subtitleBold", preferences.subtitleBold)
+          .put("subtitleTextColor", preferences.subtitleTextColor)
+          .put("subtitleBackgroundColor", preferences.subtitleBackgroundColor)
+          .put("subtitleOutline", preferences.subtitleOutline)
+          .put("subtitleOutlineColor", preferences.subtitleOutlineColor)
           .put("nextEpisodeThresholdMode", preferences.nextEpisodeThresholdMode)
           .put("nextEpisodeThresholdPercent", preferences.nextEpisodeThresholdPercent)
           .put("nextEpisodeThresholdMinutes", preferences.nextEpisodeThresholdMinutes)
@@ -2629,6 +2676,38 @@ class StreamDekApiClient(context: Context? = null) {
         useForcedSubtitles = optionalBoolean(playback, "useForcedSubtitles"),
         showOnlyPreferredSubtitleLanguages = optionalBoolean(playback, "showOnlyPreferredSubtitleLanguages"),
         addonSubtitleLoading = optionalString(playback, "addonSubtitleLoading"),
+        subtitleDefaultSource = optionalString(playback, "subtitleDefaultSource"),
+        liveProgressBarEnabled = optionalBoolean(playback, "liveProgressBarEnabled"),
+        liveBadgeEnabled = optionalBoolean(playback, "liveBadgeEnabled"),
+        subtitleTextSize = optionalInt(playback, "subtitleTextSize"),
+        subtitleVerticalOffset = optionalInt(playback, "subtitleVerticalOffset"),
+        subtitleBold = optionalBoolean(playback, "subtitleBold"),
+        subtitleTextColor = optionalString(playback, "subtitleTextColor"),
+        subtitleBackgroundColor = optionalString(playback, "subtitleBackgroundColor"),
+        subtitleOutline = optionalBoolean(playback, "subtitleOutline"),
+        subtitleOutlineColor = optionalString(playback, "subtitleOutlineColor"),
+        showNewEpisodesRow = optionalBoolean(home, "showNewEpisodesRow"),
+        newEpisodesLandscape = optionalBoolean(home, "newEpisodesLandscape"),
+        // Read from this device type's own section only. Unlike the trailer settings there is no
+        // shared value to fall back to: these were never anywhere but the phone.
+        animationSpeed = optionalString(platform, "animationSpeed"),
+        appLanguage = optionalString(platform, "appLanguage"),
+        visualEffects = optionalString(platform, "visualEffects"),
+        navigationBehaviour = optionalString(platform, "navigationBehaviour"),
+        homeDensity = optionalString(platform, "homeDensity"),
+        mediaHubEnabled = optionalBoolean(platform, "mediaHubEnabled"),
+        heroTrailerMuted = optionalBoolean(platform, "heroTrailerMuted"),
+        playerControlLayout = optionalString(platform, "playerControlLayout"),
+        showPlayerControlLabels = optionalBoolean(platform, "showPlayerControlLabels"),
+        playerTitleDisplay = optionalString(platform, "playerTitleDisplay"),
+        fullscreenStatusBar = optionalString(platform, "fullscreenStatusBar"),
+        holdToSpeedEnabled = optionalBoolean(platform, "holdToSpeedEnabled"),
+        holdToSpeedMultiplier = if (platform.has("holdToSpeedMultiplier") && !platform.isNull("holdToSpeedMultiplier")) platform.optDouble("holdToSpeedMultiplier").takeIf { !it.isNaN() }?.toFloat() else null,
+        swipeToSeekEnabled = optionalBoolean(platform, "swipeToSeekEnabled"),
+        doubleTapSeekEnabled = optionalBoolean(platform, "doubleTapSeekEnabled"),
+        doubleTapSeekSeconds = optionalInt(platform, "doubleTapSeekSeconds"),
+        doubleTapPlayPauseEnabled = optionalBoolean(platform, "doubleTapPlayPauseEnabled"),
+        playerLevelGesturesEnabled = optionalBoolean(platform, "playerLevelGesturesEnabled"),
         heroTrailerResolution = optionalInt(platform, "heroTrailerResolution") ?: optionalInt(detail, "heroTrailerResolution"),
         heroTrailerDelaySeconds = optionalInt(platform, "heroTrailerDelaySeconds") ?: optionalInt(detail, "heroTrailerDelaySeconds"),
         ratingsEnabled = optionalBoolean(detail, "ratingsEnabled"),

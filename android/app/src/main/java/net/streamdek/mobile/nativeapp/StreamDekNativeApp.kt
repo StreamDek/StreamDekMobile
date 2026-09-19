@@ -1973,6 +1973,8 @@ private class AuthEntryStore(context: Context) {
  * setting drives both engines.
  */
 internal val SUBTITLE_TEXT_SIZE_RANGE = 28..84
+/** The hold-to-speed steps the player offers. A synced value outside them is ignored. */
+internal val HOLD_TO_SPEED_MULTIPLIERS = listOf(1.5f, 2f, 2.5f, 3f, 4f)
 internal val SUBTITLE_OFFSET_RANGE = 50..110
 
 /**
@@ -9040,6 +9042,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     preferences.showOnlyPreferredSubtitleLanguages?.let(appSettingsStore::saveShowOnlyPreferredSubtitleLanguages)
     preferences.addonSubtitleLoading?.let(appSettingsStore::saveAddonSubtitleLoading)
     preferences.subtitleDefaultSource?.let(appSettingsStore::saveSubtitleDefaultSource)
+    preferences.liveProgressBarEnabled?.let(appSettingsStore::saveLiveProgressBarEnabled)
+    preferences.liveBadgeEnabled?.let(appSettingsStore::saveLiveBadgeEnabled)
     preferences.ratingsEnabled?.let(appSettingsStore::saveRatingsEnabled)
     preferences.externalRatingsEnabled?.let(appSettingsStore::saveExternalRatingsEnabled)
     ratingProviders?.let(appSettingsStore::saveEnabledRatingProviders)
@@ -9125,6 +9129,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       showOnlyPreferredSubtitleLanguages = preferences.showOnlyPreferredSubtitleLanguages ?: uiState.showOnlyPreferredSubtitleLanguages,
       addonSubtitleLoading = preferences.addonSubtitleLoading ?: uiState.addonSubtitleLoading,
       subtitleDefaultSource = preferences.subtitleDefaultSource?.let(::normalizeSubtitleDefaultSource) ?: uiState.subtitleDefaultSource,
+      liveProgressBarEnabled = preferences.liveProgressBarEnabled ?: uiState.liveProgressBarEnabled,
+      liveBadgeEnabled = preferences.liveBadgeEnabled ?: uiState.liveBadgeEnabled,
       heroTrailerDelaySeconds = preferences.heroTrailerDelaySeconds?.coerceIn(0, MAX_TRAILER_DELAY_SECONDS)
         ?: uiState.heroTrailerDelaySeconds,
       ratingsEnabled = preferences.ratingsEnabled ?: uiState.ratingsEnabled,
@@ -9167,6 +9173,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       activeFusionBadgeUrl = if (fusionBadgeUrls != null) activeFusionBadgeUrl else uiState.activeFusionBadgeUrl,
       autoUpdateChecksEnabled = preferences.autoUpdateChecksEnabled ?: uiState.autoUpdateChecksEnabled,
     )
+    applyCloudSyncedLocalSettings(preferences)
     // A row list, a row mode or a source order from the account all describe the same thing - how
     // Home is arranged - so any of them arriving is a reason to lay it out again.
     if (homeCatalogRows != null || homeRowMode != null || homeRowSourceOrder != null) {
@@ -9177,6 +9184,123 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     if (fusionBadgeUrls != null) refreshFusionBadgeSources()
     uiState.detail?.let(::refreshExternalRatings)
   }
+  /**
+   * Settings that used to stay on this phone and now travel with the account, so the web portal can
+   * set them.
+   *
+   * Two kinds. The device settings - motion, language, effects, navigation, density, the Media Hub,
+   * trailer sound and the player's controls and gestures - live under `platforms.mobile`: every phone
+   * on the account shares them and the television keeps its own. The subtitle appearance and the New
+   * Episodes row are profile settings like the rest of Home and Playback.
+   *
+   * A value the account does not hold yet leaves this phone's own untouched, and once everything is
+   * applied anything missing is uploaded. That is how a phone that has had a setting for months
+   * keeps it: the account learns it from the phone rather than the phone being handed a default.
+   */
+  private fun applyCloudSyncedLocalSettings(preferences: CloudPlaybackPreferences) {
+    val animationSpeed = preferences.animationSpeed?.let(AnimationSpeed::fromKey)
+    val appLanguage = preferences.appLanguage?.let(::normalizeAppLanguageSelection)
+    val visualEffects = preferences.visualEffects?.let(VisualEffectsMode::fromKey)
+    val navigationBehaviour = preferences.navigationBehaviour?.let { name ->
+      NavigationBehaviour.entries.firstOrNull { it.name.equals(name, ignoreCase = true) }
+    }
+    val homeDensity = preferences.homeDensity?.let(HomeDensity::fromKey)
+    val controlLayout = preferences.playerControlLayout?.takeIf { it in setOf("Normal", "Minimal") }
+    val statusBar = preferences.fullscreenStatusBar?.takeIf { it in setOf("Always show", "Hide in fullscreen", "Automatic") }
+    val titleDisplay = preferences.playerTitleDisplay?.takeIf { it in setOf("Single line", "Scrolling", "Hidden") }
+    val holdMultiplier = preferences.holdToSpeedMultiplier?.takeIf { it in HOLD_TO_SPEED_MULTIPLIERS }
+    val doubleTapSeconds = preferences.doubleTapSeekSeconds?.takeIf { it in setOf(5, 10, 15) }
+    val subtitleTextSize = preferences.subtitleTextSize?.coerceIn(SUBTITLE_TEXT_SIZE_RANGE)
+    val subtitleOffset = preferences.subtitleVerticalOffset?.coerceIn(SUBTITLE_OFFSET_RANGE)
+
+    animationSpeed?.let(appSettingsStore::saveAnimationSpeed)
+    appLanguage?.let(appSettingsStore::saveAppLanguage)
+    visualEffects?.let(appSettingsStore::saveVisualEffectsMode)
+    navigationBehaviour?.let { behaviour ->
+      if (behaviour.collapses) {
+        appSettingsStore.saveNavigationCollapsesOnScroll(behaviour == NavigationBehaviour.CollapseWhileScrolling)
+      } else {
+        appSettingsStore.saveExpandedHeadersScrollAware(behaviour == NavigationBehaviour.ExpandedScrollAwareHeaders)
+      }
+      appSettingsStore.saveCollapsibleNavigationEnabled(behaviour.collapses)
+    }
+    homeDensity?.let(appSettingsStore::saveHomeDensity)
+    preferences.mediaHubEnabled?.let(appSettingsStore::saveMediaHubEnabled)
+    preferences.heroTrailerMuted?.let(appSettingsStore::saveHeroTrailerMuted)
+    controlLayout?.let(appSettingsStore::savePlayerControlLayout)
+    preferences.showPlayerControlLabels?.let(appSettingsStore::saveShowPlayerControlLabels)
+    titleDisplay?.let(appSettingsStore::savePlayerTitleDisplay)
+    statusBar?.let(appSettingsStore::saveFullscreenStatusBar)
+    preferences.holdToSpeedEnabled?.let(appSettingsStore::saveHoldToSpeedEnabled)
+    holdMultiplier?.let(appSettingsStore::saveHoldToSpeedMultiplier)
+    preferences.swipeToSeekEnabled?.let(appSettingsStore::saveSwipeToSeekEnabled)
+    preferences.doubleTapSeekEnabled?.let(appSettingsStore::saveDoubleTapSeekEnabled)
+    doubleTapSeconds?.let(appSettingsStore::saveDoubleTapSeekSeconds)
+    preferences.doubleTapPlayPauseEnabled?.let(appSettingsStore::saveDoubleTapPlayPauseEnabled)
+    preferences.playerLevelGesturesEnabled?.let(appSettingsStore::savePlayerLevelGesturesEnabled)
+    subtitleTextSize?.let(appSettingsStore::saveSubtitleTextSize)
+    subtitleOffset?.let(appSettingsStore::saveSubtitleVerticalOffset)
+    preferences.subtitleBold?.let(appSettingsStore::saveSubtitleBold)
+    preferences.subtitleTextColor?.let(appSettingsStore::saveSubtitleTextColor)
+    preferences.subtitleBackgroundColor?.let(appSettingsStore::saveSubtitleBackgroundColor)
+    preferences.subtitleOutline?.let(appSettingsStore::saveSubtitleOutline)
+    preferences.subtitleOutlineColor?.let(appSettingsStore::saveSubtitleOutlineColor)
+    preferences.showNewEpisodesRow?.let(appSettingsStore::saveShowNewEpisodesRow)
+    preferences.newEpisodesLandscape?.let(appSettingsStore::saveNewEpisodesLandscape)
+
+    val mediaHubEnabled = preferences.mediaHubEnabled ?: uiState.mediaHubEnabled
+    uiState = uiState.copy(
+      animationSpeed = animationSpeed ?: uiState.animationSpeed,
+      appLanguage = appLanguage ?: uiState.appLanguage,
+      visualEffectsMode = visualEffects ?: uiState.visualEffectsMode,
+      // The account's Navigation Behaviour wins over the older collapse switch applied above: it is
+      // the same choice with the trigger and headers included.
+      collapsibleNavigationEnabled = navigationBehaviour?.collapses ?: uiState.collapsibleNavigationEnabled,
+      navigationCollapsesOnScroll = navigationBehaviour?.takeIf { it.collapses }
+        ?.let { it == NavigationBehaviour.CollapseWhileScrolling } ?: uiState.navigationCollapsesOnScroll,
+      expandedHeadersScrollAware = navigationBehaviour?.takeIf { !it.collapses }
+        ?.let { it == NavigationBehaviour.ExpandedScrollAwareHeaders } ?: uiState.expandedHeadersScrollAware,
+      homeDensity = homeDensity ?: uiState.homeDensity,
+      mediaHubEnabled = mediaHubEnabled,
+      mediaHubOpen = mediaHubEnabled && uiState.mediaHubOpen,
+      heroTrailerMuted = preferences.heroTrailerMuted ?: uiState.heroTrailerMuted,
+      playerControlLayout = controlLayout ?: uiState.playerControlLayout,
+      showPlayerControlLabels = preferences.showPlayerControlLabels ?: uiState.showPlayerControlLabels,
+      playerTitleDisplay = titleDisplay ?: uiState.playerTitleDisplay,
+      fullscreenStatusBar = statusBar ?: uiState.fullscreenStatusBar,
+      holdToSpeedEnabled = preferences.holdToSpeedEnabled ?: uiState.holdToSpeedEnabled,
+      holdToSpeedMultiplier = holdMultiplier ?: uiState.holdToSpeedMultiplier,
+      swipeToSeekEnabled = preferences.swipeToSeekEnabled ?: uiState.swipeToSeekEnabled,
+      doubleTapSeekEnabled = preferences.doubleTapSeekEnabled ?: uiState.doubleTapSeekEnabled,
+      doubleTapSeekSeconds = doubleTapSeconds ?: uiState.doubleTapSeekSeconds,
+      doubleTapPlayPauseEnabled = preferences.doubleTapPlayPauseEnabled ?: uiState.doubleTapPlayPauseEnabled,
+      playerLevelGesturesEnabled = preferences.playerLevelGesturesEnabled ?: uiState.playerLevelGesturesEnabled,
+      subtitleTextSize = subtitleTextSize ?: uiState.subtitleTextSize,
+      subtitleVerticalOffset = subtitleOffset ?: uiState.subtitleVerticalOffset,
+      subtitleBold = preferences.subtitleBold ?: uiState.subtitleBold,
+      subtitleTextColor = preferences.subtitleTextColor ?: uiState.subtitleTextColor,
+      subtitleBackgroundColor = preferences.subtitleBackgroundColor ?: uiState.subtitleBackgroundColor,
+      subtitleOutline = preferences.subtitleOutline ?: uiState.subtitleOutline,
+      subtitleOutlineColor = preferences.subtitleOutlineColor ?: uiState.subtitleOutlineColor,
+      showNewEpisodesRow = preferences.showNewEpisodesRow ?: uiState.showNewEpisodesRow,
+      newEpisodesLandscape = preferences.newEpisodesLandscape ?: uiState.newEpisodesLandscape,
+    )
+
+    val accountIsMissingSome = listOf(
+      preferences.animationSpeed, preferences.appLanguage, preferences.visualEffects, preferences.navigationBehaviour,
+      preferences.homeDensity, preferences.mediaHubEnabled, preferences.heroTrailerMuted, preferences.playerControlLayout,
+      preferences.showPlayerControlLabels, preferences.playerTitleDisplay, preferences.fullscreenStatusBar,
+      preferences.holdToSpeedEnabled, preferences.holdToSpeedMultiplier, preferences.swipeToSeekEnabled,
+      preferences.doubleTapSeekEnabled, preferences.doubleTapSeekSeconds, preferences.doubleTapPlayPauseEnabled,
+      preferences.playerLevelGesturesEnabled, preferences.subtitleTextSize, preferences.subtitleVerticalOffset,
+      preferences.subtitleBold, preferences.subtitleTextColor, preferences.subtitleBackgroundColor,
+      preferences.subtitleOutline, preferences.subtitleOutlineColor, preferences.showNewEpisodesRow,
+      preferences.newEpisodesLandscape, preferences.subtitleDefaultSource, preferences.liveProgressBarEnabled,
+      preferences.liveBadgeEnabled,
+    ).any { it == null }
+    if (accountIsMissingSome) syncCloudPreferences()
+  }
+
   fun refreshTraktData() {
     val session = uiState.session
     val profileId = uiState.activeProfileId
@@ -10177,6 +10301,20 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     viewModelScope.launch { apiClient.patchCloudPreferences(session, preferences, uiState.activeProfileId) }
   }
 
+  private var settledSyncJob: Job? = null
+
+  /**
+   * [syncCloudPreferences] once a slider has stopped moving. A slider reports every step of a drag,
+   * and one write per step would send a dozen settings documents to reach a single value.
+   */
+  private fun syncCloudPreferencesWhenSettled() {
+    settledSyncJob?.cancel()
+    settledSyncJob = viewModelScope.launch {
+      delay(600)
+      syncCloudPreferences()
+    }
+  }
+
   /** [syncCloudPreferences] for a caller that must know the account has the result before going on. */
   private suspend fun pushCloudPreferencesNow() {
     val session = uiState.session ?: return
@@ -10225,6 +10363,35 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       showOnlyPreferredSubtitleLanguages = uiState.showOnlyPreferredSubtitleLanguages,
       addonSubtitleLoading = uiState.addonSubtitleLoading,
       subtitleDefaultSource = uiState.subtitleDefaultSource,
+      liveProgressBarEnabled = uiState.liveProgressBarEnabled,
+      liveBadgeEnabled = uiState.liveBadgeEnabled,
+      subtitleTextSize = uiState.subtitleTextSize,
+      subtitleVerticalOffset = uiState.subtitleVerticalOffset,
+      subtitleBold = uiState.subtitleBold,
+      subtitleTextColor = uiState.subtitleTextColor,
+      subtitleBackgroundColor = uiState.subtitleBackgroundColor,
+      subtitleOutline = uiState.subtitleOutline,
+      subtitleOutlineColor = uiState.subtitleOutlineColor,
+      showNewEpisodesRow = uiState.showNewEpisodesRow,
+      newEpisodesLandscape = uiState.newEpisodesLandscape,
+      animationSpeed = uiState.animationSpeed.key,
+      appLanguage = uiState.appLanguage,
+      visualEffects = uiState.visualEffectsMode.key,
+      navigationBehaviour = uiState.navigationBehaviour.name,
+      homeDensity = uiState.homeDensity.key,
+      mediaHubEnabled = uiState.mediaHubEnabled,
+      heroTrailerMuted = uiState.heroTrailerMuted,
+      playerControlLayout = uiState.playerControlLayout,
+      showPlayerControlLabels = uiState.showPlayerControlLabels,
+      playerTitleDisplay = uiState.playerTitleDisplay,
+      fullscreenStatusBar = uiState.fullscreenStatusBar,
+      holdToSpeedEnabled = uiState.holdToSpeedEnabled,
+      holdToSpeedMultiplier = uiState.holdToSpeedMultiplier,
+      swipeToSeekEnabled = uiState.swipeToSeekEnabled,
+      doubleTapSeekEnabled = uiState.doubleTapSeekEnabled,
+      doubleTapSeekSeconds = uiState.doubleTapSeekSeconds,
+      doubleTapPlayPauseEnabled = uiState.doubleTapPlayPauseEnabled,
+      playerLevelGesturesEnabled = uiState.playerLevelGesturesEnabled,
       ratingsEnabled = uiState.ratingsEnabled,
       externalRatingsEnabled = uiState.externalRatingsEnabled,
       enabledRatingProviders = uiState.enabledRatingProviders.sorted(),
@@ -10279,34 +10446,33 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     syncCloudPreferences()
   }
   /**
-   * Deliberately without a [syncCloudPreferences] call, unlike every other appearance setting.
-   *
-   * The selection belongs to this installation - see [AnimationSpeed] - so it is saved locally and
-   * that is the end of it. Applying it is nothing more than the state change: the theme reads the
+   * Synced under `platforms.mobile` rather than with the shared appearance settings: the selection
+   * belongs to this kind of device - see [AnimationSpeed] - so every phone on the account shares it
+   * and the television keeps its own. Applying it is nothing more than the state change: the theme reads the
    * new value on the next composition and every animation in the tree is already sourcing its
    * duration from there, so the difference is visible immediately with no restart.
    */
   fun setAnimationSpeed(value: AnimationSpeed) {
     appSettingsStore.saveAnimationSpeed(value)
     uiState = uiState.copy(animationSpeed = value)
+    syncCloudPreferences()
   }
   fun setRememberLastProfileAtStartup(value: Boolean) {
     appSettingsStore.saveRememberLastProfileAtStartup(value)
     uiState = uiState.copy(rememberLastProfileAtStartup = value)
   }
   /**
-   * Deliberately without a [syncCloudPreferences] call, like [setAnimationSpeed] above.
-   *
-   * The interface language belongs to this installation and not to the account - see
-   * `AppLanguage.kt` - so changing it on a phone must leave the television alone. Applying it is
-   * nothing more than this state change: ProvideAppLocale sits above the whole tree and re-resolves
-   * every string on the next recomposition, so the difference is visible immediately, with no
-   * restart and without leaving this page.
+   * Synced under `platforms.mobile`, so it follows the account's phones but never the television -
+   * see `AppLanguage.kt`. Applying it is nothing more than this state change: ProvideAppLocale sits
+   * above the whole tree and re-resolves every string on the next recomposition, so the difference
+   * is visible immediately, with no restart and without leaving this page. The same holds when the
+   * value arrives from the portal.
    */
   fun setAppLanguage(value: String) {
     val normalized = normalizeAppLanguageSelection(value)
     appSettingsStore.saveAppLanguage(normalized)
     uiState = uiState.copy(appLanguage = normalized)
+    syncCloudPreferences()
   }
   fun setThemePreset(value: AppThemePreset) { appSettingsStore.saveThemePreset(value); uiState = uiState.copy(themePreset = value); syncCloudPreferences() }
   fun setHeaderStyle(value: HeaderStyle) { appSettingsStore.saveHeaderStyle(value); uiState = uiState.copy(headerStyle = value); syncCloudPreferences() }
@@ -10341,11 +10507,12 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setShowNavLabels(value: Boolean) { appSettingsStore.saveShowNavLabels(value); uiState = uiState.copy(showNavLabels = value); syncCloudPreferences() }
   fun setCollapsibleNavigationEnabled(value: Boolean) { appSettingsStore.saveCollapsibleNavigationEnabled(value); uiState = uiState.copy(collapsibleNavigationEnabled = value); syncCloudPreferences() }
   /**
-   * Only the synced "collapses at all" half reaches the cloud; the trigger stays on this device.
+   * The whole choice travels under `platforms.mobile`; the older "collapses at all" switch is still
+   * written beside it for builds that only know that.
    *
-   * Choosing an expanded option leaves the stored trigger alone, so switching collapsing back on —
-   * here or from another device through sync — returns to whichever trigger this phone last used.
-   * Likewise a collapsing option leaves the expanded header choice alone.
+   * Choosing an expanded option leaves the stored trigger alone, so switching collapsing back on
+   * returns to whichever trigger this phone last used. Likewise a collapsing option leaves the
+   * expanded header choice alone.
    */
   fun setNavigationBehaviour(value: NavigationBehaviour) {
     if (value.collapses) {
@@ -10357,12 +10524,17 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       appSettingsStore.saveExpandedHeadersScrollAware(scrollAware)
       uiState = uiState.copy(expandedHeadersScrollAware = scrollAware)
     }
-    if (uiState.collapsibleNavigationEnabled != value.collapses) setCollapsibleNavigationEnabled(value.collapses)
+    if (uiState.collapsibleNavigationEnabled != value.collapses) {
+      setCollapsibleNavigationEnabled(value.collapses)
+    } else {
+      syncCloudPreferences()
+    }
   }
-  /** Device-local like [setAnimationSpeed], so deliberately without a cloud sync. */
+  /** Synced under `platforms.mobile`, like [setAnimationSpeed]. */
   fun setVisualEffectsMode(value: VisualEffectsMode) {
     appSettingsStore.saveVisualEffectsMode(value)
     uiState = uiState.copy(visualEffectsMode = value)
+    syncCloudPreferences()
   }
   fun setNavigationAutoCollapseSeconds(value: Int) {
     val seconds = value.coerceIn(2, 15)
@@ -10379,15 +10551,15 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     uiState = uiState.copy(heroTrailerDelaySeconds = clamped)
     syncCloudPreferences()
   }
-  /** Local only: how loud trailers should be is a property of the device in your hand, not the account. */
-  fun setHeroTrailerMuted(value: Boolean) { appSettingsStore.saveHeroTrailerMuted(value); uiState = uiState.copy(heroTrailerMuted = value) }
+  /** How loud trailers should be is a property of the device in your hand, so it syncs under `platforms.mobile`. */
+  fun setHeroTrailerMuted(value: Boolean) { appSettingsStore.saveHeroTrailerMuted(value); uiState = uiState.copy(heroTrailerMuted = value); syncCloudPreferences() }
   fun setShowHeroSynopsis(value: Boolean) { appSettingsStore.saveShowHeroSynopsis(value); uiState = uiState.copy(showHeroSynopsis = value); syncCloudPreferences() }
   fun setContinueWatchingStyle(style: ContinueWatchingStyle) { appSettingsStore.saveContinueWatchingStyle(style); uiState = uiState.copy(continueWatchingStyle = style); syncCloudPreferences() }
   fun setHomeCardTextMode(mode: HomeCardTextMode) { appSettingsStore.saveHomeCardTextMode(mode); uiState = uiState.copy(homeCardTextMode = mode); syncCloudPreferences() }
   fun setNetworkCardStyle(style: NetworkCardStyle) { appSettingsStore.saveNetworkCardStyle(style); uiState = uiState.copy(networkCardStyle = style); syncCloudPreferences() }
   fun setLiveLandscapeCards(value: Boolean) { appSettingsStore.saveLiveLandscapeCards(value); uiState = uiState.copy(liveLandscapeCards = value); syncCloudPreferences() }
-  fun setShowNewEpisodesRow(value: Boolean) { appSettingsStore.saveShowNewEpisodesRow(value); uiState = uiState.copy(showNewEpisodesRow = value) }
-  fun setNewEpisodesLandscape(value: Boolean) { appSettingsStore.saveNewEpisodesLandscape(value); uiState = uiState.copy(newEpisodesLandscape = value) }
+  fun setShowNewEpisodesRow(value: Boolean) { appSettingsStore.saveShowNewEpisodesRow(value); uiState = uiState.copy(showNewEpisodesRow = value); syncCloudPreferences() }
+  fun setNewEpisodesLandscape(value: Boolean) { appSettingsStore.saveNewEpisodesLandscape(value); uiState = uiState.copy(newEpisodesLandscape = value); syncCloudPreferences() }
   fun setLiveCategoriesEnabled(value: Boolean) { appSettingsStore.saveLiveCategoriesEnabled(value); uiState = uiState.copy(liveCategoriesEnabled = value); syncCloudPreferences() }
 
   /** Also applied to a session already playing, so switching it on from Settings does not require
@@ -10398,6 +10570,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       liveProgressBarEnabled = value,
       playerSession = uiState.playerSession?.copy(showLiveProgressBar = value),
     )
+    syncCloudPreferences()
   }
   /**
    * The Live / VOD badge, from Player settings or from the switch in the live controls - the same
@@ -10406,6 +10579,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setLiveBadgeEnabled(value: Boolean) {
     appSettingsStore.saveLiveBadgeEnabled(value)
     uiState = uiState.copy(liveBadgeEnabled = value)
+    syncCloudPreferences()
   }
   fun setLiveFavouriteDrawerCards(value: Boolean) { appSettingsStore.saveLiveFavouriteDrawerCards(value); uiState = uiState.copy(liveFavouriteDrawerCards = value); syncCloudPreferences() }
   fun setRememberLastSource(value: Boolean) { appSettingsStore.saveRememberLastSource(value); uiState = uiState.copy(rememberLastSource = value); syncCloudPreferences() }
@@ -10417,28 +10591,29 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     syncCloudPreferences()
   }
   fun setSyncOnCellular(value: Boolean) { appSettingsStore.saveSyncOnCellular(value); uiState = uiState.copy(syncOnCellular = value); syncCloudPreferences(force = true) }
-  fun setHoldToSpeedEnabled(value: Boolean) { appSettingsStore.saveHoldToSpeedEnabled(value); uiState = uiState.copy(holdToSpeedEnabled = value) }
-  fun setHoldToSpeedMultiplier(value: Float) { appSettingsStore.saveHoldToSpeedMultiplier(value); uiState = uiState.copy(holdToSpeedMultiplier = value) }
-  fun setSwipeToSeekEnabled(value: Boolean) { appSettingsStore.saveSwipeToSeekEnabled(value); uiState = uiState.copy(swipeToSeekEnabled = value) }
-  fun setDoubleTapSeekEnabled(value: Boolean) { appSettingsStore.saveDoubleTapSeekEnabled(value); uiState = uiState.copy(doubleTapSeekEnabled = value) }
-  fun setDoubleTapSeekSeconds(value: Int) { val safe = value.takeIf { it in setOf(5, 10, 15) } ?: 10; appSettingsStore.saveDoubleTapSeekSeconds(safe); uiState = uiState.copy(doubleTapSeekSeconds = safe) }
-  fun setDoubleTapPlayPauseEnabled(value: Boolean) { appSettingsStore.saveDoubleTapPlayPauseEnabled(value); uiState = uiState.copy(doubleTapPlayPauseEnabled = value) }
-  fun setShowPlayerControlLabels(value: Boolean) { appSettingsStore.saveShowPlayerControlLabels(value); uiState = uiState.copy(showPlayerControlLabels = value) }
-  fun setPlayerControlLayout(value: String) { val safe = value.takeIf { it in setOf("Normal", "Minimal") } ?: "Normal"; appSettingsStore.savePlayerControlLayout(safe); uiState = uiState.copy(playerControlLayout = safe) }
-  fun setFullscreenStatusBar(value: String) { val safe = value.takeIf { it in setOf("Always show", "Hide in fullscreen", "Automatic") } ?: "Automatic"; appSettingsStore.saveFullscreenStatusBar(safe); uiState = uiState.copy(fullscreenStatusBar = safe) }
-  fun setPlayerTitleDisplay(value: String) { val safe = value.takeIf { it in setOf("Single line", "Scrolling", "Hidden") } ?: "Single line"; appSettingsStore.savePlayerTitleDisplay(safe); uiState = uiState.copy(playerTitleDisplay = safe) }
+  fun setHoldToSpeedEnabled(value: Boolean) { appSettingsStore.saveHoldToSpeedEnabled(value); uiState = uiState.copy(holdToSpeedEnabled = value); syncCloudPreferences() }
+  fun setHoldToSpeedMultiplier(value: Float) { appSettingsStore.saveHoldToSpeedMultiplier(value); uiState = uiState.copy(holdToSpeedMultiplier = value); syncCloudPreferences() }
+  fun setSwipeToSeekEnabled(value: Boolean) { appSettingsStore.saveSwipeToSeekEnabled(value); uiState = uiState.copy(swipeToSeekEnabled = value); syncCloudPreferences() }
+  fun setDoubleTapSeekEnabled(value: Boolean) { appSettingsStore.saveDoubleTapSeekEnabled(value); uiState = uiState.copy(doubleTapSeekEnabled = value); syncCloudPreferences() }
+  fun setDoubleTapSeekSeconds(value: Int) { val safe = value.takeIf { it in setOf(5, 10, 15) } ?: 10; appSettingsStore.saveDoubleTapSeekSeconds(safe); uiState = uiState.copy(doubleTapSeekSeconds = safe); syncCloudPreferences() }
+  fun setDoubleTapPlayPauseEnabled(value: Boolean) { appSettingsStore.saveDoubleTapPlayPauseEnabled(value); uiState = uiState.copy(doubleTapPlayPauseEnabled = value); syncCloudPreferences() }
+  fun setShowPlayerControlLabels(value: Boolean) { appSettingsStore.saveShowPlayerControlLabels(value); uiState = uiState.copy(showPlayerControlLabels = value); syncCloudPreferences() }
+  fun setPlayerControlLayout(value: String) { val safe = value.takeIf { it in setOf("Normal", "Minimal") } ?: "Normal"; appSettingsStore.savePlayerControlLayout(safe); uiState = uiState.copy(playerControlLayout = safe); syncCloudPreferences() }
+  fun setFullscreenStatusBar(value: String) { val safe = value.takeIf { it in setOf("Always show", "Hide in fullscreen", "Automatic") } ?: "Automatic"; appSettingsStore.saveFullscreenStatusBar(safe); uiState = uiState.copy(fullscreenStatusBar = safe); syncCloudPreferences() }
+  fun setPlayerTitleDisplay(value: String) { val safe = value.takeIf { it in setOf("Single line", "Scrolling", "Hidden") } ?: "Single line"; appSettingsStore.savePlayerTitleDisplay(safe); uiState = uiState.copy(playerTitleDisplay = safe); syncCloudPreferences() }
   /**
-   * No [syncCloudPreferences], like its two neighbours: a gesture setting describes the screen in
+   * Synced under `platforms.mobile`, like its neighbours: a gesture setting describes the screen in
    * this hand, and a television has neither a brightness swipe nor a volume one to turn off.
    *
    * The player reads it through [PlayerSession], so a session already on screen keeps the answer it
    * started with; the next one takes the new value.
    */
-  fun setPlayerLevelGesturesEnabled(value: Boolean) { appSettingsStore.savePlayerLevelGesturesEnabled(value); uiState = uiState.copy(playerLevelGesturesEnabled = value) }
-  /** Device-local and off by default: Mobile verification does not change the television. */
+  fun setPlayerLevelGesturesEnabled(value: Boolean) { appSettingsStore.savePlayerLevelGesturesEnabled(value); uiState = uiState.copy(playerLevelGesturesEnabled = value); syncCloudPreferences() }
+  /** Off by default. Synced under `platforms.mobile`, so it never changes the television. */
   fun setMediaHubEnabled(value: Boolean) {
     appSettingsStore.saveMediaHubEnabled(value)
     uiState = uiState.copy(mediaHubEnabled = value, mediaHubOpen = value && uiState.mediaHubOpen)
+    syncCloudPreferences()
   }
   fun setMediaHubOpen(value: Boolean) { uiState = uiState.copy(mediaHubOpen = value) }
 
@@ -10503,7 +10678,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     repairFavouriteChannelIds(result)
   }
 
-  fun setHomeDensity(value: HomeDensity) { appSettingsStore.saveHomeDensity(value); uiState = uiState.copy(homeDensity = value) }
+  fun setHomeDensity(value: HomeDensity) { appSettingsStore.saveHomeDensity(value); uiState = uiState.copy(homeDensity = value); syncCloudPreferences() }
   fun setSkipIntroEnabled(value: Boolean) { appSettingsStore.saveSkipIntroEnabled(value); uiState = uiState.copy(skipIntroEnabled = value); syncCloudPreferences() }
   fun setSkipRecapEnabled(value: Boolean) { appSettingsStore.saveSkipRecapEnabled(value); uiState = uiState.copy(skipRecapEnabled = value); syncCloudPreferences() }
   fun setSkipEndingEnabled(value: Boolean) { appSettingsStore.saveSkipEndingEnabled(value); uiState = uiState.copy(skipEndingEnabled = value); syncCloudPreferences() }
@@ -10531,13 +10706,13 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setAutoLoadSubtitles(value: Boolean) { appSettingsStore.saveAutoLoadSubtitles(value); uiState = uiState.copy(autoLoadSubtitles = value); syncCloudPreferences() }
   // Subtitle appearance stays on the device: it is tuned to the screen being watched, and a phone
   // and a television want different answers.
-  fun setSubtitleTextSize(value: Int) { appSettingsStore.saveSubtitleTextSize(value); uiState = uiState.copy(subtitleTextSize = value.coerceIn(SUBTITLE_TEXT_SIZE_RANGE)) }
-  fun setSubtitleVerticalOffset(value: Int) { appSettingsStore.saveSubtitleVerticalOffset(value); uiState = uiState.copy(subtitleVerticalOffset = value.coerceIn(SUBTITLE_OFFSET_RANGE)) }
-  fun setSubtitleBold(value: Boolean) { appSettingsStore.saveSubtitleBold(value); uiState = uiState.copy(subtitleBold = value) }
-  fun setSubtitleTextColor(value: String) { appSettingsStore.saveSubtitleTextColor(value); uiState = uiState.copy(subtitleTextColor = value) }
-  fun setSubtitleBackgroundColor(value: String) { appSettingsStore.saveSubtitleBackgroundColor(value); uiState = uiState.copy(subtitleBackgroundColor = value) }
-  fun setSubtitleOutline(value: Boolean) { appSettingsStore.saveSubtitleOutline(value); uiState = uiState.copy(subtitleOutline = value) }
-  fun setSubtitleOutlineColor(value: String) { appSettingsStore.saveSubtitleOutlineColor(value); uiState = uiState.copy(subtitleOutlineColor = value) }
+  fun setSubtitleTextSize(value: Int) { appSettingsStore.saveSubtitleTextSize(value); uiState = uiState.copy(subtitleTextSize = value.coerceIn(SUBTITLE_TEXT_SIZE_RANGE)); syncCloudPreferencesWhenSettled() }
+  fun setSubtitleVerticalOffset(value: Int) { appSettingsStore.saveSubtitleVerticalOffset(value); uiState = uiState.copy(subtitleVerticalOffset = value.coerceIn(SUBTITLE_OFFSET_RANGE)); syncCloudPreferencesWhenSettled() }
+  fun setSubtitleBold(value: Boolean) { appSettingsStore.saveSubtitleBold(value); uiState = uiState.copy(subtitleBold = value); syncCloudPreferences() }
+  fun setSubtitleTextColor(value: String) { appSettingsStore.saveSubtitleTextColor(value); uiState = uiState.copy(subtitleTextColor = value); syncCloudPreferences() }
+  fun setSubtitleBackgroundColor(value: String) { appSettingsStore.saveSubtitleBackgroundColor(value); uiState = uiState.copy(subtitleBackgroundColor = value); syncCloudPreferences() }
+  fun setSubtitleOutline(value: Boolean) { appSettingsStore.saveSubtitleOutline(value); uiState = uiState.copy(subtitleOutline = value); syncCloudPreferences() }
+  fun setSubtitleOutlineColor(value: String) { appSettingsStore.saveSubtitleOutlineColor(value); uiState = uiState.copy(subtitleOutlineColor = value); syncCloudPreferences() }
   fun setSubtitleDefaultSource(value: String) {
     val normalized = normalizeSubtitleDefaultSource(value)
     appSettingsStore.saveSubtitleDefaultSource(normalized)
@@ -20429,7 +20604,7 @@ private fun HoldToSpeedMultiplierPicker(multiplier: Float, onMultiplierChange: (
       )
     }
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-      listOf(1.5f, 2f, 2.5f, 3f, 4f).forEach { option ->
+      HOLD_TO_SPEED_MULTIPLIERS.forEach { option ->
         FilterChip(
           selected = multiplier == option,
           onClick = { onMultiplierChange(option) },

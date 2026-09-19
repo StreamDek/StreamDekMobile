@@ -277,7 +277,7 @@
   <string name="animation_speed_standard_description">Il bilanciamento consigliato tra fluidità e velocità.</string>
   <string name="animation_speed_cinematic">Cinematografiche</string>
   <string name="animation_speed_cinematic_description">Transizioni più lente e pienamente visibili, per l\'esperienza visiva completa.</string>
-  <string name="settings_animation_speed_description">Quanto durano le transizioni nell\'app. Salvato solo su questo dispositivo.</string>
+  <string name="settings_animation_speed_description">Quanto durano le transizioni nell\'app. Vale per i tuoi telefoni, non per la TV.</string>
   <string name="home_row_kind_networks">Servizi di streaming</string>
   <string name="home_row_kind_series">Serie</string>
   <string name="home_row_kind_films">Film</string>
@@ -613,7 +613,7 @@
   <string name="storage_clear_detail_sized">Questo libera %1$s di dati temporanei. Nulla di ciò che hai salvato offline viene toccato e ciò che è in riproduzione resta.</string>
   <string name="storage_clear_detail_unsized">Questo elimina i dati temporanei peer-to-peer e di streaming su questo dispositivo. Nulla di ciò che hai salvato offline viene toccato e ciò che è in riproduzione resta.</string>
   <string name="settings_home_layout">Layout della Home</string>
-  <string name="settings_home_layout_description">Scegli quanta parte della Home entra sullo schermo. Salvato solo su questo dispositivo.</string>
+  <string name="settings_home_layout_description">Scegli quanta parte della Home entra sullo schermo. Vale per i tuoi telefoni, non per la TV.</string>
   <string name="settings_theme">Tema</string>
   <string name="settings_theme_description">Scegli il tema di colori usato in tutta l\'app.</string>
   <string name="languages_search_placeholder">Cerca lingue</string>

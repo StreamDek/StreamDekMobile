@@ -285,7 +285,7 @@
   <string name="animation_speed_standard_description">L\'équilibre recommandé entre fluidité et rapidité.</string>
   <string name="animation_speed_cinematic">Cinématique</string>
   <string name="animation_speed_cinematic_description">Des transitions plus lentes et pleinement visibles, pour l\'expérience visuelle complète.</string>
-  <string name="settings_animation_speed_description">La durée des transitions dans toute l\'application. Enregistré sur cet appareil uniquement.</string>
+  <string name="settings_animation_speed_description">La durée des transitions dans toute l\'application. S\'applique à vos téléphones, pas à votre téléviseur.</string>
   <string name="home_row_kind_networks">Services de streaming</string>
   <string name="home_row_kind_series">Séries</string>
   <string name="home_row_kind_films">Films</string>
@@ -637,7 +637,7 @@
   <string name="storage_clear_detail_sized">Cela libère %1$s de données temporaires. Rien de ce que vous avez enregistré hors ligne n\'est touché, et ce qui est en cours de lecture est conservé.</string>
   <string name="storage_clear_detail_unsized">Cela supprime les données temporaires pair-à-pair et de flux sur cet appareil. Rien de ce que vous avez enregistré hors ligne n\'est touché, et ce qui est en cours de lecture est conservé.</string>
   <string name="settings_home_layout">Disposition de l\'accueil</string>
-  <string name="settings_home_layout_description">Choisissez la quantité d\'accueil affichée à l\'écran. Enregistré sur cet appareil uniquement.</string>
+  <string name="settings_home_layout_description">Choisissez la quantité d\'accueil affichée à l\'écran. S\'applique à vos téléphones, pas à votre téléviseur.</string>
   <string name="settings_theme">Thème</string>
   <string name="settings_theme_description">Choisissez le thème de couleurs utilisé dans toute l\'application.</string>
   <string name="languages_search_placeholder">Rechercher une langue</string>

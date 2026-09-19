@@ -295,7 +295,7 @@
   <string name="animation_speed_standard_description">Zalecana równowaga między płynnością a szybkością.</string>
   <string name="animation_speed_cinematic">Filmowe</string>
   <string name="animation_speed_cinematic_description">Wolniejsze, w pełni widoczne przejścia dla pełnego wrażenia wizualnego.</string>
-  <string name="settings_animation_speed_description">Jak długo trwają przejścia w aplikacji. Zapisywane tylko na tym urządzeniu.</string>
+  <string name="settings_animation_speed_description">Jak długo trwają przejścia w aplikacji. Dotyczy twoich telefonów, nie telewizora.</string>
   <string name="home_row_kind_networks">Serwisy streamingowe</string>
   <string name="home_row_kind_series">Seriale</string>
   <string name="home_row_kind_films">Filmy</string>
@@ -663,7 +663,7 @@
   <string name="storage_clear_detail_sized">Zwolni to %1$s danych tymczasowych. Nic z zapisanych materiałów offline nie zostanie naruszone, a to, co jest odtwarzane, zostaje.</string>
   <string name="storage_clear_detail_unsized">Spowoduje to usunięcie tymczasowych danych peer-to-peer i strumieni na tym urządzeniu. Nic z zapisanych materiałów offline nie zostanie naruszone, a to, co jest odtwarzane, zostaje.</string>
   <string name="settings_home_layout">Układ ekranu głównego</string>
-  <string name="settings_home_layout_description">Wybierz, ile ekranu głównego mieści się naraz. Zapisywane tylko na tym urządzeniu.</string>
+  <string name="settings_home_layout_description">Wybierz, ile ekranu głównego mieści się naraz. Dotyczy twoich telefonów, nie telewizora.</string>
   <string name="settings_theme">Motyw</string>
   <string name="settings_theme_description">Wybierz motyw kolorystyczny używany w całej aplikacji.</string>
   <string name="languages_search_placeholder">Szukaj języków</string>

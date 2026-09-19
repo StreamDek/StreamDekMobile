@@ -277,7 +277,7 @@
   <string name="animation_speed_standard_description">Die empfohlene Balance aus Geschmeidigkeit und Tempo.</string>
   <string name="animation_speed_cinematic">Filmisch</string>
   <string name="animation_speed_cinematic_description">Langsamere, voll sichtbare Übergänge für das vollständige visuelle Erlebnis.</string>
-  <string name="settings_animation_speed_description">Wie lange Übergänge in der App dauern. Nur auf diesem Gerät gespeichert.</string>
+  <string name="settings_animation_speed_description">Wie lange Übergänge in der App dauern. Gilt für deine Telefone, nicht für deinen Fernseher.</string>
   <string name="home_row_kind_networks">Streamingdienste</string>
   <string name="home_row_kind_series">Serien</string>
   <string name="home_row_kind_films">Filme</string>
@@ -613,7 +613,7 @@
   <string name="storage_clear_detail_sized">Das gibt %1$s temporäre Daten frei. Nichts, was du offline gespeichert hast, ist betroffen, und was gerade läuft, bleibt erhalten.</string>
   <string name="storage_clear_detail_unsized">Das löscht die temporären Peer-to-Peer- und Stream-Daten auf diesem Gerät. Nichts, was du offline gespeichert hast, ist betroffen, und was gerade läuft, bleibt erhalten.</string>
   <string name="settings_home_layout">Startseiten-Layout</string>
-  <string name="settings_home_layout_description">Wähle, wie viel von der Startseite auf einmal auf den Bildschirm passt. Nur auf diesem Gerät gespeichert.</string>
+  <string name="settings_home_layout_description">Wähle, wie viel von der Startseite auf einmal auf den Bildschirm passt. Gilt für deine Telefone, nicht für deinen Fernseher.</string>
   <string name="settings_theme">Design</string>
   <string name="settings_theme_description">Wähle das Farbdesign für die gesamte App.</string>
   <string name="languages_search_placeholder">Sprachen suchen</string>

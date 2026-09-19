@@ -342,6 +342,43 @@ data class CloudPlaybackPreferences(
   val showOnlyPreferredSubtitleLanguages: Boolean? = null,
   val addonSubtitleLoading: String? = null,
   val subtitleDefaultSource: String? = null,
+  /** Shared with the television, which offers both under the same keys. */
+  val liveProgressBarEnabled: Boolean? = null,
+  val liveBadgeEnabled: Boolean? = null,
+  /** How subtitles look. Profile settings, synced so the portal can offer them. */
+  val subtitleTextSize: Int? = null,
+  val subtitleVerticalOffset: Int? = null,
+  val subtitleBold: Boolean? = null,
+  val subtitleTextColor: String? = null,
+  val subtitleBackgroundColor: String? = null,
+  val subtitleOutline: Boolean? = null,
+  val subtitleOutlineColor: String? = null,
+  val showNewEpisodesRow: Boolean? = null,
+  val newEpisodesLandscape: Boolean? = null,
+  /**
+   * Settings that describe this kind of device rather than the viewer, carried under
+   * `platforms.mobile` (see [PLATFORM_PREFERENCES_KEY]): every phone on the account shares them, the
+   * television keeps its own, and the web portal can set them. Null means the account holds none
+   * yet, in which case the phone keeps what it has and uploads it.
+   */
+  val animationSpeed: String? = null,
+  val appLanguage: String? = null,
+  val visualEffects: String? = null,
+  val navigationBehaviour: String? = null,
+  val homeDensity: String? = null,
+  val mediaHubEnabled: Boolean? = null,
+  val heroTrailerMuted: Boolean? = null,
+  val playerControlLayout: String? = null,
+  val showPlayerControlLabels: Boolean? = null,
+  val playerTitleDisplay: String? = null,
+  val fullscreenStatusBar: String? = null,
+  val holdToSpeedEnabled: Boolean? = null,
+  val holdToSpeedMultiplier: Float? = null,
+  val swipeToSeekEnabled: Boolean? = null,
+  val doubleTapSeekEnabled: Boolean? = null,
+  val doubleTapSeekSeconds: Int? = null,
+  val doubleTapPlayPauseEnabled: Boolean? = null,
+  val playerLevelGesturesEnabled: Boolean? = null,
   val ratingsEnabled: Boolean? = null,
   val externalRatingsEnabled: Boolean? = null,
   val enabledRatingProviders: List<String>? = null,

@@ -3068,7 +3068,11 @@ private const val DETAIL_SOURCES_DELAY_MS = 450L
  */
 const val DEFAULT_TRAILER_DELAY_SECONDS = 3
 /** How often a foregrounded app asks whether the plugin document moved somewhere else. */
-private const val PLUGIN_WATCH_INTERVAL_MS = 15_000L
+/** How often the app asks whether the account's plugins or settings have changed elsewhere. */
+private const val ACCOUNT_WATCH_INTERVAL_MS = 15_000L
+
+/** How recently the account's settings must have been read for a foreground refresh to skip it. */
+private const val PREFERENCES_REFRESH_DEBOUNCE_MS = 10_000L
 
 const val MAX_TRAILER_DELAY_SECONDS = 5
 
@@ -3846,6 +3850,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private var pluginWatchJob: Job? = null
   /** The document stamp this device last wrote or read, so a poll knows what "changed" means. */
   private var lastKnownPluginVersion: Long = 0L
+
+  /** The settings stamp this device has already seen. See [startWatchingAccountChanges]. */
+  private var lastKnownPreferencesVersion: Long = 0L
   private var pluginRefreshJob: Job? = null
   private var cloudStreamLoadJob: Job? = null
   private var sourceSettingsSyncJob: Job? = null
@@ -10301,6 +10308,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     viewModelScope.launch { apiClient.patchCloudPreferences(session, preferences, uiState.activeProfileId) }
   }
 
+  private var lastPreferencesRefreshAt = 0L
+
   private var settledSyncJob: Job? = null
 
   /**
@@ -11508,6 +11517,36 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     Log.i("StreamDekMigration", "Guest setup from $sourceOwnerKey handed to profile $profileId")
   }
 
+  /**
+   * Re-reads the account's settings without saying anything about it.
+   *
+   * Issued when the app comes forward, because nothing pushes a settings change to a phone: the
+   * account was read at process start and not again, so a change made in the web portal, or on the
+   * television, waited until Android got round to killing the process - hours, or days. The other
+   * refreshes on that event already work this way.
+   *
+   * Quiet on purpose, unlike the Refresh control in Sync Services: no spinner, no banner, and
+   * nothing said when the network is not there. Somebody picking their phone up has not asked for
+   * anything yet.
+   */
+  fun refreshCloudPreferences(force: Boolean = false) {
+    val session = uiState.session ?: return
+    if (!cloudSyncAllowed()) return
+    // The activity's first ON_START lands moments after the fan-out in [bootstrapAfterAuth] has
+    // already asked for this, so a cold start would otherwise read the account twice. The watcher
+    // passes `force`: it has watched the stamp move rather than guessing.
+    val now = android.os.SystemClock.elapsedRealtime()
+    if (!force && now - lastPreferencesRefreshAt < PREFERENCES_REFRESH_DEBOUNCE_MS) return
+    lastPreferencesRefreshAt = now
+    viewModelScope.launch {
+      apiClient.fetchCloudPlaybackPreferences(session, uiState.activeProfileId).onSuccess { preferences ->
+        val before = homeLayoutSignature()
+        applyCloudPlaybackPreferences(preferences)
+        if (homeLayoutSignature() != before) loadHome(force = true, silent = true)
+      }
+    }
+  }
+
   private fun bootstrapAfterAuth(forceHome: Boolean = false) {
     // First, ahead of everything below it, because it is the only one of these the viewer is
     // actually waiting on: the profile picker is the screen on top, and it stays dark until the
@@ -11517,6 +11556,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     if (uiState.session != null) refreshProfiles()
     syncPeerEngine()
     uiState.session?.let { session ->
+      lastPreferencesRefreshAt = android.os.SystemClock.elapsedRealtime()
       viewModelScope.launch {
         apiClient.fetchCloudPlaybackPreferences(session, uiState.activeProfileId).onSuccess { preferences ->
           val before = homeLayoutSignature()
@@ -11616,35 +11656,49 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   }
 
   /**
-   * Watches the account for a plugin change made somewhere else.
+   * Watches the account for a plugin or settings change made somewhere else.
    *
-   * Polls a stamp, not the document: the document carries every source and every settings schema
-   * and is far too large to ask for on a timer, while the stamp is one number. Only when it moves
-   * past what this device last wrote or read is the document actually fetched — so the steady
-   * state is a few bytes every fifteen seconds, and a collection added on the web portal lands
-   * here within that without anyone pressing refresh.
+   * Polls stamps, not documents: each runs to kilobytes and is far too large to ask for on a timer,
+   * while a stamp is one number. Only when one moves past what this device last wrote or read is
+   * that document actually fetched — so the steady state is a few bytes every fifteen seconds, and
+   * a collection added or a setting changed on the web portal lands here within that without anyone
+   * pressing refresh.
+   *
+   * Both stamps share one timer rather than running two: they are asked of the same host, and a
+   * phone should not wake its radio twice to ask two questions of it.
    *
    * Runs only while the app is in front. A background poll would cost battery to answer a question
-   * nobody is looking at, and the foreground pull already covers coming back.
+   * nobody is looking at, and the foreground read in [refreshCloudPreferences] already covers
+   * coming back to the app.
    */
-  fun startWatchingProfilePlugins() {
+  fun startWatchingAccountChanges() {
     val session = uiState.session ?: return
     val profileId = uiState.activeProfileId ?: return
     pluginWatchJob?.cancel()
     pluginWatchJob = viewModelScope.launch {
+      // Where the settings stand as the app comes forward, recorded without acting on it: the
+      // foreground read is already fetching the document, and the first tick should not ask again.
+      apiClient.fetchCloudPreferencesVersion(session, profileId).getOrNull()?.let { lastKnownPreferencesVersion = it }
       while (isActive) {
-        delay(PLUGIN_WATCH_INTERVAL_MS)
+        delay(ACCOUNT_WATCH_INTERVAL_MS)
         if (uiState.session?.user?.uid != session.user.uid || uiState.activeProfileId != profileId) return@launch
-        val remote = apiClient.fetchProfilePluginsVersion(session, profileId).getOrNull() ?: continue
-        if (remote > lastKnownPluginVersion) {
-          lastKnownPluginVersion = remote
-          refreshProfilePlugins()
+        apiClient.fetchProfilePluginsVersion(session, profileId).getOrNull()?.let { remote ->
+          if (remote > lastKnownPluginVersion) {
+            lastKnownPluginVersion = remote
+            refreshProfilePlugins()
+          }
+        }
+        apiClient.fetchCloudPreferencesVersion(session, profileId).getOrNull()?.let { remote ->
+          if (remote > lastKnownPreferencesVersion) {
+            lastKnownPreferencesVersion = remote
+            refreshCloudPreferences(force = true)
+          }
         }
       }
     }
   }
 
-  fun stopWatchingProfilePlugins() {
+  fun stopWatchingAccountChanges() {
     pluginWatchJob?.cancel()
     pluginWatchJob = null
   }
@@ -12798,6 +12852,8 @@ private fun StreamDekNativeAppContent(
     val observer = LifecycleEventObserver { _, event ->
       if (event == Lifecycle.Event.ON_START) {
         viewModel.refreshContentPolicy()
+        // Settings changed elsewhere - the web portal, or the television - reach this phone here.
+        viewModel.refreshCloudPreferences()
         viewModel.pullPlaybackProgress()
         viewModel.refreshProfilePlugins()
         // Air dates get revised and a reminder that has already fired leaves nothing behind, so
@@ -12806,9 +12862,9 @@ private fun StreamDekNativeAppContent(
         viewModel.refreshNextUp()
         // Then keep watching while the app is in front, so an edit made in the portal lands here
         // without the viewer having to leave and come back for it.
-        viewModel.startWatchingProfilePlugins()
+        viewModel.startWatchingAccountChanges()
       }
-      if (event == Lifecycle.Event.ON_STOP) viewModel.stopWatchingProfilePlugins()
+      if (event == Lifecycle.Event.ON_STOP) viewModel.stopWatchingAccountChanges()
     }
     lifecycleOwner.lifecycle.addObserver(observer)
     onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }

@@ -2591,6 +2591,26 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
 
+  /**
+   * When the account's settings last changed, as epoch millis.
+   *
+   * One number, against a settings document of several kilobytes: this is what a foreground poll
+   * asks for, so the document is fetched only once something has actually moved. Mirrors
+   * [fetchProfilePluginsVersion] above.
+   */
+  suspend fun fetchCloudPreferencesVersion(session: AuthSession, profileId: String? = null): Result<Long> = withContext(Dispatchers.IO) {
+    runCatching {
+      val response = execute(
+        Request.Builder()
+          .url("$apiBaseUrl/account/preferences/version")
+          .headers(authHeaders(session, includeContentType = false, profileId = profileId))
+          .build(),
+      )
+      ensureOk(response, "Failed to check account settings")
+      response.json.optLong("updatedAt", 0L)
+    }
+  }
+
   suspend fun fetchCloudPlaybackPreferences(session: AuthSession, profileId: String? = null): Result<CloudPlaybackPreferences> = withContext(Dispatchers.IO) {
     runCatching {
       val response = execute(Request.Builder().url("$apiBaseUrl/account/bootstrap").headers(authHeaders(session, includeContentType = false)).build())

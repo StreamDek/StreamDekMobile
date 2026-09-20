@@ -874,6 +874,7 @@
   <string name="settings_dest_accessibility_description">Contraste, taille du texte et animations réduites pour ce téléviseur.</string>
   <string name="settings_dest_player">Lecteur</string>
   <string name="settings_dest_player_description">Moteur de lecture, audio, sous-titres et compatibilité.</string>
+  <string name="settings_dest_video_decoding">Décodage vidéo</string>
   <string name="settings_dest_skip_autoplay">Passage et lecture automatique</string>
   <string name="settings_dest_skip_autoplay_description">Intros, résumés, fins et épisode suivant.</string>
   <string name="settings_dest_streams">Flux et qualité</string>
@@ -956,7 +957,7 @@
   <string name="settings_m_device_code">Code de l\'appareil</string>
   <string name="settings_m_dns_over_https">DNS over HTTPS</string>
   <string name="settings_m_dns_privacy">Confidentialité DNS</string>
-  <string name="settings_m_dolby_vision_profile_7_files_mostly_disc">Les fichiers Dolby Vision Profil 7, surtout des remux de disques, s\'affichent en noir sur la plupart des appareils. Lisez-les avec mpv, qui décode la couche de base HEVC. Vous perdez l\'étalonnage Dolby Vision.</string>
+  <string name="settings_m_dolby_vision_profile_7_files_mostly_disc">Utilise automatiquement la lecture HEVC compatible si Dolby Vision Profil 7 est incompatible ou si le décodage échoue. Conserve Dolby Vision natif lorsque celui-ci est pris en charge. La sortie HDR dépend de l’appareil et du moteur de lecture.</string>
   <string name="settings_m_double_tap_the_left_or_right_side">Appuyez deux fois à gauche ou à droite de la vidéo pour avancer ou reculer sans ouvrir les contrôles.</string>
   <string name="settings_m_double_tap_the_middle_of_the_video">Appuyez deux fois au centre de la vidéo pour lancer ou mettre en pause sans ouvrir les contrôles.</string>
   <string name="settings_m_double_tap_to_play_or_pause">Double appui pour lire ou mettre en pause</string>
@@ -985,6 +986,8 @@
   <string name="settings_m_how_long_a_title_page_is_left">Durée pendant laquelle une fiche reste inactive avant le lancement de sa bande-annonce.</string>
   <string name="settings_m_how_much_to_ask_subtitle_add_ons">Ce qu\'il faut demander aux add-ons de sous-titres.</string>
   <string name="settings_m_how_results_look">Aspect des résultats</string>
+  <string name="settings_m_decoding">Décodage</string>
+  <string name="settings_m_hardware_decoding_and_what_to_try_when">Décodage matériel, et que faire si une vidéo ne se lance pas.</string>
   <string name="settings_m_if_a_video_will_not_play">Si une vidéo ne se lit pas</string>
   <string name="settings_m_improves_coverage_when_the_preferred_service_cannot">Améliore la couverture lorsque le service préféré ne peut pas fournir de données exploitables.</string>
   <string name="settings_m_keep_engine_ready">Garder le moteur prêt</string>
@@ -1287,7 +1290,8 @@
   <string name="settings_route_title_pages_subtitle">Choisissez la façon dont les bandes-annonces, les saisons, les visuels d\'épisodes et les notes s\'affichent.</string>
   <string name="settings_route_ratings_subtitle">Choisissez les notes affichées sur les fiches des titres.</string>
   <string name="settings_route_live_tv_subtitle">Choisissez la façon dont les chaînes sont listées et ce qu\'affiche le lecteur en direct.</string>
-  <string name="settings_route_player_subtitle">Choisissez le lecteur, les gestes et ce qu\'il faut essayer lorsqu\'une vidéo ne se lit pas.</string>
+  <string name="settings_route_player_subtitle">Choisissez le lecteur, ses gestes et la disposition de ses commandes.</string>
+  <string name="settings_route_video_decoding_subtitle">Comment cet appareil décode la vidéo, et que faire si quelque chose ne se lance pas. Reste sur cet appareil.</string>
   <string name="settings_route_skip_autoplay_subtitle">Choisissez ce qui peut être passé et le moment où l\'épisode suivant démarre.</string>
   <string name="settings_route_subtitles_subtitle">Choisissez les sous-titres automatiques et gérez les sources interrogées par StreamDek.</string>
   <string name="settings_route_streams_subtitle">Choisissez la qualité privilégiée par StreamDek et l\'étiquetage des résultats.</string>

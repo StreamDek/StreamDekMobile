@@ -272,7 +272,22 @@ internal fun nextUntriedPlaybackSource(
   failedKeys: Set<String>,
 ): AddonStream? {
   val excluded = if (currentStream == null) failedKeys else failedKeys + playerStreamIdentity(currentStream)
-  return availableStreams.firstOrNull { playerStreamIdentity(it) !in excluded }
+  // Below the source that just failed, before anything above it.
+  //
+  // This used to take the first untried source in the whole list, which is the same thing only
+  // while playback is working its own way down from the top - and that is the case every test
+  // here covered. It is not the case when the viewer reaches down the list themselves: they pick
+  // the eighth source, it drops, and every source above it is still "untried", so the first one
+  // is what plays. Someone who scrolled past seven sources has said something about those seven,
+  // and answering them with the one at the top is the opposite of what they asked for.
+  //
+  // The list above is still reached, but only once nothing below it is left. Playback continuing
+  // matters more than the order it is arrived at.
+  val currentIndex = currentStream
+    ?.let { current -> availableStreams.indexOfFirst { playerStreamIdentity(it) == playerStreamIdentity(current) } }
+    ?: -1
+  return availableStreams.drop(currentIndex + 1).firstOrNull { playerStreamIdentity(it) !in excluded }
+    ?: availableStreams.firstOrNull { playerStreamIdentity(it) !in excluded }
 }
 /**
  * The subtitle panel's tabs.
@@ -437,6 +452,7 @@ fun NativePlayerScreen(
   var activeEngine by remember(liveEngineKey, session.playerEngine) { mutableStateOf(initialPlaybackEngine(session.playerEngine)) }
   var autoFallbackUsed by remember(liveEngineKey, session.playerEngine) { mutableStateOf(false) }
   var pendingEngineResumeSeconds by source.pendingEngineResumeSeconds
+  var reloadedInPlace by source.reloadedInPlace
   // Start every source in the edge-to-edge Full screen scale. The viewer can still cycle to
   // Stretch or Normal afterwards, but a new video must never begin letterboxed or distorted.
   val resizeModeState = rememberSaveable(session.url) { mutableStateOf("cover") }
@@ -1081,6 +1097,20 @@ fun NativePlayerScreen(
       android.util.Log.w("StreamDekLivePlayer", "player error for ${session.url}: $message")
       error = "Live feed interrupted. Reconnecting..."
       retryOrFailoverLiveFeed()
+    } else if (hasLoaded && !reloadedInPlace) {
+      // This source has already put a picture on screen, so whether it works is settled. An error
+      // arriving minutes later is the connection dropping or a signed link lapsing, and the same
+      // source hands out a working one again - so ask it, at the same second, before considering
+      // anything else. Switching straight away cost the viewer the source they had chosen for a
+      // fault that was never the source's.
+      reloadedInPlace = true
+      pendingEngineResumeSeconds = currentTime.coerceAtLeast(0.0)
+      error = null
+      android.util.Log.w(
+        "StreamDekPlayer",
+        "playing source dropped at ${currentTime}s; reloading it in place: $message",
+      )
+      activeReload()
     } else {
       session.currentStream?.let { current ->
         val currentKey = playerStreamIdentity(current)
@@ -1256,16 +1286,13 @@ fun NativePlayerScreen(
       onTracksChanged = playerTracksCallback,
       onExoViewCreated = { view ->
         exoPlayerView = view
-        // Dolby Vision profile 7 is the one case Media3 loses silently: it decodes, reports frames,
-        // and shows black, so the error-driven fallback never fires. The stream is recognised the
-        // moment its track is selected and handed to mpv, which decodes the HEVC base layer. Not
-        // gated on the Auto engine preference the way an error is -- turning the setting on is
-        // itself the instruction to play these files with whatever can. See Dv7Hevc.
+        // Keep native DV7 when supported; accept one compatibility handoff per source.
         view.onDolbyVisionProfile7Callback = {
           if (activeEngine == ActivePlaybackEngine.Media3 && !autoFallbackUsed) {
             autoFallbackUsed = true
-            switchEngine(ActivePlaybackEngine.MPV, "Dolby Vision profile 7")
-          }
+            switchEngine(ActivePlaybackEngine.MPV, "Dolby Vision profile 7 compatibility")
+            true
+          } else false
         }
       },
       onMpvViewCreated = { playerView = it },
@@ -3268,6 +3295,14 @@ private class PlayerPlaybackState {
 private class PlayerSourceState {
   val error = mutableStateOf<String?>(null)
   val pendingEngineResumeSeconds = mutableDoubleStateOf(0.0)
+  /**
+   * Whether this source has already been asked again in place after failing mid-playback.
+   *
+   * One per source, which is what this holder's key gives for free: a switch brings a new URL and
+   * a new holder, so the next source arrives with its own attempt. A source that fails twice has
+   * said enough and the player moves on.
+   */
+  val reloadedInPlace = mutableStateOf(false)
   val playbackStats = mutableStateOf<PlaybackStats?>(null)
   val selectedAudioTrackId = mutableStateOf<Int?>(null)
   val selectedSubtitleTrackId = mutableStateOf<Int?>(null)

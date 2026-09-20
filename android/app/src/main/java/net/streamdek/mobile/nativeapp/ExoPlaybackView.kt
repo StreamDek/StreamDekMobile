@@ -60,13 +60,10 @@ class ExoPlaybackView @JvmOverloads constructor(
   var onExternalSubtitleErrorCallback: ((message: String) -> Unit)? = null
   var onTracksChangedCallback: ((List<MpvTrackInfo>, List<MpvTrackInfo>, Int?, Int?) -> Unit)? = null
 
-  /**
-   * Raised when the selected video track is Dolby Vision profile 7 and the viewer has asked for
-   * the fallback. Media3 cannot show these -- see Dv7Hevc -- and, worse, does not fail while
-   * failing to, so the player switches engine on this rather than on an error that never comes.
-   */
-  var onDolbyVisionProfile7Callback: (() -> Unit)? = null
+  /** Requests a DV7 compatibility handoff. True means the owner accepted the switch. */
+  var onDolbyVisionProfile7Callback: (() -> Boolean)? = null
   private var dolbyVisionProfile7Reported = false
+  private var selectedDv7Format: Format? = null
   var onStallChangedCallback: ((Boolean) -> Unit)? = null
 
   // Shared by every player this view builds, so a live channel switch or an engine retry keeps the
@@ -190,6 +187,7 @@ class ExoPlaybackView @JvmOverloads constructor(
 
   fun setSource(url: String?) {
     dolbyVisionProfile7Reported = false
+    selectedDv7Format = null
     val next = url?.trim().orEmpty()
     if (next.isBlank() || next == source) return
     val hadActivePlayer = exoPlayer != null
@@ -727,6 +725,8 @@ class ExoPlaybackView @JvmOverloads constructor(
 
     override fun onPlayerError(error: PlaybackException) {
       Log.e(TAG, "Media3 playback failed", error)
+      if (error.errorCode in PlaybackException.ERROR_CODE_DECODER_INIT_FAILED..PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED &&
+        requestDv7Fallback(decoderFailed = true)) return
       if (awaitingFirstFrameAfterPromotion) restoreRetiringPlayer()
       onErrorCallback?.invoke(error.localizedMessage ?: "This source could not be played.")
     }
@@ -753,16 +753,26 @@ class ExoPlaybackView @JvmOverloads constructor(
     }
   }
 
-  /**
-   * Whether the video track that was just selected is Dolby Vision profile 7.
-   *
-   * Checked here rather than inside a renderer because this is the earliest point at which the
-   * chosen format is known to the app, and because it takes no subclassing of Media3 to reach.
-   * Reported once per source: the listener fires again on every track change, and switching engine
-   * twice for the same file would restart playback twice.
-   */
+  private fun requestDv7Fallback(decoderFailed: Boolean): Boolean {
+    if (dolbyVisionProfile7Reported) return false
+    val format = selectedDv7Format ?: exoPlayer?.videoFormat?.takeIf(Dv7Hevc::isDolbyVisionProfile7) ?: return false
+    if (!shouldUseDv7Fallback(
+        enabled = PlaybackCodecOptions.dv7HevcFallback,
+        profile7 = Dv7Hevc.isDolbyVisionProfile7(format),
+        nativeSupported = if (decoderFailed) false else Dv7Hevc.supportsNativePlayback(format, display),
+        decoderFailed = decoderFailed,
+        protectedContent = format.drmInitData != null,
+      )) return false
+    // The owner guards engine retries too. Do not swallow an error if it declines the handoff.
+    val switched = onDolbyVisionProfile7Callback?.invoke() == true
+    dolbyVisionProfile7Reported = switched
+    return switched
+  }
+
+  /** Inspect only the selected video; unknown profiles do not activate this setting. */
   private fun reportDolbyVisionProfile7(tracks: Tracks) {
     if (dolbyVisionProfile7Reported) return
+    selectedDv7Format = null
     tracks.groups.forEach { group ->
       if (group.type != C.TRACK_TYPE_VIDEO) return@forEach
       for (index in 0 until group.length) {
@@ -770,10 +780,8 @@ class ExoPlaybackView @JvmOverloads constructor(
         val format = group.getTrackFormat(index)
         if (format.sampleMimeType != MimeTypes.VIDEO_DOLBY_VISION) continue
         Dv7Hevc.log("Dolby Vision video track selected: " + Dv7Hevc.describe(format))
-        if (PlaybackCodecOptions.dv7HevcFallback && Dv7Hevc.isDolbyVisionProfile7(format)) {
-          dolbyVisionProfile7Reported = true
-          onDolbyVisionProfile7Callback?.invoke()
-        }
+        selectedDv7Format = format.takeIf(Dv7Hevc::isDolbyVisionProfile7)
+        requestDv7Fallback(decoderFailed = false)
         return
       }
     }

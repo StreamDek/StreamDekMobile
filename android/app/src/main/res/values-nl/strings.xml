@@ -838,6 +838,7 @@
   <string name="settings_dest_accessibility_description">Contrast, tekstgrootte en verminderde beweging voor deze televisie.</string>
   <string name="settings_dest_player">Speler</string>
   <string name="settings_dest_player_description">Speler-engine, audio, ondertiteling en compatibiliteit.</string>
+  <string name="settings_dest_video_decoding">Videodecodering</string>
   <string name="settings_dest_skip_autoplay">Overslaan en automatisch afspelen</string>
   <string name="settings_dest_skip_autoplay_description">Intro\'s, samenvattingen, eindes en de volgende aflevering.</string>
   <string name="settings_dest_streams">Streams en kwaliteit</string>
@@ -920,7 +921,7 @@
   <string name="settings_m_device_code">Apparaatcode</string>
   <string name="settings_m_dns_over_https">DNS over HTTPS</string>
   <string name="settings_m_dns_privacy">DNS-privacy</string>
-  <string name="settings_m_dolby_vision_profile_7_files_mostly_disc">Dolby Vision Profiel 7-bestanden, meestal disc-remuxes, geven op de meeste apparaten een zwart beeld. Speel ze af met mpv, dat de HEVC-basislaag decodeert. De Dolby Vision-grade gaat verloren.</string>
+  <string name="settings_m_dolby_vision_profile_7_files_mostly_disc">Gebruikt automatisch compatibele HEVC-weergave als Dolby Vision Profiel 7 niet wordt ondersteund of decodering mislukt. Behoudt native Dolby Vision indien ondersteund. HDR-uitvoer hangt af van het apparaat en de afspeelengine.</string>
   <string name="settings_m_double_tap_the_left_or_right_side">Dubbeltik links of rechts op de video om te spoelen zonder de bediening te openen.</string>
   <string name="settings_m_double_tap_the_middle_of_the_video">Dubbeltik in het midden van de video om af te spelen of te pauzeren zonder de bediening te openen.</string>
   <string name="settings_m_double_tap_to_play_or_pause">Dubbeltikken om af te spelen of te pauzeren</string>
@@ -949,6 +950,8 @@
   <string name="settings_m_how_long_a_title_page_is_left">Hoe lang een titelpagina met rust wordt gelaten voordat de trailer begint.</string>
   <string name="settings_m_how_much_to_ask_subtitle_add_ons">Hoeveel er aan ondertitel-add-ons wordt gevraagd.</string>
   <string name="settings_m_how_results_look">Hoe resultaten eruitzien</string>
+  <string name="settings_m_decoding">Decodering</string>
+  <string name="settings_m_hardware_decoding_and_what_to_try_when">Hardwaredecodering en wat je kunt proberen als een video niet afspeelt.</string>
   <string name="settings_m_if_a_video_will_not_play">Als een video niet afspeelt</string>
   <string name="settings_m_improves_coverage_when_the_preferred_service_cannot">Verbetert de dekking wanneer de voorkeursdienst geen bruikbare gegevens kan leveren.</string>
   <string name="settings_m_keep_engine_ready">Engine gereed houden</string>
@@ -1247,7 +1250,8 @@
   <string name="settings_route_title_pages_subtitle">Kies hoe trailers, seizoenen, afleveringsafbeeldingen en beoordelingen verschijnen.</string>
   <string name="settings_route_ratings_subtitle">Kies welke beoordelingen op titelpagina\'s verschijnen.</string>
   <string name="settings_route_live_tv_subtitle">Kies hoe kanalen worden weergegeven en wat de livespeler toont.</string>
-  <string name="settings_route_player_subtitle">Kies de speler, de gebaren en wat te proberen als een video niet afspeelt.</string>
+  <string name="settings_route_player_subtitle">Kies de speler, de gebaren en de indeling van de bediening.</string>
+  <string name="settings_route_video_decoding_subtitle">Hoe dit apparaat video decodeert en wat je kunt proberen als iets niet afspeelt. Blijft op dit apparaat.</string>
   <string name="settings_route_skip_autoplay_subtitle">Kies wat kan worden overgeslagen en wanneer de volgende aflevering start.</string>
   <string name="settings_route_subtitles_subtitle">Kies automatische ondertiteling en beheer de bronnen die StreamDek doorzoekt.</string>
   <string name="settings_route_streams_subtitle">Kies de kwaliteit die StreamDek verkiest en hoe streamresultaten worden gelabeld.</string>

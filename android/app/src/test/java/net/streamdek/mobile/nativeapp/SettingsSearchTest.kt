@@ -26,6 +26,7 @@ class SettingsSearchTest {
     SettingsRoute.Ratings to "Ratings",
     SettingsRoute.LiveTv to "Live TV",
     SettingsRoute.Player to "Player",
+    SettingsRoute.VideoDecoding to "Video Decoding",
     SettingsRoute.SkipAndAutoplay to "Skip and Autoplay",
     SettingsRoute.Subtitles to "Subtitles",
     SettingsRoute.Streams to "Streams and Quality",

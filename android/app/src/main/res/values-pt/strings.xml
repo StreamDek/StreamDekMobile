@@ -838,6 +838,7 @@
   <string name="settings_dest_accessibility_description">Contraste, tamanho do texto e movimento reduzido para esta televisão.</string>
   <string name="settings_dest_player">Reprodutor</string>
   <string name="settings_dest_player_description">Motor do reprodutor, áudio, legendas e compatibilidade.</string>
+  <string name="settings_dest_video_decoding">Descodificação de vídeo</string>
   <string name="settings_dest_skip_autoplay">Saltar e reprodução automática</string>
   <string name="settings_dest_skip_autoplay_description">Introduções, resumos, finais e o episódio seguinte.</string>
   <string name="settings_dest_streams">Transmissões e qualidade</string>
@@ -920,7 +921,7 @@
   <string name="settings_m_device_code">Código do dispositivo</string>
   <string name="settings_m_dns_over_https">DNS sobre HTTPS</string>
   <string name="settings_m_dns_privacy">Privacidade de DNS</string>
-  <string name="settings_m_dolby_vision_profile_7_files_mostly_disc">Os ficheiros Dolby Vision Perfil 7, quase sempre remux de disco, aparecem a preto na maioria dos dispositivos. Reproduza-os com o mpv, que descodifica a camada base HEVC. Perde a calibração Dolby Vision.</string>
+  <string name="settings_m_dolby_vision_profile_7_files_mostly_disc">Usa automaticamente reprodução HEVC compatível se Dolby Vision Perfil 7 não for suportado ou a descodificação falhar. Mantém Dolby Vision nativo quando suportado. A saída HDR depende do dispositivo e do motor de reprodução.</string>
   <string name="settings_m_double_tap_the_left_or_right_side">Toque duas vezes no lado esquerdo ou direito do vídeo para avançar sem abrir os controlos.</string>
   <string name="settings_m_double_tap_the_middle_of_the_video">Toque duas vezes no centro do vídeo para reproduzir ou pausar sem abrir os controlos.</string>
   <string name="settings_m_double_tap_to_play_or_pause">Toque duplo para reproduzir ou pausar</string>
@@ -949,6 +950,8 @@
   <string name="settings_m_how_long_a_title_page_is_left">Durante quanto tempo uma página de título fica parada antes de o trailer começar.</string>
   <string name="settings_m_how_much_to_ask_subtitle_add_ons">Quanto pedir aos add-ons de legendas.</string>
   <string name="settings_m_how_results_look">Aspeto dos resultados</string>
+  <string name="settings_m_decoding">Descodificação</string>
+  <string name="settings_m_hardware_decoding_and_what_to_try_when">Descodificação por hardware e o que tentar se um vídeo não reproduzir.</string>
   <string name="settings_m_if_a_video_will_not_play">Se um vídeo não reproduzir</string>
   <string name="settings_m_improves_coverage_when_the_preferred_service_cannot">Melhora a cobertura quando o serviço preferido não consegue fornecer dados utilizáveis.</string>
   <string name="settings_m_keep_engine_ready">Manter o motor pronto</string>
@@ -1251,7 +1254,8 @@
   <string name="settings_route_title_pages_subtitle">Escolha como aparecem os trailers, as temporadas, as imagens dos episódios e as classificações.</string>
   <string name="settings_route_ratings_subtitle">Escolha que classificações aparecem nas páginas dos títulos.</string>
   <string name="settings_route_live_tv_subtitle">Escolha como os canais são listados e o que o reprodutor em direto mostra.</string>
-  <string name="settings_route_player_subtitle">Escolha o reprodutor, os gestos e o que tentar quando um vídeo não reproduz.</string>
+  <string name="settings_route_player_subtitle">Escolha o reprodutor, os seus gestos e a disposição dos seus controlos.</string>
+  <string name="settings_route_video_decoding_subtitle">Como este dispositivo descodifica vídeo e o que tentar se algo não reproduzir. Fica neste dispositivo.</string>
   <string name="settings_route_skip_autoplay_subtitle">Escolha o que pode ser saltado e quando começa o episódio seguinte.</string>
   <string name="settings_route_subtitles_subtitle">Escolha as legendas automáticas e faça a gestão das fontes que o StreamDek pesquisa.</string>
   <string name="settings_route_streams_subtitle">Escolha a qualidade que o StreamDek prefere e como os resultados são etiquetados.</string>

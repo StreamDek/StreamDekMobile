@@ -749,6 +749,7 @@ internal enum class SettingsRoute(@StringRes val titleRes: Int, @StringRes val s
   LiveTv(R.string.live_tv, R.string.settings_route_live_tv_subtitle),
   // Playback — the player and everything that feeds it.
   Player(R.string.settings_dest_player, R.string.settings_route_player_subtitle),
+  VideoDecoding(R.string.settings_dest_video_decoding, R.string.settings_route_video_decoding_subtitle),
   SkipAndAutoplay(R.string.settings_dest_skip_autoplay, R.string.settings_route_skip_autoplay_subtitle),
   Subtitles(R.string.player_subtitles, R.string.settings_route_subtitles_subtitle),
   Streams(R.string.settings_dest_streams, R.string.settings_route_streams_subtitle),
@@ -1033,7 +1034,7 @@ private data class AppUiState(
   val upcomingEpisodeRemindersEnabled: Boolean = false,
   val upcomingEpisodeReminderDays: Int = 1,
   val episodeRemindersPermitted: Boolean = true,
-  val dv7HevcFallback: Boolean = false,
+  val dv7HevcFallback: Boolean = true,
   val tunneledPlayback: Boolean = false,
   val downloads: List<DownloadEntry> = emptyList(),
   val debridLoading: Boolean = false,
@@ -2085,7 +2086,7 @@ private class AppSettingsStore(context: Context) {
     expandedHeadersScrollAware = prefs.getString(NavigationBehaviour.EXPANDED_HEADERS_PREFERENCE, null) != NavigationBehaviour.EXPANDED_HEADERS_FIXED,
     visualEffectsMode = VisualEffectsMode.fromKey(prefs.getString(VISUAL_EFFECTS_PREFERENCE, null)),
     downloadsEnabled = prefs.getBoolean("downloads_enabled", false),
-    dv7HevcFallback = prefs.getBoolean("dv7_hevc_fallback", false),
+    dv7HevcFallback = prefs.getBoolean("dv7_hevc_fallback", true),
     tunneledPlayback = prefs.getBoolean("tunneled_playback", false),
     navigationAutoCollapseSeconds = prefs.getInt("navigation_auto_collapse_seconds", 5).coerceIn(2, 15),
     showStreamsList = profilePrefs.getBoolean("show_streams_list", true),
@@ -21495,6 +21496,8 @@ private fun SettingsTab(
         SettingsSection(stringResource(R.string.settings_m_playback)) {
           SettingsNavRow("PLY", Color(0xFF22C55E), stringResource(R.string.settings_m_player), stringResource(R.string.settings_m_player_engine_audio_language_gestures_and_floating), onClick = { onRouteChange(SettingsRoute.Player) })
           SettingsDivider()
+          SettingsNavRow("DEC", Color(0xFF8B5CF6), stringResource(R.string.settings_dest_video_decoding), stringResource(R.string.settings_m_hardware_decoding_and_what_to_try_when), onClick = { onRouteChange(SettingsRoute.VideoDecoding) })
+          SettingsDivider()
           SettingsNavRow("SKP", Color(0xFF60A5FA), stringResource(R.string.settings_m_skip_and_autoplay), stringResource(R.string.settings_m_skip_intros_and_recaps_and_start_the), onClick = { onRouteChange(SettingsRoute.SkipAndAutoplay) })
           SettingsDivider()
           SettingsNavRow("SUB", Color(0xFFA78BFA), stringResource(R.string.settings_m_subtitles), stringResource(R.string.settings_m_automatic_subtitles_and_the_sources_they_come), onClick = { onRouteChange(SettingsRoute.Subtitles) })
@@ -22045,23 +22048,6 @@ private fun SettingsTab(
               SettingsSwitchRow("FMT", Color(0xFF0EA5E9), stringResource(R.string.settings_m_streamdek_formatting), stringResource(R.string.settings_m_rebuild_add_on_results_into_streamdek_s), uiState.streamDekFormattingEnabled, onStreamDekFormattingChange)
             }
           }
-          item {
-            // Device-level decoder choices, so they stay on this phone rather than following the
-            // account onto a television with different hardware.
-            SettingsSection(stringResource(R.string.settings_m_playback)) {
-              SettingsSwitchRow(
-                "DV7", Color(0xFF8B5CF6), stringResource(R.string.settings_m_dv7_hevc_fallback),
-                stringResource(R.string.settings_m_dolby_vision_profile_7_files_mostly_disc),
-                uiState.dv7HevcFallback, onDv7HevcFallbackChange,
-              )
-              SettingsDivider()
-              SettingsSwitchRow(
-                "TUN", Color(0xFF14B8A6), stringResource(R.string.settings_m_tunneled_playback),
-                stringResource(R.string.settings_m_let_the_hardware_decode_and_display_as),
-                uiState.tunneledPlayback, onTunneledPlaybackChange,
-              )
-            }
-          }
         }
         SettingsRoute.Player -> {
           item {
@@ -22126,16 +22112,19 @@ private fun SettingsTab(
               SettingsChoiceRow("TTL", Color(0xFFF59E0B), stringResource(R.string.settings_row_player_title_display), stringResource(R.string.settings_m_use_one_truncated_line_scroll_an_overflowing), listOf("Single line", "Scrolling", "Hidden"), uiState.playerTitleDisplay, onSelected = playerSettingsViewModel::setPlayerTitleDisplay, choice = SettingsChoice.PlayerTitleDisplay)
             }
           }
-          item {
-            // Last on the page: only worth opening when something will not play.
-            SettingsSection(stringResource(R.string.settings_m_if_a_video_will_not_play)) {
-              SettingsChoiceRow("HW", Color(0xFFA78BFA), stringResource(R.string.settings_row_mpv_video_compatibility), stringResource(R.string.settings_m_used_when_mpv_is_selected_or_automatic), listOf("HW+", "HW", "SW"), uiState.decoderMode, onSelected = onDecoderModeChange,
-              choice = SettingsChoice.MpvVideoCompatibility)
-              SettingsDivider()
-              SettingsChoiceRow("SF", Color(0xFF06B6D4), stringResource(R.string.settings_row_mpv_display), stringResource(R.string.settings_m_used_when_mpv_is_selected_or_automatic_162), listOf("Standard", "Compatibility"), uiState.renderSurface, onSelected = onRenderSurfaceChange, choice = SettingsChoice.MpvDisplay)
-            }
-          }
         }
+        // In its own file: this facade class is at the JVM's size limit, so the page's body
+        // cannot live here. See videoDecodingSettings.
+        SettingsRoute.VideoDecoding -> videoDecodingSettings(
+          dv7HevcFallback = uiState.dv7HevcFallback,
+          onDv7HevcFallbackChange = onDv7HevcFallbackChange,
+          tunneledPlayback = uiState.tunneledPlayback,
+          onTunneledPlaybackChange = onTunneledPlaybackChange,
+          decoderMode = uiState.decoderMode,
+          onDecoderModeChange = onDecoderModeChange,
+          renderSurface = uiState.renderSurface,
+          onRenderSurfaceChange = onRenderSurfaceChange,
+        )
         SettingsRoute.Network -> {
           item {
             SettingsSection(stringResource(R.string.settings_m_dns_privacy)) {
@@ -23155,7 +23144,10 @@ internal fun searchSettingsRoutes(
 internal fun settingsRouteKeywords(route: SettingsRoute): String = when (route) {
   SettingsRoute.Player -> "player engine mpv media3 exoplayer pip picture in picture floating " +
     "gesture gestures hold speed swipe seek scrub brightness volume level dim loudness " +
-    "decoder hardware software compatibility display surface video will not play"
+    "controls labels layout status bar title"
+  SettingsRoute.VideoDecoding -> "decoding decoder hardware software compatibility codec hevc h265 " +
+    "dolby vision dv7 profile 7 hdr tunneled tunnelling display surface render black screen " +
+    "green screen stutter video will not play won't play playback engine mpv"
   SettingsRoute.SkipAndAutoplay -> "autoplay auto play skip intro recap ending credits next episode binge threshold introdb intro db api key"
   SettingsRoute.Subtitles -> "subtitle subtitles caption captions language languages audio preferred secondary forced show only addon loading source position style"
   SettingsRoute.Streams -> "streams stream results source quality resolution 4k 1080p size limit filter badges labels " +

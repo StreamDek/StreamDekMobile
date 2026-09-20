@@ -847,6 +847,7 @@
   <string name="settings_dest_accessibility_description">Contrast, text size, and reduced motion for this television.</string>
   <string name="settings_dest_player">Player</string>
   <string name="settings_dest_player_description">Player engine, audio, subtitles, and compatibility.</string>
+  <string name="settings_dest_video_decoding">Video Decoding</string>
   <string name="settings_dest_skip_autoplay">Skip and Autoplay</string>
   <string name="settings_dest_skip_autoplay_description">Intros, recaps, endings, and the next episode.</string>
   <string name="settings_dest_streams">Streams and Quality</string>
@@ -929,7 +930,7 @@
   <string name="settings_m_device_code">Device Code</string>
   <string name="settings_m_dns_over_https">DNS over HTTPS</string>
   <string name="settings_m_dns_privacy">DNS Privacy</string>
-  <string name="settings_m_dolby_vision_profile_7_files_mostly_disc">Dolby Vision Profile 7 files, mostly disc remuxes, play as a black picture on most devices. Play them with mpv instead, which decodes the HEVC base layer. You lose the Dolby Vision grade.</string>
+  <string name="settings_m_dolby_vision_profile_7_files_mostly_disc">Automatically use compatible HEVC playback if Dolby Vision Profile 7 is unsupported or decoding fails. Keeps native Dolby Vision when supported. HDR output depends on the device and playback engine.</string>
   <string name="settings_m_double_tap_the_left_or_right_side">Double-tap the left or right side of the video to seek without opening the controls.</string>
   <string name="settings_m_double_tap_the_middle_of_the_video">Double-tap the middle of the video to toggle playback without opening the controls.</string>
   <string name="settings_m_double_tap_to_play_or_pause">Double-tap to Play or Pause</string>
@@ -958,6 +959,8 @@
   <string name="settings_m_how_long_a_title_page_is_left">How long a title page is left alone before its trailer begins.</string>
   <string name="settings_m_how_much_to_ask_subtitle_add_ons">How much to ask subtitle add-ons for.</string>
   <string name="settings_m_how_results_look">How Results Look</string>
+  <string name="settings_m_decoding">Decoding</string>
+  <string name="settings_m_hardware_decoding_and_what_to_try_when">Hardware decoding, and what to try when a video will not play.</string>
   <string name="settings_m_if_a_video_will_not_play">If a Video Will Not Play</string>
   <string name="settings_m_improves_coverage_when_the_preferred_service_cannot">Improves coverage when the preferred service cannot supply usable data.</string>
   <string name="settings_m_keep_engine_ready">Keep Engine Ready</string>
@@ -1256,7 +1259,8 @@
   <string name="settings_route_title_pages_subtitle">Choose how trailers, seasons, episode artwork, and ratings appear.</string>
   <string name="settings_route_ratings_subtitle">Choose which ratings appear on title pages.</string>
   <string name="settings_route_live_tv_subtitle">Choose how channels are listed and what the live player shows.</string>
-  <string name="settings_route_player_subtitle">Choose the player, gestures, and what to try when a video will not play.</string>
+  <string name="settings_route_player_subtitle">Choose the player, its gestures, and how its controls are laid out.</string>
+  <string name="settings_route_video_decoding_subtitle">How this device decodes video, and what to try when something will not play. These stay on this device.</string>
   <string name="settings_route_skip_autoplay_subtitle">Choose what can be skipped and when the next episode starts.</string>
   <string name="settings_route_subtitles_subtitle">Choose automatic subtitles and manage the sources StreamDek searches.</string>
   <string name="settings_route_streams_subtitle">Choose the quality StreamDek prefers and how stream results are labelled.</string>

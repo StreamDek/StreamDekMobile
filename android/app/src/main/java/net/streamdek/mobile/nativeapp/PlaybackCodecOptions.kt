@@ -22,7 +22,7 @@ object PlaybackCodecOptions {
   private const val TUNNELED_KEY = "tunneled_playback"
 
   @Volatile
-  var dv7HevcFallback: Boolean = false
+  var dv7HevcFallback: Boolean = true
     private set
 
   @Volatile
@@ -32,7 +32,7 @@ object PlaybackCodecOptions {
   /** Seeds the in-memory copy the player reads. Safe to call more than once. */
   fun initialize(context: Context) {
     val prefs = context.applicationContext.getSharedPreferences(APP_SETTINGS_PREFERENCES, Context.MODE_PRIVATE)
-    dv7HevcFallback = prefs.getBoolean(DV7_HEVC_KEY, false)
+    dv7HevcFallback = prefs.getBoolean(DV7_HEVC_KEY, true)
     tunneledPlayback = prefs.getBoolean(TUNNELED_KEY, false)
   }
 
@@ -50,30 +50,11 @@ object PlaybackCodecOptions {
 }
 
 /**
- * Dolby Vision profile 7, and what can actually be done about it.
- *
- * Media3 copes with most Dolby Vision on a device that cannot decode it: when the display does not
- * report support, `MediaCodecVideoRenderer` asks for an alternative codec and
- * `MediaCodecUtil.getAlternativeCodecMimeType` answers HEVC for profiles 4 and 8, AVC for 9 and AV1
- * for 10. Profile 7 -- the dual-layer format disc remuxes use -- is the one profile with no answer.
- *
- * The failure is worse than a refusal. A television with a Dolby Vision decoder accepts a profile 7
- * stream, decodes it, reports a first frame and a healthy frame rate, and shows black. Nothing
- * errors, so the player's own "Media3 failed, try mpv" path never fires: it hangs off an error
- * callback, and there is no error.
- *
- * Handing the stream to an HEVC decoder instead was tried and is not reliable. The base layer is
- * ordinary HEVC and the extra NAL units are ones a conforming decoder must ignore, so in principle
- * it works -- but a hardware decoder is far less forgiving than a software one about NAL types it
- * did not expect, and on the hardware this was tested against it stayed black. mpv plays the same
- * file correctly, because ffmpeg decodes the base layer and skips the rest. So rather than trying
- * to talk MediaCodec into it, the stream is simply sent to the engine that already handles it.
- *
- * Detection is deliberately generous. Profile 7 when the codec string says so; also when the codec
- * string says nothing at all, which is the common case for Matroska, because a Dolby Vision stream
- * that reaches here with no readable profile is far more likely to be a disc remux than one of the
- * single-layer streaming profiles -- and those play correctly on a device with a Dolby Vision
- * decoder, which is not a device anyone turns this setting on for.
+ * DV7 compatibility uses mpv/FFmpeg's HEVC path, not a MIME-type rewrite.
+ * Unknown profiles are deliberately left to normal engine behavior. Capability reports are
+ * advisory: a decoder failure can still trigger one fallback after native playback is selected.
+ * HDR passthrough and tone mapping remain properties of the engine's actual output surface;
+ * neither a codec profile nor a first-frame callback proves correct HDR or visible pixels.
  */
 @OptIn(UnstableApi::class)
 internal object Dv7Hevc {
@@ -85,7 +66,23 @@ internal object Dv7Hevc {
   fun isDolbyVisionProfile7(format: Format): Boolean {
     if (format.sampleMimeType != MimeTypes.VIDEO_DOLBY_VISION) return false
     val profile = MediaCodecUtil.getCodecProfileAndLevel(format)?.first
-    return profile == null || profile == PROFILE_DVHE_DTB
+    return profile == PROFILE_DVHE_DTB
+  }
+
+  /** Require the exact DV7 profile, stream limits, and Dolby Vision on this display. */
+  fun supportsNativePlayback(format: Format, display: android.view.Display?): Boolean {
+    if (android.os.Build.VERSION.SDK_INT < 24 || display == null) return false
+    return runCatching {
+      val supportsDisplay = display.hdrCapabilities.supportedHdrTypes.contains(
+        android.view.Display.HdrCapabilities.HDR_TYPE_DOLBY_VISION,
+      )
+      supportsDisplay && MediaCodecUtil.getDecoderInfos(
+        MimeTypes.VIDEO_DOLBY_VISION, format.drmInitData != null, false,
+      ).any { decoder ->
+        decoder.profileLevels.any { it.profile == PROFILE_DVHE_DTB } &&
+          decoder.isFormatSupported(format)
+      }
+    }.getOrDefault(false)
   }
 
   /**

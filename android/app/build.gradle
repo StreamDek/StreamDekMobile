@@ -171,6 +171,10 @@ dependencies {
     implementation("dev.chrisbanes.haze:haze-blur:2.0.0-alpha03")
     implementation("dev.chrisbanes.haze:haze-blur-materials:2.0.0-alpha03")
     implementation("androidx.core:core-splashscreen:1.0.1")
+    // Installs src/main/baseline-prof.txt at first run. Already on the classpath transitively,
+    // named here because the whole point of shipping that profile is that this is present: without
+    // it a downloaded APK gets no ahead-of-time compilation of its launch path at all.
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
     implementation("io.coil-kt:coil-compose:2.7.0")
     // Schedules the "new episode is out" reminders; see EpisodeReleaseNotifications.
     implementation("androidx.work:work-runtime-ktx:2.9.1")

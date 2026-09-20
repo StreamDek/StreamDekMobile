@@ -838,6 +838,7 @@
   <string name="settings_dest_accessibility_description">Kontrast, Textgröße und reduzierte Animationen für diesen Fernseher.</string>
   <string name="settings_dest_player">Player</string>
   <string name="settings_dest_player_description">Player-Engine, Ton, Untertitel und Kompatibilität.</string>
+  <string name="settings_dest_video_decoding">Videodekodierung</string>
   <string name="settings_dest_skip_autoplay">Überspringen und Autoplay</string>
   <string name="settings_dest_skip_autoplay_description">Intros, Rückblicke, Enden und die nächste Folge.</string>
   <string name="settings_dest_streams">Streams und Qualität</string>
@@ -920,7 +921,7 @@
   <string name="settings_m_device_code">Gerätecode</string>
   <string name="settings_m_dns_over_https">DNS over HTTPS</string>
   <string name="settings_m_dns_privacy">DNS-Privatsphäre</string>
-  <string name="settings_m_dolby_vision_profile_7_files_mostly_disc">Dolby-Vision-Profil-7-Dateien, meist Disc-Remuxes, laufen auf den meisten Geräten als schwarzes Bild. Spiele sie stattdessen mit mpv ab, das die HEVC-Basisschicht dekodiert. Die Dolby-Vision-Abstimmung geht dabei verloren.</string>
+  <string name="settings_m_dolby_vision_profile_7_files_mostly_disc">Verwendet automatisch kompatible HEVC-Wiedergabe, wenn Dolby Vision Profil 7 nicht unterstützt wird oder die Dekodierung fehlschlägt. Behält natives Dolby Vision bei, wenn es unterstützt wird. Die HDR-Ausgabe hängt vom Gerät und der Wiedergabe-Engine ab.</string>
   <string name="settings_m_double_tap_the_left_or_right_side">Tippe doppelt links oder rechts auf das Video, um zu spulen, ohne die Bedienelemente zu öffnen.</string>
   <string name="settings_m_double_tap_the_middle_of_the_video">Tippe doppelt in die Mitte des Videos, um die Wiedergabe umzuschalten, ohne die Bedienelemente zu öffnen.</string>
   <string name="settings_m_double_tap_to_play_or_pause">Doppeltippen zum Abspielen oder Pausieren</string>
@@ -949,6 +950,8 @@
   <string name="settings_m_how_long_a_title_page_is_left">Wie lange eine Titelseite unberührt bleibt, bevor ihr Trailer beginnt.</string>
   <string name="settings_m_how_much_to_ask_subtitle_add_ons">Wie viel bei Untertitel-Add-ons angefragt wird.</string>
   <string name="settings_m_how_results_look">Aussehen der Ergebnisse</string>
+  <string name="settings_m_decoding">Dekodierung</string>
+  <string name="settings_m_hardware_decoding_and_what_to_try_when">Hardware-Dekodierung und was zu tun ist, wenn ein Video nicht abspielt.</string>
   <string name="settings_m_if_a_video_will_not_play">Wenn ein Video nicht abspielt</string>
   <string name="settings_m_improves_coverage_when_the_preferred_service_cannot">Verbessert die Abdeckung, wenn der bevorzugte Dienst keine brauchbaren Daten liefern kann.</string>
   <string name="settings_m_keep_engine_ready">Engine bereithalten</string>
@@ -1247,7 +1250,8 @@
   <string name="settings_route_title_pages_subtitle">Wähle, wie Trailer, Staffeln, Folgen-Artwork und Bewertungen erscheinen.</string>
   <string name="settings_route_ratings_subtitle">Wähle, welche Bewertungen auf Titelseiten erscheinen.</string>
   <string name="settings_route_live_tv_subtitle">Wähle, wie Kanäle aufgelistet werden und was der Live-Player zeigt.</string>
-  <string name="settings_route_player_subtitle">Wähle den Player, die Gesten und was zu versuchen ist, wenn ein Video nicht abspielt.</string>
+  <string name="settings_route_player_subtitle">Wähle den Player, seine Gesten und die Anordnung seiner Bedienelemente.</string>
+  <string name="settings_route_video_decoding_subtitle">Wie dieses Gerät Videos dekodiert und was zu versuchen ist, wenn etwas nicht abspielt. Bleibt auf diesem Gerät.</string>
   <string name="settings_route_skip_autoplay_subtitle">Wähle, was übersprungen werden kann und wann die nächste Folge startet.</string>
   <string name="settings_route_subtitles_subtitle">Wähle automatische Untertitel und verwalte die Quellen, die StreamDek durchsucht.</string>
   <string name="settings_route_streams_subtitle">Wähle die von StreamDek bevorzugte Qualität und wie Stream-Ergebnisse beschriftet werden.</string>

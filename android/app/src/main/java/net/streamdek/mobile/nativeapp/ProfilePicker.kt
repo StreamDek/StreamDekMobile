@@ -200,6 +200,21 @@ private const val ProfilePickerRevealDeadlineMs = 1200L
 private const val ProfilePickerCachedEntryMs = 260L
 
 /**
+ * One pass of the loading sweep.
+ *
+ * Shorter than the screen it lives on, which is the whole point. The previous loading animation
+ * breathed a glow up and down over 2200ms in each direction - four and a half seconds for a full
+ * cycle - on a screen that is typically up for about six hundred milliseconds. A viewer saw a
+ * fifth of one direction of a fade whose entire range was four percent of white, which is to say
+ * they saw nothing at all and read the screen as blank.
+ *
+ * Deliberately not scaled by the viewer's animation-speed setting. This is not part of the page's
+ * entrance; it is the page saying it is still working, and how long that takes is decided by the
+ * network rather than by a preference. Reduced motion still removes it entirely.
+ */
+private const val ProfilePickerSweepMs = 850
+
+/**
  * One clock for the whole page.
  *
  * Every animated part of the picker asks this object where it is instead of owning an animation.
@@ -316,24 +331,38 @@ private fun profileCardCue(index: Int): Float =
   PickerCue.CardsStart + PickerCue.CardStagger * index.coerceAtMost(PickerCue.MaxStaggeredCards)
 
 /**
- * What the page shows while it is loading: the app's own background, and a slow breath of light
- * behind where the artwork and the avatars are about to be.
+ * What the page shows while it is loading: the app's own background, and a band of light that
+ * travels down it, over where the artwork and the avatars are about to be.
  *
  * Deliberately not a spinner. A spinner under a headline announces that something is missing;
  * this reads as the page being dark rather than the page being broken, and it is the only thing
  * that has to be replaced when the real content arrives - so there is nothing to shift.
+ *
+ * It travels rather than brightens because that is the difference between an animation someone
+ * can see and one they cannot. What was here before changed the whole page's brightness between
+ * 3.7% and 7.9% of white - and did it over four and a half seconds on a screen that lives for
+ * well under one, so what actually reached the viewer was a sub-1% change they never saw. A
+ * moving edge is picked up at low contrast in a way a slow fade is not, so this can stay quiet
+ * and still read as motion: one pass, bright enough to notice in a lit room, gone by the time
+ * there is anything behind it.
  */
 @Composable
 private fun ProfilePickerLoadingVeil(modifier: Modifier = Modifier, alpha: () -> Float) {
   val reduced = LocalReducedMotion.current
-  val breath = if (reduced) {
+  val sweep = if (reduced) {
     null
   } else {
-    rememberInfiniteTransition(label = "picker_loading_glow").animateFloat(
-      initialValue = 0.34f,
-      targetValue = 0.72f,
-      animationSpec = infiniteRepeatable(tween(2200, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-      label = "picker_loading_breath",
+    rememberInfiniteTransition(label = "picker_loading_sweep").animateFloat(
+      // Starts above the page and finishes below it, so the band is never seen to appear or to
+      // stop - it is only ever passing through. Just far enough out that it clears the screen at
+      // each end; any further and the pass spends its time somewhere nobody is looking.
+      initialValue = -0.3f,
+      targetValue = 1.3f,
+      animationSpec = infiniteRepeatable(
+        tween(ProfilePickerSweepMs, easing = LinearEasing),
+        RepeatMode.Restart,
+      ),
+      label = "picker_loading_sweep_position",
     )
   }
   val tint = MaterialTheme.colorScheme.onBackground
@@ -342,19 +371,39 @@ private fun ProfilePickerLoadingVeil(modifier: Modifier = Modifier, alpha: () ->
       .fillMaxSize()
       .graphicsLayer { this.alpha = alpha() }
       .drawBehind {
-        val strength = breath?.value ?: 0.5f
+        // The resting wash, which is what the page looks like with motion switched off: dark, but
+        // lit where the hero and the avatar row are about to be, so the space reads as reserved.
         drawRect(
           Brush.radialGradient(
-            colors = listOf(tint.copy(alpha = 0.11f * strength), Color.Transparent),
+            colors = listOf(tint.copy(alpha = 0.10f), Color.Transparent),
             center = Offset(size.width / 2f, size.height * 0.32f),
             radius = size.maxDimension * 0.70f,
           ),
         )
         drawRect(
           Brush.radialGradient(
-            colors = listOf(tint.copy(alpha = 0.07f * strength), Color.Transparent),
+            colors = listOf(tint.copy(alpha = 0.06f), Color.Transparent),
             center = Offset(size.width / 2f, size.height * 0.84f),
             radius = size.maxDimension * 0.52f,
+          ),
+        )
+        // Read here rather than in composition, so the pass costs a layer update and recomposes
+        // nothing - the same bargain the reveal timeline makes.
+        val position = sweep?.value ?: return@drawBehind
+        val centre = size.height * position
+        // Half the band's height. Wide enough to have no edge worth calling an edge, narrow
+        // enough that where it is reads as a position rather than as the page being lit - which
+        // is what makes the pass legible as travel in the half-second it has.
+        val reach = size.height * 0.26f
+        drawRect(
+          Brush.verticalGradient(
+            colorStops = arrayOf(
+              0f to Color.Transparent,
+              0.5f to tint.copy(alpha = 0.20f),
+              1f to Color.Transparent,
+            ),
+            startY = centre - reach,
+            endY = centre + reach,
           ),
         )
       },

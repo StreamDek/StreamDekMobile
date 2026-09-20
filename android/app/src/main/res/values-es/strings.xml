@@ -838,6 +838,7 @@
   <string name="settings_dest_accessibility_description">Contraste, tamaño del texto y movimiento reducido para esta televisión.</string>
   <string name="settings_dest_player">Reproductor</string>
   <string name="settings_dest_player_description">Motor del reproductor, audio, subtítulos y compatibilidad.</string>
+  <string name="settings_dest_video_decoding">Decodificación de vídeo</string>
   <string name="settings_dest_skip_autoplay">Saltar y reproducción automática</string>
   <string name="settings_dest_skip_autoplay_description">Intros, resúmenes, finales y el siguiente episodio.</string>
   <string name="settings_dest_streams">Emisiones y calidad</string>
@@ -920,7 +921,7 @@
   <string name="settings_m_device_code">Código del dispositivo</string>
   <string name="settings_m_dns_over_https">DNS sobre HTTPS</string>
   <string name="settings_m_dns_privacy">Privacidad de DNS</string>
-  <string name="settings_m_dolby_vision_profile_7_files_mostly_disc">Los archivos Dolby Vision Perfil 7, casi siempre remux de disco, se ven en negro en la mayoría de dispositivos. Reprodúcelos con mpv, que decodifica la capa base HEVC. Se pierde el etalonaje Dolby Vision.</string>
+  <string name="settings_m_dolby_vision_profile_7_files_mostly_disc">Usa automáticamente reproducción HEVC compatible si Dolby Vision Perfil 7 no es compatible o falla la decodificación. Mantiene Dolby Vision nativo cuando es compatible. La salida HDR depende del dispositivo y del motor de reproducción.</string>
   <string name="settings_m_double_tap_the_left_or_right_side">Toca dos veces el lado izquierdo o derecho del vídeo para avanzar sin abrir los controles.</string>
   <string name="settings_m_double_tap_the_middle_of_the_video">Toca dos veces el centro del vídeo para reproducir o pausar sin abrir los controles.</string>
   <string name="settings_m_double_tap_to_play_or_pause">Doble toque para reproducir o pausar</string>
@@ -949,6 +950,8 @@
   <string name="settings_m_how_long_a_title_page_is_left">Cuánto tiempo se deja una ficha en reposo antes de que empiece su tráiler.</string>
   <string name="settings_m_how_much_to_ask_subtitle_add_ons">Cuánto pedir a los complementos de subtítulos.</string>
   <string name="settings_m_how_results_look">Aspecto de los resultados</string>
+  <string name="settings_m_decoding">Decodificación</string>
+  <string name="settings_m_hardware_decoding_and_what_to_try_when">Decodificación por hardware y qué probar si un vídeo no se reproduce.</string>
   <string name="settings_m_if_a_video_will_not_play">Si un vídeo no se reproduce</string>
   <string name="settings_m_improves_coverage_when_the_preferred_service_cannot">Mejora la cobertura cuando el servicio preferido no puede aportar datos utilizables.</string>
   <string name="settings_m_keep_engine_ready">Mantener el motor listo</string>
@@ -1251,7 +1254,8 @@
   <string name="settings_route_title_pages_subtitle">Elige cómo aparecen los tráilers, las temporadas, las imágenes de los episodios y las valoraciones.</string>
   <string name="settings_route_ratings_subtitle">Elige qué valoraciones aparecen en las fichas de los títulos.</string>
   <string name="settings_route_live_tv_subtitle">Elige cómo se listan los canales y qué muestra el reproductor en directo.</string>
-  <string name="settings_route_player_subtitle">Elige el reproductor, los gestos y qué probar cuando un vídeo no se reproduce.</string>
+  <string name="settings_route_player_subtitle">Elige el reproductor, sus gestos y la disposición de sus controles.</string>
+  <string name="settings_route_video_decoding_subtitle">Cómo decodifica el vídeo este dispositivo y qué probar si algo no se reproduce. Se queda en este dispositivo.</string>
   <string name="settings_route_skip_autoplay_subtitle">Elige qué se puede saltar y cuándo empieza el siguiente episodio.</string>
   <string name="settings_route_subtitles_subtitle">Elige los subtítulos automáticos y gestiona las fuentes que busca StreamDek.</string>
   <string name="settings_route_streams_subtitle">Elige la calidad que prefiere StreamDek y cómo se etiquetan los resultados.</string>

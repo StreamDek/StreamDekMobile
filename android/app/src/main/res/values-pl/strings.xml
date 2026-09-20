@@ -914,6 +914,7 @@
   <string name="settings_dest_accessibility_description">Kontrast, rozmiar tekstu i ograniczony ruch dla tego telewizora.</string>
   <string name="settings_dest_player">Odtwarzacz</string>
   <string name="settings_dest_player_description">Silnik odtwarzacza, dźwięk, napisy i zgodność.</string>
+  <string name="settings_dest_video_decoding">Dekodowanie wideo</string>
   <string name="settings_dest_skip_autoplay">Pomijanie i autoodtwarzanie</string>
   <string name="settings_dest_skip_autoplay_description">Czołówki, streszczenia, zakończenia i następny odcinek.</string>
   <string name="settings_dest_streams">Strumienie i jakość</string>
@@ -996,7 +997,7 @@
   <string name="settings_m_device_code">Kod urządzenia</string>
   <string name="settings_m_dns_over_https">DNS over HTTPS</string>
   <string name="settings_m_dns_privacy">Prywatność DNS</string>
-  <string name="settings_m_dolby_vision_profile_7_files_mostly_disc">Pliki Dolby Vision Profile 7, głównie remuksy z płyt, dają czarny obraz na większości urządzeń. Odtwarzaj je w mpv, który dekoduje warstwę bazową HEVC. Tracisz korekcję Dolby Vision.</string>
+  <string name="settings_m_dolby_vision_profile_7_files_mostly_disc">Automatycznie używa zgodnego odtwarzania HEVC, gdy Dolby Vision Profile 7 nie jest obsługiwany lub dekodowanie się nie powiedzie. Zachowuje natywne Dolby Vision, gdy jest obsługiwane. Wyjście HDR zależy od urządzenia i silnika odtwarzania.</string>
   <string name="settings_m_double_tap_the_left_or_right_side">Dotknij dwukrotnie lewej lub prawej strony wideo, aby przewinąć bez otwierania sterowania.</string>
   <string name="settings_m_double_tap_the_middle_of_the_video">Dotknij dwukrotnie środka wideo, aby odtworzyć lub wstrzymać bez otwierania sterowania.</string>
   <string name="settings_m_double_tap_to_play_or_pause">Dwukrotne dotknięcie odtwarza lub wstrzymuje</string>
@@ -1025,6 +1026,8 @@
   <string name="settings_m_how_long_a_title_page_is_left">Jak długo strona tytułu pozostaje nietknięta, zanim zacznie się zwiastun.</string>
   <string name="settings_m_how_much_to_ask_subtitle_add_ons">Ile żądać od dodatków z napisami.</string>
   <string name="settings_m_how_results_look">Wygląd wyników</string>
+  <string name="settings_m_decoding">Dekodowanie</string>
+  <string name="settings_m_hardware_decoding_and_what_to_try_when">Dekodowanie sprzętowe i co zrobić, gdy film się nie odtwarza.</string>
   <string name="settings_m_if_a_video_will_not_play">Jeśli wideo się nie odtwarza</string>
   <string name="settings_m_improves_coverage_when_the_preferred_service_cannot">Poprawia pokrycie, gdy preferowana usługa nie może dostarczyć użytecznych danych.</string>
   <string name="settings_m_keep_engine_ready">Utrzymuj silnik w gotowości</string>
@@ -1337,7 +1340,8 @@
   <string name="settings_route_title_pages_subtitle">Wybierz, jak pojawiają się zwiastuny, sezony, grafiki odcinków i oceny.</string>
   <string name="settings_route_ratings_subtitle">Wybierz, które oceny pojawiają się na stronach tytułów.</string>
   <string name="settings_route_live_tv_subtitle">Wybierz sposób wyświetlania kanałów i to, co pokazuje odtwarzacz na żywo.</string>
-  <string name="settings_route_player_subtitle">Wybierz odtwarzacz, gesty i to, co spróbować, gdy wideo się nie odtwarza.</string>
+  <string name="settings_route_player_subtitle">Wybierz odtwarzacz, jego gesty i układ jego elementów sterujących.</string>
+  <string name="settings_route_video_decoding_subtitle">Jak to urządzenie dekoduje wideo i co zrobić, gdy coś się nie odtwarza. Zostaje na tym urządzeniu.</string>
   <string name="settings_route_skip_autoplay_subtitle">Wybierz, co można pomijać i kiedy zaczyna się następny odcinek.</string>
   <string name="settings_route_subtitles_subtitle">Wybierz automatyczne napisy i zarządzaj źródłami, które przeszukuje StreamDek.</string>
   <string name="settings_route_streams_subtitle">Wybierz jakość preferowaną przez StreamDek i sposób etykietowania wyników.</string>

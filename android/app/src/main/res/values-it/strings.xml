@@ -838,6 +838,7 @@
   <string name="settings_dest_accessibility_description">Contrasto, dimensione del testo e movimento ridotto per questo televisore.</string>
   <string name="settings_dest_player">Player</string>
   <string name="settings_dest_player_description">Motore del player, audio, sottotitoli e compatibilità.</string>
+  <string name="settings_dest_video_decoding">Decodifica video</string>
   <string name="settings_dest_skip_autoplay">Salto e riproduzione automatica</string>
   <string name="settings_dest_skip_autoplay_description">Intro, riepiloghi, finali ed episodio successivo.</string>
   <string name="settings_dest_streams">Flussi e qualità</string>
@@ -920,7 +921,7 @@
   <string name="settings_m_device_code">Codice del dispositivo</string>
   <string name="settings_m_dns_over_https">DNS over HTTPS</string>
   <string name="settings_m_dns_privacy">Privacy DNS</string>
-  <string name="settings_m_dolby_vision_profile_7_files_mostly_disc">I file Dolby Vision Profilo 7, in genere remux da disco, danno un\'immagine nera sulla maggior parte dei dispositivi. Riproducili con mpv, che decodifica il livello base HEVC. Si perde la calibrazione Dolby Vision.</string>
+  <string name="settings_m_dolby_vision_profile_7_files_mostly_disc">Usa automaticamente la riproduzione HEVC compatibile se Dolby Vision Profilo 7 non è supportato o la decodifica non riesce. Mantiene Dolby Vision nativo quando supportato. La resa HDR dipende dal dispositivo e dal motore di riproduzione.</string>
   <string name="settings_m_double_tap_the_left_or_right_side">Tocca due volte il lato sinistro o destro del video per spostarti senza aprire i comandi.</string>
   <string name="settings_m_double_tap_the_middle_of_the_video">Tocca due volte al centro del video per avviare o mettere in pausa senza aprire i comandi.</string>
   <string name="settings_m_double_tap_to_play_or_pause">Doppio tocco per riprodurre o mettere in pausa</string>
@@ -949,6 +950,8 @@
   <string name="settings_m_how_long_a_title_page_is_left">Per quanto tempo una scheda resta ferma prima che parta il suo trailer.</string>
   <string name="settings_m_how_much_to_ask_subtitle_add_ons">Quanto richiedere agli add-on dei sottotitoli.</string>
   <string name="settings_m_how_results_look">Aspetto dei risultati</string>
+  <string name="settings_m_decoding">Decodifica</string>
+  <string name="settings_m_hardware_decoding_and_what_to_try_when">Decodifica hardware e cosa provare se un video non parte.</string>
   <string name="settings_m_if_a_video_will_not_play">Se un video non parte</string>
   <string name="settings_m_improves_coverage_when_the_preferred_service_cannot">Migliora la copertura quando il servizio preferito non può fornire dati utilizzabili.</string>
   <string name="settings_m_keep_engine_ready">Tieni il motore pronto</string>
@@ -1251,7 +1254,8 @@
   <string name="settings_route_title_pages_subtitle">Scegli come compaiono trailer, stagioni, immagini degli episodi e valutazioni.</string>
   <string name="settings_route_ratings_subtitle">Scegli quali valutazioni compaiono nelle schede dei titoli.</string>
   <string name="settings_route_live_tv_subtitle">Scegli come sono elencati i canali e cosa mostra il player live.</string>
-  <string name="settings_route_player_subtitle">Scegli il player, i gesti e cosa provare quando un video non parte.</string>
+  <string name="settings_route_player_subtitle">Scegli il lettore, i suoi gesti e la disposizione dei suoi comandi.</string>
+  <string name="settings_route_video_decoding_subtitle">Come questo dispositivo decodifica i video e cosa provare se qualcosa non parte. Resta su questo dispositivo.</string>
   <string name="settings_route_skip_autoplay_subtitle">Scegli cosa si può saltare e quando parte l\'episodio successivo.</string>
   <string name="settings_route_subtitles_subtitle">Scegli i sottotitoli automatici e gestisci le sorgenti che StreamDek cerca.</string>
   <string name="settings_route_streams_subtitle">Scegli la qualità preferita da StreamDek e come vengono etichettati i risultati.</string>

@@ -34,6 +34,10 @@ class MainApplication : Application(), ImageLoaderFactory {
     // the splash from the manifest theme before any of this runs, and this is what tells it which
     // night mode to build it in.
     net.streamdek.mobile.nativeapp.applyAppNightMode(this)
+    // As early as the process allows: a crash before this runs cannot be recorded. It only
+    // installs a handler in front of the existing one -- see Stability -- so it changes nothing
+    // about what the user sees when the app does die.
+    net.streamdek.mobile.nativeapp.Stability.install(this, BuildConfig.VERSION_NAME)
     EpisodeNotificationSystem.ensureBackgroundWork(this)
   }
 

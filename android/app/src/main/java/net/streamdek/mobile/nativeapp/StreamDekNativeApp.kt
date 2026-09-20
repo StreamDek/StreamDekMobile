@@ -4085,6 +4085,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     // attributed once one exists, and signed-out activity is sent anonymously rather than lost.
     Telemetry.configure(apiClient) { uiState.session }
     Telemetry.sessionStarted()
+    // After configure, not before: events queued without a client are dropped, so reporting any
+    // earlier would lose exactly the crash this exists to report.
+    Stability.reportPending(application.applicationContext)
     DisplayNameOverrides.initialize(application.applicationContext)
     LocalAddonManager.initialize(application.applicationContext)
     M3uPlaylistManager.initialize(application.applicationContext)

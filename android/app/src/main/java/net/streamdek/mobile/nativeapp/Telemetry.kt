@@ -41,6 +41,8 @@ object Telemetry {
   const val PLAYBACK_STARTED = "playback_started"
   const val PLAYBACK_FAILED = "playback_failed"
   const val SESSION_STARTED = "session_started"
+  const val APP_CRASH = "app_crash"
+  const val APP_ANR = "app_anr"
 
   /** Matches the backend's error taxonomy. Anything unrecognised is filed as `unknown` there. */
   const val CATEGORY_PLAYBACK = "playback"
@@ -48,6 +50,7 @@ object Telemetry {
   const val CATEGORY_TIMEOUT = "timeout"
   const val CATEGORY_NETWORK = "network"
   const val CATEGORY_UNKNOWN = "unknown"
+  const val CATEGORY_CLIENT = "client"
 
   private const val MAX_QUEUE = 200
   private const val FLUSH_AT = 20
@@ -183,6 +186,59 @@ object Telemetry {
 
   fun sessionStarted() {
     track(SESSION_STARTED) {}
+  }
+
+  /**
+   * A crash that happened on a previous run, reported now.
+   *
+   * Never sent from inside the crash. A process being torn down cannot be relied on to finish a
+   * network call, and an attempt to make one turns a crash into a slower crash. [Stability]
+   * records what happened locally and this reports it on the next launch.
+   *
+   * `crashedAppVersion` is the build that *was running* when it crashed, not necessarily the one
+   * reporting it -- a device that crashed and then updated would otherwise blame the new build
+   * for the old one's fault.
+   */
+  fun appCrash(
+    exceptionClass: String?,
+    topFrame: String?,
+    occurredAtIso: String?,
+    crashedAppVersion: String?,
+    foreground: Boolean?,
+  ) {
+    track(APP_CRASH) {
+      occurredAtIso?.let { put("occurredAt", it) }
+      put("outcome", "failure")
+      put("errorCategory", CATEGORY_CLIENT)
+      putOpt("errorCode", exceptionClass)
+      put(
+        "metadata",
+        JSONObject().apply {
+          // The top frame of our own code, not the whole stack: enough to tell two crashes with
+          // the same exception type apart, without shipping a trace that may contain anything.
+          if (!topFrame.isNullOrBlank()) put("topFrame", topFrame)
+          if (!crashedAppVersion.isNullOrBlank()) put("crashedAppVersion", crashedAppVersion)
+          if (foreground != null) put("foreground", foreground)
+        },
+      )
+    }
+  }
+
+  /** The app stopped responding to input for long enough that Android recorded it. */
+  fun appNotResponding(occurredAtIso: String?, crashedAppVersion: String?, description: String?) {
+    track(APP_ANR) {
+      occurredAtIso?.let { put("occurredAt", it) }
+      put("outcome", "failure")
+      put("errorCategory", CATEGORY_CLIENT)
+      put("errorCode", "anr")
+      put(
+        "metadata",
+        JSONObject().apply {
+          if (!crashedAppVersion.isNullOrBlank()) put("crashedAppVersion", crashedAppVersion)
+          if (!description.isNullOrBlank()) put("description", description.take(200))
+        },
+      )
+    }
   }
 
   // ── Internals ───────────────────────────────────────────────────────────────

@@ -180,16 +180,23 @@ class ScrollChromeState internal constructor(density: Float, private val scope: 
    * exactly the events they always did.
    */
   val touchObserver: Modifier = Modifier.pointerInput(this) {
-    awaitPointerEventScope {
-      var down = false
-      while (true) {
-        val event = awaitPointerEvent(PointerEventPass.Initial)
-        val pressed = event.changes.any { it.pressed }
-        if (pressed != down) {
-          down = pressed
-          if (pressed) onTouchDown() else onTouchUp()
+    var down = false
+    try {
+      awaitPointerEventScope {
+        while (true) {
+          val event = awaitPointerEvent(PointerEventPass.Initial)
+          val pressed = event.changes.any { it.pressed }
+          if (pressed != down) {
+            down = pressed
+            if (pressed) onTouchDown() else onTouchUp()
+          }
         }
       }
+    } finally {
+      // Stopped watching with a finger still down - the node was detached or restarted mid-press.
+      // The lift will never be seen, and a chrome that believes a finger is resting on the page
+      // never brings the navigation back, so count the finger as gone.
+      if (down) onTouchUp()
     }
   }
 

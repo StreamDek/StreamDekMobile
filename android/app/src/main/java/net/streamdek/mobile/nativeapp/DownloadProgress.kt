@@ -144,8 +144,11 @@ internal fun buildDownloadNotification(
   val active = downloads.filter { it.state == DownloadState.DOWNLOADING }
 
   if (active.isEmpty()) {
-    // Queued, or held back by the platform (no network, storage low): nothing is moving yet.
-    val waiting = downloads.singleOrNull()
+    // Queued, or held back by the platform (no network, storage low): nothing is moving yet. A
+    // paused download is not waiting for anything and has its own notification.
+    val waiting = downloads.filter { it.state != DownloadState.PAUSED }.singleOrNull()
+    // Cancel only: there is nothing running to pause.
+    waiting?.let { entry -> DownloadNotifications.runningActions(context, entry).drop(1).forEach(builder::addAction) }
     return builder
       .setContentTitle(waiting?.let { DownloadProgressText.title(context, it.media) } ?: context.getString(R.string.download_channel_name))
       .setContentText(context.getString(R.string.download_notification_waiting))
@@ -160,6 +163,7 @@ internal fun buildDownloadNotification(
       DownloadProgressText.speed(context, entry)?.let { "⚡ $it" },
       DownloadProgressText.eta(context, entry),
     ).joinToString(" • ")
+    DownloadNotifications.runningActions(context, entry).forEach(builder::addAction)
     return builder
       .setContentTitle(DownloadProgressText.title(context, entry.media))
       .setContentText(if (detail.isEmpty()) status else "$status • $detail")
@@ -176,6 +180,7 @@ internal fun buildDownloadNotification(
   val inbox = NotificationCompat.InboxStyle()
   active.forEach { entry -> inbox.addLine("${DownloadProgressText.title(context, entry.media)} — ${percentOf(entry)}") }
   speedText?.let(inbox::setSummaryText)
+  builder.addAction(DownloadNotifications.pauseAllAction(context))
   return builder
     .setContentTitle(context.resources.getQuantityString(R.plurals.download_notification_multiple, active.size, active.size))
     .setContentText(listOfNotNull(active.joinToString(" • ", transform = ::percentOf), speedText).joinToString(" • "))

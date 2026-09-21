@@ -29,6 +29,7 @@ class SettingsSearchTest {
     SettingsRoute.VideoDecoding to "Video Decoding",
     SettingsRoute.SkipAndAutoplay to "Skip and Autoplay",
     SettingsRoute.Subtitles to "Subtitles",
+    SettingsRoute.Audio to "Audio",
     SettingsRoute.Streams to "Streams and Quality",
     SettingsRoute.Downloads to "Downloads",
     SettingsRoute.Addons to "Add-ons",
@@ -53,6 +54,12 @@ class SettingsSearchTest {
   private fun titleOf(route: SettingsRoute) = titles.getValue(route)
   private fun bodyOf(route: SettingsRoute) = settingsRouteKeywords(route)
   private fun find(query: String) = searchSettingsRoutes(query, ::titleOf, ::bodyOf)
+
+  @Test fun audioSettingsAreFoundOnTheAudioPage() {
+    assertEquals(SettingsRoute.Audio, find("audio delay").first())
+    assertEquals(SettingsRoute.Audio, find("lip sync").first())
+    assertEquals(SettingsRoute.Subtitles, find("subtitle timing").first())
+  }
 
   @Test fun everyRouteHasATitleInThisTest() {
     val missing = SettingsRoute.values().filterNot { it in titles }

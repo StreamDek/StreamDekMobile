@@ -26,4 +26,4 @@ internal fun parseExternalSubtitleCues(path: String): List<CuesWithTiming> {
 
 /** Positive delay shows a cue later, so presentation reads an earlier point in its timeline. */
 internal fun delayedSubtitlePositionUs(playbackPositionMs: Long, delaySeconds: Double): Long =
-  playbackPositionMs * 1_000L - (delaySeconds.coerceIn(-15.0, 15.0) * 1_000_000.0).toLong()
+  playbackPositionMs * 1_000L - (delaySeconds.coerceIn(-SUBTITLE_DELAY_LIMIT_SECONDS, SUBTITLE_DELAY_LIMIT_SECONDS) * 1_000_000.0).toLong()

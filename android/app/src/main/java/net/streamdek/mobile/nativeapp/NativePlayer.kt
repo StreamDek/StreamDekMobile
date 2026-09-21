@@ -297,11 +297,13 @@ internal fun nextUntriedPlaybackSource(
  * pill comes from a resource beside it. Drawing `tab.name` was why these four stayed English on a
  * translated phone.
  */
-private enum class SubtitlePanelTab(@StringRes val labelRes: Int) {
+private enum class SubtitlePanelTab(@StringRes val labelRes: Int, val isSource: Boolean = true) {
   All(R.string.subtitle_tab_all),
   BuiltIn(R.string.subtitle_tab_built_in),
   Addons(R.string.subtitle_tab_addons),
-  Style(R.string.subtitle_tab_style),
+  // Controls rather than places subtitles come from, so neither is remembered as the landing tab.
+  Style(R.string.subtitle_tab_style, isSource = false),
+  Timing(R.string.subtitle_tab_timing, isSource = false),
 }
 internal enum class ExternalSubtitleOrigin { BuiltIn, Addon }
 internal fun externalSubtitleOrigin(sourceId: String): ExternalSubtitleOrigin =
@@ -477,6 +479,9 @@ fun NativePlayerScreen(
   fun activeSetSubtitleOutline(enabled: Boolean, color: String) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleOutline(enabled, color) else playerView?.setSubtitleOutline(enabled, color) }
   fun activeSetSubtitleBold(bold: Boolean) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleBold(bold) else playerView?.setSubtitleBold(bold) }
   fun activeSetSubtitleDelay(seconds: Double) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleDelay(seconds) else playerView?.setSubtitleDelay(seconds) }
+  fun activeSetAudioDelay(seconds: Double) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setAudioDelay(seconds) else playerView?.setAudioDelay(seconds) }
+  // mpv moves its audio in every output mode; ExoPlayer cannot while tunneled. See [AudioDelayControl].
+  fun activeAudioDelaySupported(): Boolean = activeEngine != ActivePlaybackEngine.Media3 || exoPlayerView?.audioDelaySupported() != false
   fun activeSetSpeed(speed: Double) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSpeed(speed) else playerView?.setSpeed(speed) }
 
   val audioFocusListener = remember(playbackIdentity) {
@@ -611,6 +616,10 @@ fun NativePlayerScreen(
   var playbackStats by source.playbackStats
   val subtitleDelayState = rememberSaveable(session.url) { mutableFloatStateOf(0f) }
   var subtitleDelay by subtitleDelayState
+  // Starts from this device's default (Settings > Audio) and is then this video's own: a correction
+  // made for one stream is not carried into the next, where it would put a synced one out.
+  val audioDelayState = rememberSaveable(session.url) { mutableFloatStateOf(AudioSyncOptions.defaultDelaySeconds.toFloat()) }
+  val audioDelay by audioDelayState
   // Seeded from settings rather than from a constant, and keyed on the setting rather than on the
   // stream, so a size or colour chosen once carries into the next episode instead of resetting.
   val subtitleSizeState = remember(session.subtitleTextSize) { mutableIntStateOf(session.subtitleTextSize) }
@@ -636,8 +645,8 @@ fun NativePlayerScreen(
   val configuredSubtitleSource = normalizeSubtitleDefaultSource(session.subtitleDefaultSource)
   val availableSubtitleTabs = remember(configuredSubtitleSource) {
     when (configuredSubtitleSource) {
-      "BuiltIn" -> listOf(SubtitlePanelTab.BuiltIn, SubtitlePanelTab.Style)
-      "Addons" -> listOf(SubtitlePanelTab.Addons, SubtitlePanelTab.Style)
+      "BuiltIn" -> listOf(SubtitlePanelTab.BuiltIn, SubtitlePanelTab.Style, SubtitlePanelTab.Timing)
+      "Addons" -> listOf(SubtitlePanelTab.Addons, SubtitlePanelTab.Style, SubtitlePanelTab.Timing)
       else -> SubtitlePanelTab.entries
     }
   }
@@ -1274,6 +1283,7 @@ fun NativePlayerScreen(
       customZoom = customZoom,
       playbackSpeed = playbackSpeed,
       subtitleDelay = subtitleDelay,
+      audioDelay = audioDelay,
       subtitleSize = subtitleSize,
       subtitlePosition = subtitlePosition,
       subtitleColor = subtitleColor,
@@ -1417,6 +1427,7 @@ fun NativePlayerScreen(
       activePanelState = activePanelState,
       playbackSpeedState = playbackSpeedState,
       subtitleDelayState = subtitleDelayState,
+      audioDelayState = audioDelayState,
       subtitleSizeState = subtitleSizeState,
       subtitlePositionState = subtitlePositionState,
       subtitleTabState = subtitleTabState,
@@ -1435,6 +1446,8 @@ fun NativePlayerScreen(
       activeSetSubtitleFontSize = ::activeSetSubtitleFontSize,
       activeSetSubtitlePosition = ::activeSetSubtitlePosition,
       activeSetSubtitleDelay = ::activeSetSubtitleDelay,
+      activeSetAudioDelay = ::activeSetAudioDelay,
+      activeAudioDelaySupported = ::activeAudioDelaySupported,
       activeSetSpeed = ::activeSetSpeed,
       activeAddSubtitle = ::activeAddSubtitle,
       onSubtitleSourceChange = onSubtitleSourceChange,
@@ -1493,6 +1506,7 @@ private fun PlayerSurface(
   customZoom: Float,
   playbackSpeed: Float,
   subtitleDelay: Float,
+  audioDelay: Float,
   subtitleSize: Int,
   subtitlePosition: Int,
   subtitleColor: String,
@@ -1523,6 +1537,7 @@ private fun PlayerSurface(
             setResizeMode(if (resizeMode == "custom") "contain" else resizeMode)
             setSpeed(playbackSpeed.toDouble())
             setSubtitleDelay(subtitleDelay.toDouble())
+            setAudioDelay(audioDelay.toDouble())
             setSubtitleFontSize(subtitleSize)
             setSubtitlePosition(subtitlePosition)
             setSubtitleColor(subtitleColor)
@@ -1564,6 +1579,7 @@ private fun PlayerSurface(
           view.setResizeMode(if (resizeMode == "custom") "contain" else resizeMode)
           view.setSpeed(playbackSpeed.toDouble())
           view.setSubtitleDelay(subtitleDelay.toDouble())
+          view.setAudioDelay(audioDelay.toDouble())
           view.setSubtitleFontSize(subtitleSize)
           view.setSubtitlePosition(subtitlePosition)
           view.setSubtitleColor(subtitleColor)
@@ -1591,6 +1607,7 @@ private fun PlayerSurface(
             setRenderSurface(session.renderSurface)
             setSpeed(playbackSpeed.toDouble())
             setSubtitleDelay(subtitleDelay.toDouble())
+            setAudioDelay(audioDelay.toDouble())
             setSubtitleFontSize(subtitleSize)
             setSubtitlePosition(subtitlePosition)
             setSubtitleColor(subtitleColor)
@@ -1625,6 +1642,7 @@ private fun PlayerSurface(
           view.setRenderSurface(session.renderSurface)
           view.setSpeed(playbackSpeed.toDouble())
           view.setSubtitleDelay(subtitleDelay.toDouble())
+          view.setAudioDelay(audioDelay.toDouble())
           view.setSubtitleFontSize(subtitleSize)
           view.setSubtitlePosition(subtitlePosition)
           view.setSubtitleColor(subtitleColor)
@@ -3365,6 +3383,7 @@ private fun PlayerPanels(
   activePanelState: MutableState<PlayerPanel>,
   playbackSpeedState: MutableFloatState,
   subtitleDelayState: MutableFloatState,
+  audioDelayState: MutableFloatState,
   subtitleSizeState: MutableIntState,
   subtitlePositionState: MutableIntState,
   subtitleTabState: MutableState<SubtitlePanelTab>,
@@ -3383,6 +3402,8 @@ private fun PlayerPanels(
   activeSetSubtitleFontSize: (Int) -> Unit,
   activeSetSubtitlePosition: (Int) -> Unit,
   activeSetSubtitleDelay: (Double) -> Unit,
+  activeSetAudioDelay: (Double) -> Unit,
+  activeAudioDelaySupported: () -> Boolean,
   activeSetSpeed: (Double) -> Unit,
   activeAddSubtitle: (String, String?) -> Unit,
   onSubtitleSourceChange: (String) -> Unit,
@@ -3397,6 +3418,7 @@ private fun PlayerPanels(
   var activePanel by activePanelState
   var playbackSpeed by playbackSpeedState
   var subtitleDelay by subtitleDelayState
+  var audioDelay by audioDelayState
   var subtitleSize by subtitleSizeState
   var subtitlePosition by subtitlePositionState
   var subtitleTab by subtitleTabState
@@ -3416,7 +3438,7 @@ private fun PlayerPanels(
     subtitleErrorMessage = null
   }
   when (activePanel) {
-    PlayerPanel.Audio -> PlayerModalPanel(title = stringResource(R.string.player_audio), onClose = { activePanel = PlayerPanel.None }, compact = true) {
+    PlayerPanel.Audio -> PlayerModalPanel(title = stringResource(R.string.player_audio), onClose = { activePanel = PlayerPanel.None }) {
       if (audioTracks.isEmpty()) {
         PlayerOptionRow("Default audio", selected = true, onClick = {})
       } else {
@@ -3429,6 +3451,15 @@ private fun PlayerPanels(
           }
         }
       }
+      Box(Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.10f)))
+      AudioDelayControl(
+        valueSeconds = audioDelay.toDouble(),
+        supported = remember(activeEngine, audioTracks) { activeAudioDelaySupported() },
+        onChange = { seconds ->
+          audioDelay = seconds.toFloat()
+          activeSetAudioDelay(seconds)
+        },
+      )
     }
     PlayerPanel.Subtitles -> PlayerModalPanel(title = stringResource(R.string.player_subtitles), onClose = { activePanel = PlayerPanel.None }) {
       Row(
@@ -3446,7 +3477,7 @@ private fun PlayerPanels(
                 subtitleTab = tab
                 // Style is a set of controls, not a place subtitles come from, so it is not
                 // remembered as the picker's landing tab.
-                if (tab != SubtitlePanelTab.Style) onSubtitleSourceChange(tab.name)
+                if (tab.isSource) onSubtitleSourceChange(tab.name)
               }
               .padding(vertical = 11.dp),
             contentAlignment = Alignment.Center,
@@ -3455,6 +3486,8 @@ private fun PlayerPanels(
               stringResource(tab.labelRes),
               color = if (selected) Color.Black else Color.White.copy(alpha = 0.72f),
               fontWeight = FontWeight.Bold,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
             )
           }
         }
@@ -3615,11 +3648,10 @@ private fun PlayerPanels(
             onValueChangeFinished = { onSubtitleVerticalOffsetChange(subtitlePosition) },
           )
           Text(stringResource(R.string.player_subtitle_styling_note), color = Color.White.copy(alpha = 0.52f), fontSize = 11.5.sp)
-          Text(stringResource(R.string.player_subtitle_delay_value, AppFormats.number(LocalAppLanguage.current, subtitleDelay, decimals = 1)), color = Color.White.copy(alpha = 0.72f))
-          Slider(value = subtitleDelay, valueRange = -15f..15f, onValueChange = {
-            subtitleDelay = it
-            activeSetSubtitleDelay(it.toDouble())
-          })
+        }
+        SubtitlePanelTab.Timing -> SubtitleDelayControl(subtitleDelay.toDouble()) { seconds ->
+          subtitleDelay = seconds.toFloat()
+          activeSetSubtitleDelay(seconds)
         }
       }
     }

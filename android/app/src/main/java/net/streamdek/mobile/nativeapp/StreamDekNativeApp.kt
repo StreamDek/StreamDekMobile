@@ -160,6 +160,7 @@ import androidx.compose.material.icons.rounded.Newspaper
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PictureInPicture
+import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlayCircleOutline
 import androidx.compose.material.icons.rounded.Public
@@ -752,6 +753,7 @@ internal enum class SettingsRoute(@StringRes val titleRes: Int, @StringRes val s
   VideoDecoding(R.string.settings_dest_video_decoding, R.string.settings_route_video_decoding_subtitle),
   SkipAndAutoplay(R.string.settings_dest_skip_autoplay, R.string.settings_route_skip_autoplay_subtitle),
   Subtitles(R.string.player_subtitles, R.string.settings_route_subtitles_subtitle),
+  Audio(R.string.settings_dest_audio, R.string.settings_route_audio_subtitle),
   Streams(R.string.settings_dest_streams, R.string.settings_route_streams_subtitle),
   Downloads(R.string.settings_m_downloads, R.string.settings_route_downloads_subtitle),
   // Sources — where titles and streams come from. Peer-to-peer sits last as the advanced one.
@@ -1621,90 +1623,6 @@ private fun streamSingleLine(value: String?): String? =
 internal fun streamTextFingerprint(value: String): String =
   value.replace(Regex("\\s+"), " ").trim().lowercase()
 
-private fun parseStreamSizeGiB(size: String?): Double? {
-  val raw = size?.trim().orEmpty()
-  if (raw.isBlank()) return null
-  // The trailing boundary keeps bitrates out: without it "~7.71 Mbps" matches as "7.71 MB", so a
-  // 6 GB result reads as 7 MB and slips straight past the max-size cap.
-  val match = Regex("""([\d.]+)\s*(GB|GiB|MB|MiB|TB|TiB)\b""", RegexOption.IGNORE_CASE).find(raw) ?: return null
-  val value = match.groupValues[1].toDoubleOrNull() ?: return null
-  return when (match.groupValues[2].lowercase()) {
-    "tb", "tib" -> value * 1024.0
-    "mb", "mib" -> value / 1024.0
-    else -> value
-  }
-}
-
-// Some addons only report the size inside the title/description, so fall back to
-// scanning the stream text — otherwise those results bypass the max size cap.
-private fun streamSizeGiB(stream: AddonStream): Double? =
-  parseStreamSizeGiB(stream.size)
-    ?: parseStreamSizeGiB(listOfNotNull(stream.title, stream.name, stream.filename, stream.description).joinToString(" "))
-
-private fun preferredQualityBoost(stream: AddonStream, preferredQuality: String): Int {
-  val quality = preferredQuality.trim()
-  if (quality.equals("Auto", ignoreCase = true)) return 0
-  val text = listOfNotNull(stream.title, stream.name, stream.filename, stream.description, stream.quality).joinToString(" ").lowercase()
-  // An exact match must dominate every other tag bonus combined (codec/audio/remux
-  // add up to roughly +300) so the chosen quality genuinely wins the ranking.
-  return when (quality) {
-    "2160p" -> when {
-      "2160" in text || "4k" in text -> 520
-      "1080" in text -> 200
-      "720" in text -> 90
-      else -> 20
-    }
-    "1080p" -> when {
-      "1080" in text -> 520
-      "720" in text -> 200
-      "2160" in text || "4k" in text -> 120
-      else -> 20
-    }
-    "720p" -> when {
-      "720" in text -> 520
-      "1080" in text -> 160
-      "2160" in text || "4k" in text -> 40
-      else -> 20
-    }
-    else -> 0
-  }
-}
-
-/** Whether a stream, whichever add-on or plugin produced it, is pornography. */
-private fun streamIsAdult(stream: AddonStream): Boolean = AdultContentFilter.isBlocked(
-  stream.name,
-  stream.title,
-  stream.filename,
-  stream.addonName,
-  // Unlike a catalogue entry, a stream's description is usually the release name rather than a
-  // synopsis, and that is exactly where the marker tends to sit.
-  stream.description,
-)
-
-private fun rankedStreams(
-  streams: List<AddonStream>,
-  hasDebrid: Boolean,
-  preferredQuality: String = "Auto",
-  maxFileSizeGb: Int = 0,
-  favouriteAddonIds: Set<String> = emptySet(),
-  favouritePluginProviderIds: Set<String> = emptySet(),
-): List<AddonStream> =
-  streams
-    // Every list that reaches the viewer is ranked here first, whatever produced it, so this is
-    // the one place the block cannot be routed around by a new caller.
-    .filterNot(::streamIsAdult)
-    .filter { stream ->
-      val sizeGiB = streamSizeGiB(stream)
-      maxFileSizeGb <= 0 || sizeGiB == null || sizeGiB <= maxFileSizeGb.toDouble()
-    }
-    .sortedWith(
-      compareByDescending<AddonStream> { stream ->
-        stream.addonId in favouriteAddonIds || stream.addonId.removePrefix("plugin:") in favouritePluginProviderIds
-      }
-        .thenByDescending { streamScore(it, hasDebrid, preferredQuality, maxFileSizeGb) }
-        .thenBy { it.title ?: it.name ?: it.filename ?: "" },
-    )
-
 private fun streamIdentity(stream: AddonStream): String =
   listOf(stream.addonId, stream.url.orEmpty(), stream.infoHash.orEmpty(), stream.name.orEmpty(), stream.title.orEmpty()).joinToString("|")
 
@@ -1916,45 +1834,6 @@ private fun MediaItem.toFallbackDetail(): MediaDetail =
     imdbId = id.takeIf { it.startsWith("tt") },
     seasons = emptyList(),
   )
-
-private fun streamScore(stream: AddonStream, hasDebrid: Boolean, preferredQuality: String = "Auto", maxFileSizeGb: Int = 0): Int {
-  val text = listOfNotNull(stream.title, stream.name, stream.filename, stream.description, stream.quality, stream.addonName).joinToString(" ").lowercase()
-  val sizeGiB = streamSizeGiB(stream)
-  var score = 0
-  if (maxFileSizeGb > 0 && sizeGiB != null && sizeGiB > maxFileSizeGb.toDouble()) return Int.MIN_VALUE / 4
-  if (!stream.url.isNullOrBlank()) score += 380
-  if (hasDebrid && !stream.infoHash.isNullOrBlank()) score += 260
-  if (stream.cachedBy.isNotEmpty()) score += 400 + ((stream.cachedBy.size - 1).coerceAtLeast(0) * 45)
-  score += when {
-    "2160" in text || "4k" in text -> 90
-    "1080" in text -> 75
-    "720" in text -> 45
-    else -> 20
-  }
-  if ("english" in text || "multi" in text) score += 70
-  if ("remux" in text) score += 35
-  if ("web-dl" in text || "webdl" in text) score += 26
-  if ("bluray" in text || "blu-ray" in text) score += 12
-  if ("aac" in text || "flac" in text || "mp3" in text || "opus" in text) score += 90
-  if ("ac3" in text || "eac3" in text || "dd+" in text) score += 40
-  if ("dts:x" in text) score -= 160
-  else if ("dts" in text) score -= 90
-  if ("h264" in text || "h.264" in text || "avc" in text || "x264" in text) score += 120
-  if ("av1" in text) score -= 80
-  if ("hevc" in text || "x265" in text || "h265" in text) score += 20
-  if ("cam" in text) score -= 200
-  if ("telesync" in text) score -= 120
-  score += preferredQualityBoost(stream, preferredQuality)
-  if (sizeGiB != null) {
-    score += when {
-      sizeGiB in 0.6..12.5 -> 30
-      sizeGiB > 30.0 -> -65
-      sizeGiB < 0.25 -> -55
-      else -> 0
-    }
-  }
-  return score
-}
 
 private class AuthEntryStore(context: Context) {
   private val prefs = context.getSharedPreferences("streamdek_native_auth_entry", Context.MODE_PRIVATE)
@@ -2349,7 +2228,11 @@ private class AppSettingsStore(context: Context) {
   fun saveDetailAmbientTintPercent(value: Int) { profilePrefs.edit().putInt("detail_ambient_tint_percent", value.coerceIn(20, 100)).apply() }
   fun saveDefaultAppCatalogsEnabled(value: Boolean) { profilePrefs.edit().putBoolean("default_app_catalogs_enabled", value).apply() }
   fun saveTrailerCacheClearHours(value: Int) { profilePrefs.edit().putInt("trailer_cache_clear_hours", value).apply() }
-  fun saveHomeCatalogRows(rows: List<HomeCatalogRow>) { profilePrefs.edit().putString("home_catalog_rows", serializeHomeCatalogRows(rows)).apply() }
+  fun saveHomeCatalogRows(rows: List<HomeCatalogRow>) {
+    // A row saved without a name - its plugin not loaded yet - keeps the one stored for it last time.
+    val named = withKnownHomeRowNames(rows, parseHomeCatalogRows(profilePrefs.getString("home_catalog_rows", null)))
+    profilePrefs.edit().putString("home_catalog_rows", serializeHomeCatalogRowsForDevice(named)).apply()
+  }
   fun saveHomeRowMode(mode: HomeRowMode) { profilePrefs.edit().putString(HOME_ROW_MODE_PREFERENCE, mode.key).apply() }
   fun saveHomeRowSourceOrder(order: List<String>) {
     profilePrefs.edit().putString(HOME_ROW_SOURCE_ORDER_PREFERENCE, serializeHomeRowSourceOrder(order)).apply()
@@ -3107,28 +2990,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
 }
 internal const val GUEST_OWNER_KEY = "guest"
 
-private fun serializeHomeCatalogRows(rows: List<HomeCatalogRow>): String = JSONArray().apply {
-  rows.forEach { row ->
-    put(JSONObject().put("id", row.id).put("enabled", row.enabled))
-  }
-}.toString()
-
-private fun parseHomeCatalogRows(raw: String?): List<HomeCatalogRow> {
-  if (raw.isNullOrBlank()) return emptyList()
-  return runCatching {
-    val source = JSONArray(raw)
-    buildList {
-      for (index in 0 until source.length()) {
-        val item = source.optJSONObject(index) ?: continue
-        val id = item.optString("id").trim()
-        if (id.isEmpty()) continue
-        add(HomeCatalogRow(id = id, title = id, subtitleRes = null, builtin = false, enabled = item.optBoolean("enabled", true)))
-      }
-    }
-  }.getOrDefault(emptyList())
-}
-
-private fun isBuiltinHomeCatalog(id: String): Boolean = !id.startsWith("addon:")
+internal fun isBuiltinHomeCatalog(id: String): Boolean = !id.startsWith("addon:")
 
 /**
  * The default catalogs, as the app believes them to be before the backend's registry arrives.
@@ -3912,6 +3774,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     /** The guest migration's reload, for the same reason: see [runGuestDataMigration]. */
     override suspend fun reloadAfterRestore() {
       PlaybackCodecOptions.initialize(getApplication())
+      AudioSyncOptions.initialize(getApplication())
       uiState = appSettingsStore.applyTo(uiState)
       applyAppNightMode(getApplication())
       // Before the refresh below, which takes the account's preferences over the local ones.
@@ -3924,7 +3787,16 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   /** Keeps the viewer's normal quality/debrid ordering inside two collection-priority groups. */
-  private fun rankedProfileStreams(streams: List<AddonStream>): List<AddonStream> {
+  private fun rankedProfileStreams(streams: List<AddonStream>): List<AddonStream> = streamRanker()(streams)
+
+  /**
+   * The ranking [rankedProfileStreams] applies, with everything it needs from the app read now.
+   *
+   * Split so the reading - app state and the plugin managers, which belong to the main thread - can
+   * happen here, and the ranking itself, which is pure and not cheap over a hundred results, can
+   * run wherever the caller likes. The stream search runs it off the main thread.
+   */
+  private fun streamRanker(): (List<AddonStream>) -> List<AddonStream> {
     val pluginState = StreamDekPlugins.manager.state
     val favouriteRepos = pluginState.repos.filter { it.favourite }.mapTo(mutableSetOf()) { it.url }
     val favouriteCloudStreamIds = if (CloudStreamPlugins.isInitialized) {
@@ -3938,14 +3810,21 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         .filter { it.source.repoUrl in repos }
         .mapTo(hashSetOf()) { cloudStreamAddonId(it) }
     } else emptySet()
-    return rankedStreams(
-      streams = streams,
-      hasDebrid = uiState.debridAccounts.any { it.enabled },
-      preferredQuality = uiState.preferredQuality,
-      maxFileSizeGb = uiState.maxFileSizeGb,
-      favouriteAddonIds = uiState.addons.filter { it.favourite }.mapTo(mutableSetOf()) { it.id } + favouriteCloudStreamIds + favouriteSkyStreamIds,
-      favouritePluginProviderIds = pluginState.providers.filter { it.repoUrl in favouriteRepos }.mapTo(mutableSetOf()) { it.id },
-    )
+    val hasDebrid = uiState.debridAccounts.any { it.enabled }
+    val preferredQuality = uiState.preferredQuality
+    val maxFileSizeGb = uiState.maxFileSizeGb
+    val favouriteAddonIds = uiState.addons.filter { it.favourite }.mapTo(mutableSetOf()) { it.id } + favouriteCloudStreamIds + favouriteSkyStreamIds
+    val favouritePluginProviderIds = pluginState.providers.filter { it.repoUrl in favouriteRepos }.mapTo(mutableSetOf()) { it.id }
+    return { streams ->
+      rankedStreams(
+        streams = streams,
+        hasDebrid = hasDebrid,
+        preferredQuality = preferredQuality,
+        maxFileSizeGb = maxFileSizeGb,
+        favouriteAddonIds = favouriteAddonIds,
+        favouritePluginProviderIds = favouritePluginProviderIds,
+      )
+    }
   }
 
   /**
@@ -4105,6 +3984,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     StreamDekPlugins.initialize(application.applicationContext)
     // Read once, into the copy the player consults when it is built.
     PlaybackCodecOptions.initialize(application.applicationContext)
+    AudioSyncOptions.initialize(application.applicationContext)
     // Both engines write into the same profile document, so neither may push its own half on its
     // own -- whichever went last would drop the other's. They signal, and the composer below reads
     // both and sends one document.
@@ -6095,21 +5975,40 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
     fun streamKey(stream: AddonStream): String = addonStreamPlaybackIdentity(stream)
 
+    // Every source that answers asks for a publish, and a CloudStream collection answers a provider
+    // at a time - dozens in a burst. Each publish used to rank the whole list on the main thread and
+    // hand the page a new one to lay out, which is what froze a detail page being scrolled with its
+    // trailer playing while sources arrived. Now a burst becomes one publish, and the ranking runs
+    // on a background thread; only reading the state and writing the result stay on the main one.
+    var publishRequested = false
+    var publishJob: Job? = null
     fun publish() {
       if (generation != streamRequestGeneration) return
-      val ranked = rankedProfileStreams(mediaStreamsOnly(merged.values.toList(), detail))
-      val remaining = (totalSources - completedSources).coerceAtLeast(0)
-      val holding = ranked.isEmpty() && retained.isNotEmpty() && remaining > 0
-      uiState = uiState.copy(
-        streamLoading = remaining > 0,
-        pendingStreamSources = remaining,
-        totalStreamSources = totalSources,
-        searchingStreamSources = pendingSourceNames.keys.toList(),
-        failedStreamSources = failedSourceNames.toList(),
-        streamRefreshing = holding,
-        availableStreams = if (holding) retained else ranked,
-        selectedEpisode = episode,
-      )
+      publishRequested = true
+      if (publishJob?.isActive == true) return
+      publishJob = viewModelScope.launch {
+        while (publishRequested && generation == streamRequestGeneration) {
+          // Held only while sources are still out: the last answer lands at once.
+          if (completedSources < totalSources) delay(STREAM_PUBLISH_COALESCE_MS)
+          publishRequested = false
+          val snapshot = merged.values.toList()
+          val rank = streamRanker()
+          val ranked = withContext(Dispatchers.Default) { rank(mediaStreamsOnly(snapshot, detail)) }
+          if (generation != streamRequestGeneration) return@launch
+          val remaining = (totalSources - completedSources).coerceAtLeast(0)
+          val holding = ranked.isEmpty() && retained.isNotEmpty() && remaining > 0
+          uiState = uiState.copy(
+            streamLoading = remaining > 0,
+            pendingStreamSources = remaining,
+            totalStreamSources = totalSources,
+            searchingStreamSources = pendingSourceNames.keys.toList(),
+            failedStreamSources = failedSourceNames.toList(),
+            streamRefreshing = holding,
+            availableStreams = if (holding) retained else ranked,
+            selectedEpisode = episode,
+          )
+        }
+      }
     }
 
     uiState = uiState.copy(
@@ -6207,6 +6106,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       }
     }.invokeOnCompletion {
       if (generation != streamRequestGeneration) return@invokeOnCompletion
+      // The final list is published below. A progressive publish still ranking in the background
+      // would otherwise land after it, over the fallback results and the debrid markers.
+      publishRequested = false
+      publishJob?.cancel()
       viewModelScope.launch {
         // The aggregate endpoint fans out across every installed add-on, so it is
         // skipped for live channels — those are served only by live-capable add-ons.
@@ -6219,7 +6122,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           }
           fallback.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) }
         }
-        val ranked = rankedProfileStreams(mediaStreamsOnly(merged.values.toList(), detail))
+        val snapshot = merged.values.toList()
+        val rank = streamRanker()
+        val ranked = withContext(Dispatchers.Default) { rank(mediaStreamsOnly(snapshot, detail)) }
+        if (generation != streamRequestGeneration) return@launch
         uiState = uiState.copy(
           streamLoading = false,
           pendingStreamSources = 0,
@@ -9002,7 +8908,19 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val ratingProviders = preferences.enabledRatingProviders?.map { it.trim().lowercase() }?.filter(String::isNotBlank)?.toSet()
     val fusionBadgeUrls = preferences.fusionBadgeUrls?.distinct()?.take(MAX_FUSION_BADGE_URLS)
     val activeFusionBadgeUrl = preferences.activeFusionBadgeUrl?.takeIf { it in (fusionBadgeUrls ?: uiState.fusionBadgeUrls) }
-    val homeCatalogRows = preferences.homeCatalogRowsJson?.let(::parseHomeCatalogRows)
+    // The account holds ids and switches only. Its arrangement is taken as it stands, but each row
+    // keeps the name it already had here, or takes the one its loaded source gives it now - not the
+    // bare id, which is what Home rows used to show until the next full home load. See
+    // [withKnownHomeRowNames].
+    val homeCatalogRows = preferences.homeCatalogRowsJson?.let(::parseHomeCatalogRows)?.let { cloudRows ->
+      withKnownHomeRowNames(
+        cloudRows,
+        uiState.homeCatalogRows +
+          builtinHomeCatalogCandidates(uiState.catalogDefinitions) +
+          addonHomeCatalogCandidates(uiState.addons) +
+          cloudStreamHomeCatalogCandidates(loadedCloudStreamProviders()),
+      )
+    }
     val homeRowMode = preferences.homeRowMode?.let(HomeRowMode::fromKey)
     val homeRowSourceOrder = preferences.homeRowSourceOrder?.filter { it.isNotBlank() }?.distinct()
 
@@ -12832,6 +12750,7 @@ private fun StreamDekNativeAppContent(
   val viewModel = viewModel<NativeAppViewModel>(factory = NativeAppViewModelFactory(context))
   val uiState = viewModel.uiState
   val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+  val requestNotificationPermission = rememberNotificationPermissionRequest()
   LaunchedEffect(uiState.session?.user?.uid, uiState.activeProfileId, uiState.playbackProgressRecords, uiState.localResumeEntries, uiState.watchedEpisodeRevision) {
     viewModel.refreshNextUp()
   }
@@ -13059,7 +12978,10 @@ private fun StreamDekNativeAppContent(
                 onToggleFavouriteDrawerCards = viewModel::setLiveFavouriteDrawerCards,
                 onClearFavourites = viewModel::clearFavouriteChannels,
                 downloadsEnabled = uiState.downloadsEnabled,
-                onDownloadStream = { stream -> viewModel.downloadStream(stream, uiState.detail?.title ?: uiState.playerSession?.title ?: "Download") },
+                onDownloadStream = { stream ->
+                  requestNotificationPermission()
+                  viewModel.downloadStream(stream, uiState.detail?.title ?: uiState.playerSession?.title ?: "Download")
+                },
               )
                 }
               }
@@ -13797,6 +13719,8 @@ private fun MainScene(
   }
   val onEpisodeRemindersRequested: (Boolean) -> Unit = { enabled -> requestNotificationToggle(enabled, viewModel::setEpisodeRemindersEnabled) }
   val onUpcomingEpisodeRemindersRequested: (Boolean) -> Unit = { enabled -> requestNotificationToggle(enabled, viewModel::setUpcomingEpisodeRemindersEnabled) }
+  // A download's progress lives in the notification shade, so starting one is when to ask.
+  val requestDownloadNotificationPermission = rememberNotificationPermissionRequest()
   var selectedTab by rememberSaveable { mutableStateOf(MainTab.Home) }
   var previousTab by rememberSaveable { mutableStateOf(MainTab.Home) }
   var openDetail by rememberSaveable { mutableStateOf(uiState.detail?.let { it.type to it.id }) }
@@ -14660,7 +14584,10 @@ private fun MainScene(
           onOpenPerson = viewModel::openPerson,
           onClosePerson = viewModel::closePerson,
           onOpenRelated = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) },
-          onDownloadStream = { stream, title -> viewModel.downloadStream(stream, title) },
+          onDownloadStream = { stream, title ->
+            requestDownloadNotificationPermission()
+            viewModel.downloadStream(stream, title)
+          },
           isStreamDownloadEligible = { stream -> viewModel.isDownloadEligible(stream, uiState.detailIsLive) },
           onManageSources = {
             // Detail pages can sit over a catalog or network browse screen. Those layers render
@@ -21494,13 +21421,15 @@ private fun SettingsTab(
       }
       item {
         SettingsSection(stringResource(R.string.settings_m_playback)) {
-          SettingsNavRow("PLY", Color(0xFF22C55E), stringResource(R.string.settings_m_player), stringResource(R.string.settings_m_player_engine_audio_language_gestures_and_floating), onClick = { onRouteChange(SettingsRoute.Player) })
+          SettingsNavRow("PLY", Color(0xFF22C55E), stringResource(R.string.settings_m_player), stringResource(R.string.settings_m_player_nav_detail), onClick = { onRouteChange(SettingsRoute.Player) })
           SettingsDivider()
           SettingsNavRow("DEC", Color(0xFF8B5CF6), stringResource(R.string.settings_dest_video_decoding), stringResource(R.string.settings_m_hardware_decoding_and_what_to_try_when), onClick = { onRouteChange(SettingsRoute.VideoDecoding) })
           SettingsDivider()
           SettingsNavRow("SKP", Color(0xFF60A5FA), stringResource(R.string.settings_m_skip_and_autoplay), stringResource(R.string.settings_m_skip_intros_and_recaps_and_start_the), onClick = { onRouteChange(SettingsRoute.SkipAndAutoplay) })
           SettingsDivider()
-          SettingsNavRow("SUB", Color(0xFFA78BFA), stringResource(R.string.settings_m_subtitles), stringResource(R.string.settings_m_automatic_subtitles_and_the_sources_they_come), onClick = { onRouteChange(SettingsRoute.Subtitles) })
+          SettingsNavRow("SUB", Color(0xFFA78BFA), stringResource(R.string.settings_m_subtitles), stringResource(R.string.settings_m_subtitles_nav_detail), onClick = { onRouteChange(SettingsRoute.Subtitles) })
+          SettingsDivider()
+          SettingsNavRow("AUD", Color(0xFFF59E0B), stringResource(R.string.settings_dest_audio), stringResource(R.string.settings_m_audio_nav_detail), onClick = { onRouteChange(SettingsRoute.Audio) })
           SettingsDivider()
           SettingsNavRow("S", Color(0xFFEC4899), stringResource(R.string.settings_m_streams_and_quality), stringResource(R.string.settings_m_preferred_quality_size_limits_and_how_results), onClick = { onRouteChange(SettingsRoute.Streams) })
           SettingsDivider()
@@ -21649,29 +21578,11 @@ private fun SettingsTab(
             )
           }
         }
+        // Language, appearance, timing, then behaviour - the order a viewer setting subtitles up
+        // for the first time needs them in. Audio has a page of its own: SettingsRoute.Audio.
         SettingsRoute.Subtitles -> {
           item {
-            SettingsSection(stringResource(R.string.settings_m_subtitle_and_audio)) {
-              LanguageChoiceRow(
-                "AUD",
-                Color(0xFFF59E0B),
-                stringResource(R.string.settings_row_preferred_audio_language),
-                stringResource(R.string.settings_m_the_spoken_language_to_choose_when_a),
-                Languages.audioOptions(),
-                uiState.preferredAudioLanguage,
-                onPreferredAudioLanguageChange,
-              )
-              SettingsDivider()
-              LanguageChoiceRow(
-                "AUD2",
-                Color(0xFFFBBF24),
-                stringResource(R.string.settings_row_secondary_audio_language),
-                stringResource(R.string.settings_m_used_when_a_release_carries_nothing_in),
-                listOf(Languages.NONE) + Languages.all.map { it.code },
-                uiState.secondaryAudioLanguage,
-                onSecondaryAudioLanguageChange,
-              )
-              SettingsDivider()
+            SettingsSection(stringResource(R.string.settings_section_subtitle_language)) {
               LanguageChoiceRow(
                 "SUB1",
                 Color(0xFFA78BFA),
@@ -21709,35 +21620,6 @@ private fun SettingsTab(
                 uiState.showOnlyPreferredSubtitleLanguages,
                 onShowOnlyPreferredSubtitleLanguagesChange,
               )
-              SettingsDivider()
-              SettingsChoiceRow(
-                "ADD",
-                Color(0xFF60A5FA),
-                stringResource(R.string.settings_row_addon_subtitle_loading),
-                stringResource(R.string.settings_m_how_much_to_ask_subtitle_add_ons),
-                addonSubtitleLoadingChoices.map { it.second },
-                addonSubtitleLoadingLabel(uiState.addonSubtitleLoading),
-              ) { selected ->
-                addonSubtitleLoadingChoices.firstOrNull { it.second == selected }
-                  ?.let { onAddonSubtitleLoadingChange(it.first) }
-              }
-            }
-          }
-          item {
-            SettingsSection(stringResource(R.string.settings_m_subtitles)) {
-              SettingsSwitchRow("SUB", Color(0xFFA78BFA), stringResource(R.string.settings_m_auto_load_subtitles), stringResource(R.string.settings_m_automatically_choose_matching_subtitles_when_playback_starts), uiState.autoLoadSubtitles, onAutoLoadSubtitlesChange)
-              SettingsDivider()
-              SettingsChoiceRow(
-                "SRC",
-                Color(0xFF38BDF8),
-                stringResource(R.string.settings_row_subtitle_sources),
-                stringResource(R.string.settings_m_choose_which_subtitle_sources_the_player_searches),
-                subtitleSourceChoices.map { it.second },
-                subtitleSourceLabel(uiState.subtitleDefaultSource),
-              ) { selected ->
-                subtitleSourceChoices.firstOrNull { it.second == selected }
-                  ?.let { onSubtitleDefaultSourceChange(it.first) }
-              }
             }
           }
           item {
@@ -21752,8 +21634,45 @@ private fun SettingsTab(
               onOutlineColorChange = onSubtitleOutlineColorChange,
             )
           }
+          subtitleTimingSettings()
+          item {
+            SettingsSection(stringResource(R.string.settings_section_subtitle_behaviour)) {
+              SettingsSwitchRow("SUB", Color(0xFFA78BFA), stringResource(R.string.settings_m_auto_load_subtitles), stringResource(R.string.settings_m_automatically_choose_matching_subtitles_when_playback_starts), uiState.autoLoadSubtitles, onAutoLoadSubtitlesChange)
+              SettingsDivider()
+              SettingsChoiceRow(
+                "SRC",
+                Color(0xFF38BDF8),
+                stringResource(R.string.settings_row_subtitle_sources),
+                stringResource(R.string.settings_m_choose_which_subtitle_sources_the_player_searches),
+                subtitleSourceChoices.map { it.second },
+                subtitleSourceLabel(uiState.subtitleDefaultSource),
+              ) { selected ->
+                subtitleSourceChoices.firstOrNull { it.second == selected }
+                  ?.let { onSubtitleDefaultSourceChange(it.first) }
+              }
+              SettingsDivider()
+              SettingsChoiceRow(
+                "ADD",
+                Color(0xFF60A5FA),
+                stringResource(R.string.settings_row_addon_subtitle_loading),
+                stringResource(R.string.settings_m_how_much_to_ask_subtitle_add_ons),
+                addonSubtitleLoadingChoices.map { it.second },
+                addonSubtitleLoadingLabel(uiState.addonSubtitleLoading),
+              ) { selected ->
+                addonSubtitleLoadingChoices.firstOrNull { it.second == selected }
+                  ?.let { onAddonSubtitleLoadingChange(it.first) }
+              }
+            }
+          }
           item { SubtitleSourcesSettings(ownerKey = settingsOwnerKey(uiState)) }
         }
+        SettingsRoute.Audio -> audioSettings(
+          preferredAudioLanguage = uiState.preferredAudioLanguage,
+          secondaryAudioLanguage = uiState.secondaryAudioLanguage,
+          onPreferredAudioLanguageChange = onPreferredAudioLanguageChange,
+          onSecondaryAudioLanguageChange = onSecondaryAudioLanguageChange,
+          tunneledPlayback = uiState.tunneledPlayback,
+        )
         SettingsRoute.ConnectTv -> {
           item { ConnectToTvSettings(uiState = uiState, onDeviceRenamed = onRefreshLinkedTvs) }
         }
@@ -23141,44 +23060,6 @@ internal fun searchSettingsRoutes(
     .map { it.first }
 }
 
-internal fun settingsRouteKeywords(route: SettingsRoute): String = when (route) {
-  SettingsRoute.Player -> "player engine mpv media3 exoplayer pip picture in picture floating " +
-    "gesture gestures hold speed swipe seek scrub brightness volume level dim loudness " +
-    "controls labels layout status bar title"
-  SettingsRoute.VideoDecoding -> "decoding decoder hardware software compatibility codec hevc h265 " +
-    "dolby vision dv7 profile 7 hdr tunneled tunnelling display surface render black screen " +
-    "green screen stutter video will not play won't play playback engine mpv"
-  SettingsRoute.SkipAndAutoplay -> "autoplay auto play skip intro recap ending credits next episode binge threshold introdb intro db api key"
-  SettingsRoute.Subtitles -> "subtitle subtitles caption captions language languages audio preferred secondary forced show only addon loading source position style"
-  SettingsRoute.Streams -> "streams stream results source quality resolution 4k 1080p size limit filter badges labels " +
-    "formatting remember last source list"
-  SettingsRoute.Downloads -> "download downloads offline saved save storage remove delete watch offline"
-  SettingsRoute.Appearance -> "appearance language theme colour color dark light mode header navigation labels collapse scroll scrolling behaviour behavior font motion animation animations speed transitions reduce reduced cinematic visual effects glass blur transparency performance battery"
-  SettingsRoute.HomeScreen -> "streamdek fuse media hub unified live vod home screen rows spotlight hero synopsis continue watching streaming networks network cards branded logo ambient glow background " +
-    "layout density relaxed compact spacing card size smaller bigger tighter fit more new episodes row hide show wide cards notifications reminders upcoming before release"
-  SettingsRoute.HomeLayout -> "layout rows reorder drag order arrange home catalog sections which rows mode by source mixed group interleave"
-  SettingsRoute.TitlePages -> "title detail page style layout trailer autoplay season tabs episode artwork blur spoiler ratings trailer cache clear schedule stale"
-  SettingsRoute.Ratings -> "rating ratings imdb tmdb rotten tomatoes metacritic mdblist badge score"
-  SettingsRoute.LiveTv -> "live tv channel channels iptv category categories group landscape cards favourite favorite drawer progress bar"
-  SettingsRoute.Addons -> "addon add-on catalog channel provider install configure source manifest stremio"
-  SettingsRoute.Plugins -> "plugin source provider repository javascript cloudstream cs3 extension collection scraper"
-  SettingsRoute.M3uPlaylists -> "m3u m3u8 iptv playlist url link xtream provider channels live vod refresh import"
-  SettingsRoute.Debrid -> "premium debrid real debrid alldebrid premiumize torbox debrid-link deepbrid account cached api key keys cloud sync store device only"
-  SettingsRoute.ContentServices -> "content services tmdb mdblist introdb theintrodb api key keys metadata artwork posters ratings timing intro recap credits outro enrichment own key personal key device only save to streamdek account credential"
-  SettingsRoute.PeerToPeer -> "peer to peer p2p torrent magnet seed cache storage engine background service"
-  SettingsRoute.SyncServices -> "sync services tracking tracker trakt simkl mdblist scrobble watchlist history connect cellular mobile data"
-  SettingsRoute.Trakt -> "trakt scrobble watchlist history sync"
-  SettingsRoute.Simkl -> "simkl tracking scrobble watchlist sync connect"
-  SettingsRoute.Punchplay -> "punchplay tracking scrobble watchlist sync connect continue watching"
-  SettingsRoute.Mdblist -> "mdblist list ratings access key tracking sync connect"
-  SettingsRoute.ConnectTv -> "tv television pair pairing code connect cast handoff"
-  SettingsRoute.Network -> "network dns doh dns over https privacy resolver cloudflare google adguard quad9 custom"
-  SettingsRoute.Account -> "account sign in sign out email sync services subscription"
-  SettingsRoute.Profiles -> "profile switch kids pin default avatar family"
-  SettingsRoute.AppUpdates -> "update version apk install release changelog about"
-  SettingsRoute.BackupRestore -> "backup back up restore export import save file transfer move new phone device reinstall migrate recovery undo"
-}
-
 @Composable
 private fun CustomDoHEndpointDialog(initialValue: String, onSave: (String) -> Unit, onDismiss: () -> Unit) {
   var value by remember(initialValue) { mutableStateOf(initialValue) }
@@ -23299,7 +23180,7 @@ private fun SettingsProfileRow(uiState: AppUiState, onClick: () -> Unit) {
  * their tap — a nav row opens a page, a switch row toggles.
  */
 @Composable
-private fun SettingsSubtitle(text: String, collapsedMaxLines: Int = 3) {
+internal fun SettingsSubtitle(text: String, collapsedMaxLines: Int = 3) {
   var expanded by rememberSaveable(text) { mutableStateOf(false) }
   var clipped by remember(text) { mutableStateOf(false) }
   Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
@@ -23765,7 +23646,7 @@ internal fun SettingsChoiceRow(
  * show the language's name while storing its code.
  */
 @Composable
-private fun LanguageChoiceRow(
+internal fun LanguageChoiceRow(
   icon: String,
   iconColor: Color,
   title: String,
@@ -24901,7 +24782,7 @@ private fun SubtitleAppearanceSettings(
   onOutlineColorChange: (String) -> Unit,
 ) {
   Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-    Text(stringResource(R.string.settings_appearance), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+    Text(stringResource(R.string.settings_section_subtitle_appearance), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
     SubtitlePreviewCard(uiState)
     Card(
       colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -26520,6 +26401,9 @@ private fun DownloadsSettingsSummary(
         Text(stringResource(R.string.downloads_none_yet), modifier = Modifier.fillMaxWidth().padding(18.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), textAlign = TextAlign.Center)
       }
     } else {
+      DownloadNotificationsOffNotice(
+        visible = downloads.any { it.state == DownloadState.DOWNLOADING || it.state == DownloadState.QUEUED || it.state == DownloadState.PAUSED },
+      )
       AnimatedVisibility(visible = showLongPressHint) {
         Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), shape = StreamDekRadius.thumbShape) {
           Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -26576,6 +26460,16 @@ private fun DownloadsSettingsSummary(
                 }
                 if (download.state == DownloadState.COMPLETED) {
                   IconButton(onClick = { onPlay(download) }) { Icon(Icons.Rounded.PlayArrow, "Play download", tint = MaterialTheme.colorScheme.primary) }
+                }
+                // The same Pause and Resume the notification offers, so neither place is the only way.
+                if (download.state == DownloadState.DOWNLOADING || download.state == DownloadState.QUEUED) {
+                  IconButton(onClick = { StreamDekDownloads.pauseDownload(download.id); onRefresh() }) {
+                    Icon(Icons.Rounded.Pause, stringResource(R.string.action_pause), tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f))
+                  }
+                } else if (download.state == DownloadState.PAUSED) {
+                  IconButton(onClick = { StreamDekDownloads.resumeDownload(download.id); onRefresh() }) {
+                    Icon(Icons.Rounded.Download, stringResource(R.string.action_resume), tint = MaterialTheme.colorScheme.primary)
+                  }
                 }
                 IconButton(onClick = { onRemove(download.id) }) { Icon(Icons.Rounded.Delete, "Remove download", tint = Color(0xFFEF476F)) }
               }
@@ -30755,7 +30649,11 @@ internal fun buildStreamSourceSections(
           .groupBy(::streamQualityTier)
           .toList()
           .sortedBy { (tier, _) -> streamQualityBandOrder(tier, preferredQuality) }
-          .map { (tier, banded) -> StreamQualityBand(tier, banded.sortedByDescending { streamSizeGiB(it) ?: -1.0 }) },
+          // Sizes read once per stream, not once per comparison: this runs in composition, again
+          // each time another source answers.
+          .map { (tier, banded) ->
+            StreamQualityBand(tier, banded.map { it to (streamSizeGiB(it) ?: -1.0) }.sortedByDescending { it.second }.map { it.first })
+          },
       )
     }
 

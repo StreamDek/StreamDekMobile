@@ -109,6 +109,8 @@ object StreamDekDownloads {
       ResilientDownloaderFactory(DefaultDownloaderFactory(cacheDataSourceFactory, executor)),
     ).apply {
       maxParallelDownloads = 2
+      // Done, failed and paused get a notification of their own; see [DownloadNotifications].
+      addListener(DownloadNotifications.listener(appContext))
     }
   }
 
@@ -145,6 +147,16 @@ object StreamDekDownloads {
   fun removeDownload(id: String) {
     DownloadRateSampler.forget(id)
     DownloadService.sendRemoveDownload(appContext, StreamDekDownloadService::class.java, id, false)
+  }
+
+  /** Holds one download where it is. Its partial file stays, and [resumeDownload] carries on from it. */
+  fun pauseDownload(id: String) {
+    DownloadRateSampler.forget(id)
+    DownloadService.sendSetStopReason(appContext, StreamDekDownloadService::class.java, id, DownloadNotifications.STOP_REASON_PAUSED, false)
+  }
+
+  fun resumeDownload(id: String) {
+    DownloadService.sendSetStopReason(appContext, StreamDekDownloadService::class.java, id, Download.STOP_REASON_NONE, false)
   }
 
   /**
@@ -320,6 +332,6 @@ class StreamDekDownloadService : DownloadService(
 
   companion object {
     private const val NOTIFICATION_ID = 21001
-    private const val CHANNEL_ID = "streamdek_downloads"
+    private const val CHANNEL_ID = DownloadNotifications.CHANNEL_ID
   }
 }

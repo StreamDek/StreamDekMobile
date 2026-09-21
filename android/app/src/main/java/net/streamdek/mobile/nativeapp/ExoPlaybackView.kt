@@ -100,6 +100,8 @@ class ExoPlaybackView @JvmOverloads constructor(
   private var subtitleOutlineEnabled = true
   private var subtitleBold = false
   private var subtitleDelaySeconds = 0.0
+  /** Read by the renderers each player here is built with; see [SyncAdjustableRenderersFactory]. */
+  private val playbackOffsets = PlaybackOffsets()
   private val subtitleExecutor = Executors.newCachedThreadPool()
   private val subtitleRequestGeneration = AtomicLong()
   private var externalSubtitleCues: List<androidx.media3.extractor.text.CuesWithTiming>? = null
@@ -464,12 +466,29 @@ class ExoPlaybackView @JvmOverloads constructor(
   }
 
   fun setSubtitleDelay(seconds: Double) {
-    subtitleDelaySeconds = seconds.coerceIn(-15.0, 15.0)
+    subtitleDelaySeconds = seconds.coerceIn(-SUBTITLE_DELAY_LIMIT_SECONDS, SUBTITLE_DELAY_LIMIT_SECONDS)
+    // Embedded tracks and captions, through the text renderer; a loaded subtitle file, through the
+    // overlay ticker below. Only one of the two is ever showing.
+    playbackOffsets.subtitleDelayUs = (subtitleDelaySeconds * 1_000_000.0).toLong()
     if (externalSubtitleCues != null) {
       removeCallbacks(externalSubtitleTicker)
       externalSubtitleTicker.run()
     }
   }
+
+  fun setAudioDelay(seconds: Double) {
+    playbackOffsets.audioDelayUs = (seconds.coerceIn(-AUDIO_DELAY_LIMIT_SECONDS, AUDIO_DELAY_LIMIT_SECONDS) * 1_000_000.0).toLong()
+  }
+
+  /**
+   * Whether an audio delay would do anything to what is playing.
+   *
+   * Not with tunneled output, where the hardware keeps picture and sound together without reading
+   * the clock the delay moves. Asked of the tracks actually selected rather than of the setting:
+   * tunneling that was switched on but could not be used for this stream leaves the delay working.
+   */
+  @Suppress("DEPRECATION")
+  fun audioDelaySupported(): Boolean = runCatching { exoPlayer?.isTunnelingEnabled != true }.getOrDefault(true)
 
   fun setSubtitleFontSize(size: Int) {
     subtitleView?.setApplyEmbeddedStyles(false)
@@ -565,7 +584,7 @@ class ExoPlaybackView @JvmOverloads constructor(
     // Transparently serves already-downloaded content from disk (see StreamDekDownloads) when
     // the URL matches - falls through to the network otherwise, same as any cache miss.
     val dataSourceFactory = StreamDekDownloads.wrapWithDownloadCache(upstreamFactory)
-    val renderers = DefaultRenderersFactory(context)
+    val renderers = SyncAdjustableRenderersFactory(context, playbackOffsets)
       .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
       .setEnableDecoderFallback(true)
     // Tunneled output hands decoding and rendering to the hardware as one pipeline, which is what

@@ -4,6 +4,7 @@ import androidx.annotation.StringRes
 import androidx.compose.runtime.Immutable
 import java.util.Locale
 import org.json.JSONArray
+import org.json.JSONObject
 import net.streamdek.mobile.R
 
 /**
@@ -81,6 +82,44 @@ internal fun homeRowDisplayTitle(row: HomeCatalogRow): String {
   if (words.isEmpty()) return title.ifEmpty { row.id }
   return words.joinToString(" ") { word ->
     word.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() }
+  }
+}
+
+/** Whether a row carries a name of its own, rather than the id a bare saved layout leaves in its place. */
+internal fun HomeCatalogRow.hasOwnName(): Boolean =
+  titleRes != null || (title.isNotBlank() && title != id)
+
+/**
+ * A layout that knows only ids and switches, given back the names the rows were last seen with.
+ *
+ * The account's copy of the layout is ids and on/off flags and nothing else - it is shared with the
+ * television, which names rows its own way, so it is the right contract - and reading it used to
+ * replace the rows on screen outright. Every row whose source had not been merged in since then came
+ * back nameless: Home rows fell back to a word pulled out of the row's id ("Row", for a plugin whose
+ * page has no Latin name to slug), and lost the source line under it. The settings watcher re-reads
+ * the account every time its stamp moves, including after this phone's own writes, so that happened
+ * a few seconds after every refresh put the names back.
+ *
+ * Names go by exact id first, then by the id with its manifest position dropped (see
+ * [homeCatalogRowMatchKey]), so an add-on that reorders its catalogues keeps them. The id itself and
+ * the switch always come from [rows]: only the name is borrowed, never the arrangement. Two plugins
+ * with a "Trending" row each keep their own, because the id carries the provider.
+ */
+internal fun withKnownHomeRowNames(rows: List<HomeCatalogRow>, known: List<HomeCatalogRow>): List<HomeCatalogRow> {
+  val named = known.filter { it.hasOwnName() }
+  if (named.isEmpty()) return rows
+  val byId = named.associateBy { it.id }
+  val byMatchKey = named.associateBy { homeCatalogRowMatchKey(it.id) }
+  return rows.map { row ->
+    if (row.hasOwnName()) return@map row
+    val source = byId[row.id] ?: byMatchKey[homeCatalogRowMatchKey(row.id)] ?: return@map row
+    row.copy(
+      title = source.title,
+      titleRes = source.titleRes,
+      subtitleRes = source.subtitleRes,
+      subtitleArg = source.subtitleArg,
+      builtin = source.builtin,
+    )
   }
 }
 
@@ -211,5 +250,62 @@ internal fun parseHomeRowSourceOrder(raw: String?): List<String> {
         source.optString(index).trim().takeIf { it.isNotEmpty() }?.let(::add)
       }
     }.distinct()
+  }.getOrDefault(emptyList())
+}
+
+/**
+ * The layout as the account holds it: ids and switches only.
+ *
+ * The television reads the same document and names rows itself, so names stay out of it. This
+ * device's own copy carries them as well - see [serializeHomeCatalogRowsForDevice].
+ */
+internal fun serializeHomeCatalogRows(rows: List<HomeCatalogRow>): String = JSONArray().apply {
+  rows.forEach { row ->
+    put(JSONObject().put("id", row.id).put("enabled", row.enabled))
+  }
+}.toString()
+
+/**
+ * The layout as this device keeps it: the account's shape, plus the name and source each add-on or
+ * plugin row was last seen with.
+ *
+ * Kept so a row whose plugin has not loaded yet - every CloudStream row, for the first seconds after
+ * a cold start - is still listed under its own name rather than one guessed from its id. StreamDek's
+ * own rows are named from resources and need nothing stored.
+ */
+internal fun serializeHomeCatalogRowsForDevice(rows: List<HomeCatalogRow>): String = JSONArray().apply {
+  rows.forEach { row ->
+    val item = JSONObject().put("id", row.id).put("enabled", row.enabled)
+    if (!row.builtin && row.hasOwnName()) {
+      item.put("title", row.title)
+      row.subtitleArg?.takeIf { it.isNotBlank() }?.let { item.put("source", it) }
+    }
+    put(item)
+  }
+}.toString()
+
+internal fun parseHomeCatalogRows(raw: String?): List<HomeCatalogRow> {
+  if (raw.isNullOrBlank()) return emptyList()
+  return runCatching {
+    val source = JSONArray(raw)
+    buildList {
+      for (index in 0 until source.length()) {
+        val item = source.optJSONObject(index) ?: continue
+        val id = item.optString("id").trim()
+        if (id.isEmpty()) continue
+        val title = item.optString("title").trim().takeIf { it.isNotEmpty() }
+        val origin = item.optString("source").trim().takeIf { it.isNotEmpty() }
+        add(
+          HomeCatalogRow(
+            id = id,
+            title = title ?: id,
+            subtitleRes = if (origin != null) R.string.home_row_from_addon else null,
+            subtitleArg = origin,
+            builtin = isBuiltinHomeCatalog(id),
+            enabled = item.optBoolean("enabled", true),
+          ),
+        )
+      }
+    }
   }.getOrDefault(emptyList())
 }

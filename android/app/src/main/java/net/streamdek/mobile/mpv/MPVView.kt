@@ -69,6 +69,8 @@ class MPVView @JvmOverloads constructor(
      * the view is still being constructed, long before mpv exists to receive it.
      */
     private var subtitleFontSize = 55
+    private var subtitleDelaySeconds = 0.0
+    private var audioDelaySeconds = 0.0
     private var subtitlePosition = 92
     private var subtitleColor = DEFAULT_SUBTITLE_COLOR
     private var subtitleBackgroundColor = "#00000000"
@@ -172,6 +174,9 @@ class MPVView @JvmOverloads constructor(
             // before the surface exists and therefore before mpv can be told anything. Replay it
             // here so the viewer's choices are in place for the first subtitle drawn.
             applySubtitleStyle()
+            // Likewise the two timing offsets, which an engine switch mid-video sets straight away.
+            MPVLib.setPropertyDouble("sub-delay", subtitleDelaySeconds)
+            MPVLib.setPropertyDouble("audio-delay", audioDelaySeconds)
 
             pendingSource?.let { source ->
                 if (BuildConfig.DEBUG) Log.i(TAG, "Applying pending source after surface ready")
@@ -645,9 +650,22 @@ class MPVView @JvmOverloads constructor(
      * This maps directly to mpv's `sub-delay` property.
      */
     fun setSubtitleDelay(seconds: Double) {
+        subtitleDelaySeconds = seconds
         if (!initialized || isDestroyed) return
         if (BuildConfig.DEBUG) Log.i(TAG, "setSubtitleDelay: $seconds")
         MPVLib.setPropertyDouble("sub-delay", seconds)
+    }
+
+    /**
+     * Set the audio delay in seconds, relative to the picture.
+     * Positive values play the audio later, negative values earlier.
+     * This maps directly to mpv's `audio-delay` property, which also holds with S/PDIF passthrough.
+     */
+    fun setAudioDelay(seconds: Double) {
+        audioDelaySeconds = seconds
+        if (!initialized || isDestroyed) return
+        if (BuildConfig.DEBUG) Log.i(TAG, "setAudioDelay: $seconds")
+        MPVLib.setPropertyDouble("audio-delay", seconds)
     }
 
     /** Set subtitle font size (mpv default is 55). */

@@ -16,6 +16,9 @@ package net.streamdek.mobile.nativeapp
  * administrator instead, through [applyPolicy].
  */
 object AdultContentFilter {
+  /** Compiled once: this runs over every field of every stream each time a result list is ranked. */
+  private val wordGap = Regex("[^\\p{L}\\p{N}+]+")
+
 
   /**
    * Whether filtering is active. On by default and restored to on whenever the platform policy
@@ -120,7 +123,7 @@ object AdultContentFilter {
     if (value.isBlank()) return false
     // Release names separate words with dots and underscores, so everything that is not a letter,
     // digit or '+' becomes a gap. '+' survives because it carries the meaning in "18+".
-    val normalized = value.lowercase().replace(Regex("[^\\p{L}\\p{N}+]+"), " ").trim()
+    val normalized = value.lowercase().replace(wordGap, " ").trim()
     if (normalized.isEmpty()) return false
     val tokens = normalized.split(' ').filter { it.isNotBlank() }
 

@@ -54,6 +54,13 @@ class MPVView @JvmOverloads constructor(
         private const val DEFAULT_SUBTITLE_OUTLINE_COLOR = "#FF000000"
     }
 
+    private val callbackHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val uiCallbacks = MpvUiDispatcher(
+        isMainThread = { android.os.Looper.myLooper() == android.os.Looper.getMainLooper() },
+        post = { work -> callbackHandler.post { work() }; Unit },
+    )
+    private fun dispatchUi(work: () -> Unit) = uiCallbacks.dispatch(work)
+
     private var initialized = false
     private var pendingSource: String? = null
     private var currentSource: String? = null
@@ -142,6 +149,7 @@ class MPVView @JvmOverloads constructor(
 
     override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
         try {
+            uiCallbacks.start()
             isDestroyed = false
             if (BuildConfig.DEBUG) Log.i(TAG, "onSurfaceTextureAvailable (${width}x${height}) pendingSource=${!pendingSource.isNullOrBlank()}")
             keepScreenOn = true
@@ -187,7 +195,7 @@ class MPVView @JvmOverloads constructor(
             MPVLib.setPropertyBoolean("pause", paused)
         } catch (error: Exception) {
             Log.e(TAG, "Failed to initialize MPV", error)
-            onErrorCallback?.invoke("Embedded MPV initialization failed: ${error.message}")
+            dispatchUi { onErrorCallback?.invoke("Embedded MPV initialization failed: ${error.message}") }
         }
     }
 
@@ -198,6 +206,8 @@ class MPVView @JvmOverloads constructor(
 
     override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
         isDestroyed = true
+        uiCallbacks.stop()
+        callbackHandler.removeCallbacksAndMessages(null)
         val wasInitialized = initialized
         initialized = false
         pendingLoadRunnable?.let {
@@ -778,10 +788,12 @@ class MPVView @JvmOverloads constructor(
 
     private fun dispatchTracksChanged() {
         if (isDestroyed) return
-        val callback = onTracksChangedCallback ?: return
+        if (onTracksChangedCallback == null) return
         val trackCount = (MPVLib.getPropertyInt("track-list/count") ?: 0).coerceAtLeast(0)
         if (trackCount <= 0) {
-            callback(emptyList(), emptyList(), MPVLib.getPropertyInt("aid"), normalizeSubtitleTrackId(MPVLib.getPropertyInt("sid")))
+            val audioId = MPVLib.getPropertyInt("aid")
+            val subtitleId = normalizeSubtitleTrackId(MPVLib.getPropertyInt("sid"))
+            dispatchUi { onTracksChangedCallback?.invoke(emptyList(), emptyList(), audioId, subtitleId) }
             return
         }
 
@@ -820,7 +832,7 @@ class MPVView @JvmOverloads constructor(
             }
         }
 
-        callback(audioTracks, subtitleTracks, selectedAudioTrackId, selectedSubtitleTrackId)
+        dispatchUi { onTracksChangedCallback?.invoke(audioTracks, subtitleTracks, selectedAudioTrackId, selectedSubtitleTrackId) }
     }
 
     private fun normalizeSubtitleTrackId(trackId: Int?): Int? {
@@ -889,7 +901,7 @@ class MPVView @JvmOverloads constructor(
                 val duration = MPVLib.getPropertyDouble("duration/full")
                     ?: MPVLib.getPropertyDouble("duration")
                     ?: 0.0
-                onProgressCallback?.invoke(value, duration)
+                dispatchUi { onProgressCallback?.invoke(value, duration) }
             }
 
             "duration/full", "duration" -> {
@@ -899,7 +911,7 @@ class MPVView @JvmOverloads constructor(
                 }
                 val width = MPVLib.getPropertyInt("width") ?: 0
                 val height = MPVLib.getPropertyInt("height") ?: 0
-                onLoadCallback?.invoke(value, width, height)
+                dispatchUi { onLoadCallback?.invoke(value, width, height) }
             }
         }
     }
@@ -907,10 +919,10 @@ class MPVView @JvmOverloads constructor(
     override fun eventProperty(property: String, value: Boolean) {
         if (isDestroyed) return
         if (property == "eof-reached" && value) {
-            onEndCallback?.invoke()
+            dispatchUi { onEndCallback?.invoke() }
         }
         if (property == "paused-for-cache") {
-            onStallChangedCallback?.invoke(value)
+            dispatchUi { onStallChangedCallback?.invoke(value) }
         }
     }
 
@@ -928,11 +940,9 @@ class MPVView @JvmOverloads constructor(
                 ensureSubtitleVisibility()
                 logSubtitleState("FILE_LOADED")
                 dispatchTracksChanged()
+                dispatchUi { keepScreenOn = !paused }
                 if (!paused) {
-                    keepScreenOn = true
                     MPVLib.setPropertyBoolean("pause", false)
-                } else {
-                    keepScreenOn = false
                 }
             }
 
@@ -949,7 +959,7 @@ class MPVView @JvmOverloads constructor(
                 val width = MPVLib.getPropertyInt("width") ?: 0
                 val height = MPVLib.getPropertyInt("height") ?: 0
                 Log.i(TAG, "Playback started duration=${duration}s video=${width}x${height}")
-                onLoadCallback?.invoke(duration, width, height)
+                dispatchUi { onLoadCallback?.invoke(duration, width, height) }
             }
 
             MPV_EVENT_END_FILE -> {
@@ -964,7 +974,7 @@ class MPVView @JvmOverloads constructor(
                     isSwitchingSource = false
                     val baseMessage = "MPV could not play this source ($fileError)."
                     val detailed = lastMpvErrorMessage?.takeIf { it.isNotBlank() }?.let { "$baseMessage $it" } ?: baseMessage
-                    onErrorCallback?.invoke(detailed)
+                    dispatchUi { onErrorCallback?.invoke(detailed) }
                 } else if (isSwitchingSource) {
                     // END_FILE fired for the outgoing source during a loadfile replace.
                     // FILE_LOADED for the incoming source hasn't arrived yet — suppress
@@ -974,9 +984,9 @@ class MPVView @JvmOverloads constructor(
                     val fallbackMessage = lastMpvErrorMessage?.takeIf { it.isNotBlank() }?.let {
                         "MPV could not play this source. $it"
                     } ?: "MPV could not play this source."
-                    onErrorCallback?.invoke(fallbackMessage)
+                    dispatchUi { onErrorCallback?.invoke(fallbackMessage) }
                 } else {
-                    onEndCallback?.invoke()
+                    dispatchUi { onEndCallback?.invoke() }
                 }
             }
         }

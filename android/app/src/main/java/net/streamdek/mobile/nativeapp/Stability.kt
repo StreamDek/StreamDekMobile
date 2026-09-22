@@ -20,7 +20,7 @@ import java.time.Instant
  * watching. So nothing is sent at the time. What happens instead:
  *
  *  - [install] puts a handler in front of the existing one that writes a *small* record to
- *    preferences -- exception class, one frame, a timestamp, the running version -- and then
+ *    preferences -- exception class, bounded cause frames, timestamp and build -- and then
  *    hands straight on to whatever handler was already there. It changes no behaviour: the app
  *    still dies exactly as it would have.
  *  - [reportPending] runs on the next launch, sends that record, and clears it.
@@ -38,6 +38,7 @@ object Stability {
   private const val PREFS = "streamdek_stability"
   private const val KEY_EXCEPTION = "pending_exception"
   private const val KEY_FRAME = "pending_frame"
+  private const val KEY_DIAGNOSTICS = "pending_diagnostics"
   private const val KEY_AT = "pending_at"
   private const val KEY_VERSION = "pending_version"
   private const val KEY_LAST_EXIT_AT = "last_exit_reported_at"
@@ -81,11 +82,20 @@ object Stability {
   private fun record(context: Context, error: Throwable, appVersion: String?) {
     val prefs = prefs(context)
     val root = rootCause(error)
+    // Extra detail must never prevent the minimal crash record being persisted.
+    val diagnostics = runCatching {
+      com.google.gson.Gson().toJson(crashDiagnostics(error) + mapOf(
+        "crashedVersionCode" to net.streamdek.mobile.BuildConfig.VERSION_CODE,
+        "androidSdk" to Build.VERSION.SDK_INT,
+        "crashedOnMainThread" to (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()),
+      ))
+    }.getOrNull()
 
     prefs
       .edit()
       .putString(KEY_EXCEPTION, root.javaClass.name.take(180))
       .putString(KEY_FRAME, ownFrame(root))
+      .putString(KEY_DIAGNOSTICS, diagnostics)
       .putString(KEY_AT, Instant.now().toString())
       .putString(KEY_VERSION, appVersion)
       .commit()
@@ -116,12 +126,18 @@ object Stability {
       occurredAtIso = prefs.getString(KEY_AT, null),
       crashedAppVersion = prefs.getString(KEY_VERSION, null),
       foreground = null,
+      diagnostics = runCatching {
+        com.google.gson.Gson().fromJson<Map<String, Any>>(
+          prefs.getString(KEY_DIAGNOSTICS, null),
+          object : com.google.gson.reflect.TypeToken<Map<String, Any>>() {}.type,
+        )
+      }.getOrNull(),
     )
 
     // Cleared whether or not the send succeeds. The emitter has taken ownership of it by now,
     // and keeping it would mean re-reporting the same crash on every launch until the device
     // next reaches the backend -- turning one crash into a week of them.
-    prefs.edit().remove(KEY_EXCEPTION).remove(KEY_FRAME).remove(KEY_AT).remove(KEY_VERSION).apply()
+    prefs.edit().remove(KEY_EXCEPTION).remove(KEY_FRAME).remove(KEY_DIAGNOSTICS).remove(KEY_AT).remove(KEY_VERSION).apply()
   }
 
   /**
@@ -166,6 +182,12 @@ object Stability {
             occurredAtIso = at,
             crashedAppVersion = null,
             foreground = record.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND,
+            diagnostics = mapOf(
+              "exitStatus" to record.status,
+              "exitImportance" to record.importance,
+              "pssKb" to record.pss,
+              "rssKb" to record.rss,
+            ),
           )
 
         // Everything else -- the user swiping the app away, the system reclaiming memory, an
@@ -194,16 +216,10 @@ object Stability {
     return current
   }
 
-  /**
-   * The first frame in our own code.
-   *
-   * A framework frame is the same for every crash of that kind and groups nothing; the first
-   * StreamDek frame is what distinguishes two `IllegalStateException`s from each other. Only the
-   * class and line are taken -- never the message, which can contain anything a user typed.
-   */
+  /** Actual throwing location, including obfuscated and framework frames. Never the message. */
   private fun ownFrame(error: Throwable): String? = runCatching {
     error.stackTrace
-      .firstOrNull { it.className.startsWith("net.streamdek") }
+      .firstOrNull()
       ?.let { "${it.className}.${it.methodName}:${it.lineNumber}" }
       ?.take(180)
   }.getOrNull()

@@ -179,6 +179,14 @@ jobs:
           path: ${{ steps.apk.outputs.apk_path }}
           if-no-files-found: error
 
+      - name: Preserve release crash mappings
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamdek-${{ github.ref_name }}-${{ github.run_number }}-${{ github.sha }}-mapping
+          path: android/app/build/outputs/mapping/release/
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Detect custom release notes
         id: release_notes
         shell: bash

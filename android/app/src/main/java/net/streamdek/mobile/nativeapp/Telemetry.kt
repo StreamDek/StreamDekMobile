@@ -205,6 +205,7 @@ object Telemetry {
     occurredAtIso: String?,
     crashedAppVersion: String?,
     foreground: Boolean?,
+    diagnostics: Map<String, Any>? = null,
   ) {
     track(APP_CRASH) {
       occurredAtIso?.let { put("occurredAt", it) }
@@ -214,8 +215,12 @@ object Telemetry {
       put(
         "metadata",
         JSONObject().apply {
-          // The top frame of our own code, not the whole stack: enough to tell two crashes with
-          // the same exception type apart, without shipping a trace that may contain anything.
+          // JSONObject(Map) preserves the nested cause/frame arrays as JSON.
+          diagnostics?.let { values ->
+            val details = JSONObject(values)
+            details.keys().forEach { key -> put(key, details.get(key)) }
+          }
+          if (!occurredAtIso.isNullOrBlank()) put("crashOccurredAt", occurredAtIso)
           if (!topFrame.isNullOrBlank()) put("topFrame", topFrame)
           if (!crashedAppVersion.isNullOrBlank()) put("crashedAppVersion", crashedAppVersion)
           if (foreground != null) put("foreground", foreground)

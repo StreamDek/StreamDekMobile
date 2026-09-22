@@ -1144,6 +1144,7 @@ class StreamDekApiClient(context: Context? = null) {
   suspend fun fetchDetails(type: String, id: String, fallbackTitle: String? = null, fallbackYear: String? = null): Result<MediaDetail> = withContext(Dispatchers.IO) {
     runCatching {
       val normalizedType = normalizeMediaType(type)
+      if (!MetadataLookupIdentity.supportsType(normalizedType)) throw IllegalArgumentException()
       val idCandidates = buildDetailIdCandidates(id)
       fetchDetailsByCandidates(normalizedType, idCandidates)?.let { return@runCatching it }
 
@@ -1186,14 +1187,7 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
 
-  private fun buildDetailIdCandidates(id: String): List<String> = buildList {
-    val trimmed = id.trim()
-    if (trimmed.isBlank()) return@buildList
-    add(trimmed)
-    add(trimmed.substringAfter("tmdb:", trimmed))
-    add(trimmed.substringAfterLast(":", trimmed))
-    Regex("tt\\d+", RegexOption.IGNORE_CASE).find(trimmed)?.value?.let(::add)
-  }.filter { it.isNotBlank() }.distinct()
+  private fun buildDetailIdCandidates(id: String): List<String> = MetadataLookupIdentity.detailIds(id)
 
   private fun normalizeMediaType(type: String): String = when (type.trim().lowercase()) {
     "series", "show" -> "tv"
@@ -1203,9 +1197,9 @@ class StreamDekApiClient(context: Context? = null) {
   private data class ResolvedTmdbId(val id: String, val type: String)
 
   private fun resolveImdbToTmdb(candidate: String, hintType: String): ResolvedTmdbId? {
-    val imdbId = Regex("tt\\d+", RegexOption.IGNORE_CASE).find(candidate)?.value ?: return null
+    val imdbId = MetadataLookupIdentity.imdbId(candidate) ?: return null
     val hint = normalizeMediaType(hintType)
-    val typeCandidates = listOf(hint, if (hint == "tv") "series" else hint, "tv", "movie").distinct()
+    val typeCandidates = listOf(hint, "tv", "movie").filter(MetadataLookupIdentity::supportsType).distinct()
     for (type in typeCandidates) {
       val response = execute(Request.Builder().url("$apiBaseUrl/tmdb/find/imdb/${encodeQuery(imdbId)}?type=${encodeQuery(normalizeMediaType(type))}").build())
       if (!response.ok) continue
@@ -1277,8 +1271,10 @@ class StreamDekApiClient(context: Context? = null) {
     providers: List<String> = listOf("imdb", "tmdb", "tomatoes", "metacritic", "trakt", "letterboxd", "audience"),
   ): Result<List<ExternalRating>> = withContext(Dispatchers.IO) {
     runCatching {
-      val mediaType = if (type == "tv" || type == "series") "show" else "movie"
-      val normalizedImdbId = imdbId?.let { Regex("tt\\d+", RegexOption.IGNORE_CASE).find(it)?.value }
+      val normalizedType = normalizeMediaType(type)
+      if (!MetadataLookupIdentity.supportsType(normalizedType)) return@runCatching emptyList()
+      val mediaType = if (normalizedType == "tv") "show" else "movie"
+      val normalizedImdbId = imdbId?.let(MetadataLookupIdentity::imdbId)
       val mergedRatings = linkedMapOf<String, ExternalRating>()
       if (!normalizedImdbId.isNullOrBlank()) {
         val selectedProviders = providers.map { it.trim().lowercase() }.filter { it.isNotBlank() }.distinct()
@@ -1304,7 +1300,7 @@ class StreamDekApiClient(context: Context? = null) {
       }
 
       val candidates = buildList {
-        if (tmdbId.isNotBlank()) add("$apiBaseUrl/mdblist/lookup/tmdb/$mediaType/${encodeQuery(tmdbId)}")
+        MetadataLookupIdentity.tmdbId(tmdbId)?.let { add("$apiBaseUrl/mdblist/lookup/tmdb/$mediaType/$it") }
         if (!normalizedImdbId.isNullOrBlank()) add("$apiBaseUrl/mdblist/lookup/imdb/$mediaType/${encodeQuery(normalizedImdbId)}")
       }
       for (url in candidates) {

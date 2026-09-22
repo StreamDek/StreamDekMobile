@@ -1763,4 +1763,20 @@
   <string name="settings_section_subtitle_timing">Sincronia das legendas</string>
   <string name="settings_subtitle_timing_detail">Adiante ou atrase as legendas até 120 segundos no reprodutor, em Legendas › Sincronia. A alteração aplica-se ao vídeo que está a ver, por isso a correção de uma versão nunca dessincroniza outra.</string>
   <string name="settings_section_subtitle_behaviour">Comportamento das legendas</string>
+  <string name="player_default_audio">Áudio predefinido</string>
+  <string name="player_no_builtin_subtitles">Não foram encontradas legendas incorporadas ou do StreamDek correspondentes.</string>
+  <string name="player_no_addon_subtitles">Não foram encontradas legendas correspondentes nos complementos.</string>
+  <string name="player_no_matching_subtitles">Não foram encontradas legendas correspondentes.</string>
+  <string name="player_no_subtitles_for_languages">Não foram encontradas legendas para %1$s.</string>
+  <string name="player_recap_skipped">Resumo ignorado</string>
+  <string name="player_ending_skipped">Final ignorado</string>
+  <string name="player_intro_skipped">Introdução ignorada</string>
+  <string name="action_remove_download">Remover transferência</string>
+  <string name="download_status_completed">Transferido</string>
+  <string name="download_status_failed">Falhou</string>
+  <string name="download_status_removing">A remover…</string>
+  <string name="download_status_queued">Em fila</string>
+  <string name="download_status_paused">Em pausa</string>
+  <string name="episode_part_watched">Visto parcialmente</string>
+  <string name="episode_not_watched">Não visto</string>
 </resources>

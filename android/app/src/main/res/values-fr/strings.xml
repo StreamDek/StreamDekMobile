@@ -1799,4 +1799,20 @@
   <string name="settings_section_subtitle_timing">Synchronisation des sous-titres</string>
   <string name="settings_subtitle_timing_detail">Avancez ou retardez les sous-titres jusqu\'à 120 secondes depuis le lecteur, dans Sous-titres › Synchro. Le réglage s\'applique à la vidéo en cours : une correction faite pour une version n\'en décale jamais une autre.</string>
   <string name="settings_section_subtitle_behaviour">Comportement des sous-titres</string>
+  <string name="player_default_audio">Audio par défaut</string>
+  <string name="player_no_builtin_subtitles">Aucun sous-titre intégré ou StreamDek correspondant trouvé.</string>
+  <string name="player_no_addon_subtitles">Aucun sous-titre correspondant trouvé dans les extensions.</string>
+  <string name="player_no_matching_subtitles">Aucun sous-titre correspondant trouvé.</string>
+  <string name="player_no_subtitles_for_languages">Aucun sous-titre trouvé pour %1$s.</string>
+  <string name="player_recap_skipped">Récapitulatif passé</string>
+  <string name="player_ending_skipped">Fin passée</string>
+  <string name="player_intro_skipped">Introduction passée</string>
+  <string name="action_remove_download">Supprimer le téléchargement</string>
+  <string name="download_status_completed">Téléchargé</string>
+  <string name="download_status_failed">Échec</string>
+  <string name="download_status_removing">Suppression…</string>
+  <string name="download_status_queued">En attente</string>
+  <string name="download_status_paused">En pause</string>
+  <string name="episode_part_watched">Partiellement regardé</string>
+  <string name="episode_not_watched">Non regardé</string>
 </resources>

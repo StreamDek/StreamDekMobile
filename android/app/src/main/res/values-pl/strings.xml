@@ -1859,4 +1859,20 @@
   <string name="settings_section_subtitle_timing">Synchronizacja napisów</string>
   <string name="settings_subtitle_timing_detail">Przesuń napisy nawet o 120 sekund wcześniej lub później w odtwarzaczu: Napisy › Czas. Zmiana dotyczy oglądanego filmu, więc poprawka dla jednego wydania nigdy nie rozsynchronizuje innego.</string>
   <string name="settings_section_subtitle_behaviour">Zachowanie napisów</string>
+  <string name="player_default_audio">Domyślny dźwięk</string>
+  <string name="player_no_builtin_subtitles">Nie znaleziono pasujących napisów wbudowanych ani napisów StreamDek.</string>
+  <string name="player_no_addon_subtitles">Nie znaleziono pasujących napisów z dodatków.</string>
+  <string name="player_no_matching_subtitles">Nie znaleziono pasujących napisów.</string>
+  <string name="player_no_subtitles_for_languages">Nie znaleziono napisów dla %1$s.</string>
+  <string name="player_recap_skipped">Pominięto przypomnienie</string>
+  <string name="player_ending_skipped">Pominięto zakończenie</string>
+  <string name="player_intro_skipped">Pominięto czołówkę</string>
+  <string name="action_remove_download">Usuń pobrane</string>
+  <string name="download_status_completed">Pobrano</string>
+  <string name="download_status_failed">Niepowodzenie</string>
+  <string name="download_status_removing">Usuwanie…</string>
+  <string name="download_status_queued">W kolejce</string>
+  <string name="download_status_paused">Wstrzymano</string>
+  <string name="episode_part_watched">Częściowo obejrzane</string>
+  <string name="episode_not_watched">Nieobejrzane</string>
 </resources>

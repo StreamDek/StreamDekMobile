@@ -1763,4 +1763,20 @@
   <string name="settings_section_subtitle_timing">Sincronía de los subtítulos</string>
   <string name="settings_subtitle_timing_detail">Adelanta o retrasa los subtítulos hasta 120 segundos desde el reproductor, en Subtítulos › Sincronía. El cambio se aplica al vídeo que estás viendo, así que la corrección de una versión nunca desajusta otra.</string>
   <string name="settings_section_subtitle_behaviour">Comportamiento de los subtítulos</string>
+  <string name="player_default_audio">Audio predeterminado</string>
+  <string name="player_no_builtin_subtitles">No se encontraron subtítulos integrados o de StreamDek que coincidan.</string>
+  <string name="player_no_addon_subtitles">No se encontraron subtítulos de complementos que coincidan.</string>
+  <string name="player_no_matching_subtitles">No se encontraron subtítulos que coincidan.</string>
+  <string name="player_no_subtitles_for_languages">No se encontraron subtítulos para %1$s.</string>
+  <string name="player_recap_skipped">Resumen omitido</string>
+  <string name="player_ending_skipped">Final omitido</string>
+  <string name="player_intro_skipped">Introducción omitida</string>
+  <string name="action_remove_download">Eliminar descarga</string>
+  <string name="download_status_completed">Descargado</string>
+  <string name="download_status_failed">Error</string>
+  <string name="download_status_removing">Eliminando…</string>
+  <string name="download_status_queued">En cola</string>
+  <string name="download_status_paused">En pausa</string>
+  <string name="episode_part_watched">Visto parcialmente</string>
+  <string name="episode_not_watched">No visto</string>
 </resources>

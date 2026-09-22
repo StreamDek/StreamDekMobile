@@ -3291,7 +3291,7 @@ private class PlayerPlaybackState {
   val seekIssuedAtMs = mutableStateOf(0L)
   val hasLoaded = mutableStateOf(false)
   val autoSkippedSegments = mutableStateOf(emptySet<String>())
-  val autoSkipNotice = mutableStateOf<String?>(null)
+  val autoSkipNotice = mutableStateOf<Int?>(null)
   val playbackEnded = mutableStateOf(false)
   val completionDispatched = mutableStateOf(false)
   val didApplyResume = mutableStateOf(false)
@@ -3440,7 +3440,7 @@ private fun PlayerPanels(
   when (activePanel) {
     PlayerPanel.Audio -> PlayerModalPanel(title = stringResource(R.string.player_audio), onClose = { activePanel = PlayerPanel.None }) {
       if (audioTracks.isEmpty()) {
-        PlayerOptionRow("Default audio", selected = true, onClick = {})
+        PlayerOptionRow(stringResource(R.string.player_default_audio), selected = true, onClick = {})
       } else {
         audioTracks.forEach { track ->
           PlayerOptionRow(trackLabel(track), selected = selectedAudioTrackId == track.id) {
@@ -3608,14 +3608,14 @@ private fun PlayerPanels(
           }
           if (!subtitlesLoading && visibleEmbeddedTracks.isEmpty() && visibleExternalSubtitles.isEmpty()) {
             val requestedLanguages = preferredSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage)
-              .joinToString(" or ") { Languages.label(it) }
+              .joinToString(", ") { Languages.label(it) }
             Text(
               if (session.showOnlyPreferredSubtitleLanguages && requestedLanguages.isNotBlank()) {
-                "No subtitles found for $requestedLanguages."
+                stringResource(R.string.player_no_subtitles_for_languages, requestedLanguages)
               } else when (subtitleTab) {
-                SubtitlePanelTab.BuiltIn -> "No matching embedded or StreamDek subtitles found."
-                SubtitlePanelTab.Addons -> "No matching subtitle add-on results found."
-                else -> "No matching subtitles found."
+                SubtitlePanelTab.BuiltIn -> stringResource(R.string.player_no_builtin_subtitles)
+                SubtitlePanelTab.Addons -> stringResource(R.string.player_no_addon_subtitles)
+                else -> stringResource(R.string.player_no_matching_subtitles)
               },
               color = Color.White.copy(alpha = 0.64f),
             )
@@ -4293,9 +4293,9 @@ LaunchedEffect(activeSkipSegment, isLoading, nextEpisodeActionAvailable) {
   activeSeekTo(segment.endSeconds)
   skipSegments = skipSegments - segment
   autoSkipNotice = when (segment.type) {
-    "recap" -> "Recap skipped"
-    "outro" -> "Ending skipped"
-    else -> "Intro skipped"
+    "recap" -> R.string.player_recap_skipped
+    "outro" -> R.string.player_ending_skipped
+    else -> R.string.player_intro_skipped
   }
 }
 
@@ -4705,7 +4705,7 @@ private fun BoxScope.PlayerSurfaceOverlays(
       },
       colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black),
       shape = StreamDekRadius.panelShape,
-    ) { Text(if (nextEpisodeActionAvailable) "Next Episode" else when (activeSkipSegment?.type) { "recap" -> "Skip Recap"; "outro" -> "Skip Ending"; else -> "Skip Intro" }, fontWeight = FontWeight.Bold) }
+    ) { Text(stringResource(if (nextEpisodeActionAvailable) R.string.action_next_episode else when (activeSkipSegment?.type) { "recap" -> R.string.settings_m_skip_recap; "outro" -> R.string.action_skip_ending; else -> R.string.settings_m_skip_intro }), fontWeight = FontWeight.Bold) }
   }
   AnimatedVisibility(
     visible = autoSkipNotice != null,
@@ -4714,7 +4714,7 @@ private fun BoxScope.PlayerSurfaceOverlays(
     exit = fadeOut(animationSpec = tween(180)),
   ) {
     Surface(color = Color(0xD91A1D24), shape = StreamDekRadius.pill) {
-      Text(autoSkipNotice.orEmpty(), modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp), color = Color.White, fontWeight = FontWeight.SemiBold)
+      Text(autoSkipNotice?.let { stringResource(it) }.orEmpty(), modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp), color = Color.White, fontWeight = FontWeight.SemiBold)
     }
   }
   // A live-channel switch has its own compact status indicator below. Keeping the

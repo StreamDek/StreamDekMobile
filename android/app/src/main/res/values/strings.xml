@@ -1914,4 +1914,20 @@
   <string name="settings_section_subtitle_timing">Subtitle timing</string>
   <string name="settings_subtitle_timing_detail">Move subtitles up to 120 seconds earlier or later from the player, under Subtitles › Timing. The change applies to the video you are watching, so a correction for one release never mis-times another.</string>
   <string name="settings_section_subtitle_behaviour">Subtitle behaviour</string>
+  <string name="player_default_audio">Default audio</string>
+  <string name="player_no_builtin_subtitles">No matching embedded or StreamDek subtitles found.</string>
+  <string name="player_no_addon_subtitles">No matching subtitle add-on results found.</string>
+  <string name="player_no_matching_subtitles">No matching subtitles found.</string>
+  <string name="player_no_subtitles_for_languages">No subtitles found for %1$s.</string>
+  <string name="player_recap_skipped">Recap skipped</string>
+  <string name="player_ending_skipped">Ending skipped</string>
+  <string name="player_intro_skipped">Intro skipped</string>
+  <string name="action_remove_download">Remove Download</string>
+  <string name="download_status_completed">Downloaded</string>
+  <string name="download_status_failed">Failed</string>
+  <string name="download_status_removing">Removing…</string>
+  <string name="download_status_queued">Queued</string>
+  <string name="download_status_paused">Paused</string>
+  <string name="episode_part_watched">Part watched</string>
+  <string name="episode_not_watched">Not watched</string>
 </resources>

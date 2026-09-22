@@ -1749,4 +1749,20 @@
   <string name="settings_section_subtitle_timing">Timing van ondertiteling</string>
   <string name="settings_subtitle_timing_detail">Verschuif ondertiteling in de speler tot 120 seconden eerder of later, via Ondertiteling › Timing. De wijziging geldt voor de video die je kijkt, zodat een correctie voor de ene versie nooit een andere verschuift.</string>
   <string name="settings_section_subtitle_behaviour">Gedrag van ondertiteling</string>
+  <string name="player_default_audio">Standaardaudio</string>
+  <string name="player_no_builtin_subtitles">Geen overeenkomende ingebouwde of StreamDek-ondertitels gevonden.</string>
+  <string name="player_no_addon_subtitles">Geen overeenkomende ondertitels van add-ons gevonden.</string>
+  <string name="player_no_matching_subtitles">Geen overeenkomende ondertitels gevonden.</string>
+  <string name="player_no_subtitles_for_languages">Geen ondertitels gevonden voor %1$s.</string>
+  <string name="player_recap_skipped">Samenvatting overgeslagen</string>
+  <string name="player_ending_skipped">Einde overgeslagen</string>
+  <string name="player_intro_skipped">Intro overgeslagen</string>
+  <string name="action_remove_download">Download verwijderen</string>
+  <string name="download_status_completed">Gedownload</string>
+  <string name="download_status_failed">Mislukt</string>
+  <string name="download_status_removing">Verwijderen…</string>
+  <string name="download_status_queued">In wachtrij</string>
+  <string name="download_status_paused">Gepauzeerd</string>
+  <string name="episode_part_watched">Gedeeltelijk bekeken</string>
+  <string name="episode_not_watched">Niet bekeken</string>
 </resources>

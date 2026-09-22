@@ -26348,12 +26348,12 @@ private fun DownloadActionsDialog(
       // Downloads saved before the media record existed have no catalogue id, so there is no
       // page to open — offering it would land on an unrelated title.
       if (download.media.isResolvable) {
-        AmbientActionRow("Open Details", icon = Icons.Rounded.Info) {
+        AmbientActionRow(stringResource(R.string.action_open_details), icon = Icons.Rounded.Info) {
           onOpenDetails()
           onDismiss()
         }
       }
-      AmbientActionRow("Remove Download", icon = Icons.Rounded.Delete) {
+      AmbientActionRow(stringResource(R.string.action_remove_download), icon = Icons.Rounded.Delete) {
         onRemove()
         onDismiss()
       }
@@ -26446,11 +26446,11 @@ private fun DownloadsSettingsSummary(
                   Text(
                     when (download.state) {
                       DownloadState.COMPLETED -> DownloadProgressText.completedSize(context, download)
-                        ?.let { stringResource(R.string.download_status_completed_size, it) } ?: "Downloaded"
-                      DownloadState.FAILED -> "Failed"
-                      DownloadState.REMOVING -> "Removing…"
-                      DownloadState.QUEUED -> "Queued"
-                      DownloadState.PAUSED -> "Paused"
+                        ?.let { stringResource(R.string.download_status_completed_size, it) } ?: stringResource(R.string.download_status_completed)
+                      DownloadState.FAILED -> stringResource(R.string.download_status_failed)
+                      DownloadState.REMOVING -> stringResource(R.string.download_status_removing)
+                      DownloadState.QUEUED -> stringResource(R.string.download_status_queued)
+                      DownloadState.PAUSED -> stringResource(R.string.download_status_paused)
                       DownloadState.DOWNLOADING -> DownloadProgressText.status(context, download)
                     },
                     color = if (download.state == DownloadState.DOWNLOADING) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.60f),
@@ -31760,6 +31760,12 @@ private fun EpisodeViewportCard(
 ) {
   val unreleased = isEpisodeUnreleased(episode)
   val locked = blurUnwatched && !watched
+  val episodeStateDescription = stringResource(when {
+    watched -> R.string.player_watched
+    progress != null -> R.string.episode_part_watched
+    nextUp -> R.string.detail_next_up
+    else -> R.string.episode_not_watched
+  })
   Box(
     modifier = Modifier
       .width(314.dp)
@@ -31771,12 +31777,7 @@ private fun EpisodeViewportCard(
       .combinedClickable(onClick = onOpen, onLongClick = onLongPress)
       .semantics {
         this.selected = selected
-        stateDescription = when {
-          watched -> "Watched"
-          progress != null -> "Part watched"
-          nextUp -> "Next up"
-          else -> "Not watched"
-        }
+        stateDescription = episodeStateDescription
       },
   ) {
     AsyncImage(model = episode.still, contentDescription = episode.name.ifBlank { stringResource(R.string.detail_episode_number, episode.episodeNumber) }, modifier = Modifier.fillMaxSize().then(EpisodeContentBlurModifier(locked)), contentScale = ContentScale.Crop)
@@ -31916,6 +31917,12 @@ private fun EpisodeListRow(
 ) {
   val unreleased = isEpisodeUnreleased(episode)
   val locked = blurUnwatched && !watched
+  val episodeStateDescription = stringResource(when {
+    watched -> R.string.player_watched
+    progress != null -> R.string.episode_part_watched
+    nextUp -> R.string.detail_next_up
+    else -> R.string.episode_not_watched
+  })
   // Kept per episode and across a scroll, so opening a synopsis and coming back does not shut it.
   var expanded by rememberSaveable(episode.id) { mutableStateOf(false) }
   // Only what actually overflowed offers to open: a "Show more" under a synopsis that is already
@@ -31932,12 +31939,7 @@ private fun EpisodeListRow(
       .combinedClickable(onClick = onOpen, onLongClick = onLongPress)
       .semantics {
         this.selected = selected
-        stateDescription = when {
-          watched -> "Watched"
-          progress != null -> "Part watched"
-          nextUp -> "Next up"
-          else -> "Not watched"
-        }
+        stateDescription = episodeStateDescription
       },
   ) {
     Row(

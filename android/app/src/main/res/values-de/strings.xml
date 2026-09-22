@@ -1749,4 +1749,20 @@
   <string name="settings_section_subtitle_timing">Untertitel-Timing</string>
   <string name="settings_subtitle_timing_detail">Verschiebe Untertitel im Player unter Untertitel › Timing um bis zu 120 Sekunden nach vorn oder hinten. Die Änderung gilt für das laufende Video, damit eine Korrektur für eine Fassung keine andere verschiebt.</string>
   <string name="settings_section_subtitle_behaviour">Untertitelverhalten</string>
+  <string name="player_default_audio">Standardaudio</string>
+  <string name="player_no_builtin_subtitles">Keine passenden eingebetteten oder StreamDek-Untertitel gefunden.</string>
+  <string name="player_no_addon_subtitles">Keine passenden Untertitel aus Add-ons gefunden.</string>
+  <string name="player_no_matching_subtitles">Keine passenden Untertitel gefunden.</string>
+  <string name="player_no_subtitles_for_languages">Keine Untertitel für %1$s gefunden.</string>
+  <string name="player_recap_skipped">Rückblick übersprungen</string>
+  <string name="player_ending_skipped">Abspann übersprungen</string>
+  <string name="player_intro_skipped">Intro übersprungen</string>
+  <string name="action_remove_download">Download entfernen</string>
+  <string name="download_status_completed">Heruntergeladen</string>
+  <string name="download_status_failed">Fehlgeschlagen</string>
+  <string name="download_status_removing">Wird entfernt…</string>
+  <string name="download_status_queued">In Warteschlange</string>
+  <string name="download_status_paused">Pausiert</string>
+  <string name="episode_part_watched">Teilweise angesehen</string>
+  <string name="episode_not_watched">Nicht angesehen</string>
 </resources>

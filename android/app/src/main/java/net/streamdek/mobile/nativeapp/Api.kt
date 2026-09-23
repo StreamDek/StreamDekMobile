@@ -273,7 +273,7 @@ class FavouriteChannelStore(context: Context) {
           .put("updatedAt", item.updatedAt)
           .put("sourceAddonId", item.sourceAddonId)
           .put("sourceAddonName", item.sourceAddonName)
-          .put("sourceCatalogType", item.sourceCatalogType)
+          .put("sourceMediaType", item.sourceMediaType).put("sourceCatalogType", item.sourceCatalogType)
           .put("sourceCatalogId", item.sourceCatalogId)
           .put("sourceCatalogName", item.sourceCatalogName)
           .put("directStreamUrl", item.directStreamUrl),
@@ -321,6 +321,7 @@ private fun parseFavouriteChannel(item: JSONObject): MediaItem = MediaItem(
   updatedAt = parseFlexibleTimestamp(item, "updatedAt"),
   sourceAddonId = item.optString("sourceAddonId").takeIf { it.isNotBlank() && it != "null" },
   sourceAddonName = item.optString("sourceAddonName").takeIf { it.isNotBlank() && it != "null" },
+  sourceMediaType = item.optString("sourceMediaType").takeIf { it.isNotBlank() && it != "null" },
   sourceCatalogType = item.optString("sourceCatalogType").takeIf { it.isNotBlank() && it != "null" },
   sourceCatalogId = item.optString("sourceCatalogId").takeIf { it.isNotBlank() && it != "null" },
   sourceCatalogName = item.optString("sourceCatalogName").takeIf { it.isNotBlank() && it != "null" },
@@ -1137,20 +1138,17 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
   suspend fun resolvePluginMediaId(type: String, id: String): String = withContext(Dispatchers.IO) {
-    val candidate = id.substringBefore(":").trim()
-    if (!candidate.startsWith("tt", ignoreCase = true)) return@withContext candidate
+    MetadataLookupIdentity.tmdbId(id)?.let { return@withContext it }
+    val candidate = MetadataLookupIdentity.imdbId(id) ?: return@withContext id
     resolveImdbToTmdb(candidate, normalizeMediaType(type))?.id ?: candidate
   }
-  suspend fun fetchDetails(type: String, id: String, fallbackTitle: String? = null, fallbackYear: String? = null): Result<MediaDetail> = withContext(Dispatchers.IO) {
+  suspend fun fetchDetails(type: String, id: String, fallbackTitle: String? = null, fallbackYear: String? = null, providerOwned: Boolean = false): Result<MediaDetail> = withContext(Dispatchers.IO) {
     runCatching {
       val normalizedType = normalizeMediaType(type)
       if (!MetadataLookupIdentity.supportsType(normalizedType)) throw IllegalArgumentException()
-      val idCandidates = buildDetailIdCandidates(id)
+      val idCandidates = if (providerOwned) MediaClassification.enrichmentId(id, true)?.let(::buildDetailIdCandidates).orEmpty()
+        else buildDetailIdCandidates(id)
       fetchDetailsByCandidates(normalizedType, idCandidates)?.let { return@runCatching it }
-
-      idCandidates.firstNotNullOfOrNull { candidate -> resolveImdbToTmdb(candidate, normalizedType) }?.let { resolved ->
-        fetchDetailsByCandidates(resolved.type, listOf(resolved.id))?.let { return@runCatching it }
-      }
 
       val title = fallbackTitle?.trim().orEmpty()
       // Some bridge catalogs hand out placeholder titles (a bare "_", "-", "?" or similar) for
@@ -1158,25 +1156,14 @@ class StreamDekApiClient(context: Context? = null) {
       // string never resolves anything (and previously fired repeatedly whenever the retry loop
       // above re-triggered), so bail out before spending a request on it.
       val isRealTitle = title.isNotBlank() && title.any { it.isLetterOrDigit() }
-      if (isRealTitle) {
+      if (isRealTitle && fallbackYear?.take(4)?.toIntOrNull() != null) {
         val queries = listOf(title, cleanSearchTitle(title)).filter { it.isNotBlank() }.distinctBy { it.lowercase() }
         for (query in queries) {
           val encoded = encodeQuery(query)
           val searchItems = listOf("/tmdb/search?q=$encoded", "/tmdb/search?query=$encoded")
             .firstNotNullOfOrNull { path -> runCatching { fetchMediaList(path) }.getOrNull()?.takeIf { it.isNotEmpty() } }
             .orEmpty()
-          val resolved = searchItems
-            .filter { item ->
-              normalizeMediaType(item.type) == normalizedType &&
-                normalizeTitle(item.title) == normalizeTitle(title) &&
-                (fallbackYear == null || item.year == null || item.year.take(4) == fallbackYear.take(4))
-            }
-            .sortedWith(
-              compareByDescending<MediaItem> { it.year != null && fallbackYear != null && it.year.take(4) == fallbackYear.take(4) }
-                .thenByDescending { it.title.equals(title, ignoreCase = true) }
-                .thenByDescending { it.rating ?: 0.0 },
-            )
-            .firstOrNull()
+          val resolved = MediaClassification.uniqueTitleMatch(title, fallbackYear, searchItems, normalizedType)
           if (resolved != null) {
             fetchDetailsByCandidates(resolved.type, buildDetailIdCandidates(resolved.id))?.let { return@runCatching it }
           }
@@ -1189,17 +1176,14 @@ class StreamDekApiClient(context: Context? = null) {
 
   private fun buildDetailIdCandidates(id: String): List<String> = MetadataLookupIdentity.detailIds(id)
 
-  private fun normalizeMediaType(type: String): String = when (type.trim().lowercase()) {
-    "series", "show" -> "tv"
-    else -> type.trim().lowercase().ifBlank { "movie" }
-  }
+  private fun normalizeMediaType(type: String): String = MediaClassification.canonical(type)
 
   private data class ResolvedTmdbId(val id: String, val type: String)
 
   private fun resolveImdbToTmdb(candidate: String, hintType: String): ResolvedTmdbId? {
     val imdbId = MetadataLookupIdentity.imdbId(candidate) ?: return null
     val hint = normalizeMediaType(hintType)
-    val typeCandidates = listOf(hint, "tv", "movie").filter(MetadataLookupIdentity::supportsType).distinct()
+    val typeCandidates = listOf(hint).filter(MetadataLookupIdentity::supportsType)
     for (type in typeCandidates) {
       val response = execute(Request.Builder().url("$apiBaseUrl/tmdb/find/imdb/${encodeQuery(imdbId)}?type=${encodeQuery(normalizeMediaType(type))}").build())
       if (!response.ok) continue
@@ -1237,8 +1221,9 @@ class StreamDekApiClient(context: Context? = null) {
    */
   private fun fetchDetailsByCandidates(type: String, idCandidates: List<String>): MediaDetail? {
     val normalizedType = normalizeMediaType(type)
+    if (!MetadataLookupIdentity.supportsType(normalizedType)) return null
     for (candidateId in idCandidates) {
-      val response = execute(Request.Builder().url("$apiBaseUrl/tmdb/details/$normalizedType/${encodeQuery(candidateId)}").build())
+      val response = execute(Request.Builder().url("$apiBaseUrl/tmdb/details/$normalizedType/${Uri.encode(candidateId)}").build())
       if (response.ok) return parseMediaDetail(response.json)
     }
     return null
@@ -1335,8 +1320,11 @@ class StreamDekApiClient(context: Context? = null) {
 
   suspend fun fetchTraktComments(session: AuthSession?, type: String, tmdbId: String, imdbId: String?): Result<List<TraktComment>> = withContext(Dispatchers.IO) {
     runCatching {
-      val canonicalType = if (type == "tv" || type == "series") "tv" else "movie"
-      val url = "$apiBaseUrl/trakt/comments/$canonicalType/${encodeQuery(tmdbId)}"
+      val canonicalType = MediaClassification.canonical(type)
+      if (!MetadataLookupIdentity.supportsType(canonicalType)) return@runCatching emptyList()
+      val lookupId = MetadataLookupIdentity.tmdbId(tmdbId) ?: imdbId?.let(MetadataLookupIdentity::imdbId)
+        ?: return@runCatching emptyList()
+      val url = "$apiBaseUrl/trakt/comments/$canonicalType/${Uri.encode(lookupId)}"
       val response = execute(Request.Builder().url(url).headers(authHeaders(session, includeContentType = false)).build())
       ensureOk(response, "Failed to load Trakt comments")
       parseTraktComments(response.json)
@@ -1411,7 +1399,7 @@ class StreamDekApiClient(context: Context? = null) {
             .put("year", item.year).put("poster", item.poster).put("backdrop", item.backdrop)
             .put("rating", item.rating).put("description", item.description)
             .put("sourceAddonId", item.sourceAddonId).put("sourceAddonName", item.sourceAddonName)
-            .put("sourceCatalogType", item.sourceCatalogType).put("sourceCatalogId", item.sourceCatalogId)
+            .put("sourceMediaType", item.sourceMediaType).put("sourceCatalogType", item.sourceCatalogType).put("sourceCatalogId", item.sourceCatalogId)
             .put("sourceCatalogName", item.sourceCatalogName).put("directStreamUrl", item.directStreamUrl)
             .put("requestHeaders", JSONObject(item.requestHeaders)).put("addedAt", item.addedAt).put("updatedAt", item.updatedAt))
         }
@@ -1742,7 +1730,7 @@ class StreamDekApiClient(context: Context? = null) {
           addon.manifest.name,
           catalog.name,
           if (duplicateCatalogNames[catalog.name.trim().lowercase()] == true) {
-            if (mappedType == "movie") "Movies" else "Series"
+            when (mappedType) { "movie" -> "Movies"; "tv" -> "Series"; else -> null }
           } else {
             null
           },
@@ -1763,7 +1751,7 @@ class StreamDekApiClient(context: Context? = null) {
     }
     val query = queryParams.takeIf { it.isNotEmpty() }?.joinToString("&", prefix = "?").orEmpty()
     val request = Request.Builder()
-      .url("$apiBaseUrl/addons/${encodeQuery(addonId)}/catalog/${encodeQuery(rawType)}/${encodeQuery(catalogId)}$query")
+      .url("$apiBaseUrl/addons/${Uri.encode(addonId)}/catalog/${Uri.encode(rawType)}/${Uri.encode(catalogId)}$query")
       .headers(authHeaders(session, includeContentType = false, profileId = profileId))
       .build()
     val response = execute(request)
@@ -1780,15 +1768,16 @@ class StreamDekApiClient(context: Context? = null) {
         val item = items.optJSONObject(index) ?: continue
         if (isPlaceholderCatalogMeta(item)) continue
         if (isAdultCatalogEntry(item)) continue
-        val normalizedCatalogType = rawType.trim().lowercase()
+        val normalizedCatalogType = rawType.trim()
         val mediaItem = parseMediaItem(item).copy(
           id = parseAddonCatalogItemId(item),
-          type = when (normalizedCatalogType) {
-            "series", "show" -> "tv"
-            else -> normalizedCatalogType
-          },
+          type = MediaClassification.item(
+            item.optString("type").ifBlank { item.optString("media_type") },
+            normalizedCatalogType, parseAddonCatalogItemId(item), episodic = hasAddonEpisodeMetadata(item),
+          ),
           sourceAddonId = addonId,
           sourceAddonName = addonName,
+          sourceMediaType = item.optString("type").ifBlank { item.optString("media_type") }.ifBlank { null },
           sourceCatalogType = normalizedCatalogType,
           sourceCatalogId = catalogId,
           sourceCatalogName = catalogName,
@@ -1881,15 +1870,16 @@ class StreamDekApiClient(context: Context? = null) {
         val item = items.optJSONObject(index) ?: continue
         if (isPlaceholderCatalogMeta(item)) continue
         if (isAdultCatalogEntry(item)) continue
-        val normalizedCatalogType = rawType.trim().lowercase()
+        val normalizedCatalogType = rawType.trim()
         val mediaItem = parseMediaItem(item).copy(
           id = parseAddonCatalogItemId(item),
-          type = when (normalizedCatalogType) {
-            "series", "show" -> "tv"
-            else -> normalizedCatalogType
-          },
+          type = MediaClassification.item(
+            item.optString("type").ifBlank { item.optString("media_type") },
+            normalizedCatalogType, parseAddonCatalogItemId(item), episodic = hasAddonEpisodeMetadata(item),
+          ),
           sourceAddonId = addon.id,
           sourceAddonName = addon.manifest.name,
+          sourceMediaType = item.optString("type").ifBlank { item.optString("media_type") }.ifBlank { null },
           sourceCatalogType = normalizedCatalogType,
           sourceCatalogId = catalogId,
           sourceCatalogName = catalogName,
@@ -1935,7 +1925,7 @@ class StreamDekApiClient(context: Context? = null) {
           ?: return@runCatching id
         fun pathSegment(value: String) = Uri.encode(value)
         val request = Request.Builder()
-          .url("$base/meta/${pathSegment(rawType.trim().lowercase())}/${pathSegment(id)}.json")
+          .url("$base/meta/${pathSegment(rawType.trim())}/${pathSegment(id)}.json")
           .header("User-Agent", "Stremio/4.4.168")
           .build()
         val response = execute(request, directStreamClient)
@@ -1969,7 +1959,7 @@ class StreamDekApiClient(context: Context? = null) {
       runCatching {
         val response = execute(
           Request.Builder()
-            .url("$apiBaseUrl/addons/${Uri.encode(addon.id)}/meta/${Uri.encode(rawType.trim().lowercase())}/${Uri.encode(id)}")
+            .url("$apiBaseUrl/addons/${Uri.encode(addon.id)}/meta/${Uri.encode(rawType.trim())}/${Uri.encode(id)}")
             .headers(authHeaders(session, includeContentType = false, profileId = profileId))
             .build(),
         )
@@ -1987,7 +1977,7 @@ class StreamDekApiClient(context: Context? = null) {
           ?: error("Addon transport URL is unavailable")
         val response = execute(
           Request.Builder()
-            .url("$base/meta/${Uri.encode(rawType.trim().lowercase())}/${Uri.encode(id)}.json")
+            .url("$base/meta/${Uri.encode(rawType.trim())}/${Uri.encode(id)}.json")
             .header("User-Agent", "Stremio/4.4.168")
             .build(),
           directStreamClient,
@@ -2095,7 +2085,7 @@ class StreamDekApiClient(context: Context? = null) {
           } else null,
         )
       val body = JSONObject()
-        .put("entityType", if (entityType.equals("movie", true)) "movie" else "tv")
+        .put("entityType", MetadataLookupIdentity.requireType(entityType))
         .put("entityId", entityId)
         .put("episodeKey", episodeKey)
         .put("positionSec", positionSec)
@@ -2152,7 +2142,7 @@ class StreamDekApiClient(context: Context? = null) {
   ): Result<Unit> = withContext(Dispatchers.IO) {
     runCatching {
       val body = JSONObject()
-        .put("entityType", if (entityType.equals("movie", true)) "movie" else "tv")
+        .put("entityType", MetadataLookupIdentity.requireType(entityType))
         .put("entityId", entityId)
         .put("episodeKey", episodeKey)
         .put("seasonNumber", seasonNumber)
@@ -2211,7 +2201,7 @@ class StreamDekApiClient(context: Context? = null) {
           )
         items.put(
           JSONObject()
-            .put("entityType", if (record.entityType.equals("movie", true)) "movie" else "tv")
+            .put("entityType", MetadataLookupIdentity.requireType(record.entityType))
             .put("entityId", record.entityId)
             .put("episodeKey", record.episodeKey)
             .put("positionSec", record.positionSec)
@@ -2328,7 +2318,7 @@ class StreamDekApiClient(context: Context? = null) {
     episodeKey: String? = null,
   ): Result<Unit> = withContext(Dispatchers.IO) {
     runCatching {
-      val type = if (entityType.equals("movie", true)) "movie" else "tv"
+      val type = MetadataLookupIdentity.requireType(entityType)
       val query = episodeKey?.takeIf { it.isNotBlank() }?.let { "?episodeKey=${encodeQuery(it)}" }.orEmpty()
       val response = execute(
         Request.Builder()
@@ -2934,12 +2924,12 @@ class StreamDekApiClient(context: Context? = null) {
       }
     }
 
-  suspend fun fetchStreamsFromAddon(session: AuthSession?, addonId: String, type: String, videoId: String, profileId: String? = null): Result<List<AddonStream>> =
+  suspend fun fetchStreamsFromAddon(session: AuthSession?, addonId: String, type: String, videoId: String, profileId: String? = null, nativeIdentity: Boolean = false): Result<List<AddonStream>> =
     withContext(Dispatchers.IO) {
       runCatching {
         val response = execute(
           Request.Builder()
-            .url("$apiBaseUrl/addons/streams/single/${encodeQuery(addonId)}/${encodeQuery(type)}/${encodeQuery(videoId)}")
+            .url("$apiBaseUrl/addons/streams/single/${Uri.encode(addonId)}/${Uri.encode(type)}/${Uri.encode(videoId)}?nativeIdentity=$nativeIdentity")
             .headers(authHeaders(session, includeContentType = false, profileId = profileId))
             .build(),
         )
@@ -2966,7 +2956,7 @@ class StreamDekApiClient(context: Context? = null) {
         val manifestUrl = addon.transportUrl ?: addon.manifestUrl ?: addon.url
           ?: throw IllegalArgumentException("Addon transport URL is unavailable")
         val baseUrl = manifestUrl.substringBeforeLast("/manifest.json", missingDelimiterValue = manifestUrl.trimEnd('/'))
-        val streamType = type.trim().lowercase()
+        val streamType = type.trim()
         // Path segments need proper percent-encoding (spaces -> %20), not form/query
         // encoding (spaces -> "+"). Add-ons whose native ids contain spaces or other
         // reserved characters (as CNCVerse Bridge's do) will 404/fall through to a
@@ -3378,7 +3368,7 @@ class StreamDekApiClient(context: Context? = null) {
         .put("title", item.title)
       item.year?.toIntOrNull()?.let { entry.put("year", it) }
       entry.put("ids", JSONObject().put("tmdb", item.id.toIntOrNull()))
-      val payload = if (item.type.trim().lowercase() in setOf("tv", "series", "show")) {
+      val payload = if (MediaClassification.canonical(item.type) == "tv") {
         JSONObject().put("movies", JSONArray()).put("shows", JSONArray().put(entry))
       } else {
         JSONObject().put("movies", JSONArray().put(entry)).put("shows", JSONArray())
@@ -3743,7 +3733,7 @@ class StreamDekApiClient(context: Context? = null) {
       val entry = JSONObject().put("title", item.title)
       item.year?.toIntOrNull()?.let { entry.put("year", it) }
       entry.put("ids", JSONObject().put("tmdb", item.id.toIntOrNull()))
-      val payload = if (item.type.trim().lowercase() in setOf("tv", "series", "show")) {
+      val payload = if (MediaClassification.canonical(item.type) == "tv") {
         JSONObject().put("movies", JSONArray()).put("shows", JSONArray().put(entry))
       } else {
         JSONObject().put("movies", JSONArray().put(entry)).put("shows", JSONArray())
@@ -3771,7 +3761,7 @@ class StreamDekApiClient(context: Context? = null) {
       val entry = JSONObject().put("title", item.title)
       item.year?.toIntOrNull()?.let { entry.put("year", it) }
       entry.put("ids", JSONObject().put("tmdb", item.id.toIntOrNull()))
-      val payload = if (item.type.trim().lowercase() in setOf("tv", "series", "show")) {
+      val payload = if (MediaClassification.canonical(item.type) == "tv") {
         JSONObject().put("movies", JSONArray()).put("shows", JSONArray().put(entry))
       } else {
         JSONObject().put("movies", JSONArray().put(entry)).put("shows", JSONArray())
@@ -4657,10 +4647,12 @@ internal fun isPlaceholderCatalogMeta(item: JSONObject): Boolean {
 private fun parseMediaItemType(item: JSONObject): String {
   if (item.has("logo") && !item.has("title") && !item.has("poster")) return "network"
   val rawType = item.optString("type").ifBlank { item.optString("media_type").ifBlank { item.optString("kind") } }
-  return when (rawType.trim().lowercase()) {
-    "series", "show", "tv" -> "tv"
-    "movie" -> "movie"
-    else -> if (item.has("first_air_date") || item.has("tvdb_id")) "tv" else "movie"
+  val canonical = MediaClassification.canonical(rawType)
+  if (canonical != "unknown") return canonical
+  return when {
+    item.has("first_air_date") || item.has("tvdb_id") -> "tv"
+    item.has("release_date") -> "movie"
+    else -> "unknown"
   }
 }
 
@@ -4712,6 +4704,15 @@ private fun parseMediaItem(item: JSONObject): MediaItem =
     updatedAt = parseFlexibleTimestamp(item, "updatedAt", "updated_at"),
   )
 
+internal fun hasAddonEpisodeMetadata(meta: JSONObject): Boolean {
+  val videos = meta.optJSONArray("videos") ?: return false
+  return (0 until videos.length()).any { index ->
+    val video = videos.optJSONObject(index)
+    video != null && video.has("season") && !video.isNull("season") &&
+      video.optInt("season", -1) >= 0 && video.optInt("episode", 0) > 0
+  }
+}
+
 internal fun parseLocalAddonMetaResponse(root: JSONObject, rawType: String, fallbackId: String): LocalAddonMeta {
   val meta = root.optJSONObject("meta") ?: root.optJSONObject("data")?.optJSONObject("meta") ?: root
   val videos = meta.optJSONArray("videos") ?: JSONArray()
@@ -4737,12 +4738,8 @@ internal fun parseLocalAddonMetaResponse(root: JSONObject, rawType: String, fall
     }
   }
   val declaredType = meta.optString("type").ifBlank { rawType }.trim().lowercase()
-  val inferredType = when {
-    episodes.isNotEmpty() -> "tv"
-    declaredType in setOf("series", "show", "tv") -> "tv"
-    declaredType == "movie" -> "movie"
-    else -> "movie"
-  }
+  val inferredType = MediaClassification.item(meta.optString("type"), rawType, fallbackId,
+    hasAddonEpisodeMetadata(meta))
   val releaseInfo = meta.optString("releaseInfo").ifBlank { null }
   val year = meta.opt("year")?.toString()?.takeIf { it.isNotBlank() && it != "null" }
     ?: releaseInfo?.let { Regex("\\b(19|20)\\d{2}\\b").find(it)?.value }
@@ -4763,6 +4760,9 @@ internal fun parseLocalAddonMetaResponse(root: JSONObject, rawType: String, fall
     else -> emptyList()
   }
   return LocalAddonMeta(
+    tmdbId = listOf("tmdbId", "tmdb_id", "moviedb_id").firstNotNullOfOrNull { key ->
+      meta.optString(key).takeIf { it.toLongOrNull()?.let { number -> number > 0 } == true }
+    },
     id = meta.optString("id").ifBlank { fallbackId },
     imdbId = meta.optString("imdb_id").ifBlank { meta.optString("imdbId") }.ifBlank { null },
     type = inferredType,
@@ -5185,12 +5185,7 @@ private fun parseAddonCatalogs(values: JSONArray?): List<AddonCatalog> = buildLi
 
 /** Maps an add-on's own catalog type onto the app's, or null when the app has nowhere to show it.
  * Also used by the search screen to decide which catalogs can serve the type being browsed. */
-internal fun mapHomeCatalogType(rawType: String): String? = when (rawType.trim().lowercase()) {
-  "movie" -> "movie"
-  "series", "tv" -> "tv"
-  "sport", "sports", "channel", "live", "other" -> rawType.trim().lowercase()
-  else -> null
-}
+internal fun mapHomeCatalogType(rawType: String): String? = MediaClassification.addon(rawType)
 
 // Home rows show only the catalog's own name \u2014 the provider/addon name and any
 // account email the addon embeds in its labels are stripped out.

@@ -61,6 +61,7 @@ data class MediaItem(
   val updatedAt: Long? = null,
   val sourceAddonId: String? = null,
   val sourceAddonName: String? = null,
+  val sourceMediaType: String? = null,
   val sourceCatalogType: String? = null,
   val sourceCatalogId: String? = null,
   val sourceCatalogName: String? = null,
@@ -125,6 +126,7 @@ data class EpisodeItem(
 )
 
 data class LocalAddonMeta(
+  val tmdbId: String? = null,
   val id: String,
   val imdbId: String?,
   val type: String,

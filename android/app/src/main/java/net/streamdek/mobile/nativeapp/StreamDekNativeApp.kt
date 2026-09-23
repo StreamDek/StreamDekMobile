@@ -1683,12 +1683,11 @@ private fun ambientTintAlpha(base: Float, percent: Int): Float =
   (base * (percent.coerceIn(20, 100) / 100f)).coerceIn(0f, 1f)
 
 internal fun MediaItem.isLiveCatalogItem(): Boolean {
-  val catalogText = listOfNotNull(sourceAddonName, sourceCatalogType, sourceCatalogId, sourceCatalogName).joinToString(" ").lowercase()
-  val isLiveTvChannel = sourceCatalogType == "tv" && !looksLikeSeriesDatabaseId(id)
-  return sourceCatalogType in liveMediaTypes ||
-    isLiveTvChannel ||
-    directStreamUrl != null ||
-    listOf("live", "channel", "sport", "ultra max tv", "iptv").any { it in catalogText }
+  if (MediaClassification.canonical(sourceCatalogType) == "live") return true
+  val canonical = MediaClassification.canonical(type)
+  if (canonical == "live") return true
+  if (canonical in setOf("movie", "tv")) return false
+  return MediaClassification.addon(sourceCatalogType) == "live"
 }
 
 /**
@@ -2860,10 +2859,8 @@ private fun parseAddonStreamJson(json: JSONObject): AddonStream = AddonStream(
 private fun JSONObject.toStringMap(): Map<String, String> = buildMap {
   keys().forEach { key -> optString(key).trim().takeIf { it.isNotBlank() }?.let { put(key, it) } }
 }
-internal fun normalizedMediaType(type: String): String = when (type.trim().lowercase()) {
-  "tv", "series", "show" -> "tv"
-  else -> type.trim().lowercase()
-}
+internal fun normalizedMediaType(type: String): String =
+  MediaClassification.canonical(type).takeUnless { it == "unknown" } ?: type.trim().lowercase()
 
 internal fun progressCameFromAnotherPlatform(lastPlatform: String?, destination: String): Boolean {
   val origin = lastPlatform?.trim()?.lowercase().orEmpty()
@@ -2883,7 +2880,7 @@ internal fun progressCameFromAnotherPlatform(lastPlatform: String?, destination:
  * original catalog type, falling back to Stremio's canonical `series` spelling for TV cards.
  */
 internal fun addonMetaRequestType(type: String, sourceCatalogType: String?): String =
-  sourceCatalogType?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+  sourceCatalogType?.trim()?.takeIf { it.isNotBlank() }
     ?: if (normalizedMediaType(type) == "tv") "series" else type.trim().lowercase()
 
 /** Watchlist/library identity. Types reach us as "tv", "series" or "show" depending on the
@@ -2915,7 +2912,7 @@ private fun mediaKey(type: String, id: String): String = "${normalizedMediaType(
  * canonical one is exactly what it exists to do.
  */
 internal fun isUsableAddonMeta(meta: LocalAddonMeta, requestedId: String, isLocalAddon: Boolean): Boolean {
-  if (meta.title.isBlank()) return false
+  if (meta.title.none(Char::isLetterOrDigit) || meta.id.startsWith("aiostreamserror", true) || meta.title.startsWith("[❌]")) return false
   if (isLocalAddon) return meta.id.isNotBlank()
   if (!meta.imdbId.isNullOrBlank()) return true
   if (meta.episodes.isNotEmpty()) return true
@@ -4489,7 +4486,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           ?: return@launchWork Result.failure(IllegalStateException("The next season has no playable episodes."))
         val ids = streamLookupIds(detail).distinct()
           .map { "$it:${nextEpisode.seasonNumber}:${nextEpisode.episodeNumber}" }
-        fetchStreamsForPlayback("series", ids).map { streams -> nextEpisode to streams }
+        fetchStreamsForPlayback("series", ids, episode = nextEpisode).map { streams -> nextEpisode to streams }
       },
       onSuccess = { (nextEpisode, streams) ->
         val ranked = rankedProfileStreams(mediaStreamsOnly(streams, detail))
@@ -4540,7 +4537,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           ?: return@launchWork Result.failure(IllegalStateException("No adjacent episode was found."))
         val ids = streamLookupIds(detail).distinct()
           .map { "$it:${target.seasonNumber}:${target.episodeNumber}" }
-        fetchStreamsForPlayback("series", ids).map { streams -> target to streams }
+        fetchStreamsForPlayback("series", ids, episode = target).map { streams -> target to streams }
       },
       onSuccess = { (target, streams) ->
         val ranked = rankedProfileStreams(mediaStreamsOnly(streams, detail))
@@ -4624,7 +4621,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         val target = loadedTarget ?: apiClient.fetchSeason(detail.id, nextSeason!!).getOrThrow().minByOrNull { it.episodeNumber }
           ?: error("The next season has no playable episodes.")
         val ids = streamLookupIds(detail).distinct().map { "$it:${target.seasonNumber}:${target.episodeNumber}" }
-        val ranked = rankedProfileStreams(mediaStreamsOnly(fetchStreamsForPlayback("series", ids).getOrThrow(), detail))
+        val ranked = rankedProfileStreams(mediaStreamsOnly(fetchStreamsForPlayback("series", ids, episode = target).getOrThrow(), detail))
         val binge = currentStream?.bingeGroup?.takeIf { it.isNotBlank() }?.let { group -> ranked.firstOrNull { it.bingeGroup == group } }
         val matching = currentStream?.let { source -> ranked.firstOrNull { it.addonId == source.addonId && it.quality == source.quality } }
         val selected = (if (player.preferBingeGroup) binge ?: matching ?: ranked.firstOrNull() else ranked.firstOrNull())
@@ -4750,7 +4747,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val entry = playbackResumeStore.loadAll(ownerKey)
       .filter { it.mediaId == item.id && normalizedMediaType(it.mediaType) == mediaType && !it.isLive }
       .maxByOrNull { it.updatedAt }
-    val detail = apiClient.fetchDetails(item.type, item.id, item.title, item.year).getOrNull() ?: item.toFallbackDetail()
+    val detail = apiClient.fetchDetails(item.type, item.id, item.title, item.year, providerOwned = item.sourceAddonId != null).getOrNull() ?: item.toFallbackDetail()
     val seasonNumber = entry?.seasonNumber ?: item.resumeSeasonNumber
     val episodeNumber = entry?.episodeNumber ?: item.resumeEpisodeNumber
     val episode = if (mediaType == "tv" && seasonNumber != null && episodeNumber != null) {
@@ -5036,7 +5033,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         val resolved = supervisorScope {
           requests.map { item ->
             async {
-              val logo = apiClient.fetchDetails(item.type, item.id, item.title, item.year).getOrNull()?.titleLogo?.takeIf { it.isNotBlank() }
+              val logo = apiClient.fetchDetails(item.type, item.id, item.title, item.year, providerOwned = item.sourceAddonId != null).getOrNull()?.titleLogo?.takeIf { it.isNotBlank() }
               homeHeroMediaKey(item) to logo
             }
           }.awaitAll().toMap()
@@ -5069,7 +5066,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         val resolved = supervisorScope {
           requests.map { item ->
             async {
-              val rating = apiClient.fetchDetails(item.type, item.id, item.title, item.year).getOrNull()
+              val rating = apiClient.fetchDetails(item.type, item.id, item.title, item.year, providerOwned = item.sourceAddonId != null).getOrNull()
                 ?.let { it.tmdbRating ?: it.rating }
                 ?.takeIf { it > 0.0 }
               homeHeroMediaKey(item) to rating
@@ -5522,6 +5519,15 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   fun loadDetail(type: String, id: String, fallbackItem: MediaItem? = null, preservePendingContinue: Boolean = false) {
+    AddonMediaReference.decode(id)?.let { origin ->
+      val item = (fallbackItem ?: MediaItem(id = origin.id, type = type, title = "", year = null,
+        poster = null, backdrop = null, rating = null, description = "")).copy(
+        id = origin.id, sourceAddonId = origin.addonId, sourceCatalogType = origin.type,
+      )
+      loadDetail(type, origin.id, item, preservePendingContinue)
+      return
+    }
+
     fallbackItem?.let { repairFavouriteChannelIds(listOf(it)) }
     // A download id has no catalogue entry behind it. Looking one up returned whatever the id
     // happened to match, which is how tapping a downloaded title opened a different one.
@@ -5591,7 +5597,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     // cannot resolve at all. TMDB enrichment is still layered on top of whatever comes back.
     val metaAddon = fallbackItem?.sourceAddonId?.let { addonId ->
       uiState.addons.firstOrNull {
-        it.id == addonId && (LocalAddonManager.isLocalAddonId(it.id) || it.manifest.providesMetaFor(type))
+        it.id == addonId && (LocalAddonManager.isLocalAddonId(it.id) || it.manifest.providesMetaFor(fallbackItem.sourceCatalogType ?: type))
       }
     }
     if (metaAddon != null && fallbackItem != null) {
@@ -5604,30 +5610,19 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
             ?: return@launchWork Result.failure(IllegalStateException("That add-on is no longer installed."))
           val rawMeta = apiClient
             .fetchAddonMeta(uiState.session, uiState.activeProfileId, addon, metaRequestType, id)
-            .getOrThrow()
+            .getOrNull()
           // An add-on that advertises `meta` but cannot describe this item is treated as though it
           // had not answered: the card's own id is what TMDB and the stream add-ons get.
-          val bridgeMeta = rawMeta.takeIf { isUsableAddonMeta(it, id, isLocalMetaAddon) }
-          val lookupId = bridgeMeta?.let { it.imdbId ?: it.id } ?: id
-          val typeGuesses = when {
-            bridgeMeta == null -> if (normalizedMediaType(type) == "tv") listOf("tv", "movie") else listOf("movie", "tv")
-            bridgeMeta.episodes.isNotEmpty() || bridgeMeta.type in setOf("tv", "series", "show") -> listOf("tv", "movie")
-            bridgeMeta.type == "movie" -> listOf("movie", "tv")
-            else -> listOf("movie", "tv")
-          }
-          val enriched = coroutineScope {
-            val guessResults = typeGuesses.map { guess ->
-              async {
-                apiClient.fetchDetails(
-                  guess,
-                  lookupId,
-                  bridgeMeta?.title ?: fallbackItem.title,
-                  bridgeMeta?.year ?: fallbackItem.year,
-                ).getOrNull()
-              }
-            }.awaitAll()
-            guessResults.firstNotNullOfOrNull { it }
-          }
+          val bridgeMeta = rawMeta?.takeIf { isUsableAddonMeta(it, id, isLocalMetaAddon) }
+          val lookupId = bridgeMeta?.let { meta -> meta.tmdbId?.let { "tmdb:$it" } ?: meta.imdbId ?: meta.id } ?: id
+          val resolvedType = bridgeMeta?.type?.takeIf { it != "unknown" }
+            ?: MediaClassification.canonical(type)
+          val enriched = if (MetadataLookupIdentity.supportsType(resolvedType)) {
+            apiClient.fetchDetails(
+              resolvedType, lookupId, bridgeMeta?.title ?: fallbackItem.title,
+              bridgeMeta?.year ?: fallbackItem.year, providerOwned = true,
+            ).getOrNull()
+          } else null
           Result.success(bridgeMeta to enriched)
         },
         onSuccess = { (bridgeMeta, enriched) ->
@@ -5647,7 +5642,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           uiState = uiState.copy(
             detailLoading = false,
             detail = resolvedDetail,
-            detailIsLive = false,
+            detailIsLive = resolvedDetail.type == "live",
             streamLoading = false,
             pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = false,
             errorMessage = null,
@@ -5681,7 +5676,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
     launchWork(
       onStart = { uiState = uiState.copy(detailLoading = true, detail = null, detailIsLive = detailIsLive, detailFallbackItem = fallbackItem, selectedPerson = null, personLoading = false, selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null, detailSelectedTab = null, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = false, availableStreams = emptyList(), errorMessage = null) },
-      block = { apiClient.fetchDetails(type, id, fallbackItem?.title, fallbackItem?.year) },
+      block = { apiClient.fetchDetails(type, id, fallbackItem?.title, fallbackItem?.year, providerOwned = fallbackItem?.sourceAddonId != null) },
       onSuccess = { detail ->
         if (detailGeneration != detailRequestGeneration) return@launchWork
         val resolvedDetail = detail.withCatalogFallback(fallbackItem)
@@ -5922,10 +5917,18 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           // actually serve live TV. Movie/series add-ons are never queried here.
           if (detailSourceAddonId != null) addon.id == detailSourceAddonId else addonSupportsLiveStreams(addon)
         } else {
-          addonSupportsStreamType(addon, type)
+          addonSupportsStreamType(addon, if (addon.id == detailSourceAddonId) detailSourceCatalogType ?: type else type)
         }
       }
       .sortedWith(compareByDescending<InstalledAddon> { it.favourite }.thenBy { it.position })
+    val addonRequests = enabledAddons.flatMap { addon ->
+      if (addon.id == detailSourceAddonId) {
+        val baseId = detailLocalStreamId ?: detailAddonMetaId ?: uiState.detailFallbackItem?.id ?: detail.id
+        val originalId = episode?.sourceStreamId?.takeIf { it.isNotBlank() }
+          ?: episode?.let { "$baseId:${it.seasonNumber}:${it.episodeNumber}" } ?: baseId
+        listOf(Triple(addon, detailSourceCatalogType ?: type, originalId))
+      } else candidates.map { Triple(addon, type, it) }
+    }
     val pluginState = StreamDekPlugins.manager.state
     val enabledPluginRepos = pluginState.repos.filter { it.enabled }.mapTo(mutableSetOf()) { it.url }
     val pluginSourceCount = if (!uiState.detailIsLive && pluginState.enabled && pluginState.providers.any { it.enabled && it.repoUrl in enabledPluginRepos }) 1 else 0
@@ -5939,7 +5942,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val cloudStreamProviders = allScrapers.filterNot { it is SkyStreamMainApi }
     val cloudStreamSourceCount = if (cloudStreamProviders.isEmpty()) 0 else 1
     val skyStreamSourceCount = if (skyStreamProviders.isEmpty()) 0 else 1
-    val totalSources = candidates.size * enabledAddons.size + pluginSourceCount + cloudStreamSourceCount + skyStreamSourceCount
+    val totalSources = addonRequests.size + pluginSourceCount + cloudStreamSourceCount + skyStreamSourceCount
     val generation = ++streamRequestGeneration
     val merged = linkedMapOf<String, AddonStream>()
     val requestGate = Semaphore(4)
@@ -5962,7 +5965,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     if (pluginSourceCount > 0) beginSource(PLUGIN_SOURCE_LABEL)
     if (skyStreamSourceCount > 0) beginSource(SKYSTREAM_SOURCE_LABEL)
     if (cloudStreamSourceCount > 0) beginSource(CLOUDSTREAM_SOURCE_LABEL)
-    repeat(candidates.size) { enabledAddons.forEach { addon -> beginSource(addon.manifest.name.ifBlank { addon.id }) } }
+    addonRequests.forEach { (addon, _, _) -> beginSource(addon.manifest.name.ifBlank { addon.id }) }
 
     // A re-run over results that are already on screen is a refresh, not a fresh search, so the
     // list stays put until the new one has something to put in its place. Blanking it first threw
@@ -6092,17 +6095,14 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         if (skyStreamSourceCount > 0) launchScrapers(SKYSTREAM_SOURCE_LABEL, skyStreamProviders)
         if (cloudStreamSourceCount > 0) launchScrapers(CLOUDSTREAM_SOURCE_LABEL, cloudStreamProviders)
       }
-      for (id in candidates) {
-        for (addon in enabledAddons) {
+      for ((addon, requestType, id) in addonRequests) {
           launch {
-            val outcome = requestGate.withPermit { fetchAddonStreamsWithRetry(addon, type, id) }
+            val outcome = requestGate.withPermit { fetchAddonStreamsWithRetry(addon, requestType, id) }
               .onSuccess { streams -> streams.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) } }
               .onFailure { lastError = it }
             endSource(addon.manifest.name.ifBlank { addon.id }, outcome.isFailure)
             publish()
           }
-        }
-
       }
     }.invokeOnCompletion {
       if (generation != streamRequestGeneration) return@invokeOnCompletion
@@ -6221,7 +6221,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   private suspend fun fetchAddonStreamsWithRetry(addon: InstalledAddon, type: String, id: String): Result<List<AddonStream>> {
-    val requestedType = type.trim().lowercase()
+    val nativeIdentity = addon.id == detailSourceAddonId
+    val requestedType = type.trim()
     val declaredTypes = addon.manifest.types.map { it.trim().lowercase() }.filterTo(mutableSetOf()) { it.isNotBlank() }
     val typeCandidates = if (uiState.detailIsLive) {
       buildList {
@@ -6247,12 +6248,12 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val useServerSideStreams = !isLocalAddon && uiState.serverSideStreamsEnabled
     if (useServerSideStreams) {
       for (candidateType in typeCandidates) {
-        apiClient.fetchStreamsFromAddon(uiState.session, addon.id, candidateType, id, uiState.activeProfileId)
+        apiClient.fetchStreamsFromAddon(uiState.session, addon.id, candidateType, id, uiState.activeProfileId, nativeIdentity = nativeIdentity)
           .onSuccess { if (it.isNotEmpty()) return Result.success(it) }
           .onFailure { lastError = it }
       }
     }
-    val requiresImdbId = !uiState.detailIsLive && (requestedType == "movie" || requestedType == "series" || requestedType == "tv")
+    val requiresImdbId = !nativeIdentity && !uiState.detailIsLive && (requestedType == "movie" || requestedType == "series" || requestedType == "tv")
     // Without the server in front, an id an add-on cannot read has to be translated first or the
     // request below is a guaranteed miss - that translation needs a TMDB key only the server
     // holds. The resolver contacts no add-on, so no add-on learns a StreamDek address from it.
@@ -6290,18 +6291,29 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     // CloudStream providers search by title, so callers that are not the on-screen detail (the TV
     // handoff, for one) have to say which title they mean rather than inherit uiState.detail.
     detail: MediaDetail? = uiState.detail,
+    episode: EpisodeItem? = null,
   ): Result<List<AddonStream>> {
     val merged = mutableListOf<AddonStream>()
     var lastError: Throwable? = null
     val candidates = ids.filter { it.isNotBlank() }.distinct()
+    val ownerId = detailSourceAddonId.takeIf { detail != null && detail.id == uiState.detail?.id }
+    val ownerType = detailSourceCatalogType ?: type
     val enabledAddons = uiState.addons
       .filter { addon ->
-        addon.enabled && if (live) addonSupportsLiveStreams(addon) else addonSupportsStreamType(addon, type)
+        addon.enabled && if (live) addonSupportsLiveStreams(addon)
+        else addonSupportsStreamType(addon, if (addon.id == ownerId) ownerType else type)
       }
       .sortedWith(compareByDescending<InstalledAddon> { it.favourite }.thenBy { it.position })
 
+    enabledAddons.firstOrNull { it.id == ownerId }?.let { owner ->
+      val baseId = detailLocalStreamId ?: detailAddonMetaId ?: uiState.detailFallbackItem?.id ?: detail?.id
+      val nativeId = episode?.sourceStreamId?.takeIf { it.isNotBlank() }
+        ?: baseId?.let { base -> episode?.let { "$base:${it.seasonNumber}:${it.episodeNumber}" } ?: base }
+      if (nativeId != null) fetchAddonStreamsWithRetry(owner, ownerType, nativeId)
+        .onSuccess { merged += it }.onFailure { lastError = it }
+    }
     for (id in candidates) {
-      for (addon in enabledAddons) {
+      for (addon in enabledAddons.filterNot { it.id == ownerId }) {
         fetchAddonStreamsWithRetry(addon, type, id)
           .onSuccess { streams -> merged += streams }
           .onFailure { lastError = it }
@@ -6830,10 +6842,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           detail.type == "tv" && !uiState.detailIsLive && selectedEpisode != null -> {
             val bridgeEpisodeId = selectedEpisode.sourceStreamId?.takeIf { it.isNotBlank() }
             if (bridgeEpisodeId != null) {
-              fetchStreamsForPlayback(detailSourceCatalogType ?: "series", listOf(bridgeEpisodeId))
+              fetchStreamsForPlayback(detailSourceCatalogType ?: "series", listOf(bridgeEpisodeId), episode = selectedEpisode)
             } else {
               val ids = streamLookupIds(detail).distinct()
-              fetchStreamsForPlayback("series", ids.map { "${it}:${selectedEpisode.seasonNumber}:${selectedEpisode.episodeNumber}" })
+              fetchStreamsForPlayback("series", ids.map { "${it}:${selectedEpisode.seasonNumber}:${selectedEpisode.episodeNumber}" }, episode = selectedEpisode)
             }
           }
           detail.type == "tv" && !uiState.detailIsLive -> Result.failure(IllegalStateException("Choose an episode first."))

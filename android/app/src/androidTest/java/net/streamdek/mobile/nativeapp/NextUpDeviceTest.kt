@@ -11,6 +11,16 @@ class NextUpDeviceInstrumentation : Instrumentation() {
   override fun onCreate(arguments: Bundle?) { this.arguments = arguments ?: Bundle(); super.onCreate(arguments); start() }
   override fun onStart() {
     val result = Bundle()
+    if (arguments.getString("suite") == "content-safety") {
+      try {
+        result.putString("stream", ContentSafetyDeviceChecks(targetContext).run(arguments.getString("phase") ?: "write"))
+        finish(Activity.RESULT_OK, result)
+      } catch (failure: Throwable) {
+        result.putString("stream", "Content safety FAILED: ${failure.stackTraceToString().take(2500)}")
+        finish(Activity.RESULT_CANCELED, result)
+      }
+      return
+    }
     // Gradle registers one runner, so the SkyStream plugin checks are chosen by argument.
     if (arguments.getString("suite") == "skystream") {
       val report = StringBuilder()

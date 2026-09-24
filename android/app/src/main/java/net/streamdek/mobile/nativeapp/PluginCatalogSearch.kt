@@ -76,10 +76,11 @@ internal object PluginCatalogSearch {
 
   /** One provider's matches for [query]: its own search when it has one, its indexed rows either way. */
   suspend fun searchProvider(provider: MainAPI, query: String, forceRefresh: Boolean = false): ProviderOutcome {
+        if (AdultContentFilter.isBlocked(provider.name, provider.mainUrl, provider.javaClass.name)) return ProviderOutcome(provider.name, emptyList(), Capability.CatalogueOnly)
     val needle = query.trim()
     val key = provider.name + "" + needle.lowercase(Locale.US)
     val now = System.currentTimeMillis()
-    if (!forceRefresh) cache[key]?.takeIf { now - it.at < CACHE_TTL_MS }?.let { return it.outcome }
+    if (!forceRefresh) cache[key]?.takeIf { now - it.at < CACHE_TTL_MS }?.let { return it.outcome.copy(items = it.outcome.items.filterNot { item -> AdultContentFilter.isBlockedItem(title = item.title) || AdultContentFilter.isBlocked(item.id) }) }
     val indexed = matchIndexed(provider.name, needle)
     var failed = false
     val native = if (capabilities[provider.name] == Capability.CatalogueOnly) {

@@ -11,6 +11,11 @@ import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
 import okhttp3.Cache
 import okhttp3.CacheControl
 import okhttp3.Interceptor
@@ -631,6 +636,22 @@ class AccountSuspendedException(message: String) : IllegalStateException(message
 
 class StreamDekApiClient(context: Context? = null) {
   private val appContext = context?.applicationContext
+  private val contentPolicyStore = appContext?.let { ContentPolicyStore(it).also { store -> store.restore() } }
+  private val pluginUploadMutex = Mutex()
+  private val pluginUploadClient by lazy {
+    client.newBuilder().writeTimeout(90, TimeUnit.SECONDS).callTimeout(120, TimeUnit.SECONDS)
+      .retryOnConnectionFailure(false).build()
+  }
+  private val pendingPluginSync = appContext?.getSharedPreferences("plugin_sync_pending", Context.MODE_PRIVATE)
+
+  fun hasUnsentProfilePlugins(session: AuthSession, profileId: String): Boolean =
+    pendingPluginSync?.contains("${session.user.uid}:$profileId") == true
+
+  fun hasPendingProfilePlugins(session: AuthSession, profileId: String): Boolean {
+    val key = "${session.user.uid}:$profileId"
+    val retryAt = pendingPluginSync?.getLong("retry:$key", 0L) ?: 0L
+    return pendingPluginSync?.contains(key) == true && retryAt >= 0 && retryAt <= System.currentTimeMillis()
+  }
   private val clientIdentity = appContext?.let { ClientIdentityStore(it).load() }
 
   /**
@@ -924,15 +945,7 @@ class StreamDekApiClient(context: Context? = null) {
     runCatching {
       val response = execute(Request.Builder().url("$apiBaseUrl/public/content-policy").build())
       ensureOk(response, "Failed to load content policy")
-      val terms = response.json.optJSONArray("terms")
-      AdultContentFilter.applyPolicy(
-        blockAdult = response.json.optBoolean("blockAdult", true),
-        terms = buildList {
-          if (terms != null) for (index in 0 until terms.length()) {
-            terms.optString(index).takeIf { it.isNotBlank() }?.let(::add)
-          }
-        },
-      )
+      contentPolicyStore?.accept(response.json)
     }.onFailure { AdultContentFilter.applyPolicy(null, null) }
   }
 
@@ -2352,14 +2365,46 @@ class StreamDekApiClient(context: Context? = null) {
   }
 
   suspend fun putProfilePlugins(session: AuthSession, profileId: String, pluginsJson: String): Result<Unit> = withContext(Dispatchers.IO) {
-    runCatching {
-      val plugins = runCatching { JSONObject(pluginsJson) }.getOrElse { JSONObject() }
+    try {
+      // Never turn corrupt serialization into a valid cloud-clearing document.
+      val plugins = JSONObject(pluginsJson)
+      require(plugins.length() > 0)
+      require(pluginsJson.toByteArray(Charsets.UTF_8).size <= 2 * 1024 * 1024)
+      val key = "${session.user.uid}:$profileId"
+      val fingerprint = MessageDigest.getInstance("SHA-256").digest(pluginsJson.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+      pendingPluginSync?.edit()?.putString(key, fingerprint)?.putLong("retry:$key", 0L)?.commit()
       val request = Request.Builder()
         .url("$apiBaseUrl/profiles/${encodeQuery(profileId)}/plugins")
         .put(JSONObject().put("plugins", plugins).toString().toRequestBody(jsonMediaType))
         .headers(authHeaders(session, profileId = profileId))
         .build()
-      ensureOk(execute(request), "Failed to sync profile plugins")
+      pluginUploadMutex.withLock {
+        var failure: Throwable? = null
+        for (attempt in 0 until PluginSyncRetry.attempts) {
+          coroutineContext.ensureActive()
+          try {
+            val response = execute(request, pluginUploadClient)
+            if (!response.ok) throw PluginSyncHttpFailure(response.statusCode)
+            if (!response.json.optBoolean("success", false)) throw java.io.IOException("Plugin sync acknowledgement missing")
+            if (pendingPluginSync?.getString(key, null) == fingerprint) pendingPluginSync.edit().remove(key).remove("retry:$key").commit()
+            return@withLock Result.success(Unit)
+          } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+          catch (error: Exception) {
+            failure = error
+            val retryable = PluginSyncRetry.retryable(error)
+            android.util.Log.w("PluginSync", "upload failed attempt=${attempt + 1} retryable=$retryable category=${error.javaClass.simpleName} status=${(error as? PluginSyncHttpFailure)?.status ?: 0}")
+            if (!retryable || attempt == PluginSyncRetry.attempts - 1) break
+            delay(PluginSyncRetry.delayMs(attempt, kotlin.random.Random.nextLong(501)))
+          }
+        }
+        val error = failure ?: IllegalStateException("Plugin sync failed")
+        if (pendingPluginSync?.getString(key, null) == fingerprint) pendingPluginSync.edit()
+          .putLong("retry:$key", if (PluginSyncRetry.retryable(error)) System.currentTimeMillis() + 60_000 else -1L).commit()
+        Result.failure(error)
+      }
+    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+    catch (error: Exception) {
+      Result.failure(error)
     }
   }
   suspend fun patchCloudPreferences(
@@ -4674,7 +4719,7 @@ internal fun isAdultCatalogEntry(item: JSONObject): Boolean = AdultContentFilter
   adultFlag = item.optBoolean("adult", false),
   title = item.optString("title").ifBlank { item.optString("name") },
   genres = parseGenreNames(item),
-)
+) || AdultContentFilter.isBlocked(item.optString("id"), item.optString("url"), item.optString("directStreamUrl"), item.optString("sourceAddonId"), item.optString("sourceAddonName"), item.optString("sourceCatalogId"), item.optString("sourceCatalogName"))
 
 private fun parseAiringEpisode(json: JSONObject?): AiringEpisode? {
   val airDate = json?.optString("airDate")?.trim()?.takeIf { it.isNotEmpty() && it != "null" } ?: return null

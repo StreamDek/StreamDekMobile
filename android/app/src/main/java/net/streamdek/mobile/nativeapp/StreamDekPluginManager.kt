@@ -515,6 +515,7 @@ class StreamDekPluginManager(context: Context) {
    * This is what the television has always done, which is why the same collection answers there.
    */
   private suspend fun providerCode(provider: PluginProvider): String {
+    check(!AdultContentFilter.isBlocked(provider.id, provider.name, provider.repoUrl)) { "CONTENT_SAFETY_BLOCKED" }
     provider.code.takeIf { it.isNotBlank() }?.let { return it }
     val sourceUrl = withContext(Dispatchers.IO) { runCatching { providerSourceUrls(provider.repoUrl)[provider.id] } }
       .getOrNull()

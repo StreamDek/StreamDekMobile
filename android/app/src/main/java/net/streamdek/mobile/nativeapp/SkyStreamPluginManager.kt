@@ -340,7 +340,7 @@ class SkyStreamPluginManager(private val context: Context) {
   /** Providers that are switched on, inside collections that are switched on. */
   fun activeProviders(): List<SkyProvider> {
     val enabledRepos = state.repos.filter { it.enabled }.associateBy { it.url }
-    return state.providers.filter { it.enabled && it.repoUrl in enabledRepos }
+    return state.providers.filter { it.enabled && it.repoUrl in enabledRepos && !AdultContentFilter.isBlocked(it.repoUrl, it.packageName, it.name) }
       .sortedWith(compareByDescending<SkyProvider> { enabledRepos[it.repoUrl]?.favourite == true }.thenBy { it.name.lowercase() })
   }
 

@@ -73,6 +73,9 @@ internal fun preferredQualityBoost(stream: AddonStream, preferredQuality: String
 
 /** Whether a stream, whichever add-on or plugin produced it, is pornography. */
 internal fun streamIsAdult(stream: AddonStream): Boolean = AdultContentFilter.isBlocked(
+  stream.url,
+  stream.addonId,
+  stream.source,
   stream.name,
   stream.title,
   stream.filename,

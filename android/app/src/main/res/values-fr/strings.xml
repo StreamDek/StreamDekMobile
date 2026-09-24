@@ -1815,4 +1815,5 @@
   <string name="download_status_paused">En pause</string>
   <string name="episode_part_watched">Partiellement regardé</string>
   <string name="episode_not_watched">Non regardé</string>
+  <string name="content_safety_blocked">Ce contenu est bloqué par la politique de protection du contenu.</string>
 </resources>

@@ -1930,4 +1930,5 @@
   <string name="download_status_paused">Paused</string>
   <string name="episode_part_watched">Part watched</string>
   <string name="episode_not_watched">Not watched</string>
+  <string name="content_safety_blocked">This content is blocked by the content protection policy.</string>
 </resources>

@@ -24,13 +24,11 @@ object AdultContentFilter {
    * Whether filtering is active. On by default and restored to on whenever the platform policy
    * cannot be read, so an unreachable backend fails closed rather than open.
    */
-  @Volatile
-  var enabled: Boolean = true
-    private set
-
-  /** Terms an administrator added, folded in alongside the built-in ones. */
-  @Volatile
-  private var adminTerms: Set<String> = emptySet()
+  private data class PolicyState(val enabled: Boolean = true, val terms: Set<String> = emptySet(), val rules: List<ContentSafetyRule> = emptyList(), val version: String? = null)
+  @Volatile private var policy = PolicyState()
+  val enabled: Boolean get() = policy.enabled
+  val revision: String? get() = policy.version
+  private val adminTerms: Set<String> get() = policy.terms
 
   /**
    * Single words that mean one thing.
@@ -70,22 +68,35 @@ object AdultContentFilter {
    *
    * "18" alone is not here for the obvious reason; it appears in years, episode counts and titles.
    */
-  private val ratingTokens = setOf("18+", "r18", "r18+", "xxx", "nc17", "ao")
+  private val ratingTokens = setOf("r18", "r18+", "xxx")
 
   /** Category and genre labels that classify the whole thing rather than describe it. */
-  private val blockedCategories = setOf("adult", "adults", "xxx", "porn", "erotic", "erotica", "18+")
+  private val blockedCategories = setOf("adult", "adults", "xxx", "porn", "pornography", "pornographic", "hentai")
 
   /**
    * Takes the platform's policy.
    *
    * A null [blockAdult] means the policy could not be read, which leaves the block on.
    */
-  fun applyPolicy(blockAdult: Boolean?, terms: Collection<String>?) {
-    enabled = blockAdult ?: true
-    adminTerms = terms.orEmpty()
-      .map { it.trim().lowercase() }
-      .filter { it.isNotBlank() }
-      .toSet()
+  @Synchronized
+  fun applyPolicy(blockAdult: Boolean?, terms: Collection<String>?, rules: List<ContentSafetyRule>? = null, version: String? = null) {
+    val prior = policy
+    val next = PolicyState(blockAdult ?: true,
+      (terms ?: prior.terms).map { it.trim().lowercase(java.util.Locale.ROOT) }.filter { it.isNotBlank() }.toSet(),
+      rules?.toList() ?: prior.rules, version ?: prior.version)
+    policy = next
+    if (next != prior) PluginCatalogSearch.clearCache()
+  }
+
+  /** Call separately for the repository before its plugin/provider, so exceptions stay scoped. */
+  fun isBlockedEntity(scope: String, vararg fields: String?): Boolean {
+    val current = policy
+    if (!current.enabled) return false
+    val values = fields.filterNotNull()
+    val matching = current.rules.filter { it.matches(scope, values) }
+    if (matching.any { it.status == "ADULT" }) return true
+    if (matching.any { it.status == "SAFE" }) return false
+    return values.any { matches(it) }
   }
 
   /**
@@ -107,9 +118,18 @@ object AdultContentFilter {
     vararg extra: String?,
   ): Boolean {
     if (!enabled) return false
+    val matching = policy.rules.filter { it.matches("media", listOfNotNull(title) + extra.filterNotNull()) }
+    if (matching.any { it.status == "ADULT" }) return true
+    if (matching.any { it.status == "SAFE" }) return false
     if (adultFlag) return true
     if (genres.any { genre -> blockedCategories.contains(genre.trim().lowercase()) }) return true
-    return isBlocked(title, *extra) || genres.any { genre -> matches(genre) }
+    // A documentary title mentioning pornography is weak evidence, unlike source identity.
+    val titleBlocked = title?.let { value ->
+      AdultSourceIdentity.matches(value) || adminTerms.any { term ->
+        (" " + AdultSourceIdentity.normalize(value) + " ").contains(" " + AdultSourceIdentity.normalize(term) + " ")
+      }
+    } == true
+    return titleBlocked || isBlocked(*extra) || genres.any { genre -> matches(genre) }
   }
 
   /** Whether a category or genre label is an adult one outright. */
@@ -121,6 +141,8 @@ object AdultContentFilter {
 
   private fun matches(value: String): Boolean {
     if (value.isBlank()) return false
+    if (policy.rules.any { it.scope == "*" && it.status == "ADULT" && it.matches("source", listOf(value)) }) return true
+    if (AdultSourceIdentity.matches(value)) return true
     // Release names separate words with dots and underscores, so everything that is not a letter,
     // digit or '+' becomes a gap. '+' survives because it carries the meaning in "18+".
     val normalized = value.lowercase().replace(wordGap, " ").trim()

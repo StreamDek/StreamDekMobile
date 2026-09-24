@@ -394,6 +394,14 @@ fun NativePlayerScreen(
   /** Normal or Minimal, switched from the player's header and kept as the Settings choice. */
   onPlayerControlLayoutChange: (String) -> Unit = {},
 ) {
+  if ((AdultContentFilter.isBlockedItem(title = session.title) || AdultContentFilter.isBlocked(session.url, session.mediaId, session.sourceLabel)) || session.currentStream?.let(::streamIsAdult) == true) {
+    val context = LocalContext.current
+    LaunchedEffect(session) {
+      android.widget.Toast.makeText(context, context.getString(R.string.content_safety_blocked), android.widget.Toast.LENGTH_LONG).show()
+      onBack(0.0)
+    }
+    return
+  }
   // Hoisted above the provisional/real-session split so the last swarm reading survives the URL
   // handoff instead of disappearing for one polling interval. Polling stops at the first frame.
   var peerSwarm by remember(resolvingPeerHash) { mutableStateOf<SwarmStats?>(null) }

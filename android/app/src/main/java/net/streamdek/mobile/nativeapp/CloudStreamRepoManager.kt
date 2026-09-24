@@ -77,10 +77,10 @@ internal fun collectRepoPluginListUrls(
   val visited = mutableSetOf(rootUrl)
 
   fun walk(manifest: JSONObject, depth: Int) {
-    listUrls += manifestUrlList(manifest.optJSONArray("pluginLists"))
+    listUrls += manifestUrlList(manifest.optJSONArray("pluginLists")).filterNot { AdultContentFilter.isBlocked(it) }
     if (depth >= maxDepth) return
     for (childUrl in manifestUrlList(manifest.optJSONArray("repos"))) {
-      if (!visited.add(childUrl)) continue
+      if (!visited.add(childUrl) || AdultContentFilter.isBlocked(childUrl)) continue
       val childManifest = fetchManifest(childUrl) ?: continue
       walk(childManifest, depth + 1)
     }
@@ -299,7 +299,7 @@ class CloudStreamRepoManager(private val context: Context) {
    */
   suspend fun loadEnabledProviders(): Unit = withContext(Dispatchers.IO) {
     val enabledRepos = state.repos.filter { it.enabled }.mapTo(mutableSetOf()) { it.url }
-    val wanted = state.providers.filter { it.enabled && it.repoUrl in enabledRepos }
+    val wanted = state.providers.filter { it.enabled && it.repoUrl in enabledRepos && !AdultContentFilter.isBlocked(it.repoUrl, it.internalName, it.name, it.downloadUrl) }
     val installedPaths = mutableMapOf<String, String>()
     wanted.forEach { entry ->
       val file = entry.installedFilePath?.let(::File)?.takeIf { it.exists() && it.length() > 0L }
@@ -334,10 +334,11 @@ class CloudStreamRepoManager(private val context: Context) {
   fun activeProviders(): List<com.lagradost.cloudstream3.MainAPI> {
     val enabledRepos = state.repos.filter { it.enabled }.associateBy { it.url }
     return state.providers
-      .filter { it.enabled && it.repoUrl in enabledRepos }
+      .filter { it.enabled && it.repoUrl in enabledRepos && !AdultContentFilter.isBlocked(it.repoUrl, it.internalName, it.name, it.downloadUrl) }
       .sortedWith(compareByDescending<CsProviderEntry> { enabledRepos[it.repoUrl]?.favourite == true }.thenBy { it.name.lowercase() })
       .mapNotNull { it.installedFilePath }
       .flatMap(CloudStreamPluginLoader::providersFor)
+      .filterNot { AdultContentFilter.isBlocked(it.name, it.mainUrl, it.javaClass.name) }
   }
 
   private fun loadFailureMessage(name: String, failure: Throwable): String {
@@ -352,6 +353,7 @@ class CloudStreamRepoManager(private val context: Context) {
   }
 
   private fun downloadPlugin(entry: CsProviderEntry): File {
+    check(!AdultContentFilter.isBlocked(entry.repoUrl, entry.internalName, entry.name, entry.downloadUrl)) { "CONTENT_SAFETY_BLOCKED" }
     val safeName = entry.internalName.replace(Regex("[^A-Za-z0-9._-]"), "_") + "_" + entry.repoUrl.hashCode().toUInt().toString(16) + ".cs3"
     val file = File(pluginDir, safeName)
     // The loader marks installed plugins read-only (Android 14+ refuses to load writable code),
@@ -371,6 +373,7 @@ class CloudStreamRepoManager(private val context: Context) {
   }
 
   private fun fetchRepo(url: String): Pair<CsRepo, List<CsProviderEntry>> {
+    check(!AdultContentFilter.isBlocked(url)) { "CONTENT_SAFETY_BLOCKED" }
     val manifest = JSONObject(text(url))
     val name = manifest.optString("name").ifBlank { "CloudStream collection" }
     val pluginListUrls = collectRepoPluginListUrls(url, manifest) { childUrl ->
@@ -394,6 +397,7 @@ class CloudStreamRepoManager(private val context: Context) {
           val internalName = item.optString("internalName").ifBlank { item.optString("name") }
           val downloadUrl = item.optString("url")
           if (internalName.isBlank() || downloadUrl.isBlank()) continue
+          if (AdultContentFilter.isBlocked(internalName, downloadUrl, item.optString("name"), listUrl)) continue
           // SkyStream bundles advertise themselves through an identical manifest and are handled
           // by SkyStreamPluginManager. Skipping them here is what lets one aggregate carrying both
           // formats install into both engines, each taking only the entries it can actually run —
@@ -635,7 +639,7 @@ class CloudStreamRepoManager(private val context: Context) {
     // a .cs3 stays live in the process until it is explicitly dropped.
     // A collection switched off elsewhere takes its sources with it, whatever their own switches say.
     val enabledRepos = merged.repos.filter { it.enabled }.mapTo(HashSet()) { it.url }
-    val keep = merged.providers.filter { it.enabled && it.repoUrl in enabledRepos }.mapNotNull { it.installedFilePath }.toSet()
+    val keep = merged.providers.filter { it.enabled && it.repoUrl in enabledRepos && !AdultContentFilter.isBlocked(it.repoUrl, it.internalName, it.name, it.downloadUrl) }.mapNotNull { it.installedFilePath }.toSet()
     state.providers.mapNotNull { it.installedFilePath }.distinct()
       .filterNot { it in keep }
       .forEach(CloudStreamPluginLoader::unload)

@@ -7,6 +7,36 @@ import org.junit.Before
 import org.junit.Test
 
 class AdultContentFilterTest {
+  @Test
+  fun `mature ratings and documentary titles are not pornography evidence`() {
+    assertFalse(AdultContentFilter.isBlockedItem(title = "A documentary about pornography", genres = listOf("Documentary")))
+    assertFalse(AdultContentFilter.isBlockedItem(title = "Ordinary film", genres = listOf("18+")))
+    assertFalse(AdultContentFilter.isBlocked("Ordinary film NC17"))
+  }
+
+  @Test
+  fun `reported providers cannot evade identity checks with punctuation or unicode`() {
+    listOf("pornmz", "xprimehub", "YesPornPlease", "Perverzija", "Brazzers", "PornHD", "EPorner", "Porntrex").forEach { name ->
+      assertTrue(name, AdultContentFilter.isBlocked(name))
+      assertTrue(name, AdultContentFilter.isBlocked(name.toList().joinToString(".")))
+      assertTrue(name, AdultContentFilter.isBlocked(name + "Provider"))
+    }
+    listOf("PоrnHD", "P\u200bornHD", "P%6FrnHD", "P&#111;rnHD", "ＰｏｒｎＨＤ").forEach { assertTrue(it, AdultContentFilter.isBlocked(it)) }
+  }
+
+  @Test
+  fun `repository lineage blocks renamed providers but leaves mixed repositories available`() {
+    assertTrue(AdultContentFilter.isBlocked("https://raw.githubusercontent.com/phisher98/CXXX/builds/Renamed.cs3"))
+    assertFalse(AdultContentFilter.isBlocked("https://github.com/phisher98/cloudstream-extensions-phisher"))
+  }
+
+  @Test
+  fun `failed refresh preserves administrator restrictions`() {
+    AdultContentFilter.applyPolicy(true, listOf("restrictedchannel"))
+    AdultContentFilter.applyPolicy(null, null)
+    assertTrue(AdultContentFilter.isBlocked("restrictedchannel"))
+  }
+
   @Before
   fun reset() = AdultContentFilter.applyPolicy(true, emptyList())
 
@@ -20,7 +50,7 @@ class AdultContentFilterTest {
     assertTrue(AdultContentFilter.isBlocked("hardcore_scene_04.mp4"))
     assertTrue(AdultContentFilter.isBlocked("PornHub rip 720p"))
     assertTrue(AdultContentFilter.isBlocked("Naughty America 2024"))
-    assertTrue(AdultContentFilter.isBlocked("Channel 18+"))
+    assertFalse(AdultContentFilter.isBlocked("Channel 18+"))
   }
 
   /**

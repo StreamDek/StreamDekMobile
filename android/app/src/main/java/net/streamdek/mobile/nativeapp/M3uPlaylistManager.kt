@@ -610,6 +610,8 @@ internal fun parseM3u(
  * categories, and the derived description / catalog-name / genre strings are built from those, so
  * without interning a 200k-entry playlist holds close to a million near-duplicate strings.
  */
+private val m3uSafetyIdentityRegex = Regex("""\btvg-(?:id|name)\s*=\s*["']([^"']{1,512})["']""", RegexOption.IGNORE_CASE)
+
 internal fun parseM3uLines(
   lines: Sequence<String>,
   sourceId: String,
@@ -618,6 +620,7 @@ internal fun parseM3uLines(
 ): List<MediaItem> {
   val items = mutableListOf<MediaItem>()
   var pendingTitle: String? = null
+    var pendingIdentityBlocked = false
   var pendingLogo: String? = null
   var pendingGroup: String? = null
   var pendingMediaType: String? = null
@@ -654,6 +657,7 @@ internal fun parseM3uLines(
       line.startsWith("#EXTINF", ignoreCase = true) -> {
         sawPlaylistMarker = true
         val comma = line.indexOf(',')
+                pendingIdentityBlocked = m3uSafetyIdentityRegex.findAll(line).any { AdultContentFilter.isBlocked(it.groupValues[1]) }
         pendingTitle = if (comma >= 0) line.substring(comma + 1).trim().takeIf { it.isNotEmpty() } else null
         pendingLogo = m3uTvgLogoRegex.find(line)?.groupValues?.get(1)?.takeIf { it.isNotEmpty() }
         pendingGroup = m3uGroupTitleRegex.find(line)?.groupValues?.get(1)?.takeIf { it.isNotEmpty() }?.let(::intern)
@@ -714,7 +718,9 @@ internal fun parseM3uLines(
             drmClearKeys = if (pendingDrmClearKeys.isEmpty()) emptyMap() else pendingDrmClearKeys.toMap(),
           ),
         )
-        pendingTitle = null
+        if (pendingIdentityBlocked && items.isNotEmpty()) items.removeAt(items.lastIndex)
+                pendingIdentityBlocked = false
+                pendingTitle = null
         pendingLogo = null
         pendingGroup = null
         pendingMediaType = null
@@ -739,6 +745,6 @@ internal fun parseM3uLines(
   // favourites at once -- there is no later list that could quietly reintroduce them.
   return items.filterNot { item ->
     AdultContentFilter.isBlockedItem(title = item.title, genres = item.genres) ||
-      AdultContentFilter.isBlocked(item.sourceCatalogName)
+      AdultContentFilter.isBlockedCategory(item.sourceCatalogName) || AdultContentFilter.isBlocked(item.id, item.directStreamUrl)
   }
 }

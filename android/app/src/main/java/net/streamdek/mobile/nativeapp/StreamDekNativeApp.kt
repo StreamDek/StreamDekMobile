@@ -3706,6 +3706,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   private var creatingDefaultProfile = false
   private var torrentStatusRefreshJob: Job? = null
   private var pluginSyncJob: Job? = null
+  private var pluginSyncGeneration = 0L
   private var episodeReminderJob: Job? = null
   private var pluginWatchJob: Job? = null
   /** The document stamp this device last wrote or read, so a poll knows what "changed" means. */
@@ -11616,9 +11617,9 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       while (isActive) {
         delay(ACCOUNT_WATCH_INTERVAL_MS)
         if (uiState.session?.user?.uid != session.user.uid || uiState.activeProfileId != profileId) return@launch
+        if (apiClient.hasPendingProfilePlugins(session, profileId)) syncActiveProfilePlugins()
         apiClient.fetchProfilePluginsVersion(session, profileId).getOrNull()?.let { remote ->
           if (remote > lastKnownPluginVersion) {
-            lastKnownPluginVersion = remote
             refreshProfilePlugins()
           }
         }
@@ -11657,10 +11658,25 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       // to Home before it had started.
       withContext(Dispatchers.IO) { StreamDekPlugins.manager.selectProfileStorage(ownerKey) }
       if (activeOwnerKey() != ownerKey) return@launch
+      // Local persisted managers remain the source for a previously interrupted upload.
+      // Recover before a cloud read can replace their unsent changes.
+      if (apiClient.hasUnsentProfilePlugins(session, profileId) && !apiClient.hasPendingProfilePlugins(session, profileId)) {
+        uiState = uiState.copy(pluginsLoading = false)
+        if (manual) uiState = uiState.copy(errorMessage = strings.getString(R.string.error_plugin_refresh_failed))
+        return@launch
+      }
+      if (apiClient.hasPendingProfilePlugins(session, profileId)) {
+        if (apiClient.putProfilePlugins(session, profileId, profilePluginDocument()).isFailure) {
+          uiState = uiState.copy(pluginsLoading = false)
+          return@launch
+        }
+      }
       apiClient.fetchProfilePlugins(session, profileId).onFailure {
         if (manual) uiState = uiState.copy(errorMessage = strings.getString(R.string.error_plugin_refresh_failed))
       }.onSuccess { cloudJson ->
         if (uiState.activeProfileId != profileId || activeOwnerKey() != ownerKey) return@onSuccess
+        // An edit may have arrived while this GET was in flight.
+        if (apiClient.hasUnsentProfilePlugins(session, profileId) || pluginSyncJob?.isActive == true) return@onSuccess
         // Read and compared off the main thread: the document, and the local state it is weighed
         // against, carry every source's script, and doing this in the result handler blocked the
         // main thread for about 300ms right as Home was being revealed after a profile switch.
@@ -11717,7 +11733,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
         } else if (cloudHasState && (manual || !localIsNewer)) {
           // In sync already: nothing to take and nothing to push.
         } else if (StreamDekPlugins.manager.state.repos.isNotEmpty() || StreamDekPlugins.manager.state.updatedAt > 0L) {
-          apiClient.putProfilePlugins(session, profileId, localSnapshot)
+          apiClient.putProfilePlugins(session, profileId, profilePluginDocument())
         }
         if (manual) uiState = uiState.copy(infoMessage = strings.getString(R.string.notice_plugins_up_to_date))
       }
@@ -11863,7 +11879,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       .getOrDefault(JSONObject())
     if (CloudStreamPlugins.isInitialized) {
       val cloudStream = CloudStreamPlugins.manager.state
-      if (cloudStream.repos.isNotEmpty() || cloudStream.providers.isNotEmpty()) {
+      if (cloudStream.updatedAt > 0L || cloudStream.repos.isNotEmpty() || cloudStream.providers.isNotEmpty()) {
         runCatching { root.put("cloudstream", JSONObject(CloudStreamPlugins.manager.snapshotJson())) }
       }
       // Beside the section rather than inside it, so it outlives the section being replaced or
@@ -11873,27 +11889,29 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       }
     }
     // SkyStream collections, switches and source settings, stamped on their own like CloudStream's.
-    if (SkyStreamPlugins.isInitialized && SkyStreamPlugins.manager.hasCollections()) {
+    if (SkyStreamPlugins.isInitialized && (SkyStreamPlugins.manager.hasCollections() || SkyStreamPlugins.manager.state.updatedAt > 0L)) {
       runCatching { root.put("skystream", JSONObject(SkyStreamPlugins.manager.snapshotJson())) }
     }
     return root.toString()
   }
 
   private fun syncActiveProfilePlugins() {
-    val session = uiState.session ?: return
-    val profileId = uiState.activeProfileId ?: return
-    pluginSyncJob?.cancel()
+    if (uiState.session == null || uiState.activeProfileId == null) return
+    pluginSyncGeneration++
+    // Debounce/coalesce without cancelling an upload that may already have reached the server.
+    if (pluginSyncJob?.isActive == true) return
     pluginSyncJob = viewModelScope.launch {
-      delay(350)
-      // Read after the debounce, not before: several edits in quick succession should send the
-      // state they settled on rather than the first of them.
-      val document = profilePluginDocument()
-      repeat(3) { attempt ->
-        if (apiClient.putProfilePlugins(session, profileId, document).isSuccess) {
-          lastKnownPluginVersion = runCatching { JSONObject(document).optLong("updatedAt", 0L) }.getOrDefault(0L)
-          return@launch
+      while (isActive) {
+        delay(350)
+        val generation = pluginSyncGeneration
+        val session = uiState.session ?: return@launch
+        val profileId = uiState.activeProfileId ?: return@launch
+        val document = withContext(Dispatchers.IO) { profilePluginDocument() }
+        if (apiClient.putProfilePlugins(session, profileId, document).isSuccess &&
+          uiState.session?.user?.uid == session.user.uid && uiState.activeProfileId == profileId) {
+          lastKnownPluginVersion = maxOf(lastKnownPluginVersion, runCatching { JSONObject(document).optLong("updatedAt", 0L) }.getOrDefault(0L))
         }
-        delay(500L * (attempt + 1))
+        if (generation == pluginSyncGeneration) return@launch
       }
     }
   }

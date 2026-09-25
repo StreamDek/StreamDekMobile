@@ -1531,7 +1531,7 @@ private fun PlayerSurface(
   key(engineKey, activeEngine) {
     if (activeEngine == ActivePlaybackEngine.Media3) {
       AndroidView(
-        modifier = Modifier.fillMaxSize().graphicsLayer { scaleX = customZoom; scaleY = customZoom },
+        modifier = Modifier.fillMaxSize(),
         factory = { context ->
           ExoPlaybackView(context).apply {
             onExoViewCreated(this)
@@ -1543,6 +1543,7 @@ private fun PlayerSurface(
             onStallChangedCallback = onStallChanged
             onTracksChangedCallback = onTracksChanged
             setResizeMode(if (resizeMode == "custom") "contain" else resizeMode)
+            setVideoZoom(customZoom)
             setSpeed(playbackSpeed.toDouble())
             setSubtitleDelay(subtitleDelay.toDouble())
             setAudioDelay(audioDelay.toDouble())
@@ -1585,6 +1586,7 @@ private fun PlayerSurface(
           view.setSource(session.url)
           view.setPaused(isPaused)
           view.setResizeMode(if (resizeMode == "custom") "contain" else resizeMode)
+          view.setVideoZoom(customZoom)
           view.setSpeed(playbackSpeed.toDouble())
           view.setSubtitleDelay(subtitleDelay.toDouble())
           view.setAudioDelay(audioDelay.toDouble())
@@ -1598,7 +1600,7 @@ private fun PlayerSurface(
       )
     } else {
       AndroidView(
-        modifier = Modifier.fillMaxSize().graphicsLayer { scaleX = customZoom; scaleY = customZoom },
+        modifier = Modifier.fillMaxSize(),
         factory = { context ->
           MPVView(context).apply {
             onMpvViewCreated(this)
@@ -1611,6 +1613,7 @@ private fun PlayerSurface(
             onStallChangedCallback = onStallChanged
             onTracksChangedCallback = onTracksChanged
             setResizeMode(if (resizeMode == "custom") "contain" else resizeMode)
+            setVideoZoom(customZoom)
             setDecoderMode(session.decoderMode)
             setRenderSurface(session.renderSurface)
             setSpeed(playbackSpeed.toDouble())
@@ -1646,6 +1649,7 @@ private fun PlayerSurface(
           view.setSource(session.url)
           view.setPaused(isPaused)
           view.setResizeMode(if (resizeMode == "custom") "contain" else resizeMode)
+          view.setVideoZoom(customZoom)
           view.setDecoderMode(session.decoderMode)
           view.setRenderSurface(session.renderSurface)
           view.setSpeed(playbackSpeed.toDouble())

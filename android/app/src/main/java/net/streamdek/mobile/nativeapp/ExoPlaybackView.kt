@@ -7,6 +7,7 @@ import android.net.Uri
 import android.util.AttributeSet
 import android.util.Base64
 import android.util.Log
+import android.view.ViewGroup
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.Format
@@ -155,6 +156,13 @@ class ExoPlaybackView @JvmOverloads constructor(
     keepScreenOn = true
     subtitleView?.setApplyEmbeddedStyles(false)
     subtitleView?.setApplyEmbeddedFontSizes(false)
+    // PlayerView lays its subtitles out inside the video's aspect-ratio frame, which "cover" and
+    // pinch zoom enlarge past the screen edges - taking the subtitles with them. Laid out over the
+    // whole view instead, they stay on screen however the picture is sized.
+    subtitleView?.let { subtitles ->
+      (subtitles.parent as? ViewGroup)?.removeView(subtitles)
+      overlayFrameLayout?.addView(subtitles, 0, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+    }
   }
 
   override fun onAttachedToWindow() {
@@ -284,6 +292,14 @@ class ExoPlaybackView @JvmOverloads constructor(
       "stretch" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
       else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
     }
+  }
+
+  /** Pinch zoom. Only the picture is scaled; the subtitles sit outside it (see init). */
+  fun setVideoZoom(scale: Float) {
+    val frame = findViewById<AspectRatioFrameLayout>(androidx.media3.ui.R.id.exo_content_frame) ?: return
+    val zoom = scale.coerceAtLeast(1f)
+    frame.scaleX = zoom
+    frame.scaleY = zoom
   }
 
   fun setDecoderMode(mode: String?) = Unit

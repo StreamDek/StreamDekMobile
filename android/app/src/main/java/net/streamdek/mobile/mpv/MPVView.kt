@@ -10,6 +10,7 @@ import android.view.TextureView
 import dev.jdtech.mpv.MPVLib
 import java.io.File
 import java.io.FileOutputStream
+import kotlin.math.log2
 import net.streamdek.mobile.BuildConfig
 import net.streamdek.mobile.nativeapp.PlaybackStats
 import net.streamdek.mobile.nativeapp.normalizePreferredAudioLanguage
@@ -65,6 +66,7 @@ class MPVView @JvmOverloads constructor(
     private var pendingSource: String? = null
     private var currentSource: String? = null
     private var pendingResizeMode: String = "cover"
+    private var pendingVideoZoom: Float = 1f
     private var pendingDecoderMode: String = "HW+"
     private var pendingRenderSurface: String = "Standard"
     private var pendingPreferredAudioLanguage: String = "en"
@@ -176,6 +178,7 @@ class MPVView @JvmOverloads constructor(
                     MPVLib.setPropertyString("keepaspect", "yes")
                 }
             }
+            MPVLib.setPropertyDouble("video-zoom", log2(pendingVideoZoom.toDouble()))
             observeProperties()
             initialized = true
             // The player sets the subtitle appearance the moment this view is constructed, which is
@@ -537,6 +540,17 @@ class MPVView @JvmOverloads constructor(
                 MPVLib.setPropertyString("keepaspect", "yes")
             }
         }
+    }
+
+    /**
+     * Pinch zoom, as a plain multiplier. Done by mpv rather than by scaling this view, because mpv
+     * keeps its text subtitles inside the window however far the picture is enlarged; scaling the
+     * view enlarges the subtitles with the picture and pushes them off the screen.
+     */
+    fun setVideoZoom(scale: Float) {
+        pendingVideoZoom = scale.coerceAtLeast(1f)
+        if (!initialized || isDestroyed) return
+        MPVLib.setPropertyDouble("video-zoom", log2(pendingVideoZoom.toDouble()))
     }
 
     fun setDecoderMode(mode: String?) {

@@ -9,14 +9,24 @@ import java.util.Locale
 data class ContentSafetyRule(val id: String, val scope: String, val kind: String, val value: String, val status: String, val reason: String) {
   fun matches(entityScope: String, fields: List<String>): Boolean {
     if (scope != "*" && scope != entityScope) return false
-    if (kind == "domain") return fields.any { raw -> runCatching {
-      val host = URI(raw).host?.lowercase(Locale.ROOT)?.trimEnd('.') ?: return@runCatching false
-      host == value || host.endsWith(".$value")
-    }.getOrDefault(false) }
+    if (kind == "domain") return fields.any { raw -> hostOf(raw)?.let { host -> host == value || host.endsWith(".$value") } == true }
     val expected = skeleton(value)
     return fields.any { skeleton(it) == expected }
   }
   companion object {
+    private val authority = Regex("^[a-zA-Z][a-zA-Z0-9+.-]*://(?:[^/?#@]*@)?(\\[[^\\]]*\\]|[^/?#:]*)")
+
+    /**
+     * The URL's host in the ASCII form rules are stored in. [URI] reports no host for an
+     * internationalised name, so those are read from the authority and converted with [IDN], as
+     * the backend's URL parser does.
+     */
+    fun hostOf(raw: String): String? {
+      val host = runCatching { URI(raw).host }.getOrNull()
+        ?: authority.find(raw)?.groupValues?.get(1)?.takeIf { it.isNotEmpty() }
+        ?: return null
+      return runCatching { IDN.toASCII(host.trimEnd('.'), IDN.ALLOW_UNASSIGNED).lowercase(Locale.ROOT).trimEnd('.') }.getOrNull()
+    }
     private val scopes = setOf("*", "repository", "plugin", "provider", "catalogue", "media", "channel", "source")
     private fun skeleton(value: String) = AdultSourceIdentity.normalize(value).replace('0', 'o').replace('1', 'i')
       .replace('3', 'e').replace('4', 'a').replace('5', 's').replace('7', 't').replace(" ", "")

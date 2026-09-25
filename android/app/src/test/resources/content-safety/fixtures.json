@@ -1,0 +1,1511 @@
+{
+  "about": "Shared content-safety contract. The backend, Mobile and TV test suites all run every case here. Edit this file in the backend repository only, then run: node scripts/content-safety-fixtures.js",
+  "normalization": [
+    {
+      "input": "PornHD",
+      "normalized": "pornhd"
+    },
+    {
+      "input": "P.o.r.n.H.D",
+      "normalized": "p o r n h d"
+    },
+    {
+      "input": "P%6FrnHD",
+      "normalized": "pornhd"
+    },
+    {
+      "input": "P%256FrnHD",
+      "normalized": "pornhd"
+    },
+    {
+      "input": "P&#111;rnHD",
+      "normalized": "pornhd"
+    },
+    {
+      "input": "P&#x6f;rnHD",
+      "normalized": "pornhd"
+    },
+    {
+      "input": "ＰｏｒｎＨＤ",
+      "normalized": "pornhd"
+    },
+    {
+      "input": "P​ornHD",
+      "normalized": "pornhd"
+    },
+    {
+      "input": "PоrnHD",
+      "normalized": "pornhd"
+    },
+    {
+      "input": "РORNHD",
+      "normalized": "pornhd"
+    },
+    {
+      "input": "ΡΟRN",
+      "normalized": "porn"
+    },
+    {
+      "input": "Café Société",
+      "normalized": "cafe societe"
+    },
+    {
+      "input": "a+b",
+      "normalized": "a b"
+    },
+    {
+      "input": "100% Real",
+      "normalized": "100 real"
+    },
+    {
+      "input": "Tom &amp; Jerry",
+      "normalized": "tom jerry"
+    },
+    {
+      "input": "  __Mixed--Case__  ",
+      "normalized": "mixed case"
+    }
+  ],
+  "identity": [
+    {
+      "input": "pornmz",
+      "adult": true
+    },
+    {
+      "input": "XPrimeHub",
+      "adult": true
+    },
+    {
+      "input": "YesPornPlease",
+      "adult": true
+    },
+    {
+      "input": "Perverzija",
+      "adult": true
+    },
+    {
+      "input": "Brazzers",
+      "adult": true
+    },
+    {
+      "input": "PornHD",
+      "adult": true
+    },
+    {
+      "input": "EPorner",
+      "adult": true
+    },
+    {
+      "input": "Porntrex",
+      "adult": true
+    },
+    {
+      "input": "B r a z z e r s",
+      "adult": true
+    },
+    {
+      "input": "BrazzersProvider",
+      "adult": true
+    },
+    {
+      "input": "Brazzers Plugin",
+      "adult": true
+    },
+    {
+      "input": "EP0RNER",
+      "adult": true
+    },
+    {
+      "input": "PPPornnnHHHDDD",
+      "adult": true
+    },
+    {
+      "input": "P​ornHD",
+      "adult": true
+    },
+    {
+      "input": "РornHD",
+      "adult": true
+    },
+    {
+      "input": "https://www.eporner.com/watch",
+      "adult": true
+    },
+    {
+      "input": "porntrex.com",
+      "adult": true
+    },
+    {
+      "input": "PornHD TV",
+      "adult": true
+    },
+    {
+      "input": "BBC News",
+      "adult": false
+    },
+    {
+      "input": "Essex Boys",
+      "adult": false
+    },
+    {
+      "input": "Sussex",
+      "adult": false
+    },
+    {
+      "input": "Sex Education",
+      "adult": false
+    },
+    {
+      "input": "Pornography: A Documentary",
+      "adult": false
+    },
+    {
+      "input": "HD Porch Renovations",
+      "adult": false
+    },
+    {
+      "input": "https://github.com/phisher98/CXXX",
+      "adult": true
+    },
+    {
+      "input": "https://raw.githubusercontent.com/phisher98/CXXX/refs/heads/builds/plugins.json",
+      "adult": true
+    },
+    {
+      "input": "https://github.com/owenconnorz/XXX",
+      "adult": true
+    },
+    {
+      "input": "https://github.com/punpunsx/cloudstream-18plus-Extensions",
+      "adult": true
+    },
+    {
+      "input": "https://raw.githubusercontent.com/Kraptor123/Cs-GizliKeyif/refs/heads/master/repo.json",
+      "adult": true
+    },
+    {
+      "input": "https://github.com/Kraptor123/Cs-GizliKeyif",
+      "adult": true
+    },
+    {
+      "input": "https://github.com/Kraptor123/some-other-repo",
+      "adult": false
+    },
+    {
+      "input": "https://github.com/phisher98/cloudstream-extensions-phisher",
+      "adult": false
+    },
+    {
+      "input": "https://evil.example/phisher98/CXXX",
+      "adult": false
+    }
+  ],
+  "ruleValidation": {
+    "valid": [
+      {
+        "name": "values are trimmed and domains normalised to lower-case ASCII",
+        "rules": [
+          {
+            "id": "b-domain",
+            "scope": "source",
+            "kind": "domain",
+            "value": " Example.COM. ",
+            "status": "ADULT",
+            "reason": " fixture "
+          },
+          {
+            "id": "a-idn",
+            "scope": "*",
+            "kind": "domain",
+            "value": "пример.рф",
+            "status": "ADULT",
+            "reason": "fixture"
+          },
+          {
+            "id": "c-identity",
+            "scope": "provider",
+            "kind": "identity",
+            "value": "  Renamed Provider ",
+            "status": "SAFE",
+            "reason": "fixture"
+          }
+        ],
+        "expected": {
+          "a-idn": {
+            "scope": "*",
+            "kind": "domain",
+            "value": "xn--e1afmkfd.xn--p1ai",
+            "status": "ADULT",
+            "reason": "fixture"
+          },
+          "b-domain": {
+            "scope": "source",
+            "kind": "domain",
+            "value": "example.com",
+            "status": "ADULT",
+            "reason": "fixture"
+          },
+          "c-identity": {
+            "scope": "provider",
+            "kind": "identity",
+            "value": "Renamed Provider",
+            "status": "SAFE",
+            "reason": "fixture"
+          }
+        }
+      },
+      {
+        "name": "an empty list is valid",
+        "rules": [],
+        "expected": {}
+      }
+    ],
+    "invalid": [
+      {
+        "name": "duplicate id",
+        "rules": [
+          {
+            "id": "same",
+            "scope": "provider",
+            "kind": "identity",
+            "value": "a",
+            "status": "ADULT",
+            "reason": "r"
+          },
+          {
+            "id": "same",
+            "scope": "plugin",
+            "kind": "identity",
+            "value": "b",
+            "status": "ADULT",
+            "reason": "r"
+          }
+        ]
+      },
+      {
+        "name": "id with a space",
+        "rules": [
+          {
+            "id": "has space",
+            "scope": "provider",
+            "kind": "identity",
+            "value": "a",
+            "status": "ADULT",
+            "reason": "r"
+          }
+        ]
+      },
+      {
+        "name": "unknown scope",
+        "rules": [
+          {
+            "id": "x",
+            "scope": "everything",
+            "kind": "identity",
+            "value": "a",
+            "status": "ADULT",
+            "reason": "r"
+          }
+        ]
+      },
+      {
+        "name": "unknown match kind",
+        "rules": [
+          {
+            "id": "x",
+            "scope": "provider",
+            "kind": "regex",
+            "value": "a",
+            "status": "ADULT",
+            "reason": "r"
+          }
+        ]
+      },
+      {
+        "name": "unknown status",
+        "rules": [
+          {
+            "id": "x",
+            "scope": "provider",
+            "kind": "identity",
+            "value": "a",
+            "status": "SUSPECTED_ADULT",
+            "reason": "r"
+          }
+        ]
+      },
+      {
+        "name": "blank value",
+        "rules": [
+          {
+            "id": "x",
+            "scope": "provider",
+            "kind": "identity",
+            "value": "   ",
+            "status": "ADULT",
+            "reason": "r"
+          }
+        ]
+      },
+      {
+        "name": "blank reason",
+        "rules": [
+          {
+            "id": "x",
+            "scope": "provider",
+            "kind": "identity",
+            "value": "a",
+            "status": "ADULT",
+            "reason": "  "
+          }
+        ]
+      },
+      {
+        "name": "numeric value",
+        "rules": [
+          {
+            "id": "x",
+            "scope": "provider",
+            "kind": "identity",
+            "value": 42,
+            "status": "ADULT",
+            "reason": "r"
+          }
+        ]
+      },
+      {
+        "name": "missing reason",
+        "rules": [
+          {
+            "id": "x",
+            "scope": "provider",
+            "kind": "identity",
+            "value": "a",
+            "status": "ADULT"
+          }
+        ]
+      },
+      {
+        "name": "domain with a scheme",
+        "rules": [
+          {
+            "id": "x",
+            "scope": "source",
+            "kind": "domain",
+            "value": "https://example.com",
+            "status": "ADULT",
+            "reason": "r"
+          }
+        ]
+      },
+      {
+        "name": "domain with a path",
+        "rules": [
+          {
+            "id": "x",
+            "scope": "source",
+            "kind": "domain",
+            "value": "example.com/path",
+            "status": "ADULT",
+            "reason": "r"
+          }
+        ]
+      },
+      {
+        "name": "wildcard domain",
+        "rules": [
+          {
+            "id": "x",
+            "scope": "source",
+            "kind": "domain",
+            "value": "*.example.com",
+            "status": "ADULT",
+            "reason": "r"
+          }
+        ]
+      },
+      {
+        "name": "single-label domain",
+        "rules": [
+          {
+            "id": "x",
+            "scope": "source",
+            "kind": "domain",
+            "value": "localhost",
+            "status": "ADULT",
+            "reason": "r"
+          }
+        ]
+      },
+      {
+        "name": "label starting with a hyphen",
+        "rules": [
+          {
+            "id": "x",
+            "scope": "source",
+            "kind": "domain",
+            "value": "-bad.example.com",
+            "status": "ADULT",
+            "reason": "r"
+          }
+        ]
+      },
+      {
+        "name": "domain with a port",
+        "rules": [
+          {
+            "id": "x",
+            "scope": "source",
+            "kind": "domain",
+            "value": "example.com:8080",
+            "status": "ADULT",
+            "reason": "r"
+          }
+        ]
+      }
+    ],
+    "maxRules": 200
+  },
+  "ruleMatching": [
+    {
+      "name": "identity ignores case, punctuation and spacing",
+      "rule": {
+        "id": "r",
+        "scope": "provider",
+        "kind": "identity",
+        "value": "Renamed Provider",
+        "status": "ADULT",
+        "reason": "f"
+      },
+      "scope": "provider",
+      "fields": [
+        "renamed-provider"
+      ],
+      "matches": true
+    },
+    {
+      "name": "identity survives digit substitution",
+      "rule": {
+        "id": "r",
+        "scope": "provider",
+        "kind": "identity",
+        "value": "Renamed Provider",
+        "status": "ADULT",
+        "reason": "f"
+      },
+      "scope": "provider",
+      "fields": [
+        "R3n4med Pr0vider"
+      ],
+      "matches": true
+    },
+    {
+      "name": "identity survives look-alike characters",
+      "rule": {
+        "id": "r",
+        "scope": "provider",
+        "kind": "identity",
+        "value": "Renamed Provider",
+        "status": "ADULT",
+        "reason": "f"
+      },
+      "scope": "provider",
+      "fields": [
+        "Rеnamed Prоvider"
+      ],
+      "matches": true
+    },
+    {
+      "name": "identity matches any supplied identifier",
+      "rule": {
+        "id": "r",
+        "scope": "plugin",
+        "kind": "identity",
+        "value": "com.example.adult",
+        "status": "ADULT",
+        "reason": "f"
+      },
+      "scope": "plugin",
+      "fields": [
+        "Ordinary Name",
+        "com.example.adult"
+      ],
+      "matches": true
+    },
+    {
+      "name": "identity is a whole-value match, not a substring",
+      "rule": {
+        "id": "r",
+        "scope": "provider",
+        "kind": "identity",
+        "value": "porn",
+        "status": "ADULT",
+        "reason": "f"
+      },
+      "scope": "provider",
+      "fields": [
+        "pornhd"
+      ],
+      "matches": false
+    },
+    {
+      "name": "a rule applies only at its own level",
+      "rule": {
+        "id": "r",
+        "scope": "provider",
+        "kind": "identity",
+        "value": "Renamed Provider",
+        "status": "ADULT",
+        "reason": "f"
+      },
+      "scope": "plugin",
+      "fields": [
+        "Renamed Provider"
+      ],
+      "matches": false
+    },
+    {
+      "name": "any-level rule applies everywhere",
+      "rule": {
+        "id": "r",
+        "scope": "*",
+        "kind": "identity",
+        "value": "Renamed Provider",
+        "status": "ADULT",
+        "reason": "f"
+      },
+      "scope": "channel",
+      "fields": [
+        "Renamed Provider"
+      ],
+      "matches": true
+    },
+    {
+      "name": "domain matches a subdomain",
+      "rule": {
+        "id": "r",
+        "scope": "source",
+        "kind": "domain",
+        "value": "example.com",
+        "status": "ADULT",
+        "reason": "f"
+      },
+      "scope": "source",
+      "fields": [
+        "https://cdn.example.com/video.m3u8"
+      ],
+      "matches": true
+    },
+    {
+      "name": "domain match ignores case, port and trailing dot",
+      "rule": {
+        "id": "r",
+        "scope": "source",
+        "kind": "domain",
+        "value": "example.com",
+        "status": "ADULT",
+        "reason": "f"
+      },
+      "scope": "source",
+      "fields": [
+        "https://EXAMPLE.com.:8443/a"
+      ],
+      "matches": true
+    },
+    {
+      "name": "domain is not a suffix of another name",
+      "rule": {
+        "id": "r",
+        "scope": "source",
+        "kind": "domain",
+        "value": "example.com",
+        "status": "ADULT",
+        "reason": "f"
+      },
+      "scope": "source",
+      "fields": [
+        "https://notexample.com/a"
+      ],
+      "matches": false
+    },
+    {
+      "name": "domain is not matched as a subdomain of an attacker's host",
+      "rule": {
+        "id": "r",
+        "scope": "source",
+        "kind": "domain",
+        "value": "example.com",
+        "status": "ADULT",
+        "reason": "f"
+      },
+      "scope": "source",
+      "fields": [
+        "https://example.com.evil.net/a"
+      ],
+      "matches": false
+    },
+    {
+      "name": "domain ignores user information",
+      "rule": {
+        "id": "r",
+        "scope": "source",
+        "kind": "domain",
+        "value": "example.com",
+        "status": "ADULT",
+        "reason": "f"
+      },
+      "scope": "source",
+      "fields": [
+        "https://example.com@evil.net/a"
+      ],
+      "matches": false
+    },
+    {
+      "name": "internationalised host matches its ASCII rule",
+      "rule": {
+        "id": "r",
+        "scope": "source",
+        "kind": "domain",
+        "value": "xn--e1afmkfd.xn--p1ai",
+        "status": "ADULT",
+        "reason": "f"
+      },
+      "scope": "source",
+      "fields": [
+        "https://пример.рф/live"
+      ],
+      "matches": true
+    },
+    {
+      "name": "domain rule needs a URL, not a bare host name",
+      "rule": {
+        "id": "r",
+        "scope": "source",
+        "kind": "domain",
+        "value": "example.com",
+        "status": "ADULT",
+        "reason": "f"
+      },
+      "scope": "source",
+      "fields": [
+        "example.com"
+      ],
+      "matches": false
+    }
+  ],
+  "decisions": [
+    {
+      "name": "parent block wins over a child exception",
+      "rules": [
+        {
+          "id": "block-provider",
+          "scope": "provider",
+          "kind": "identity",
+          "value": "Renamed Provider",
+          "status": "ADULT",
+          "reason": "f"
+        },
+        {
+          "id": "allow-item",
+          "scope": "media",
+          "kind": "identity",
+          "value": "Ordinary Film",
+          "status": "SAFE",
+          "reason": "f"
+        }
+      ],
+      "levels": [
+        {
+          "scope": "provider",
+          "fields": [
+            "Renamed Provider"
+          ]
+        },
+        {
+          "scope": "media",
+          "fields": [
+            "Ordinary Film"
+          ]
+        }
+      ],
+      "blocked": true
+    },
+    {
+      "name": "a block on one plugin leaves its sibling in a mixed repository",
+      "rules": [
+        {
+          "id": "block-plugin",
+          "scope": "plugin",
+          "kind": "identity",
+          "value": "Adult Plugin",
+          "status": "ADULT",
+          "reason": "f"
+        }
+      ],
+      "levels": [
+        {
+          "scope": "repository",
+          "fields": [
+            "https://github.com/example/mixed"
+          ]
+        },
+        {
+          "scope": "plugin",
+          "fields": [
+            "News Plugin"
+          ]
+        }
+      ],
+      "blocked": false
+    },
+    {
+      "name": "the blocked plugin in that repository",
+      "rules": [
+        {
+          "id": "block-plugin",
+          "scope": "plugin",
+          "kind": "identity",
+          "value": "Adult Plugin",
+          "status": "ADULT",
+          "reason": "f"
+        }
+      ],
+      "levels": [
+        {
+          "scope": "repository",
+          "fields": [
+            "https://github.com/example/mixed"
+          ]
+        },
+        {
+          "scope": "plugin",
+          "fields": [
+            "Adult Plugin"
+          ]
+        }
+      ],
+      "blocked": true
+    },
+    {
+      "name": "block and exception on the same item: the block wins",
+      "rules": [
+        {
+          "id": "block",
+          "scope": "media",
+          "kind": "identity",
+          "value": "Ordinary Film",
+          "status": "ADULT",
+          "reason": "f"
+        },
+        {
+          "id": "allow",
+          "scope": "*",
+          "kind": "identity",
+          "value": "Ordinary Film",
+          "status": "SAFE",
+          "reason": "f"
+        }
+      ],
+      "levels": [
+        {
+          "scope": "media",
+          "fields": [
+            "Ordinary Film"
+          ]
+        }
+      ],
+      "blocked": true
+    },
+    {
+      "name": "a known adult repository blocks a harmless-looking child",
+      "rules": [],
+      "levels": [
+        {
+          "scope": "repository",
+          "fields": [
+            "https://github.com/phisher98/CXXX"
+          ]
+        },
+        {
+          "scope": "plugin",
+          "fields": [
+            "Renamed Plugin"
+          ]
+        }
+      ],
+      "blocked": true
+    },
+    {
+      "name": "a known identity renamed at the provider level",
+      "rules": [],
+      "levels": [
+        {
+          "scope": "provider",
+          "fields": [
+            "P.o.r.n.H.D"
+          ]
+        },
+        {
+          "scope": "media",
+          "fields": [
+            "Ordinary Film"
+          ]
+        }
+      ],
+      "blocked": true
+    },
+    {
+      "name": "an administrator exception for a misclassified item",
+      "rules": [
+        {
+          "id": "allow",
+          "scope": "media",
+          "kind": "identity",
+          "value": "PornHD Documentary Review",
+          "status": "SAFE",
+          "reason": "f"
+        }
+      ],
+      "levels": [
+        {
+          "scope": "media",
+          "fields": [
+            "PornHD Documentary Review"
+          ]
+        }
+      ],
+      "blocked": false
+    },
+    {
+      "name": "a domain rule blocks the source whatever its title",
+      "rules": [
+        {
+          "id": "domain",
+          "scope": "source",
+          "kind": "domain",
+          "value": "adult-cdn.example",
+          "status": "ADULT",
+          "reason": "f"
+        }
+      ],
+      "levels": [
+        {
+          "scope": "media",
+          "fields": [
+            "Ordinary Film"
+          ]
+        },
+        {
+          "scope": "source",
+          "fields": [
+            "1080p WEB",
+            "https://edge.adult-cdn.example/v.m3u8"
+          ]
+        }
+      ],
+      "blocked": true
+    },
+    {
+      "name": "nothing matches an ordinary chain",
+      "rules": [
+        {
+          "id": "block",
+          "scope": "provider",
+          "kind": "identity",
+          "value": "Renamed Provider",
+          "status": "ADULT",
+          "reason": "f"
+        }
+      ],
+      "levels": [
+        {
+          "scope": "repository",
+          "fields": [
+            "https://github.com/example/films"
+          ]
+        },
+        {
+          "scope": "provider",
+          "fields": [
+            "Ordinary Provider"
+          ]
+        },
+        {
+          "scope": "media",
+          "fields": [
+            "Ordinary Film"
+          ]
+        }
+      ],
+      "blocked": false
+    },
+    {
+      "name": "protection switched off allows even a rule match",
+      "blockAdult": false,
+      "rules": [
+        {
+          "id": "block",
+          "scope": "provider",
+          "kind": "identity",
+          "value": "Renamed Provider",
+          "status": "ADULT",
+          "reason": "f"
+        }
+      ],
+      "levels": [
+        {
+          "scope": "provider",
+          "fields": [
+            "Renamed Provider"
+          ]
+        }
+      ],
+      "blocked": false
+    }
+  ],
+  "signing": {
+    "trustedPublicKeys": [
+      "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE3iPeSV+w9lBwtq4rOrfcqZQ+nD/PsYemhSk2dmblCorGSx6OCG8Qe/agpn3bb6gnyVt8QnYzM0hI4tU8v6fXsQ=="
+    ],
+    "trustedKeyId": "b68f009330cc844b",
+    "acceptedPolicy": {
+      "format": 1,
+      "blockAdult": true,
+      "terms": [
+        "fixture term"
+      ],
+      "version": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "engineVersion": "1",
+      "publishedAt": "2026-09-25T10:00:00.000Z",
+      "rules": [
+        {
+          "id": "fixture-rule",
+          "scope": "provider",
+          "kind": "identity",
+          "value": "renamed-provider",
+          "status": "ADULT",
+          "reason": "fixture"
+        }
+      ]
+    },
+    "cases": [
+      {
+        "name": "valid signature, nothing held",
+        "response": {
+          "blockAdult": false,
+          "terms": [],
+          "rules": [],
+          "signed": {
+            "algorithm": "ES256",
+            "keyId": "b68f009330cc844b",
+            "payload": "{\"format\":1,\"blockAdult\":true,\"terms\":[\"fixture term\"],\"version\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"engineVersion\":\"1\",\"publishedAt\":\"2026-09-25T10:00:00.000Z\",\"rules\":[{\"id\":\"fixture-rule\",\"scope\":\"provider\",\"kind\":\"identity\",\"value\":\"renamed-provider\",\"status\":\"ADULT\",\"reason\":\"fixture\"}]}",
+            "signature": "MEQCIHccTJQ7dIEOecdQNtEF4VrELH7nh8DXSu/qaKqI6Ma0AiBSKWkaAUTLdrPNWcZFIpzIyNas5/962yBhfKnzmWwgQA=="
+          }
+        },
+        "held": null,
+        "expect": "accept"
+      },
+      {
+        "name": "same publication as the one held",
+        "response": {
+          "blockAdult": false,
+          "terms": [],
+          "rules": [],
+          "signed": {
+            "algorithm": "ES256",
+            "keyId": "b68f009330cc844b",
+            "payload": "{\"format\":1,\"blockAdult\":true,\"terms\":[\"fixture term\"],\"version\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"engineVersion\":\"1\",\"publishedAt\":\"2026-09-25T10:00:00.000Z\",\"rules\":[{\"id\":\"fixture-rule\",\"scope\":\"provider\",\"kind\":\"identity\",\"value\":\"renamed-provider\",\"status\":\"ADULT\",\"reason\":\"fixture\"}]}",
+            "signature": "MEQCIHccTJQ7dIEOecdQNtEF4VrELH7nh8DXSu/qaKqI6Ma0AiBSKWkaAUTLdrPNWcZFIpzIyNas5/962yBhfKnzmWwgQA=="
+          }
+        },
+        "held": "2026-09-25T10:00:00.000Z",
+        "expect": "accept"
+      },
+      {
+        "name": "replay of an older publication",
+        "response": {
+          "blockAdult": false,
+          "terms": [],
+          "rules": [],
+          "signed": {
+            "algorithm": "ES256",
+            "keyId": "b68f009330cc844b",
+            "payload": "{\"format\":1,\"blockAdult\":true,\"terms\":[\"fixture term\"],\"version\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"engineVersion\":\"1\",\"publishedAt\":\"2026-09-25T10:00:00.000Z\",\"rules\":[{\"id\":\"fixture-rule\",\"scope\":\"provider\",\"kind\":\"identity\",\"value\":\"renamed-provider\",\"status\":\"ADULT\",\"reason\":\"fixture\"}]}",
+            "signature": "MEQCIHccTJQ7dIEOecdQNtEF4VrELH7nh8DXSu/qaKqI6Ma0AiBSKWkaAUTLdrPNWcZFIpzIyNas5/962yBhfKnzmWwgQA=="
+          }
+        },
+        "held": "2026-09-25T10:00:00.001Z",
+        "expect": "reject"
+      },
+      {
+        "name": "payload altered after signing",
+        "response": {
+          "blockAdult": false,
+          "terms": [],
+          "rules": [],
+          "signed": {
+            "algorithm": "ES256",
+            "keyId": "b68f009330cc844b",
+            "payload": "{\"format\":1,\"blockAdult\":false,\"terms\":[\"fixture term\"],\"version\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"engineVersion\":\"1\",\"publishedAt\":\"2026-09-25T10:00:00.000Z\",\"rules\":[{\"id\":\"fixture-rule\",\"scope\":\"provider\",\"kind\":\"identity\",\"value\":\"renamed-provider\",\"status\":\"ADULT\",\"reason\":\"fixture\"}]}",
+            "signature": "MEQCIHccTJQ7dIEOecdQNtEF4VrELH7nh8DXSu/qaKqI6Ma0AiBSKWkaAUTLdrPNWcZFIpzIyNas5/962yBhfKnzmWwgQA=="
+          }
+        },
+        "held": null,
+        "expect": "reject"
+      },
+      {
+        "name": "rule removed after signing",
+        "response": {
+          "blockAdult": false,
+          "terms": [],
+          "rules": [],
+          "signed": {
+            "algorithm": "ES256",
+            "keyId": "b68f009330cc844b",
+            "payload": "{\"format\":1,\"blockAdult\":true,\"terms\":[\"fixture term\"],\"version\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"engineVersion\":\"1\",\"publishedAt\":\"2026-09-25T10:00:00.000Z\",\"rules\":[]}",
+            "signature": "MEQCIHccTJQ7dIEOecdQNtEF4VrELH7nh8DXSu/qaKqI6Ma0AiBSKWkaAUTLdrPNWcZFIpzIyNas5/962yBhfKnzmWwgQA=="
+          }
+        },
+        "held": null,
+        "expect": "reject"
+      },
+      {
+        "name": "signed by an untrusted key",
+        "response": {
+          "blockAdult": false,
+          "terms": [],
+          "rules": [],
+          "signed": {
+            "algorithm": "ES256",
+            "keyId": "9dc87e8cddcd0d69",
+            "payload": "{\"format\":1,\"blockAdult\":true,\"terms\":[\"fixture term\"],\"version\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"engineVersion\":\"1\",\"publishedAt\":\"2026-09-25T10:00:00.000Z\",\"rules\":[{\"id\":\"fixture-rule\",\"scope\":\"provider\",\"kind\":\"identity\",\"value\":\"renamed-provider\",\"status\":\"ADULT\",\"reason\":\"fixture\"}]}",
+            "signature": "MEQCIG3ztbFIBRZuGsuUHnU9GXiWWGSWE1OiBjXNfHJQReFTAiBosHN/00bTQ6sTbV49Hiab8ZbEDLSGAMsqNdzUXQeWww=="
+          }
+        },
+        "held": null,
+        "expect": "reject"
+      },
+      {
+        "name": "untrusted key claiming the trusted key id",
+        "response": {
+          "blockAdult": false,
+          "terms": [],
+          "rules": [],
+          "signed": {
+            "algorithm": "ES256",
+            "keyId": "b68f009330cc844b",
+            "payload": "{\"format\":1,\"blockAdult\":true,\"terms\":[\"fixture term\"],\"version\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"engineVersion\":\"1\",\"publishedAt\":\"2026-09-25T10:00:00.000Z\",\"rules\":[{\"id\":\"fixture-rule\",\"scope\":\"provider\",\"kind\":\"identity\",\"value\":\"renamed-provider\",\"status\":\"ADULT\",\"reason\":\"fixture\"}]}",
+            "signature": "MEYCIQDRE0V10lyaq911kfq8INgqWCfiFRzJdOunKOh+Z0/9qQIhAJBbnRgVGRjIznYha8h/k5o70vBuRscQnIuq8FvaOSwn"
+          }
+        },
+        "held": null,
+        "expect": "reject"
+      },
+      {
+        "name": "unsigned legacy response",
+        "response": {
+          "blockAdult": true,
+          "terms": [],
+          "rules": []
+        },
+        "held": null,
+        "expect": "reject"
+      },
+      {
+        "name": "unsupported algorithm",
+        "response": {
+          "blockAdult": false,
+          "terms": [],
+          "rules": [],
+          "signed": {
+            "algorithm": "none",
+            "keyId": "b68f009330cc844b",
+            "payload": "{\"format\":1,\"blockAdult\":true,\"terms\":[\"fixture term\"],\"version\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"engineVersion\":\"1\",\"publishedAt\":\"2026-09-25T10:00:00.000Z\",\"rules\":[{\"id\":\"fixture-rule\",\"scope\":\"provider\",\"kind\":\"identity\",\"value\":\"renamed-provider\",\"status\":\"ADULT\",\"reason\":\"fixture\"}]}",
+            "signature": "MEQCIHccTJQ7dIEOecdQNtEF4VrELH7nh8DXSu/qaKqI6Ma0AiBSKWkaAUTLdrPNWcZFIpzIyNas5/962yBhfKnzmWwgQA=="
+          }
+        },
+        "held": null,
+        "expect": "reject"
+      },
+      {
+        "name": "unsupported payload format",
+        "response": {
+          "blockAdult": false,
+          "terms": [],
+          "rules": [],
+          "signed": {
+            "algorithm": "ES256",
+            "keyId": "b68f009330cc844b",
+            "payload": "{\"format\":2,\"blockAdult\":true,\"terms\":[\"fixture term\"],\"version\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"engineVersion\":\"1\",\"publishedAt\":\"2026-09-25T10:00:00.000Z\",\"rules\":[{\"id\":\"fixture-rule\",\"scope\":\"provider\",\"kind\":\"identity\",\"value\":\"renamed-provider\",\"status\":\"ADULT\",\"reason\":\"fixture\"}]}",
+            "signature": "MEUCIAKqQBdWyMYTdSl9AKiP32zKzar3YgXO3fVBv8Kx3n6oAiEAg/h+wqQVbF0HmUOL7tTg4oS/EmR68jHwC9ZMCK+HAhU="
+          }
+        },
+        "held": null,
+        "expect": "reject"
+      },
+      {
+        "name": "never published, nothing held",
+        "response": {
+          "blockAdult": false,
+          "terms": [],
+          "rules": [],
+          "signed": {
+            "algorithm": "ES256",
+            "keyId": "b68f009330cc844b",
+            "payload": "{\"format\":1,\"blockAdult\":true,\"terms\":[\"fixture term\"],\"version\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"engineVersion\":\"1\",\"publishedAt\":null,\"rules\":[{\"id\":\"fixture-rule\",\"scope\":\"provider\",\"kind\":\"identity\",\"value\":\"renamed-provider\",\"status\":\"ADULT\",\"reason\":\"fixture\"}]}",
+            "signature": "MEUCIQDelmoacuvPwSWcw+SptgKR1loNLJTldmdjVuVFgarrjgIgU6kEGOikbUfxiRfsSXjZe/fwsKg5CBi8n3qhomhd3Zw="
+          }
+        },
+        "held": null,
+        "expect": "accept"
+      },
+      {
+        "name": "never published while a publication is held",
+        "response": {
+          "blockAdult": false,
+          "terms": [],
+          "rules": [],
+          "signed": {
+            "algorithm": "ES256",
+            "keyId": "b68f009330cc844b",
+            "payload": "{\"format\":1,\"blockAdult\":true,\"terms\":[\"fixture term\"],\"version\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"engineVersion\":\"1\",\"publishedAt\":null,\"rules\":[{\"id\":\"fixture-rule\",\"scope\":\"provider\",\"kind\":\"identity\",\"value\":\"renamed-provider\",\"status\":\"ADULT\",\"reason\":\"fixture\"}]}",
+            "signature": "MEUCIQDNxxVqag/X9HbLOsK6cwezGkPgOge89mMLjrwZRYf+8wIgNHKsoGO3FhP2YIrK/xyMQCwpoBSP9SRzM+n9LX3JdfE="
+          }
+        },
+        "held": "2026-09-25T10:00:00.000Z",
+        "expect": "reject"
+      },
+      {
+        "name": "malformed publication time",
+        "response": {
+          "blockAdult": false,
+          "terms": [],
+          "rules": [],
+          "signed": {
+            "algorithm": "ES256",
+            "keyId": "b68f009330cc844b",
+            "payload": "{\"format\":1,\"blockAdult\":true,\"terms\":[\"fixture term\"],\"version\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"engineVersion\":\"1\",\"publishedAt\":\"yesterday\",\"rules\":[{\"id\":\"fixture-rule\",\"scope\":\"provider\",\"kind\":\"identity\",\"value\":\"renamed-provider\",\"status\":\"ADULT\",\"reason\":\"fixture\"}]}",
+            "signature": "MEUCIQD7uY2Uwc6FvZLOPYDAxrkA2DfHzfPr0Iz8E6e0Y03W3QIge2jsj4Y60g8KuWviPteJ/cV09f3rdSm88qW88HZ6DMM="
+          }
+        },
+        "held": null,
+        "expect": "reject"
+      },
+      {
+        "name": "signature is not base64",
+        "response": {
+          "blockAdult": false,
+          "terms": [],
+          "rules": [],
+          "signed": {
+            "algorithm": "ES256",
+            "keyId": "b68f009330cc844b",
+            "payload": "{\"format\":1,\"blockAdult\":true,\"terms\":[\"fixture term\"],\"version\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"engineVersion\":\"1\",\"publishedAt\":\"2026-09-25T10:00:00.000Z\",\"rules\":[{\"id\":\"fixture-rule\",\"scope\":\"provider\",\"kind\":\"identity\",\"value\":\"renamed-provider\",\"status\":\"ADULT\",\"reason\":\"fixture\"}]}",
+            "signature": "***"
+          }
+        },
+        "held": null,
+        "expect": "reject"
+      }
+    ]
+  },
+  "textSignals": [
+    {
+      "input": "AllClassicPorn",
+      "adult": true
+    },
+    {
+      "input": "FamilyPorn",
+      "adult": true
+    },
+    {
+      "input": "TurkPorno",
+      "adult": true
+    },
+    {
+      "input": "XXXParodyHD",
+      "adult": true
+    },
+    {
+      "input": "HentaiCity",
+      "adult": true
+    },
+    {
+      "input": "RealityKings",
+      "adult": true
+    },
+    {
+      "input": "OnlyFans",
+      "adult": true
+    },
+    {
+      "input": "MetArt",
+      "adult": true
+    },
+    {
+      "input": "Explicit.Scene.XXX.1080p",
+      "adult": true
+    },
+    {
+      "input": "Watch hentai online free",
+      "adult": true
+    },
+    {
+      "input": "EssexBoys",
+      "adult": false
+    },
+    {
+      "input": "SexEducation",
+      "adult": false
+    },
+    {
+      "input": "McDonaldsDocumentary",
+      "adult": false
+    },
+    {
+      "input": "NC-17 Drama",
+      "adult": false
+    },
+    {
+      "input": "18+ Entertainment",
+      "adult": false
+    },
+    {
+      "input": "AllMovieLandProvider",
+      "adult": false
+    },
+    {
+      "input": "Indian MultiLanguage Provider (Mostly Hindi)",
+      "adult": false
+    }
+  ],
+  "cloudStream": {
+    "about": "App-only: CloudStream repositories and plugins are installed on the device, never by the backend. Plugin metadata below is copied from the public Kraptor123/Cs-GizliKeyif and phisher98 plugin lists.",
+    "plugins": [
+      {
+        "name": "declares NSFW with nothing else adult about it",
+        "repoUrl": "https://raw.githubusercontent.com/Kraptor123/Cs-GizliKeyif/refs/heads/master/repo.json",
+        "internalName": "Coomer",
+        "pluginName": "Coomer",
+        "downloadUrl": "https://raw.githubusercontent.com/Kraptor123/Cs-GizliKeyif/builds/Coomer.cs3",
+        "description": "Coomer: supports photos and videos",
+        "tvTypes": [
+          "NSFW"
+        ],
+        "blocked": true
+      },
+      {
+        "name": "MissAV",
+        "repoUrl": "https://raw.githubusercontent.com/Kraptor123/Cs-GizliKeyif/refs/heads/master/repo.json",
+        "internalName": "MissAV",
+        "pluginName": "MissAV",
+        "downloadUrl": "https://raw.githubusercontent.com/Kraptor123/Cs-GizliKeyif/builds/MissAV.cs3",
+        "description": "Best Japan AV porn site, free forever, high speed, no lag, over 100,000 videos with daily update.",
+        "tvTypes": [
+          "NSFW"
+        ],
+        "blocked": true
+      },
+      {
+        "name": "TurkPorno",
+        "repoUrl": "https://raw.githubusercontent.com/Kraptor123/Cs-GizliKeyif/refs/heads/master/repo.json",
+        "internalName": "TurkPorno",
+        "pluginName": "TurkPorno",
+        "downloadUrl": "https://raw.githubusercontent.com/Kraptor123/Cs-GizliKeyif/builds/TurkPorno.cs3",
+        "description": "Türk ifşa.",
+        "tvTypes": [
+          "NSFW"
+        ],
+        "blocked": true
+      },
+      {
+        "name": "NSFW removed, description still says what it serves",
+        "repoUrl": "https://raw.githubusercontent.com/Kraptor123/Cs-GizliKeyif/refs/heads/master/repo.json",
+        "internalName": "HanimeTV",
+        "pluginName": "HanimeTV",
+        "downloadUrl": "https://raw.githubusercontent.com/Kraptor123/Cs-GizliKeyif/builds/HanimeTV.cs3",
+        "description": "Watch hentai online free download HD on mobile phone tablet laptop desktop.",
+        "tvTypes": [],
+        "blocked": true
+      },
+      {
+        "name": "NSFW removed, joined-up name still names it",
+        "repoUrl": "https://raw.githubusercontent.com/Kraptor123/Cs-GizliKeyif/refs/heads/master/repo.json",
+        "internalName": "AllClassicPorn",
+        "pluginName": "AllClassicPorn",
+        "downloadUrl": "https://raw.githubusercontent.com/Kraptor123/Cs-GizliKeyif/builds/AllClassicPorn.cs3",
+        "description": "Retro videos from the old days.",
+        "tvTypes": [],
+        "blocked": true
+      },
+      {
+        "name": "NSFW removed and nothing else adult: an administrator rule covers it",
+        "repoUrl": "https://raw.githubusercontent.com/Kraptor123/Cs-GizliKeyif/refs/heads/master/repo.json",
+        "internalName": "Coomer",
+        "pluginName": "Coomer",
+        "downloadUrl": "https://raw.githubusercontent.com/Kraptor123/Cs-GizliKeyif/builds/Coomer.cs3",
+        "description": "Coomer: supports photos and videos",
+        "tvTypes": [],
+        "blocked": true,
+        "rules": [
+          {
+            "id": "coomer",
+            "scope": "plugin",
+            "kind": "identity",
+            "value": "Coomer",
+            "status": "ADULT",
+            "reason": "Adult plugin"
+          }
+        ]
+      },
+      {
+        "name": "administrator exception for a plugin that mislabels itself",
+        "repoUrl": "https://raw.githubusercontent.com/Kraptor123/Cs-GizliKeyif/refs/heads/master/repo.json",
+        "internalName": "Coomer",
+        "pluginName": "Coomer",
+        "downloadUrl": "https://raw.githubusercontent.com/Kraptor123/Cs-GizliKeyif/builds/Coomer.cs3",
+        "description": "Coomer: supports photos and videos",
+        "tvTypes": [
+          "nsfw"
+        ],
+        "blocked": false,
+        "rules": [
+          {
+            "id": "coomer-ok",
+            "scope": "plugin",
+            "kind": "identity",
+            "value": "Coomer",
+            "status": "SAFE",
+            "reason": "Reviewed"
+          }
+        ]
+      },
+      {
+        "name": "AllMovieLandProvider",
+        "repoUrl": "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json",
+        "internalName": "AllMovieLandProvider",
+        "pluginName": "AllMovieLandProvider",
+        "downloadUrl": "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/AllMovieLandProvider.cs3",
+        "description": "Indian MultiLanguage Provider (Mostly Hindi)",
+        "tvTypes": [
+          "Movie",
+          "TvSeries",
+          "Cartoon"
+        ],
+        "blocked": false
+      },
+      {
+        "name": "AllWish",
+        "repoUrl": "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json",
+        "internalName": "AllWish",
+        "pluginName": "AllWish",
+        "downloadUrl": "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/AllWish.cs3",
+        "description": "Anime from all-wish.me",
+        "tvTypes": [
+          "All"
+        ],
+        "blocked": false
+      },
+      {
+        "name": "Anichi",
+        "repoUrl": "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json",
+        "internalName": "Anichi",
+        "pluginName": "Anichi",
+        "downloadUrl": "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/Anichi.cs3",
+        "description": "AllManga/Mkissa Source",
+        "tvTypes": [
+          "AnimeMovie",
+          "Anime",
+          "OVA"
+        ],
+        "blocked": false
+      }
+    ],
+    "repositories": [
+      {
+        "name": "labels itself +18 and every plugin declares NSFW",
+        "url": "https://raw.githubusercontent.com/Kraptor123/Cs-GizliKeyif/refs/heads/master/repo.json",
+        "repoName": "Cs-GizliKeyif +18 | @kraptor123",
+        "description": "+18 Repo",
+        "pluginTvTypes": [
+          [
+            "NSFW"
+          ],
+          [
+            "NSFW"
+          ],
+          [
+            "NSFW"
+          ]
+        ],
+        "blocked": true
+      },
+      {
+        "name": "no label, but every plugin declares NSFW",
+        "url": "https://example.org/renamed/repo.json",
+        "repoName": "Ordinary Collection",
+        "description": "Movies",
+        "pluginTvTypes": [
+          [
+            "NSFW"
+          ],
+          [
+            "nsfw"
+          ]
+        ],
+        "blocked": true
+      },
+      {
+        "name": "labels itself NSFW",
+        "url": "https://example.org/other/repo.json",
+        "repoName": "Misc (NSFW)",
+        "description": "",
+        "pluginTvTypes": [
+          [
+            "Movie"
+          ]
+        ],
+        "blocked": true
+      },
+      {
+        "name": "mixed collection is not blocked wholesale",
+        "url": "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json",
+        "repoName": "Phisher Repo",
+        "description": "Mixed providers",
+        "pluginTvTypes": [
+          [
+            "Movie",
+            "TvSeries"
+          ],
+          [
+            "NSFW"
+          ],
+          [
+            "Anime"
+          ]
+        ],
+        "blocked": false
+      },
+      {
+        "name": "a year or version is not an age label",
+        "url": "https://example.org/films/repo.json",
+        "repoName": "Films 2018 v18",
+        "description": "Classic films from 1918",
+        "pluginTvTypes": [
+          [
+            "Movie"
+          ]
+        ],
+        "blocked": false
+      },
+      {
+        "name": "an empty collection is not adult-only",
+        "url": "https://example.org/empty/repo.json",
+        "repoName": "Empty",
+        "description": "",
+        "pluginTvTypes": [],
+        "blocked": false
+      }
+    ]
+  }
+}

@@ -18,6 +18,8 @@ package net.streamdek.mobile.nativeapp
 object AdultContentFilter {
   /** Compiled once: this runs over every field of every stream each time a result list is ranked. */
   private val wordGap = Regex("[^\\p{L}\\p{N}+]+")
+  /** Where a joined-up name changes case: "allClassic" and "XXXParody" both split before the capital. */
+  private val caseBoundary = Regex("(?<=\\p{Ll})(?=\\p{Lu})|(?<=\\p{Lu})(?=\\p{Lu}\\p{Ll})")
 
 
   /**
@@ -26,6 +28,15 @@ object AdultContentFilter {
    */
   private data class PolicyState(val enabled: Boolean = true, val terms: Set<String> = emptySet(), val rules: List<ContentSafetyRule> = emptyList(), val version: String? = null)
   @Volatile private var policy = PolicyState()
+  private val changeCount = kotlinx.coroutines.flow.MutableStateFlow(0L)
+
+  /**
+   * Goes up by one whenever the policy in force changes: switched on or off, terms or rules edited,
+   * or a rollback. Screens and caches holding content filtered under the previous policy watch this
+   * to filter what is already visible again and reload, so a newly blocked item does not stay on
+   * screen until the next navigation.
+   */
+  val changes: kotlinx.coroutines.flow.StateFlow<Long> = changeCount
   val enabled: Boolean get() = policy.enabled
   val revision: String? get() = policy.version
   private val adminTerms: Set<String> get() = policy.terms
@@ -85,18 +96,29 @@ object AdultContentFilter {
       (terms ?: prior.terms).map { it.trim().lowercase(java.util.Locale.ROOT) }.filter { it.isNotBlank() }.toSet(),
       rules?.toList() ?: prior.rules, version ?: prior.version)
     policy = next
-    if (next != prior) PluginCatalogSearch.clearCache()
+    // The revision string alone is not compared: a failed refresh changes what is enforced without
+    // a new revision, by switching blocking back on.
+    if (next.copy(version = null) != prior.copy(version = null)) {
+      PluginCatalogSearch.clearCache()
+      changeCount.value = changeCount.value + 1
+    }
   }
 
-  /** Call separately for the repository before its plugin/provider, so exceptions stay scoped. */
-  fun isBlockedEntity(scope: String, vararg fields: String?): Boolean {
+  /**
+   * Call separately for the repository before its plugin/provider, so exceptions stay scoped.
+   *
+   * [declaredAdult] is the entity's own statement that it is adult (a CloudStream plugin listing
+   * NSFW among its types). It is trusted over the text, but an administrator's exception for this
+   * exact entity still wins, for the rare source that mislabels itself.
+   */
+  fun isBlockedEntity(scope: String, vararg fields: String?, declaredAdult: Boolean = false): Boolean {
     val current = policy
     if (!current.enabled) return false
     val values = fields.filterNotNull()
     val matching = current.rules.filter { it.matches(scope, values) }
     if (matching.any { it.status == "ADULT" }) return true
     if (matching.any { it.status == "SAFE" }) return false
-    return values.any { matches(it) }
+    return declaredAdult || values.any { matches(it) }
   }
 
   /**
@@ -145,7 +167,15 @@ object AdultContentFilter {
     if (AdultSourceIdentity.matches(value)) return true
     // Release names separate words with dots and underscores, so everything that is not a letter,
     // digit or '+' becomes a gap. '+' survives because it carries the meaning in "18+".
-    val normalized = value.lowercase().replace(wordGap, " ").trim()
+    // Names are often written joined up ("AllClassicPorn"), so the text is also read split at its
+    // case changes. Both readings are tried: splitting alone would lose brands written the same way
+    // ("OnlyFans", "MetArt") that are listed as single words.
+    val split = value.replace(caseBoundary, " ")
+    return matchesWords(value.lowercase().replace(wordGap, " ").trim()) ||
+      (split != value && matchesWords(split.lowercase().replace(wordGap, " ").trim()))
+  }
+
+  private fun matchesWords(normalized: String): Boolean {
     if (normalized.isEmpty()) return false
     val tokens = normalized.split(' ').filter { it.isNotBlank() }
 

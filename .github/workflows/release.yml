@@ -106,11 +106,13 @@ jobs:
           STREAMDEK_API_URL_SECRET: ${{ secrets.STREAMDEK_API_URL }}
           STREAMDEK_PREMIUMIZE_CLIENT_ID_VAR: ${{ vars.STREAMDEK_PREMIUMIZE_CLIENT_ID }}
           STREAMDEK_PREMIUMIZE_CLIENT_ID_SECRET: ${{ secrets.STREAMDEK_PREMIUMIZE_CLIENT_ID }}
+          STREAMDEK_CONTENT_POLICY_PUBLIC_KEYS_VAR: ${{ vars.STREAMDEK_CONTENT_POLICY_PUBLIC_KEYS }}
         run: |
           set -Eeuo pipefail
 
           api_url="${STREAMDEK_API_URL_VAR:-$STREAMDEK_API_URL_SECRET}"
           premiumize_client_id="${STREAMDEK_PREMIUMIZE_CLIENT_ID_VAR:-$STREAMDEK_PREMIUMIZE_CLIENT_ID_SECRET}"
+          content_policy_public_keys="${STREAMDEK_CONTENT_POLICY_PUBLIC_KEYS_VAR:-}"
 
           if [ -z "$api_url" ]; then
             echo "STREAMDEK_API_URL repository variable or secret is required."
@@ -121,7 +123,14 @@ jobs:
             exit 1
           fi
 
-          printf 'STREAMDEK_API_URL=%s\nSTREAMDEK_PREMIUMIZE_CLIENT_ID=%s\n' "$api_url" "$premiumize_client_id" > .env
+
+          # Public half of the backend's content-policy signing key (not a secret). Builds without it
+          # accept unsigned policies; see scripts/generate-content-policy-key.js in the backend.
+          if [ -z "$content_policy_public_keys" ]; then
+            echo "::warning::STREAMDEK_CONTENT_POLICY_PUBLIC_KEYS is not set; this build will accept unsigned content policies."
+          fi
+
+          printf 'STREAMDEK_API_URL=%s\nSTREAMDEK_PREMIUMIZE_CLIENT_ID=%s\nSTREAMDEK_CONTENT_POLICY_PUBLIC_KEYS=%s\n' "$api_url" "$premiumize_client_id" "$content_policy_public_keys" > .env
 
       - name: Decode Android keystore
         shell: bash

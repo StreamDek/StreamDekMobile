@@ -42,6 +42,6 @@ internal object AdultSourceIdentity {
     val uri = java.net.URI(raw)
     if (uri.host?.lowercase(java.util.Locale.ROOT) !in setOf("github.com", "raw.githubusercontent.com")) false
     else uri.path.lowercase(java.util.Locale.ROOT).split('/').filter { it.isNotBlank() }.take(2).joinToString("/") in
-      setOf("phisher98/cxxx", "owenconnorz/xxx", "punpunsx/cloudstream-18plus-extensions")
+      setOf("phisher98/cxxx", "owenconnorz/xxx", "punpunsx/cloudstream-18plus-extensions", "kraptor123/cs-gizlikeyif")
   }.getOrDefault(false)
 }

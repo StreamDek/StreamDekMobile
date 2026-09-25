@@ -44,6 +44,38 @@ import java.util.concurrent.TimeUnit
 private const val MAX_REPO_NESTING = 3
 
 /** URLs from a manifest array that holds either plain strings or `{ "url": … }` objects. */
+/** CloudStream's own adult marker: a plugin lists "NSFW" among its content types. */
+internal fun declaresNsfw(tvTypes: Collection<String>): Boolean = tvTypes.any { it.trim().equals("NSFW", ignoreCase = true) }
+
+/**
+ * Whether a CloudStream plugin is blocked: by an administrator rule, by declaring itself NSFW, or by
+ * its identity, name, address or its own description. The description counts here, unlike a film's
+ * synopsis, because a plugin's description is the source describing what it serves.
+ */
+internal fun isBlockedCsPlugin(
+  repoUrl: String, internalName: String, name: String?, downloadUrl: String?, description: String?, tvTypes: Collection<String>, listUrl: String? = null,
+): Boolean = AdultContentFilter.isBlockedEntity("plugin", internalName, name, downloadUrl, repoUrl, listUrl, description, declaredAdult = declaresNsfw(tvTypes))
+
+private val adultCollectionLabel = Regex("(?i)(?<![\\p{L}\\p{N}])(?:\\+18|18\\+|nsfw)(?![\\p{L}\\p{N}])")
+
+/**
+ * Whether a whole collection is adult-only, and so blocked with everything in it: it labels itself
+ * +18 or NSFW, or every plugin it lists declares NSFW. A mixed collection is never blocked
+ * wholesale; its adult plugins are removed one by one by [isBlockedCsPlugin].
+ */
+internal fun isAdultOnlyCsRepo(url: String, name: String?, description: String?, pluginTvTypes: List<Collection<String>>): Boolean {
+  val selfDeclared = listOfNotNull(name, description).any { adultCollectionLabel.containsMatchIn(it) }
+  val everyPluginNsfw = pluginTvTypes.isNotEmpty() && pluginTvTypes.all(::declaresNsfw)
+  return AdultContentFilter.isBlockedEntity("repository", url, name, description, declaredAdult = selfDeclared || everyPluginNsfw)
+}
+
+private fun CsProviderEntry.blockedBySafety(): Boolean = isBlockedCsPlugin(repoUrl, internalName, name, downloadUrl, description, tvTypes)
+
+/** Installed collections that are adult-only under the policy in force, including ones added before it said so. */
+private fun CsPluginState.adultOnlyRepoUrls(): Set<String> = repos.filterTo(mutableListOf()) { repo ->
+  isAdultOnlyCsRepo(repo.url, repo.name, repo.description, providers.filter { it.repoUrl == repo.url }.map { it.tvTypes })
+}.mapTo(HashSet()) { it.url }
+
 private fun manifestUrlList(values: JSONArray?): List<String> = buildList {
   val source = values ?: return@buildList
   for (index in 0 until source.length()) {
@@ -298,8 +330,8 @@ class CloudStreamRepoManager(private val context: Context) {
    * silently leave every enabled source unable to answer.
    */
   suspend fun loadEnabledProviders(): Unit = withContext(Dispatchers.IO) {
-    val enabledRepos = state.repos.filter { it.enabled }.mapTo(mutableSetOf()) { it.url }
-    val wanted = state.providers.filter { it.enabled && it.repoUrl in enabledRepos && !AdultContentFilter.isBlocked(it.repoUrl, it.internalName, it.name, it.downloadUrl) }
+    val enabledRepos = state.repos.filter { it.enabled }.mapTo(mutableSetOf()) { it.url } - state.adultOnlyRepoUrls()
+    val wanted = state.providers.filter { it.enabled && it.repoUrl in enabledRepos && !it.blockedBySafety() }
     val installedPaths = mutableMapOf<String, String>()
     wanted.forEach { entry ->
       val file = entry.installedFilePath?.let(::File)?.takeIf { it.exists() && it.length() > 0L }
@@ -332,9 +364,10 @@ class CloudStreamRepoManager(private val context: Context) {
 
   /** The providers usable right now — loaded, and belonging to an enabled source in an enabled repo. */
   fun activeProviders(): List<com.lagradost.cloudstream3.MainAPI> {
-    val enabledRepos = state.repos.filter { it.enabled }.associateBy { it.url }
+    val adultOnly = state.adultOnlyRepoUrls()
+    val enabledRepos = state.repos.filter { it.enabled && it.url !in adultOnly }.associateBy { it.url }
     return state.providers
-      .filter { it.enabled && it.repoUrl in enabledRepos && !AdultContentFilter.isBlocked(it.repoUrl, it.internalName, it.name, it.downloadUrl) }
+      .filter { it.enabled && it.repoUrl in enabledRepos && !it.blockedBySafety() }
       .sortedWith(compareByDescending<CsProviderEntry> { enabledRepos[it.repoUrl]?.favourite == true }.thenBy { it.name.lowercase() })
       .mapNotNull { it.installedFilePath }
       .flatMap(CloudStreamPluginLoader::providersFor)
@@ -353,7 +386,7 @@ class CloudStreamRepoManager(private val context: Context) {
   }
 
   private fun downloadPlugin(entry: CsProviderEntry): File {
-    check(!AdultContentFilter.isBlocked(entry.repoUrl, entry.internalName, entry.name, entry.downloadUrl)) { "CONTENT_SAFETY_BLOCKED" }
+    check(!entry.blockedBySafety() && entry.repoUrl !in state.adultOnlyRepoUrls()) { "CONTENT_SAFETY_BLOCKED" }
     val safeName = entry.internalName.replace(Regex("[^A-Za-z0-9._-]"), "_") + "_" + entry.repoUrl.hashCode().toUInt().toString(16) + ".cs3"
     val file = File(pluginDir, safeName)
     // The loader marks installed plugins read-only (Android 14+ refuses to load writable code),
@@ -389,6 +422,9 @@ class CloudStreamRepoManager(private val context: Context) {
     // repoUrl, so two collections shipping the same internalName would otherwise collide on all
     // three. First listed wins, which respects the order the aggregate declared.
     val seen = mutableSetOf<String>()
+    // Every listed plugin's declared types, blocked or not, so an adult-only collection is recognised
+    // as one even though its plugins are all filtered out below.
+    val allTvTypes = mutableListOf<List<String>>()
     val providers = buildList {
       for (listUrl in pluginListUrls) {
         val entries = runCatching { JSONArray(text(listUrl)) }.getOrDefault(JSONArray())
@@ -397,7 +433,9 @@ class CloudStreamRepoManager(private val context: Context) {
           val internalName = item.optString("internalName").ifBlank { item.optString("name") }
           val downloadUrl = item.optString("url")
           if (internalName.isBlank() || downloadUrl.isBlank()) continue
-          if (AdultContentFilter.isBlocked(internalName, downloadUrl, item.optString("name"), listUrl)) continue
+          val declaredTypes = item.optJSONArray("tvTypes").let { arr -> List(arr?.length() ?: 0) { k -> arr!!.optString(k) } }
+          allTvTypes += listOf(declaredTypes)
+          if (isBlockedCsPlugin(url, internalName, item.optString("name"), downloadUrl, item.optString("description"), declaredTypes, listUrl)) continue
           // SkyStream bundles advertise themselves through an identical manifest and are handled
           // by SkyStreamPluginManager. Skipping them here is what lets one aggregate carrying both
           // formats install into both engines, each taking only the entries it can actually run —
@@ -422,6 +460,7 @@ class CloudStreamRepoManager(private val context: Context) {
         }
       }
     }
+    check(!isAdultOnlyCsRepo(url, name, manifest.optString("description"), allTvTypes)) { "CONTENT_SAFETY_BLOCKED" }
     require(providers.isNotEmpty()) { "No providers found in that collection." }
     return CsRepo(url = url, name = name, description = manifest.optString("description").ifBlank { null }, iconUrl = manifest.optString("iconUrl").ifBlank { null }) to providers
   }
@@ -638,8 +677,8 @@ class CloudStreamRepoManager(private val context: Context) {
     // A source that has gone, or been switched off elsewhere, must stop answering here too --
     // a .cs3 stays live in the process until it is explicitly dropped.
     // A collection switched off elsewhere takes its sources with it, whatever their own switches say.
-    val enabledRepos = merged.repos.filter { it.enabled }.mapTo(HashSet()) { it.url }
-    val keep = merged.providers.filter { it.enabled && it.repoUrl in enabledRepos && !AdultContentFilter.isBlocked(it.repoUrl, it.internalName, it.name, it.downloadUrl) }.mapNotNull { it.installedFilePath }.toSet()
+    val enabledRepos = merged.repos.filter { it.enabled }.mapTo(HashSet()) { it.url } - merged.adultOnlyRepoUrls()
+    val keep = merged.providers.filter { it.enabled && it.repoUrl in enabledRepos && !it.blockedBySafety() }.mapNotNull { it.installedFilePath }.toSet()
     state.providers.mapNotNull { it.installedFilePath }.distinct()
       .filterNot { it in keep }
       .forEach(CloudStreamPluginLoader::unload)

@@ -48,6 +48,14 @@ def apiBaseUrl = loadEnvValue("STREAMDEK_API_URL", "https://api.streamdek.net")
 // IntroDB serves reads anonymously, so an empty value here still works — it just shares the
 // unauthenticated rate limit rather than StreamDek's own allowance.
 def introdbApiKey = loadEnvValue("STREAMDEK_INTRODB_API_KEY", "")
+// Public keys the downloaded content policy must be signed with (base64 SPKI, comma-separated for
+// rotation). Not a secret. Empty accepts unsigned policies, which is only for local development:
+// see scripts/generate-content-policy-key.js in the backend repository.
+def contentPolicyPublicKeys = loadEnvValue("STREAMDEK_CONTENT_POLICY_PUBLIC_KEYS", "")
+if (!(contentPolicyPublicKeys ==~ /[A-Za-z0-9+\/=,]*/)) {
+    throw new GradleException("STREAMDEK_CONTENT_POLICY_PUBLIC_KEYS must be comma-separated base64 SPKI keys.")
+}
+
 
 // Premiumize's OAuth client id, for signing in without typing an API key.
 //
@@ -91,6 +99,7 @@ android {
         buildConfigField "String", "API_BASE_URL", "\"${apiBaseUrl}\""
         buildConfigField "String", "INTRODB_API_KEY", "\"${introdbApiKey}\""
         buildConfigField "String", "PREMIUMIZE_CLIENT_ID", "\"${premiumizeClientId}\""
+        buildConfigField "String", "CONTENT_POLICY_PUBLIC_KEYS", "\"${contentPolicyPublicKeys}\""
     }
 
     signingConfigs {

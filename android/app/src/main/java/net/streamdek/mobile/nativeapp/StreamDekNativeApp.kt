@@ -2,6 +2,7 @@ package net.streamdek.mobile.nativeapp
 
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.drop
 
 import android.app.Activity
 import android.app.Application
@@ -3966,6 +3967,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     // After configure, not before: events queued without a client are dropped, so reporting any
     // earlier would lose exactly the crash this exists to report.
     Stability.reportPending(application.applicationContext)
+    // The first value is the policy already in force when this starts; only later changes sweep.
+    viewModelScope.launch { AdultContentFilter.changes.drop(1).collect { onContentPolicyChanged() } }
     DisplayNameOverrides.initialize(application.applicationContext)
     LocalAddonManager.initialize(application.applicationContext)
     M3uPlaylistManager.initialize(application.applicationContext)
@@ -4904,6 +4907,49 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     addons.filter { it.enabled && it.manifest.catalogs.isNotEmpty() }.joinToString("|") { addon ->
       addon.id + ":" + addon.manifest.catalogs.joinToString(",") { catalog -> catalog.type + "/" + catalog.id }
     }
+
+  /**
+   * Applies a changed content policy to what is already on screen.
+   *
+   * Lists are filtered when they are built, so a policy published while they are showing would
+   * otherwise leave a newly blocked title visible until the viewer navigated away. Everything held
+   * here is filtered again at once (rows left empty by the sweep are dropped rather than shown
+   * bare), and Home reloads quietly so a policy that was relaxed brings its content back.
+   */
+  private fun onContentPolicyChanged() {
+    fun List<MediaItem>.swept() = filterNot { it.blockedByContentPolicy() }
+    fun List<MediaSection>.sweptSections() = mapNotNull { section ->
+      val kept = section.items.swept()
+      if (kept.isEmpty() && section.items.isNotEmpty()) null else section.copy(items = kept)
+    }
+    fun List<TraktItem>.sweptTrakt() = filterNot { AdultContentFilter.isBlockedItem(title = it.title) }
+    val state = uiState
+    uiState = state.copy(
+      allHomeSections = state.allHomeSections.sweptSections(),
+      homeSections = state.homeSections.sweptSections(),
+      searchResults = state.searchResults.swept(),
+      addonSearchResults = state.addonSearchResults.swept(),
+      localContinueWatching = state.localContinueWatching.swept(),
+      nextUpItems = state.nextUpItems.swept(),
+      localResumeEntries = state.localResumeEntries.filterNot { entry ->
+        AdultContentFilter.isBlockedItem(title = entry.title) ||
+          AdultContentFilter.isBlocked(entry.stream?.addonName, entry.stream?.name, entry.stream?.title, entry.stream?.url)
+      },
+      mediaHubPages = state.mediaHubPages.mapValues { (_, page) -> page.copy(items = page.items.swept()) },
+      browseLoadedItems = state.browseLoadedItems.swept(),
+      m3uChannels = state.m3uChannels.swept(),
+      m3uVodItems = state.m3uVodItems.swept(),
+      newEpisodeItems = state.newEpisodeItems.swept(),
+      traktContinueWatching = state.traktContinueWatching.sweptTrakt(),
+      traktWatchlist = state.traktWatchlist.sweptTrakt(),
+      traktRecommendations = state.traktRecommendations.sweptTrakt(),
+      traktTrending = state.traktTrending.sweptTrakt(),
+      mergedWatchlist = state.mergedWatchlist.swept(),
+      favouriteChannels = state.favouriteChannels.swept(),
+      playerLiveChannels = state.playerLiveChannels.swept(),
+    )
+    if (state.homeSections.isNotEmpty()) loadHome(force = true, silent = true)
+  }
 
   fun loadHome(force: Boolean = false, silent: Boolean = false) {
     if (uiState.homeSections.isNotEmpty() && !force) return
@@ -10609,9 +10655,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     kotlinx.coroutines.currentCoroutineContext().ensureActive()
     if (activeOwnerKey() != owner) return
     val merged = withContext(Dispatchers.Default) {
-      (previous.items + result).distinctBy(::mediaHubItemKey).filterNot {
-        AdultContentFilter.isBlockedItem(title = it.title, genres = it.genres) || AdultContentFilter.isBlocked(it.sourceCatalogName)
-      }
+      (previous.items + result).distinctBy(::mediaHubItemKey).filterNot { it.blockedByContentPolicy() }
     }
     val page = MediaHubPage(merged,
       nextOffset = previous.nextOffset + if (source.cloudRowId != null) 1 else result.size,
@@ -16224,6 +16268,15 @@ internal fun tidyCategoryLabel(raw: String): String {
  * counts when it differs from the add-on/playlist name — otherwise every item in a single-catalog
  * source would land in one category named after the source, which groups nothing.
  */
+/**
+ * Whether the content policy in force hides this item. The one definition used where lists are
+ * built and when a policy change sweeps lists already on screen, so the two cannot disagree.
+ */
+internal fun MediaItem.blockedByContentPolicy(): Boolean =
+  AdultContentFilter.isBlockedItem(title = title, genres = genres) ||
+    AdultContentFilter.isBlocked(sourceCatalogName) ||
+    AdultContentFilter.isBlockedCategory(declaredCategory())
+
 internal fun MediaItem.declaredCategory(): String? = listOfNotNull(
   genres.firstOrNull()?.takeIf { it.isNotBlank() },
   sourceCatalogGenre?.takeIf { it.isNotBlank() },
@@ -16329,11 +16382,7 @@ internal fun buildBrowseCategories(items: List<MediaItem>): List<BrowseCategory>
   if (items.isEmpty()) return emptyList()
   // Live lists reach this from sources the playlist parser never sees, and an adult section is
   // usually labelled as one, so the group name is worth checking as well as the entries.
-  @Suppress("NAME_SHADOWING") val items = items.filterNot { item ->
-    AdultContentFilter.isBlockedItem(title = item.title, genres = item.genres) ||
-      AdultContentFilter.isBlocked(item.sourceCatalogName) ||
-      AdultContentFilter.isBlockedCategory(item.declaredCategory())
-  }
+  @Suppress("NAME_SHADOWING") val items = items.filterNot { item -> item.blockedByContentPolicy() }
   if (items.isEmpty()) return emptyList()
   val declared = items.groupBy { it.declaredCategory() }
   val declaredNames = declared.keys.filterNotNull()
@@ -34171,9 +34220,7 @@ fun MediaHubScreen(
         owners.getOrPut(mediaHubItemKey(favourite)) { owner.sourceKey }
         true
       }
-      val items = (loaded + favourites).distinctBy(::mediaHubItemKey).filterNot {
-        AdultContentFilter.isBlockedItem(title = it.title, genres = it.genres) || AdultContentFilter.isBlocked(it.sourceCatalogName)
-      }
+      val items = (loaded + favourites).distinctBy(::mediaHubItemKey).filterNot { it.blockedByContentPolicy() }
       val grouped = if (scoped.isNotEmpty() && scoped.all { it.live } && state.liveCategoriesEnabled) buildBrowseCategories(items) else emptyList()
       val base = if (category == null) items else grouped.firstOrNull { it.name == category }?.items.orEmpty()
       // What a plugin's own search returned is already an answer to the query - it may match on a

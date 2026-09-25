@@ -510,7 +510,8 @@ private class CatalogPageCache(
   private val ttlMs: Long = 5L * 60L * 1000L,
   private val maxEntries: Int = 120,
 ) {
-  private class Entry(val page: DiscoverPage, val storedAt: Long)
+  /** [policyRevision] is the content policy the page was filtered under; any other is a miss. */
+  private class Entry(val page: DiscoverPage, val storedAt: Long, val policyRevision: Long)
 
   private val entries = object : LinkedHashMap<String, Entry>(32, 0.75f, true) {
     override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Entry>?): Boolean = size > maxEntries
@@ -521,7 +522,7 @@ private class CatalogPageCache(
   @Synchronized
   fun get(catalogId: String, region: String, page: Int): DiscoverPage? {
     val entry = entries[key(catalogId, region, page)] ?: return null
-    if (System.currentTimeMillis() - entry.storedAt > ttlMs) {
+    if (System.currentTimeMillis() - entry.storedAt > ttlMs || entry.policyRevision != AdultContentFilter.changes.value) {
       entries.remove(key(catalogId, region, page))
       return null
     }
@@ -530,7 +531,7 @@ private class CatalogPageCache(
 
   @Synchronized
   fun put(catalogId: String, region: String, page: Int, value: DiscoverPage) {
-    entries[key(catalogId, region, page)] = Entry(value, System.currentTimeMillis())
+    entries[key(catalogId, region, page)] = Entry(value, System.currentTimeMillis(), AdultContentFilter.changes.value)
   }
 }
 

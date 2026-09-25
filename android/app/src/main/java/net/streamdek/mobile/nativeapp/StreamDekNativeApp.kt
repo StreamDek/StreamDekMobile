@@ -15217,7 +15217,27 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
       if (item.titleLogo.isNullOrBlank() && !resolvedLogo.isNullOrBlank()) item.copy(titleLogo = resolvedLogo) else item
     }
   }
-  val pagerState = rememberPagerState(pageCount = { heroItems.size })
+  // Loops: see HomeHeroLoop.kt. Every read of the page below goes through homeHeroItemIndex.
+  val pagerState = rememberPagerState(initialPage = homeHeroLoopStart(heroItems.size), pageCount = { homeHeroPageCount(heroItems.size) })
+  // The titles arrive after the pager is first created, and can change count as rows load. Re-centre
+  // the loop when they do, keeping the title that was showing, so there is always room to swipe
+  // either way -- a pager created with no titles starts on page 0, the very edge of the loop.
+  var heroLoopSize by remember { mutableIntStateOf(0) }
+  LaunchedEffect(heroItems.size) {
+    val size = heroItems.size
+    val previous = heroLoopSize
+    heroLoopSize = size
+    if (size <= 1) return@LaunchedEffect
+    val page = pagerState.currentPage
+    val shown = when {
+      previous > 1 -> homeHeroItemIndex(page, previous)
+      // Already a loop page: the initial start, or one restored from saved state.
+      page >= size -> homeHeroItemIndex(page, size)
+      else -> page
+    }.coerceIn(0, size - 1)
+    val nearEdge = page < size || page >= HOME_HERO_LOOP_PAGES - size
+    if (nearEdge || homeHeroItemIndex(page, size) != shown) pagerState.requestScrollToPage(homeHeroLoopStart(size) + shown)
+  }
   val listState = rememberLazyListState()
   val heroAtTop by remember(listState) {
     derivedStateOf {
@@ -15233,13 +15253,13 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
       // used to restore as two half-width backdrops when the viewer returned to the top. Queue a
       // synchronous snap for the pager's next measure so an off-screen interruption can never be
       // preserved as a visual state.
-      pagerState.requestScrollToPage(pagerState.currentPage.coerceIn(heroItems.indices))
+      pagerState.requestScrollToPage(pagerState.currentPage)
       return@LaunchedEffect
     }
     delay(5500)
     if (!heroAtTop) return@LaunchedEffect
-    val nextPage = (pagerState.settledPage + 1) % heroItems.size
-    pagerState.animateScrollToPage(nextPage)
+    // The next page, never a jump back to the first: the loop carries on past the last title.
+    pagerState.animateScrollToPage(pagerState.settledPage + 1)
   }
 
   val recommendations = remember(uiState.traktRecommendations) {
@@ -15383,7 +15403,7 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
       if (id == MEDIA_HUB_ROW_ID) HomeRow(id, hubTitle, rows.filter { it.id in eligible }.flatMap { it.items.take(3) }.take(12)) else byId[id]
     }
   }
-  val heroBackdrop = heroItems.getOrNull(pagerState.currentPage.coerceIn(0, (heroItems.size - 1).coerceAtLeast(0)))
+  val heroBackdrop = heroItems.getOrNull(homeHeroItemIndex(pagerState.currentPage, heroItems.size))
   // Hoisted out of the background layer below so it is remembered for as long as Home is, rather
   // than for as long as the spotlight happens to be on screen. Scrolling down past the hero and
   // back up again must not re-sample the palette or replay its fade.
@@ -15738,8 +15758,11 @@ private fun HomeHeroPageDots(
   onSelect: (Int) -> Unit,
 ) {
   Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+    val fraction = pagerState.currentPageOffsetFraction.takeUnless { it.isNaN() } ?: 0f
+    val position = pagerState.currentPage + fraction
     repeat(pageCount) { index ->
-      val activeFraction = homeHeroPageVisibility(pagerState, index)
+      // The nearest page showing this title, so the dot fills across the wrap from last to first.
+      val activeFraction = homeHeroPageVisibility(pagerState, homeHeroNearestPageForItem(position, index, pageCount))
       Box(
         modifier = Modifier
           .clickable { onSelect(index) }
@@ -15768,8 +15791,7 @@ private fun HomeHeroCarousel(
   BoxWithConstraints(
     modifier = modifier.fillMaxWidth(),
   ) {
-    val currentPage = pagerState.currentPage.coerceIn(items.indices)
-    val currentItem = items[currentPage]
+    val currentItem = items[homeHeroItemIndex(pagerState.currentPage, items.size)]
     val heroHeight = homeHeroHeight()
     val heroDotsLaneHeight = HomeHeroDotsLaneHeight
     val heroItemSpacing = if (maxWidth < 390.dp) 4.dp else if (showSynopsis) 8.dp else 6.dp
@@ -15788,8 +15810,8 @@ private fun HomeHeroCarousel(
     // came across as jitter.
     val heroPages by remember(pagerState, items.size) {
       derivedStateOf {
-        val settled = pagerState.currentPage.coerceIn(items.indices)
-        listOf(settled - 1, settled, settled + 1).filter { it in items.indices }
+        val settled = pagerState.currentPage
+        listOf(settled - 1, settled, settled + 1).filter { it in 0 until homeHeroPageCount(items.size) }
       }
     }
 
@@ -15841,9 +15863,10 @@ private fun HomeHeroCarousel(
         Box(modifier = Modifier.fillMaxSize().graphicsLayer { translationY = scrollOffset().toFloat() * 0.46f }) {
           heroPages.forEach { page ->
             key(page) {
+              val item = items[homeHeroItemIndex(page, items.size)]
               AsyncImage(
-                model = items[page].backdrop ?: items[page].poster,
-                contentDescription = items[page].title,
+                model = item.backdrop ?: item.poster,
+                contentDescription = item.title,
                 // One page of offset moves exactly one hero width, so the next backdrop sits flush
                 // against the current one and tracks the finger. `size.width` is the layer's width
                 // in pixels — the previous multiplier was built on `maxWidth.value`, which is the
@@ -15907,6 +15930,7 @@ private fun HomeHeroCarousel(
           Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
             heroPages.forEach { page ->
               key(page) {
+                val item = items[homeHeroItemIndex(page, items.size)]
               // Same one-page-per-hero-width travel as the backdrop so the title stays locked to
               // its image, and the same draw-phase offset read so dragging never recomposes this.
               // Text keeps its cross-fade — sliding two opaque copies of the overlay past each
@@ -15929,18 +15953,18 @@ private fun HomeHeroCarousel(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(heroItemSpacing),
               ) {
-                HomeHeroTitle(items[page], lightMode)
+                HomeHeroTitle(item, lightMode)
                 Text(
-                  (listOf(if (items[page].type == "tv" || items[page].type == "series") "Series" else "Movie") + items[page].genres.take(3)).joinToString(" \u00B7 "),
+                  (listOf(if (item.type == "tv" || item.type == "series") "Series" else "Movie") + item.genres.take(3)).joinToString(" \u00B7 "),
                   style = MaterialTheme.typography.bodyMedium,
                   color = Color.White.copy(alpha = 0.72f),
                   fontWeight = FontWeight.Bold,
                   maxLines = 1,
                   overflow = TextOverflow.Ellipsis,
                 )
-                if (showSynopsis && items[page].description.isNotBlank()) {
+                if (showSynopsis && item.description.isNotBlank()) {
                   Text(
-                    items[page].description,
+                    item.description,
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.White.copy(alpha = 0.82f),
                     maxLines = 2,
@@ -15977,7 +16001,7 @@ private fun HomeHeroCarousel(
           HomeHeroPageDots(
             pageCount = items.size,
             pagerState = pagerState,
-            onSelect = { index -> pagerScope.launch { pagerState.animateScrollToPage(index) } },
+            onSelect = { index -> pagerScope.launch { pagerState.animateScrollToPage(homeHeroPageForItem(pagerState.currentPage, index, items.size)) } },
           )
         }
       }

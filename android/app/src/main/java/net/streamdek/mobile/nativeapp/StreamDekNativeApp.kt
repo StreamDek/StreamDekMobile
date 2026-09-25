@@ -325,6 +325,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.MediaItem as ExoMediaItem
@@ -2691,7 +2692,7 @@ internal class PlaybackResumeStore(context: Context) {
    *   timestamp is the one the newest-wins merge has to compare against -- overwriting it with the
    *   moment it happened to be downloaded made every pulled row look newer than the server's copy.
    */
-  fun save(ownerKey: String, entry: PlaybackMemoryEntry, touch: Boolean = true) {
+  fun save(ownerKey: String, entry: PlaybackMemoryEntry, touch: Boolean = true) = synchronized(writeLock) {
     val updated = loadAll(ownerKey)
       .filterNot { playbackMemoryKey(it.mediaId, it.mediaType, it.seasonNumber, it.episodeNumber) == playbackMemoryKey(entry.mediaId, entry.mediaType, entry.seasonNumber, entry.episodeNumber) }
       .toMutableList()
@@ -2705,7 +2706,7 @@ internal class PlaybackResumeStore(context: Context) {
   }
 
   /** Records that the account now holds this entry, so its later absence can be read as a removal. */
-  fun markSynced(ownerKey: String, mediaId: String, mediaType: String, seasonNumber: Int?, episodeNumber: Int?, stamp: Long) {
+  fun markSynced(ownerKey: String, mediaId: String, mediaType: String, seasonNumber: Int?, episodeNumber: Int?, stamp: Long): Unit = synchronized(writeLock) {
     val target = playbackMemoryKey(mediaId, mediaType, seasonNumber, episodeNumber)
     val entries = loadAll(ownerKey)
     if (entries.none { playbackMemoryKey(it.mediaId, it.mediaType, it.seasonNumber, it.episodeNumber) == target }) return
@@ -2721,13 +2722,30 @@ internal class PlaybackResumeStore(context: Context) {
     )
   }
 
-  fun removeTitle(ownerKey: String, mediaId: String, mediaType: String) {
+  fun removeTitle(ownerKey: String, mediaId: String, mediaType: String) = synchronized(writeLock) {
     val targetType = normalizedMediaType(mediaType)
     persist(ownerKey, loadAll(ownerKey).filterNot { it.mediaId == mediaId && normalizedMediaType(it.mediaType) == targetType })
   }
-  fun remove(ownerKey: String, mediaId: String, mediaType: String, seasonNumber: Int?, episodeNumber: Int?) {
+  fun remove(ownerKey: String, mediaId: String, mediaType: String, seasonNumber: Int?, episodeNumber: Int?) = synchronized(writeLock) {
     val key = playbackMemoryKey(mediaId, mediaType, seasonNumber, episodeNumber)
     persist(ownerKey, loadAll(ownerKey).filterNot { playbackMemoryKey(it.mediaId, it.mediaType, it.seasonNumber, it.episodeNumber) == key })
+  }
+
+  /**
+   * Changes an owner's entries as one read and one write, and writes nothing when [transform] leaves
+   * them as they were. Returns whether anything was written.
+   *
+   * For callers that touch many entries at once. Going through [save] and [remove] per entry parses
+   * and rewrites the whole list every time, which is what made a playback-progress pull cost seconds
+   * of main thread once an account had a few hundred rows. The budgets [save] applies apply here too.
+   */
+  fun edit(ownerKey: String, transform: (MutableList<PlaybackMemoryEntry>) -> Unit): Boolean = synchronized(writeLock) {
+    val before = loadAll(ownerKey)
+    val after = before.toMutableList().also(transform)
+    if (after == before) return@synchronized false
+    val (live, resumable) = after.partition { it.isLive }
+    persist(ownerKey, resumable.take(RESUMABLE_ENTRY_LIMIT) + live.take(40))
+    true
   }
 
   /**
@@ -2737,7 +2755,7 @@ internal class PlaybackResumeStore(context: Context) {
    * decided which copy of each title wins and must not have those stamps rewritten underneath it.
    * The same two budgets [save] applies are applied here.
    */
-  fun replaceAll(ownerKey: String, entries: List<PlaybackMemoryEntry>) {
+  fun replaceAll(ownerKey: String, entries: List<PlaybackMemoryEntry>) = synchronized(writeLock) {
     val (live, resumable) = entries.sortedByDescending { it.updatedAt }.partition { it.isLive }
     persist(ownerKey, resumable.take(RESUMABLE_ENTRY_LIMIT) + live.take(40))
   }
@@ -2747,12 +2765,20 @@ internal class PlaybackResumeStore(context: Context) {
    * the remembered source for a channel (see rememberLiveSource) and never appear in Continue
    * Watching anyway, so clearing that list should not forget which live source last worked.
    */
-  fun clearResumable(ownerKey: String) {
+  fun clearResumable(ownerKey: String) = synchronized(writeLock) {
     persist(ownerKey, loadAll(ownerKey).filter { it.isLive })
   }
 
   private fun persist(ownerKey: String, entries: List<PlaybackMemoryEntry>) {
     prefs.edit().putString(storageKey(ownerKey), JSONArray(entries.map(::playbackMemoryToJson)).toString()).commit()
+  }
+
+  private companion object {
+    /**
+     * Every write here is read-modify-write, and a progress pull now merges off the main thread. One
+     * lock for the whole process, not per instance, because the backup engine opens its own.
+     */
+    val writeLock = Any()
   }
 }
 
@@ -12219,7 +12245,26 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
    */
   private val PROGRESS_PULL_LIMIT = 500
 
-  fun pullPlaybackProgress() {
+  /** The pull in flight, so the detail page's poll cannot stack a second one on top of it. */
+  private var playbackPullJob: Job? = null
+  /** A full pull asked for while one was running. The running job does one more, in full, at the end. */
+  private var playbackFullPullRequested = false
+
+  fun pullPlaybackProgress() = startPlaybackPull(titleId = null)
+
+  /**
+   * One title's rows only, for the detail page's poll.
+   *
+   * The page polls so that a position set on the television shows up here while the title is open,
+   * and everything it shows is matched on the title's own id. Asking for the account's latest five
+   * hundred rows every four seconds to answer that downloaded the whole history each time -- and kept
+   * doing it with the app in the background. This asks for the rows the page can actually use.
+   */
+  fun refreshTitlePlaybackProgress(mediaId: String) {
+    if (mediaId.isNotBlank()) startPlaybackPull(titleId = mediaId)
+  }
+
+  private fun startPlaybackPull(titleId: String?) {
     val session = uiState.session ?: return
     // Nothing to pull into until a profile is chosen. Positions are the profile's, and a request
     // that names none is answered with the account's default profile -- so pulling early filed one
@@ -12227,94 +12272,179 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     // The effect that calls this is keyed on the active profile, so choosing one runs it properly.
     val profileId = uiState.activeProfileId ?: return
     val ownerKey = activeOwnerKey() ?: return
-    viewModelScope.launch {
-      val remote = apiClient.fetchPlaybackProgress(session, profileId, PROGRESS_PULL_LIMIT)
-        .getOrNull() ?: return@launch
-      if (uiState.session?.user?.uid != session.user.uid || activeOwnerKey() != ownerKey) return@launch
-      val local = playbackResumeStore.loadAll(ownerKey).associateBy { entry ->
-        listOf(normalizedMediaType(entry.mediaType), entry.mediaId, entry.seasonNumber?.toString().orEmpty(), entry.episodeNumber?.toString().orEmpty()).joinToString(":")
+    // The detail page asks every few seconds, and a pull on a slow connection can outlast that.
+    // Starting another each time stacked them up, so a poll tick that lands mid-pull is answered by
+    // the pull already running. A full request is not dropped, though: one made straight after
+    // marking something watched needs an answer fetched after that change, so the running job goes
+    // round again in full.
+    if (playbackPullJob?.isActive == true) {
+      if (titleId == null) playbackFullPullRequested = true
+      return
+    }
+    playbackPullJob = viewModelScope.launch {
+      var current = Triple(session, profileId, ownerKey)
+      var scope = titleId
+      while (true) {
+        playbackFullPullRequested = false
+        pullPlaybackProgressOnce(current.first, current.second, current.third, scope)
+        if (!playbackFullPullRequested) break
+        scope = null
+        current = Triple(uiState.session ?: break, uiState.activeProfileId ?: break, activeOwnerKey() ?: break)
       }
-      var changed = false
+    }
+  }
+
+  /** @param titleId pull only this title's rows, rather than the account's latest page. */
+  private suspend fun pullPlaybackProgressOnce(session: AuthSession, profileId: String, ownerKey: String, titleId: String?) {
+    val remote = apiClient.fetchPlaybackProgress(session, profileId, PROGRESS_PULL_LIMIT, entityId = titleId)
+      .getOrNull() ?: return
+    if (uiState.session?.user?.uid != session.user.uid || activeOwnerKey() != ownerKey) return
+    // Off the main thread. The detail page polls this every four seconds, and folding a full page
+    // in on the main thread measured over two seconds a time on a phone with an ordinary history:
+    // every scroll on the page froze, and the hero trailer froze with it, because its frames are
+    // drawn by the same thread. That looked exactly like the trailer buffering.
+    val pendingLocal = uiState.playbackProgressRecords
+    val changed = withContext(Dispatchers.IO) { mergePulledPlaybackProgress(ownerKey, remote, pendingLocal, titleId) }
+    if (uiState.session?.user?.uid != session.user.uid || activeOwnerKey() != ownerKey) return
+
+    // A pull started before a local movie checkpoint must not resurrect its old completion/position.
+    val recentMovies = uiState.playbackProgressRecords
+    val mergedRecords = (remote + recentMovies).groupBy { listOf(it.entityType, it.entityId, it.episodeKey) }
+      .map { (_, records) -> records.maxBy { it.updatedAt } }
+    uiState = uiState.copy(playbackProgressRecords = mergedRecords)
+    if (changed) {
+      uiState = uiState.copy(
+        localContinueWatching = loadLocalContinueWatching(),
+        localResumeEntries = loadResumeEntries(),
+        watchedEpisodeRevision = uiState.watchedEpisodeRevision + 1,
+      )
+    }
+  }
+
+  /**
+   * Folds a pulled page into this device's stores. Returns whether anything was actually written.
+   *
+   * Each store is read once and written at most once. This used to go through the stores' per-entry
+   * calls, each of which parsed and rewrote the whole resume list with a blocking commit -- once per
+   * record, up to five hundred records a pull.
+   *
+   * "Changed" means written, not looked at. Completed and removed rows stay in every page for as
+   * long as the account keeps them, and counting each as a change rewrote the store and bumped the
+   * watched revision on every poll -- recomposing the open page and re-running Next Up with it.
+   *
+   * [pendingLocal] is this device's own recent writes, read on the main thread by the caller.
+   * [titleId] is set when [remote] holds only that title's rows. Their absence then says nothing
+   * about any other title, so only that title's entries can be read as removed elsewhere.
+   */
+  private fun mergePulledPlaybackProgress(
+    ownerKey: String,
+    remote: List<PlaybackProgressRecord>,
+    pendingLocal: List<PlaybackProgressRecord>,
+    titleId: String? = null,
+  ): Boolean {
+    fun progressKey(type: String, id: String, season: Int?, episode: Int?): String =
+      listOf(normalizedMediaType(type), id, season?.toString().orEmpty(), episode?.toString().orEmpty()).joinToString(":")
+    // Newest local write per row, so each pulled record is one lookup rather than a scan.
+    val newestPending = HashMap<String, Long>()
+    pendingLocal.forEach { record ->
+      val key = progressKey(record.entityType, record.entityId, record.seasonNumber, record.episodeNumber)
+      if (record.updatedAt > (newestPending[key] ?: Long.MIN_VALUE)) newestPending[key] = record.updatedAt
+    }
+
+    var watchedMovies: List<String>? = null
+    var watchedMoviesChanged = false
+    fun movies(): List<String> = watchedMovies ?: watchedMovieStore.load(ownerKey).also { watchedMovies = it }
+    fun setMovies(ids: List<String>) {
+      if (ids != movies()) { watchedMovies = ids; watchedMoviesChanged = true }
+    }
+    val watchedEpisodes = HashMap<String, List<String>>()
+    val changedShows = linkedSetOf<String>()
+    fun episodes(showId: String): List<String> = watchedEpisodes.getOrPut(showId) { watchedEpisodeStore.load(ownerKey, showId) }
+    fun setEpisodes(showId: String, ids: List<String>) {
+      if (ids != episodes(showId)) { watchedEpisodes[showId] = ids; changedShows += showId }
+    }
+    val knownWatchedTitles by lazy { watchedTitleStore.load(ownerKey) }
+    val newlyWatchedTitles = linkedMapOf<String, MediaItem>()
+
+    val resumeChanged = playbackResumeStore.edit(ownerKey) { entries ->
+      val local = entries.associateBy { entry -> progressKey(entry.mediaType, entry.mediaId, entry.seasonNumber, entry.episodeNumber) }
+      fun remove(mediaId: String, mediaType: String, seasonNumber: Int?, episodeNumber: Int?) {
+        val key = playbackMemoryKey(mediaId, mediaType, seasonNumber, episodeNumber)
+        entries.removeAll { playbackMemoryKey(it.mediaId, it.mediaType, it.seasonNumber, it.episodeNumber) == key }
+      }
+      fun removeTitle(mediaId: String, mediaType: String) {
+        val targetType = normalizedMediaType(mediaType)
+        entries.removeAll { it.mediaId == mediaId && normalizedMediaType(it.mediaType) == targetType }
+      }
+
       val seen = hashSetOf<String>()
       remote.forEach { record ->
         val type = if (record.entityType.equals("movie", true)) "movie" else "tv"
-        val key = listOf(normalizedMediaType(type), record.entityId, record.seasonNumber?.toString().orEmpty(), record.episodeNumber?.toString().orEmpty()).joinToString(":")
+        val key = progressKey(type, record.entityId, record.seasonNumber, record.episodeNumber)
         seen += key
         val existing = local[key]
-        if (uiState.playbackProgressRecords.any {
-            normalizedMediaType(it.entityType) == type && it.entityId == record.entityId &&
-              it.seasonNumber == record.seasonNumber && it.episodeNumber == record.episodeNumber && it.updatedAt > record.updatedAt
-          }) return@forEach
-        if (existing != null && (existing.updatedAt ?: 0L) >= record.updatedAt) return@forEach
-        changed = true
+        if ((newestPending[key] ?: Long.MIN_VALUE) > record.updatedAt) return@forEach
+        if (existing != null && existing.updatedAt >= record.updatedAt) return@forEach
         if (type == "movie" && (record.completed || record.unwatched)) {
-          val watched = watchedMovieStore.load(ownerKey)
-          watchedMovieStore.save(ownerKey, if (record.unwatched) watched.filterNot { it == record.entityId }
-            else (watched + record.entityId).distinct())
+          setMovies(if (record.unwatched) movies().filterNot { it == record.entityId } else (movies() + record.entityId).distinct())
         }
         if (record.unwatched) {
           if (record.seasonNumber != null && record.episodeNumber != null) {
             val watchedKey = watchedEpisodeKey(record.entityId, record.seasonNumber, record.episodeNumber)
-            watchedEpisodeStore.save(
-              ownerKey,
-              record.entityId,
-              watchedEpisodeStore.load(ownerKey, record.entityId).filterNot { it == watchedKey },
-            )
+            setEpisodes(record.entityId, episodes(record.entityId).filterNot { it == watchedKey })
           }
-          playbackResumeStore.remove(ownerKey, record.entityId, type, record.seasonNumber, record.episodeNumber)
+          remove(record.entityId, type, record.seasonNumber, record.episodeNumber)
         } else if (record.dismissed) {
-          playbackResumeStore.removeTitle(ownerKey, record.entityId, type)
+          removeTitle(record.entityId, type)
         } else if (record.completed) {
           // Finished elsewhere -- either played out, or marked watched, which now writes the same
           // kind of row rather than deleting one. The same two moves markWatched makes locally.
           if (record.seasonNumber != null && record.episodeNumber != null) {
             val watchedKey = watchedEpisodeKey(record.entityId, record.seasonNumber, record.episodeNumber)
-            watchedEpisodeStore.save(
-              ownerKey,
-              record.entityId,
-              completedEpisodeWatchedIds(watchedEpisodeStore.load(ownerKey, record.entityId), watchedKey),
-            )
+            setEpisodes(record.entityId, completedEpisodeWatchedIds(episodes(record.entityId), watchedKey))
             // One episode finished, not the series. Dropping the whole title here would take the
             // next episode's position with it, which is the one the viewer is about to want.
-            playbackResumeStore.remove(ownerKey, record.entityId, type, record.seasonNumber, record.episodeNumber)
+            remove(record.entityId, type, record.seasonNumber, record.episodeNumber)
           } else {
-            watchedTitleStore.add(ownerKey, MediaItem(record.entityId, type, record.title.orEmpty(), record.year, record.poster, record.backdrop, null, ""))
-            playbackResumeStore.removeTitle(ownerKey, record.entityId, type)
+            val titleKey = watchedTitleKey(type, record.entityId)
+            if (titleKey !in knownWatchedTitles) {
+              newlyWatchedTitles[titleKey] = MediaItem(record.entityId, type, record.title.orEmpty(), record.year, record.poster, record.backdrop, null, "")
+            }
+            removeTitle(record.entityId, type)
           }
         } else {
-          playbackResumeStore.save(
-            ownerKey,
-            PlaybackMemoryEntry(
-              mediaId = record.entityId,
-              mediaType = type,
-              title = record.title.orEmpty().ifBlank { existing?.title.orEmpty() },
-              year = record.year ?: existing?.year,
-              // A record with no artwork is missing information, not an instruction to forget what
-              // this device already knew. Taking it literally is how a card that had a poster this
-              // morning went blank: the position was newer, so the whole entry was replaced, art
-              // and all.
-              poster = record.poster ?: existing?.poster,
-              backdrop = record.backdrop ?: existing?.backdrop,
-              seasonNumber = record.seasonNumber,
-              episodeNumber = record.episodeNumber,
-              progressPercent = record.progress,
-              positionSeconds = record.positionSec.takeIf { it >= 0.0 },
-              durationSeconds = record.durationSec.takeIf { it > 0.0 }?.toInt() ?: existing?.durationSeconds,
-              // The same reasoning as the artwork above, and the reason Remember Last Source read
-              // as broken: the account stores a position, not a source, so every pull replaced the
-              // entry with one that had forgotten which stream had played. Continue Watching then
-              // had nothing to resume from and fell back to opening the detail page. The server
-              // does not know this, so it cannot be asked -- what this device already knew is the
-              // only copy there is.
-              stream = existing?.stream,
-              isLive = existing?.isLive ?: false,
-              updatedAt = record.updatedAt,
-              lastDevice = record.lastDevice,
-              lastPlatform = record.lastPlatform,
-              syncedAt = record.updatedAt,
-            ),
-            touch = false,
+          val entry = PlaybackMemoryEntry(
+            mediaId = record.entityId,
+            mediaType = type,
+            title = record.title.orEmpty().ifBlank { existing?.title.orEmpty() },
+            year = record.year ?: existing?.year,
+            // A record with no artwork is missing information, not an instruction to forget what
+            // this device already knew. Taking it literally is how a card that had a poster this
+            // morning went blank: the position was newer, so the whole entry was replaced, art
+            // and all.
+            poster = record.poster ?: existing?.poster,
+            backdrop = record.backdrop ?: existing?.backdrop,
+            seasonNumber = record.seasonNumber,
+            episodeNumber = record.episodeNumber,
+            progressPercent = record.progress,
+            positionSeconds = record.positionSec.takeIf { it >= 0.0 },
+            durationSeconds = record.durationSec.takeIf { it > 0.0 }?.toInt() ?: existing?.durationSeconds,
+            // The same reasoning as the artwork above, and the reason Remember Last Source read
+            // as broken: the account stores a position, not a source, so every pull replaced the
+            // entry with one that had forgotten which stream had played. Continue Watching then
+            // had nothing to resume from and fell back to opening the detail page. The server
+            // does not know this, so it cannot be asked -- what this device already knew is the
+            // only copy there is.
+            stream = existing?.stream,
+            isLive = existing?.isLive ?: false,
+            updatedAt = record.updatedAt,
+            lastDevice = record.lastDevice,
+            lastPlatform = record.lastPlatform,
+            syncedAt = record.updatedAt,
           )
+          // What save(touch = false) did: replace this row and put it first.
+          remove(entry.mediaId, entry.mediaType, entry.seasonNumber, entry.episodeNumber)
+          entries.add(0, entry)
         }
       }
 
@@ -12326,24 +12456,16 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       if (remote.size < PROGRESS_PULL_LIMIT) {
         local.forEach { (key, entry) ->
           if (key in seen || entry.isLive || entry.syncedAt == null) return@forEach
-          changed = true
-          playbackResumeStore.remove(ownerKey, entry.mediaId, entry.mediaType, entry.seasonNumber, entry.episodeNumber)
+          if (titleId != null && entry.mediaId != titleId) return@forEach
+          remove(entry.mediaId, entry.mediaType, entry.seasonNumber, entry.episodeNumber)
         }
       }
-
-      // A pull started before a local movie checkpoint must not resurrect its old completion/position.
-      val recentMovies = uiState.playbackProgressRecords
-      val mergedRecords = (remote + recentMovies).groupBy { listOf(it.entityType, it.entityId, it.episodeKey) }
-        .map { (_, records) -> records.maxBy { it.updatedAt } }
-      uiState = uiState.copy(playbackProgressRecords = mergedRecords)
-      if (changed) {
-        uiState = uiState.copy(
-          localContinueWatching = loadLocalContinueWatching(),
-          localResumeEntries = loadResumeEntries(),
-          watchedEpisodeRevision = uiState.watchedEpisodeRevision + 1,
-        )
-      }
     }
+
+    watchedMovies?.takeIf { watchedMoviesChanged }?.let { watchedMovieStore.save(ownerKey, it) }
+    changedShows.forEach { showId -> watchedEpisodeStore.save(ownerKey, showId, watchedEpisodes.getValue(showId)) }
+    watchedTitleStore.addAll(ownerKey, newlyWatchedTitles.values.toList())
+    return resumeChanged || watchedMoviesChanged || changedShows.isNotEmpty() || newlyWatchedTitles.isNotEmpty()
   }
 
   /** "S1 E3", or nothing at all for a film. */
@@ -14653,7 +14775,7 @@ private fun MainScene(
           onMarkPreviousEpisodesWatched = viewModel::markPreviousEpisodesWatched,
           onSetSeasonWatched = viewModel::setSeasonWatched,
           onSeasonTabStyleChange = viewModel::setSeasonTabStyle,
-          onRefreshPlaybackProgress = viewModel::pullPlaybackProgress,
+          onRefreshPlaybackProgress = viewModel::refreshTitlePlaybackProgress,
           onToggleFavourite = viewModel::toggleFavouriteChannelForCurrentDetail,
           onOpenPerson = viewModel::openPerson,
           onClosePerson = viewModel::closePerson,
@@ -27704,7 +27826,8 @@ private fun DetailScreen(
   onMarkPreviousEpisodesWatched: (MediaDetail, EpisodeItem) -> Unit,
   onSetSeasonWatched: (MediaDetail, List<EpisodeItem>, Boolean) -> Unit,
   onSeasonTabStyleChange: (SeasonTabStyle) -> Unit,
-  onRefreshPlaybackProgress: () -> Unit,
+  /** Re-reads one title's positions from the account. */
+  onRefreshPlaybackProgress: (mediaId: String) -> Unit,
   onToggleFavourite: () -> Unit,
   onOpenPerson: (CastMember) -> Unit,
   onClosePerson: () -> Unit,
@@ -27750,10 +27873,17 @@ private fun DetailScreen(
   LaunchedEffect(detail.id, watchedOwnerKey, uiState.watchedEpisodeRevision) {
     watchedEpisodeIds = watchedEpisodeStore.load(watchedOwnerKey, detail.id)
   }
-  LaunchedEffect(detail.id, watchedOwnerKey) {
-    while (true) {
-      delay(4_000L)
-      onRefreshPlaybackProgress()
+  // Picks up a position set on another device -- the television, usually -- while this page is
+  // open. Only while the app is in front: a LaunchedEffect's delay keeps running with the activity
+  // stopped, so a detail page left open under the home screen kept asking the account every four
+  // seconds until the process died. Coming back to the app runs a full pull anyway.
+  val detailLifecycle = LocalLifecycleOwner.current.lifecycle
+  LaunchedEffect(detail.id, watchedOwnerKey, detailLifecycle) {
+    detailLifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+      while (true) {
+        delay(4_000L)
+        onRefreshPlaybackProgress(detail.id)
+      }
     }
   }
   var watchedMovieIds by remember(watchedOwnerKey, detail.id) { mutableStateOf(watchedMovieStore.load(watchedOwnerKey)) }

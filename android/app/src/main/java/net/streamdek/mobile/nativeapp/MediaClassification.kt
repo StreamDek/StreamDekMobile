@@ -2,7 +2,10 @@ package net.streamdek.mobile.nativeapp
 
 /** Contract: canonical tv is a series; Stremio-native tv is live. Unknown is never a movie. */
 internal object MediaClassification {
-  private fun key(raw: String?): String = raw?.trim()?.lowercase()?.replace(Regex("[\\s_-]+"), "").orEmpty()
+  // Compiled once. This runs for every record a playback-progress pull looks at, and building the
+  // pattern per call made the regex compiler the single hottest thing in that loop.
+  private val separators = Regex("[\\s_-]+")
+  private fun key(raw: String?): String = raw?.trim()?.lowercase()?.replace(separators, "").orEmpty()
   fun canonical(raw: String?): String = when (key(raw)) {
     "movie", "movies", "film", "films", "featurefilm", "featurefilms", "tvmovie" -> "movie"
     "tv", "series", "show", "shows", "tvshow", "tvshows", "tvseries", "television", "televisionshow", "televisionseries" -> "tv"

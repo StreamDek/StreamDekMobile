@@ -25,6 +25,9 @@ internal data class PlexMappingContext(
     val baseUri: String,
     val attribution: String,
     val libraryTitles: Map<String, String> = emptyMap(),
+    /** The app's words for an unnamed season or episode, in its language. */
+    val seasonName: (Int) -> String = { "Season $it" },
+    val episodeName: (Int) -> String = { "Episode $it" },
 )
 
 internal object PlexImages {
@@ -125,7 +128,7 @@ internal object PlexMapping {
             .map { season ->
                 SeasonSummary(
                     seasonNumber = season.index!!,
-                    name = season.title?.takeIf { it.isNotBlank() } ?: "Season ${season.index}",
+                    name = season.title?.takeIf { it.isNotBlank() } ?: context.seasonName(season.index!!),
                     episodeCount = season.leafCount ?: 0,
                     poster = PlexImages.poster(context, season.thumb),
                     airDate = season.originallyAvailableAt,
@@ -170,7 +173,7 @@ internal object PlexMapping {
                 id = "$showId:${episode.parentIndex}:${episode.index}",
                 episodeNumber = episode.index!!,
                 seasonNumber = episode.parentIndex!!,
-                name = episode.title?.takeIf { it.isNotBlank() } ?: "Episode ${episode.index}",
+                name = episode.title?.takeIf { it.isNotBlank() } ?: context.episodeName(episode.index!!),
                 overview = episode.summary.orEmpty(),
                 still = PlexImages.still(context, episode.thumb),
                 runtime = episode.duration?.takeIf { it > 0 }?.let { (it / 60_000L).toInt() },

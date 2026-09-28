@@ -42,6 +42,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -180,6 +186,8 @@ internal fun PlexTab(
   val headerScope = remember { ScrollAwareHeaderScope() }
   val condensePx = with(density) { CondenseDistance.toPx() }
   var headerHeight by remember { mutableStateOf(120.dp) }
+  // Derived, so scrolling recomposes only on the frame the page leaves or returns to the top.
+  val scrolled by remember { derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0 } }
 
   Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
     // The glass samples everything in here, the colour wash included.
@@ -255,17 +263,21 @@ internal fun PlexTab(
         }
       }
     }
-    if (!modernHeaderHeldFixed(headerStyle == HeaderStyle.Modern)) ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f))
-    // Glass in both header styles: this page's header floats over its own colour, as Search's does.
+    // Only once scrolled: at the top the status bar sits on the page's own colour, like the header.
+    if (scrolled) {
+      ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f))
+    }
+    // Nothing behind the header at the top of the page: it sits straight on the page's colour. The
+    // glass pill forms around the title row only as the page scrolls, and fades back out on return.
     ScrollAwareHeader(
-      surface = ScrollAwareHeaderSurface.Glass(hazeState),
+      surface = ScrollAwareHeaderSurface.Solid(Color.Transparent, pillAroundAnchor = true, hazeState = hazeState),
       modifier = Modifier.align(Alignment.TopCenter).zIndex(5f).fillMaxWidth().statusBarsPadding()
         .onSizeChanged { size -> headerHeight = maxOf(headerHeight, with(density) { size.height.toDp() }) },
       keepAnchorVisible = true,
-      panelPadding = PaddingValues(start = 8.dp, end = 8.dp, top = 12.dp, bottom = 6.dp),
-      contentPadding = PaddingValues(horizontal = 18.dp, vertical = 16.dp),
+      contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
+      // Room inside the pill around the row, so it does not end at the title's letters.
       anchorPaddingHorizontal = 12.dp,
-      anchorPaddingVertical = 8.dp,
+      anchorPaddingVertical = 6.dp,
       headerScope = headerScope,
       fractionOverride = { listState.condenseProgress(condensePx) },
     ) {
@@ -296,8 +308,11 @@ internal fun PlexTab(
  * a media server is connected so the navigation keeps its five places. In-progress titles first,
  * then the watchlist; a title in both appears once, under Continue Watching, where it resumes.
  *
- * The section heading rides in the filter row, as Discover does on Search: it reads Continue
- * Watching until the Watchlist heading scrolls up to the row, then Watchlist.
+ * The section heading rides in the filter row, as Discover does on Search. It reads Continue
+ * Watching until the Watchlist heading arrives, and the change is carried by the scroll itself:
+ * as the Watchlist heading rises toward the row it slides and shrinks into exactly the row's title
+ * position and size, pushing Continue Watching up and out, and docks there. Scrolling back reverses
+ * it. Everything here is read while drawing, so the hand-off costs no recomposition per frame.
  */
 @Composable
 internal fun LibraryTab(
@@ -328,8 +343,19 @@ internal fun LibraryTab(
   val watchlistTitle = stringResource(R.string.library_section_watchlist)
   val hasContinue = library.continueWatching.isNotEmpty()
   val hasWatchlist = library.watchlist.isNotEmpty()
-  val switchPx = with(LocalDensity.current) { 24.dp.roundToPx() }
-  // Derived, so scrolling recomposes the row only on the frame the heading changes.
+  val density = LocalDensity.current
+  // How far below the row the incoming heading starts to move in.
+  val handoffPx = with(density) { 72.dp.toPx() }
+  // Where the filter row and its heading are, and where the Watchlist heading is, in window pixels.
+  var rowCenterY by remember { mutableFloatStateOf(Float.NaN) }
+  var rowTitleLeft by remember { mutableFloatStateOf(0f) }
+  var headingCenterY by remember { mutableFloatStateOf(Float.POSITIVE_INFINITY) }
+  var headingLeft by remember { mutableFloatStateOf(0f) }
+  /** 0 while the Watchlist heading is well below the row, 1 once it has reached it. */
+  fun handoff(): Float {
+    if (rowCenterY.isNaN() || headingCenterY == Float.POSITIVE_INFINITY) return 0f
+    return (1f - (headingCenterY - rowCenterY) / handoffPx).coerceIn(0f, 1f)
+  }
   val pinnedTitle by remember(hasContinue, hasWatchlist, continueTitle, watchlistTitle) {
     derivedStateOf {
       when {
@@ -338,12 +364,10 @@ internal fun LibraryTab(
         !hasWatchlist -> continueTitle
         else -> {
           val info = listState.layoutInfo
-          val heading = info.visibleItemsInfo.firstOrNull { it.key == WatchlistHeadingKey }
-          val reached = when {
-            heading != null -> heading.offset <= switchPx
-            // Off screen: past it if anything after it is showing at the top.
-            else -> info.visibleItemsInfo.firstOrNull()?.key == WatchlistGridKey
-          }
+          val headingShown = info.visibleItemsInfo.any { it.key == WatchlistHeadingKey }
+          val reached = if (headingShown) headingCenterY <= rowCenterY
+            // Off screen: past it if the Watchlist grid is what is showing at the top.
+            else info.visibleItemsInfo.firstOrNull()?.key == WatchlistGridKey
           if (reached) watchlistTitle else continueTitle
         }
       }
@@ -360,6 +384,12 @@ internal fun LibraryTab(
     listState = listState,
     trailingAction = null,
     pinnedTitle = pinnedTitle,
+    // Only Continue Watching is pushed out; once Watchlist has docked it stays put.
+    pinnedTitleExit = { if (pinnedTitle == continueTitle && hasWatchlist) handoff() else 0f },
+    onPinnedRowPlaced = { top, height, titleLeft ->
+      rowCenterY = top + height / 2f
+      rowTitleLeft = titleLeft
+    },
   ) {
     if (library.isEmpty) {
       item(key = "library-empty") {
@@ -382,7 +412,19 @@ internal fun LibraryTab(
     }
     if (hasWatchlist) {
       // Only when Continue Watching precedes it; alone, the row already names it.
-      if (hasContinue) item(key = WatchlistHeadingKey) { LibrarySectionTitle(watchlistTitle, library.watchlist.size) }
+      if (hasContinue) item(key = WatchlistHeadingKey) {
+        DockingSectionTitle(
+          title = watchlistTitle,
+          count = library.watchlist.size,
+          progress = ::handoff,
+          targetLeft = { rowTitleLeft },
+          onPlaced = { centerY, left ->
+            headingCenterY = centerY
+            headingLeft = left
+          },
+          startLeft = { headingLeft },
+        )
+      }
       item(key = WatchlistGridKey) {
         MediaGrid(library.watchlist, onOpen, columns = columns, showMeta = false, onToggleWatchlist = onToggleWatchlist, watchlistItems = watchlistItems, includeRemoveAction = true, onMarkWatched = onMarkWatched)
       }
@@ -393,17 +435,60 @@ internal fun LibraryTab(
 private const val WatchlistHeadingKey = "library-watchlist-title"
 private const val WatchlistGridKey = "library-watchlist"
 
+/**
+ * A section heading that docks into the pinned filter row.
+ *
+ * Styled as the row's own heading (22sp bold), so that as [progress] runs to 1 it can slide to the
+ * row's heading position ([targetLeft]) and shrink to the row's compact size and be indistinguishable
+ * from it at the moment the row takes it over; it is hidden from then on, the row showing it. Its
+ * count fades on the way, since the row's heading carries none. Position is reported from outside
+ * the moving layer, so the movement never feeds back into what is measured.
+ */
 @Composable
-private fun LibrarySectionTitle(title: String, count: Int) {
+private fun DockingSectionTitle(
+  title: String,
+  count: Int,
+  progress: () -> Float,
+  targetLeft: () -> Float,
+  startLeft: () -> Float,
+  onPlaced: (centerY: Float, left: Float) -> Unit,
+) {
+  val motionless = LocalMotionSettings.current.motionless
   Row(
     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-    verticalAlignment = Alignment.Bottom,
+    verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(8.dp),
   ) {
-    Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
-    Text(count.toString(), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f))
+    Text(
+      title,
+      style = androidx.compose.ui.text.TextStyle(fontSize = 22.sp, fontWeight = FontWeight.Bold),
+      color = MaterialTheme.colorScheme.onBackground,
+      maxLines = 1,
+      modifier = Modifier
+        .onGloballyPositioned { c -> onPlaced(c.positionInWindow().y + c.size.height / 2f, c.positionInWindow().x) }
+        .graphicsLayer {
+          val t = progress()
+          alpha = if (t >= 1f) 0f else 1f
+          if (!motionless) {
+            val scale = 1f - (1f - DockedTitleScale) * t
+            scaleX = scale
+            scaleY = scale
+            translationX = (targetLeft() - startLeft()) * t
+          }
+          transformOrigin = TransformOrigin(0f, 0.5f)
+        },
+    )
+    Text(
+      count.toString(),
+      style = MaterialTheme.typography.titleSmall,
+      color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+      modifier = Modifier.graphicsLayer { alpha = 1f - progress() },
+    )
   }
 }
+
+/** The pinned row's compact heading scale; see PinnedSectionChrome. */
+private const val DockedTitleScale = 0.82f
 
 /** The Plex mark in a Plex list's search field, before the search icon, so the list reads as Plex's. */
 @Composable

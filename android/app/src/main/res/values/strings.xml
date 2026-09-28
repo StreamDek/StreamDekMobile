@@ -1957,6 +1957,7 @@
   <string name="plex_link_waiting">Waiting for Plex. This screen updates by itself.</string>
   <string name="plex_link_expired">That code has expired.</string>
   <string name="plex_link_getting_code">Getting a code…</string>
+  <string name="plex_episode_number">Episode %1$d</string>
   <string name="plex_link_new_code">Get a new code</string>
   <string name="plex_link_failed">Plex could not be linked. Try again.</string>
   <string name="plex_link_unavailable">StreamDek could not reach Plex. Check the connection and try again.</string>

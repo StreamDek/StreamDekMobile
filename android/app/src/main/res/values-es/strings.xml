@@ -1806,6 +1806,7 @@
   <string name="plex_link_waiting">Esperando a Plex. Esta pantalla se actualiza sola.</string>
   <string name="plex_link_expired">Ese código ha caducado.</string>
   <string name="plex_link_getting_code">Obteniendo un código…</string>
+  <string name="plex_episode_number">Episodio %1$d</string>
   <string name="plex_link_new_code">Obtener un código nuevo</string>
   <string name="plex_link_failed">No se pudo vincular Plex. Inténtalo de nuevo.</string>
   <string name="plex_link_unavailable">StreamDek no pudo conectar con Plex. Comprueba la conexión e inténtalo de nuevo.</string>

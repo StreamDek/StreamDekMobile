@@ -1792,6 +1792,7 @@
   <string name="plex_link_waiting">Wachten op Plex. Dit scherm werkt zichzelf bij.</string>
   <string name="plex_link_expired">Die code is verlopen.</string>
   <string name="plex_link_getting_code">Code ophalen…</string>
+  <string name="plex_episode_number">Aflevering %1$d</string>
   <string name="plex_link_new_code">Nieuwe code ophalen</string>
   <string name="plex_link_failed">Plex kon niet worden gekoppeld. Probeer het opnieuw.</string>
   <string name="plex_link_unavailable">StreamDek kon Plex niet bereiken. Controleer de verbinding en probeer het opnieuw.</string>

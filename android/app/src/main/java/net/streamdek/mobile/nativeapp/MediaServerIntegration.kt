@@ -159,4 +159,6 @@ internal class AppMediaServerLabels(private val context: () -> Context) : MediaS
   override fun transcode(quality: String) = s(R.string.media_server_transcode_quality, quality)
   override fun attribution(provider: String, serverName: String, multipleServers: Boolean) =
     if (multipleServers) s(R.string.media_server_attribution, provider, serverName) else provider
+  override fun season(number: Int) = s(R.string.detail_season_number, number)
+  override fun episode(number: Int) = s(R.string.detail_episode_number, number)
 }

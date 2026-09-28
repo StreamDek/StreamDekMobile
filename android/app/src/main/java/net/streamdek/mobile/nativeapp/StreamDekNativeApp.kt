@@ -289,6 +289,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -18256,6 +18257,12 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
   val headerTitle = selectedCategory ?: row.title
   // A list from the viewer's own Plex server says so, in its search field, where it stays in view.
   val plexSearchBadge: (@Composable () -> Unit)? = if (isMediaServerBrowseRowId(row.id)) ({ PlexSearchBadge() }) else null
+  // A Plex list's header stays condensed while the list is scrolled, whichever way, and only opens
+  // again at the top - as a library page's does - rather than following each change of direction.
+  val condensePx = with(LocalDensity.current) { 96.dp.toPx() }
+  val plexHeaderFraction: (() -> Float)? = if (isMediaServerBrowseRowId(row.id)) ({
+    if (gridState.firstVisibleItemIndex > 0) 1f else (gridState.firstVisibleItemScrollOffset / condensePx).coerceIn(0f, 1f)
+  }) else null
   val headerCount = when {
     showCategoryGrid -> stringResource(
       R.string.browse_categories_and_items,
@@ -18364,6 +18371,7 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
           .statusBarsPadding(),
         enabled = !sideHeader,
         keepAnchorVisible = showSearch,
+        fractionOverride = plexHeaderFraction,
         panelPadding = if (sideHeader) {
           PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 6.dp)
         } else {
@@ -18415,6 +18423,7 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
           modifier = Modifier.fillMaxWidth(),
           keepAnchorVisible = showSearch,
           contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = 12.dp),
+          fractionOverride = plexHeaderFraction,
         ) {
           BrowseSectionHeaderContent(
           title = headerTitle,
@@ -19746,6 +19755,13 @@ internal fun LibraryPage(
   trailingAction: (@Composable () -> Unit)?,
   /** A section heading carried in the filter row, as Search carries Discover; null for none. */
   pinnedTitle: String? = null,
+  /** How far [pinnedTitle] has been pushed out by the next heading arriving; see [PinnedSectionChrome]. */
+  pinnedTitleExit: (() -> Float)? = null,
+  /**
+   * Where the filter row is on screen, for a heading that flows into it: its top and height in
+   * window pixels, and where its heading starts once the row has condensed.
+   */
+  onPinnedRowPlaced: ((topPx: Float, heightPx: Float, titleLeftPx: Float) -> Unit)? = null,
   content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit,
 ) {
   val modernHeader = style == HeaderStyle.Modern
@@ -19769,9 +19785,12 @@ internal fun LibraryPage(
       item(key = "library-filters") { Spacer(Modifier.height(filtersHeight)) }
       content()
     }
+    val pinnedFieldInset = if (modernHeader) LibraryHeaderInset.modernPill else HeaderSearchInset.content
+    val pinnedTitleLeftPx = with(density) { (pinnedFieldInset + 16.dp).toPx() }
     PinnedSectionChrome(
       title = pinnedTitle,
       titleAbove = true,
+      titleExit = pinnedTitleExit,
       progress = progress,
       hazeState = headerHazeState,
       defaultStyle = !modernHeader,
@@ -19780,7 +19799,10 @@ internal fun LibraryPage(
       filterSpacing = 10.dp,
       modifier = Modifier.fillMaxWidth().zIndex(3f).pinnedBelowHeader(headerScope, statusTop) {
         listState.sectionNaturalTop(0, contentTop.roundToPx())
-      },
+      }.then(
+        if (onPinnedRowPlaced == null) Modifier
+        else Modifier.onGloballyPositioned { row -> onPinnedRowPlaced(row.positionInWindow().y, row.size.height.toFloat(), pinnedTitleLeftPx) },
+      ),
       filters = MediaFilter.values().map { value ->
         @Composable {
           FilterChip(
@@ -20731,6 +20753,11 @@ private fun PinnedSectionChrome(
    * to the header itself.
    */
   partOfHeader: Boolean = true,
+  /**
+   * How far the heading has been pushed out by the next section's heading arriving, 0 to 1: it
+   * rises and fades as the incoming one takes its place. Read while drawing, so it costs no layout.
+   */
+  titleExit: (() -> Float)? = null,
   filters: List<@Composable () -> Unit>,
 ) {
   val motion = LocalMotionSettings.current
@@ -20755,10 +20782,13 @@ private fun PinnedSectionChrome(
   val measurer = rememberTextMeasurer()
   // Measured rather than guessed, so a longer heading in another language is not cut off in the row.
   val titleWidthPx = remember(title, measurer) { title?.let { measurer.measure(it, titleStyle, maxLines = 1).size.width } ?: 0 }
+  // Eased, so a heading changing to a longer or shorter one moves the filters along rather than
+  // making them jump. A heading that never changes is unaffected.
+  val animatedTitleWidthPx by animateFloatAsState(titleWidthPx.toFloat(), springSpec, label = "pinnedTitleWidth")
   BoxWithConstraints(modifier = modifier.padding(horizontal = fieldInset * across)) {
     val density = LocalDensity.current
     val compactScale = 0.82f
-    val headingWidthPx = with(density) { minOf(titleWidthPx * compactScale, ((maxWidth - 32.dp) / 3).toPx()) }
+    val headingWidthPx = with(density) { minOf(animatedTitleWidthPx * compactScale, ((maxWidth - 32.dp) / 3).toPx()) }
     // A clear gap after the heading, so it reads as the row's label rather than as its first filter.
     val shift = if (title == null) 0 else with(density) { (headingWidthPx + 20.dp.toPx()).roundToInt() }
     // Without a heading there is nothing to make room for, so the stagger is a short glide instead.
@@ -20786,6 +20816,11 @@ private fun PinnedSectionChrome(
                 scaleX = compactScale; scaleY = compactScale
                 alpha = up
                 translationY = if (motion.motionless) 0f else -6.dp.toPx() * (1f - up)
+              }
+              val exit = titleExit?.invoke()?.coerceIn(0f, 1f) ?: 0f
+              if (exit > 0f) {
+                alpha *= 1f - exit
+                if (!motion.motionless) translationY -= size.height * 0.9f * exit
               }
               transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
             })

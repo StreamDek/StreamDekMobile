@@ -59,6 +59,10 @@ interface MediaServerLabels {
     fun directStream(): String
     fun transcode(quality: String): String
     fun attribution(provider: String, serverName: String, multipleServers: Boolean): String
+    /** "Season 3", for a season the server gave no name of its own. */
+    fun season(number: Int): String = "Season $number"
+    /** "Episode 5", for an episode the server gave no title of its own. */
+    fun episode(number: Int): String = "Episode $number"
 }
 
 data class MediaServerPlaybackContext(

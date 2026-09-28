@@ -1902,6 +1902,7 @@
   <string name="plex_link_waiting">Czekamy na Plex. Ten ekran odświeży się sam.</string>
   <string name="plex_link_expired">Ten kod wygasł.</string>
   <string name="plex_link_getting_code">Pobieranie kodu…</string>
+  <string name="plex_episode_number">Odcinek %1$d</string>
   <string name="plex_link_new_code">Pobierz nowy kod</string>
   <string name="plex_link_failed">Nie udało się połączyć Plex. Spróbuj ponownie.</string>
   <string name="plex_link_unavailable">StreamDek nie może połączyć się z Plex. Sprawdź połączenie i spróbuj ponownie.</string>

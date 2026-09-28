@@ -32,6 +32,7 @@ class SettingsSearchTest {
     SettingsRoute.Audio to "Audio",
     SettingsRoute.Streams to "Streams and Quality",
     SettingsRoute.Downloads to "Downloads",
+    SettingsRoute.MediaServers to "Plex",
     SettingsRoute.Addons to "Add-ons",
     SettingsRoute.Plugins to "Plugins",
     SettingsRoute.M3uPlaylists to "Playlists",

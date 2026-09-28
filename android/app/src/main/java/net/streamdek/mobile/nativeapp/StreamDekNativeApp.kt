@@ -3,6 +3,8 @@ package net.streamdek.mobile.nativeapp
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.withTimeoutOrNull
 
 import android.app.Activity
 import android.app.Application
@@ -125,6 +127,8 @@ import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.CloudOff
+import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ChildCare
@@ -381,6 +385,17 @@ import net.streamdek.mobile.debrid.RealDebridDeviceAuth
 import net.streamdek.mobile.peer.PeerStreamConfig
 import net.streamdek.mobile.peer.PeerStreamService
 import net.streamdek.mobile.usenet.UsenetPlayback
+import net.streamdek.mobile.nativeapp.mediaserver.MediaServerBackend
+import net.streamdek.mobile.nativeapp.mediaserver.MediaServerEpisode
+import net.streamdek.mobile.nativeapp.mediaserver.MediaServerIdentities
+import net.streamdek.mobile.nativeapp.mediaserver.MediaServerManager
+import net.streamdek.mobile.nativeapp.mediaserver.MediaServerPlaybackContext
+import net.streamdek.mobile.nativeapp.mediaserver.MediaServerPlaybackState
+import net.streamdek.mobile.nativeapp.mediaserver.MediaServerReference
+import net.streamdek.mobile.nativeapp.mediaserver.MediaServerResume
+import net.streamdek.mobile.nativeapp.mediaserver.MediaServerUiState
+import net.streamdek.mobile.nativeapp.mediaserver.plex.PlexClientIdentity
+import net.streamdek.mobile.nativeapp.mediaserver.plex.PlexProvider
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -398,6 +413,10 @@ private enum class MainTab(@StringRes val labelRes: Int) {
   Continue(R.string.nav_continue),
   Watchlist(R.string.nav_watchlist),
   Settings(R.string.nav_settings),
+  /** Shown only while a media server is connected with a usable library. */
+  Plex(R.string.media_server_plex),
+  /** Continue Watching and Watchlist together, in their place while [Plex] is shown. */
+  Library(R.string.nav_library),
 }
 private enum class LibraryTab { Continue, Watchlist, Profiles, Addons, Debrid, Trakt }
 private enum class DetailTab { About, Episodes, Streams }
@@ -759,6 +778,8 @@ internal enum class SettingsRoute(@StringRes val titleRes: Int, @StringRes val s
   Streams(R.string.settings_dest_streams, R.string.settings_route_streams_subtitle),
   Downloads(R.string.settings_m_downloads, R.string.settings_route_downloads_subtitle),
   // Sources — where titles and streams come from. Peer-to-peer sits last as the advanced one.
+  /** Personal media servers - Plex today. Linking, servers, libraries and remote quality. */
+  MediaServers(R.string.media_server_plex, R.string.settings_dest_plex_description),
   Addons(R.string.settings_m_add_ons, R.string.settings_route_addons_subtitle),
   Plugins(R.string.settings_m_plugins, R.string.settings_route_plugins_subtitle),
   M3uPlaylists(R.string.settings_m_playlists, R.string.settings_route_playlists_subtitle),
@@ -905,6 +926,48 @@ data class DebridSignInPrompt(
   val waiting: Boolean = true,
   val outcome: String? = null,
 )
+
+/**
+ * The media server part of the app state.
+ *
+ * Held beside [AppUiState] rather than in it: that class is at the dex ceiling on how many
+ * properties one `copy` may take (see AppUiStateSizeTest) and cannot take even one more. The
+ * extension properties below read it through the app state, so screens use it as if it were part of
+ * it, and it is snapshot state, so they recompose when it changes. Written only by the view model.
+ */
+@androidx.compose.runtime.Immutable
+private data class MediaServerAppState(
+  /** Linked, which servers and libraries, how each is reached. */
+  val state: MediaServerUiState = MediaServerUiState(),
+  /** Titles part-way through on a media server, folded into Continue Watching; see [reconcileContinueWatching]. */
+  val continueWatching: List<MediaServerResume> = emptyList(),
+  /** The Plex page's rows - every enabled library, collections included. */
+  val pageRows: List<net.streamdek.mobile.nativeapp.mediaserver.MediaServerRow> = emptyList(),
+  val pageLoading: Boolean = false,
+  /** Matches from the viewer's own media servers, shown first in Search: it is their library. */
+  val searchResults: List<MediaItem> = emptyList(),
+)
+
+private object MediaServerAppStore {
+  var value by mutableStateOf(MediaServerAppState())
+}
+
+@Suppress("UnusedReceiverParameter")
+private val AppUiState.mediaServerState: MediaServerUiState get() = MediaServerAppStore.value.state
+@Suppress("UnusedReceiverParameter")
+private val AppUiState.mediaServerContinueWatching: List<MediaServerResume> get() = MediaServerAppStore.value.continueWatching
+@Suppress("UnusedReceiverParameter")
+private val AppUiState.mediaServerPageRows: List<net.streamdek.mobile.nativeapp.mediaserver.MediaServerRow> get() = MediaServerAppStore.value.pageRows
+@Suppress("UnusedReceiverParameter")
+private val AppUiState.mediaServerPageLoading: Boolean get() = MediaServerAppStore.value.pageLoading
+@Suppress("UnusedReceiverParameter")
+private val AppUiState.mediaServerSearchResults: List<MediaItem> get() = MediaServerAppStore.value.searchResults
+
+/** Changes the media server state; returns the app state unchanged, so `uiState = uiState.withMediaServer { … }` reads naturally. */
+private inline fun AppUiState.withMediaServer(change: (MediaServerAppState) -> MediaServerAppState): AppUiState {
+  MediaServerAppStore.value = change(MediaServerAppStore.value)
+  return this
+}
 
 private data class AppUiState(
   val booting: Boolean = true,
@@ -1377,6 +1440,9 @@ private data class AppUiState(
 internal data class UpdateMessage(@StringRes val textRes: Int, val arg: String? = null) {
   @Composable fun resolve(): String = arg?.let { stringResource(textRes, it) } ?: stringResource(textRes)
 }
+
+/** A browsable row holding one media server collection's titles; the rest of the id is the collection's card id. */
+private const val MEDIA_SERVER_COLLECTION_ROW_PREFIX = "mediaserver-collection:"
 
 private data class HomeRow(
   val id: String,
@@ -2857,7 +2923,8 @@ private fun addonStreamToJson(stream: AddonStream): JSONObject = JSONObject()
   .put("size", stream.size)
   .put("cachedBy", JSONArray(stream.cachedBy))
   .put("bingeGroup", stream.bingeGroup)
-  .put("requestHeaders", JSONObject(stream.requestHeaders))
+  // A media server's credentials are sent at request time and never written down with a stream.
+  .put("requestHeaders", JSONObject(withoutMediaServerHeaders(stream.requestHeaders)))
 
 private fun parseAddonStreamJson(json: JSONObject): AddonStream = AddonStream(
   addonId = json.optString("addonId"),
@@ -3164,7 +3231,9 @@ internal fun addonHomeCatalogCandidates(addons: List<InstalledAddon>): List<Home
  * each with several rows, and turning all of them on would bury Home.
  */
 internal fun cloudStreamHomeCatalogCandidates(providers: List<com.lagradost.cloudstream3.MainAPI>): List<HomeCatalogRow> =
-  providers.distinctBy { it.name }.flatMap { provider ->
+  // Every place that offers Home Rows beyond the add-ons reads this, so the personal media
+  // server rows are offered here too - one list, one merge, the same ordering and switches.
+  mediaServerHomeCatalogCandidates() + providers.distinctBy { it.name }.flatMap { provider ->
     CloudStreamProviderBridge.mainPageRows(provider).map { row ->
       HomeCatalogRow(
         id = cloudStreamHomeRowId(provider, row.index, row.page.name),
@@ -3750,6 +3819,157 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     client.onSessionEnded = ::onSessionEnded
   }
 
+  /**
+   * Personal media servers (Plex, and any later provider), for this profile.
+   *
+   * StreamDek's backend owns the account link, so every device on the profile has it; this device
+   * owns reaching the servers. The rules for where server content meets the phone's own live in
+   * MediaServerIntegration.kt, so this class only routes.
+   */
+  private val mediaServerLabels = AppMediaServerLabels { getApplication() }
+  val mediaServers: MediaServerManager = MediaServerManager(
+    context = application.applicationContext,
+    backend = object : MediaServerBackend {
+      override suspend fun request(method: String, path: String, body: Map<String, Any?>?): String? {
+        val session = uiState.session ?: return null
+        return apiClient.mediaServerRequest(session, uiState.activeProfileId, method, path, body)
+      }
+    },
+    scopeKey = { uiState.session?.user?.uid?.let { uid -> "$uid:${uiState.activeProfileId ?: "default"}" } },
+    identity = { mediaServerClientIdentity() },
+    labels = { mediaServerLabels },
+  )
+  private val mediaServerPrefs by lazy { application.getSharedPreferences("streamdek_media_servers", android.content.Context.MODE_PRIVATE) }
+
+  private fun mediaServerClientIdentity(): PlexClientIdentity {
+    val (deviceId, deviceName) = apiClient.mediaServerDeviceIdentity ?: ("unknown" to "StreamDek Mobile")
+    return PlexClientIdentity(
+      clientIdentifier = "streamdek-mobile-$deviceId",
+      product = PlexProvider.PLEX_PRODUCT,
+      version = BuildConfig.VERSION_NAME,
+      platform = "Android",
+      deviceName = deviceName,
+    )
+  }
+
+  /** Upper bound for anything not on the local network, in kbps; null is original quality. Kept on the device. */
+  fun mediaServerRemoteQualityKbps(): Int? = mediaServerPrefs.getInt("remoteMaxKbps", 0).takeIf { it > 0 }
+
+  fun showMediaServerMessage(message: String) {
+    uiState = uiState.copy(infoMessage = message, errorMessage = null)
+  }
+
+  fun setMediaServerRemoteQualityKbps(kbps: Int?) {
+    mediaServerPrefs.edit().putInt("remoteMaxKbps", kbps ?: 0).apply()
+  }
+
+  private fun mediaServerPlaybackContext(): MediaServerPlaybackContext {
+    val identity = mediaServerClientIdentity()
+    return MediaServerPlaybackContext(
+      engine = uiState.playerEngine,
+      remoteMaxBitrateKbps = mediaServerRemoteQualityKbps(),
+      deviceName = identity.deviceName,
+      clientIdentifier = identity.clientIdentifier,
+      appVersion = identity.version,
+    )
+  }
+
+  /** The server a detail page is showing a title from, or null for everything else. */
+  private var detailMediaServerRef: MediaServerReference? = null
+
+  /**
+   * Where each media server title and episode was left, as its server said when its sources were
+   * last read - so a Plex title resumes from Plex's own position rather than from anything stored
+   * here. Keyed by [mediaServerResumeKey]. Seconds.
+   */
+  private val mediaServerResumeSec = java.util.concurrent.ConcurrentHashMap<String, Double>()
+
+  private fun mediaServerResumeKey(id: String, season: Int?, episode: Int?) = "$id|${season ?: ""}|${episode ?: ""}"
+
+  private fun EpisodeItem?.asMediaServerEpisode(): MediaServerEpisode? = this?.let { MediaServerEpisode(it.seasonNumber, it.episodeNumber) }
+
+  /** Reads the servers' in-progress titles for Continue Watching, off the main thread. */
+  private var mediaServerContinueJob: Job? = null
+  fun refreshMediaServerContinueWatching() {
+    mediaServerContinueJob?.cancel()
+    if (!uiState.mediaServerState.linked) {
+      if (uiState.mediaServerContinueWatching.isNotEmpty()) uiState = uiState.withMediaServer { it.copy(continueWatching = emptyList()) }
+      return
+    }
+    mediaServerContinueJob = viewModelScope.launch {
+      val items = withContext(Dispatchers.IO) {
+        withTimeoutOrNull(12_000) {
+          mediaServers.activeProviders().flatMap { provider -> runCatching { provider.continueWatching() }.getOrDefault(emptyList()) }
+        }
+      } ?: return@launch
+      uiState = uiState.withMediaServer { it.copy(continueWatching = items) }
+    }
+  }
+
+  private var mediaServerPageJob: Job? = null
+
+  /** Reads the Plex page's rows. Kept while it reloads, so returning to the page never shows it empty. */
+  fun loadMediaServerPage(force: Boolean = false) {
+    if (!uiState.mediaServerState.linked) return
+    if (!force && uiState.mediaServerPageRows.isNotEmpty() && mediaServerPageJob?.isActive != true) {
+      refreshMediaServerContinueWatching()
+      return
+    }
+    mediaServerPageJob?.cancel()
+    uiState = uiState.withMediaServer { it.copy(pageLoading = true) }
+    mediaServerPageJob = viewModelScope.launch {
+      if (force) withContext(Dispatchers.IO) { mediaServers.refresh(force = false) }
+      val rows = withContext(Dispatchers.IO) {
+        withTimeoutOrNull(20_000) {
+          mediaServers.activeProviders().flatMap { provider -> runCatching { provider.rows(includeCollections = true) }.getOrDefault(emptyList()) }
+        }
+      }
+      uiState = uiState.withMediaServer { it.copy(pageRows = rows ?: it.pageRows, pageLoading = false) }
+      refreshMediaServerContinueWatching()
+    }
+  }
+
+  /** A collection card opens its titles as a browsable row. */
+  fun openMediaServerCollection(item: MediaItem) {
+    val ref = MediaServerReference.decode(item.id) ?: return
+    val provider = mediaServers.providerFor(ref) ?: return
+    viewModelScope.launch {
+      val page = withContext(Dispatchers.IO) { withTimeoutOrNull(15_000) { runCatching { provider.collection(ref, 0, 60) }.getOrNull() } }
+      if (page == null) {
+        uiState = uiState.copy(errorMessage = strings.getString(R.string.plex_title_unavailable))
+        return@launch
+      }
+      setBrowseRow(HomeRow(id = MEDIA_SERVER_COLLECTION_ROW_PREFIX + item.id, title = item.title, items = page.items))
+    }
+  }
+
+  /** Watches the signed-in profile and the integration's state; everything media-server starts here. */
+  private fun watchMediaServers() {
+    viewModelScope.launch {
+      snapshotFlow { uiState.session?.user?.uid to uiState.activeProfileId }
+        .distinctUntilChanged()
+        .collect { mediaServers.onSessionChanged() }
+    }
+    viewModelScope.launch {
+      mediaServers.state.collect { state ->
+        val wasLinked = uiState.mediaServerState.linked
+        uiState = uiState.withMediaServer { it.copy(state = state) }
+        if (!state.linked && wasLinked) {
+          MediaServerHomeRows.rows = emptyList()
+          uiState = uiState.withMediaServer { it.copy(continueWatching = emptyList(), pageRows = emptyList(), searchResults = emptyList()) }
+        }
+      }
+    }
+    viewModelScope.launch {
+      // What Plex rows would show may have changed: reload Home quietly, and Continue Watching.
+      mediaServers.revision.drop(1).collect {
+        refreshMediaServerContinueWatching()
+        if (uiState.mediaServerPageRows.isNotEmpty()) loadMediaServerPage(force = true)
+        if (uiState.homeSections.isNotEmpty()) loadHome(force = true, silent = true)
+      }
+    }
+  }
+
   /** Settings > Backup & Restore. Everything it does lives in BackupRestoreController. */
   val backupController: BackupRestoreController by lazy {
     BackupRestoreController(getApplication(), apiClient, viewModelScope, BackupViewModelHost())
@@ -3996,6 +4216,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     // The first value is the policy already in force when this starts; only later changes sweep.
     viewModelScope.launch { AdultContentFilter.changes.drop(1).collect { onContentPolicyChanged() } }
     DisplayNameOverrides.initialize(application.applicationContext)
+    watchMediaServers()
     LocalAddonManager.initialize(application.applicationContext)
     M3uPlaylistManager.initialize(application.applicationContext)
     StreamDekDownloads.initialize(application.applicationContext)
@@ -4146,6 +4367,11 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   fun signOut() {
     sessionStore.clear()
+    // The media server link is the profile's, kept on StreamDek; this device's copy goes with the account.
+    mediaServers.clearDevice()
+    MediaServerHomeRows.rows = emptyList()
+    MediaServerIdentities.clear()
+    mediaServerResumeSec.clear()
     // The premium service keys belong to the account that just left, not to the device.
     DebridKeyStore.clear(getApplication())
     // Same reasoning for the content-service keys, including a device-only one: it was this
@@ -4234,7 +4460,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     liveChannelSwitchSnapshot = null
     liveChannelSwitchTargetId = null
     progressPercent?.let {
-      saveCurrentPlaybackSnapshot(it)
+      saveCurrentPlaybackSnapshot(it, MediaServerPlaybackState.Stopped)
       scrobbleCurrentPlayer("pause", it)
     }
     uiState = uiState.copy(playerSession = null, playerLaunchSession = null, playerLaunching = false, playerLaunchingLabel = null, playerLaunchingPeerHash = null, streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null)
@@ -4507,9 +4733,18 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       return
     }
     val currentStream = player.currentStream
+    val mediaServerRef = detailMediaServerRef?.takeIf { it.encode() == detail.id }
     launchWork(
       onStart = { uiState = uiState.copy(streamLoading = true, nextEpisodeLoading = true, nextEpisodeLoadingLabel = loadedNextEpisode?.let { "S${it.seasonNumber} • E${it.episodeNumber}" } ?: nextSeasonNumber?.let { "Season $it" }, errorMessage = null) },
       block = {
+        // A media server series carries on from its own server, not from TMDB and the add-ons.
+        if (mediaServerRef != null) {
+          val provider = mediaServers.providerFor(mediaServerRef)
+            ?: return@launchWork Result.failure(IllegalStateException(strings.getString(R.string.plex_title_unavailable)))
+          val nextEpisode = loadedNextEpisode ?: provider.season(mediaServerRef, nextSeasonNumber!!)?.minByOrNull { it.episodeNumber }
+            ?: return@launchWork Result.failure(IllegalStateException(strings.getString(R.string.plex_title_unavailable)))
+          return@launchWork Result.success(nextEpisode to provider.streams(mediaServerRef, nextEpisode.asMediaServerEpisode(), mediaServerPlaybackContext()))
+        }
         val nextEpisode = loadedNextEpisode ?: apiClient.fetchSeason(detail.id, nextSeasonNumber!!)
           .getOrElse { return@launchWork Result.failure(it) }
           .minByOrNull { it.episodeNumber }
@@ -4664,7 +4899,19 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
   }
 
-  fun scrobblePlayer(action: String, progressPercent: Double) { scrobbleCurrentPlayer(action, progressPercent) }
+  fun scrobblePlayer(action: String, progressPercent: Double) {
+    // The player's own start/pause/stop, for a media server title, become that server's timeline.
+    if (isMediaServerId(uiState.playerSession?.mediaId)) {
+      val state = when (action) {
+        "pause" -> MediaServerPlaybackState.Paused
+        "stop" -> MediaServerPlaybackState.Stopped
+        else -> MediaServerPlaybackState.Playing
+      }
+      saveCurrentPlaybackSnapshot(progressPercent, state)
+      return
+    }
+    scrobbleCurrentPlayer(action, progressPercent)
+  }
 
   /**
    * Where the player has got to, in seconds as well as percent.
@@ -4872,13 +5119,29 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
   }
 
+  /**
+   * Rows from the linked media servers, as Home sections. A server that is slow or away leaves
+   * the rows it had last time rather than holding Home up or emptying it.
+   */
+  private suspend fun fetchMediaServerHomeSections(): List<MediaSection> {
+    if (!uiState.mediaServerState.linked) return emptyList()
+    val fetched = withTimeoutOrNull(12_000) {
+      mediaServers.activeProviders().flatMap { provider -> runCatching { provider.rows(includeCollections = false) }.getOrDefault(emptyList()) }
+    }
+    if (!fetched.isNullOrEmpty()) MediaServerHomeRows.rows = fetched
+    return mediaServerHomeSections(MediaServerHomeRows.rows)
+  }
+
   private fun publishHomeSections(
     sections: List<MediaSection>,
     definitions: List<CatalogDefinition>,
     rows: List<HomeCatalogRow>,
   ) {
-    val mergedRows = if (definitions.isEmpty()) {
+    val mergedRows = if (definitions.isEmpty() && MediaServerHomeRows.rows.isEmpty()) {
       rows
+    } else if (definitions.isEmpty()) {
+      // Media server rows are new candidates even when the registry did not answer.
+      mergeHomeCatalogRows(uiState.homeCatalogRows, uiState.addons, uiState.catalogDefinitions, cloudStreamHomeCatalogCandidates(loadedCloudStreamProviders()))
     } else {
       mergeHomeCatalogRows(uiState.homeCatalogRows, uiState.addons, definitions, cloudStreamHomeCatalogCandidates(loadedCloudStreamProviders()))
     }
@@ -5009,6 +5272,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         // CloudStream rows come from the providers on this device, not the backend, so they are
         // fetched beside the home request rather than after it.
         val cloudStreamSections = viewModelScope.async(Dispatchers.IO) { fetchCloudStreamHomeSections(rows, cloudStreamProviders) }
+        // Media server rows come from the viewer's own servers, on this device, alongside.
+        val mediaServerSections = viewModelScope.async(Dispatchers.IO) { fetchMediaServerHomeSections() }
         val visibleIds = if (!uiState.defaultAppCatalogsEnabled) emptyList() else rows
           .filter { it.builtin && it.enabled && it.id !in streamDekFeatureRowIds }
           .map { it.id }
@@ -5055,7 +5320,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           .also { perf.mark("sections", "count=${it.getOrNull()?.size ?: -1}") }
           .let { result ->
             val cloudStream = cloudStreamSections.await()
-            result.map { sections -> Triple(sections + cloudStream, definitions, rows) }
+            val mediaServer = mediaServerSections.await()
+            result.map { sections -> Triple(sections + cloudStream + mediaServer, definitions, rows) }
           }
           .also { perf.end("loaded") }
       },
@@ -5179,6 +5445,27 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
     searchInstalledAddons(normalized, generation)
     searchPluginCatalogs(normalized, generation)
+    searchMediaServers(normalized, generation)
+  }
+
+  private var mediaServerSearchJob: Job? = null
+
+  /** The same query against every linked media server, alongside everything else. */
+  private fun searchMediaServers(query: String, generation: Long) {
+    mediaServerSearchJob?.cancel()
+    val providers = mediaServers.activeProviders()
+    if (providers.isEmpty()) {
+      if (uiState.mediaServerSearchResults.isNotEmpty()) uiState = uiState.withMediaServer { it.copy(searchResults = emptyList()) }
+      return
+    }
+    mediaServerSearchJob = viewModelScope.launch {
+      val results = withContext(Dispatchers.IO) {
+        withTimeoutOrNull(10_000) {
+          providers.flatMap { provider -> runCatching { provider.search(query, 40) }.getOrDefault(emptyList()) }
+        }
+      }.orEmpty().distinctBy { it.id }
+      if (generation == searchRequestGeneration) uiState = uiState.withMediaServer { it.copy(searchResults = results) }
+    }
   }
 
   private var pluginSearchJob: kotlinx.coroutines.Job? = null
@@ -5271,7 +5558,26 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
    */
   suspend fun loadMoreRowItems(rowId: String, anchorItem: MediaItem?, skip: Int): List<MediaItem> {
     val addonId = anchorItem?.sourceAddonId
-    val fetched = if (addonId != null) {
+    val mediaServerRow = (MediaServerHomeRows.rows + uiState.mediaServerPageRows).firstOrNull { it.id == rowId && it.id.isNotEmpty() }
+    val collectionRef = rowId.takeIf { it.startsWith(MEDIA_SERVER_COLLECTION_ROW_PREFIX) }?.let { MediaServerReference.decode(it.removePrefix(MEDIA_SERVER_COLLECTION_ROW_PREFIX)) }
+    val fetched = if (collectionRef != null) {
+      val provider = mediaServers.providerFor(collectionRef)
+      if (provider == null) emptyList() else withContext(Dispatchers.IO) {
+        runCatching { provider.collection(collectionRef, skip, 60).items }.getOrDefault(emptyList())
+      }
+    } else if (mediaServerRow != null) {
+      // A media server row pages through its own library on the server.
+      val library = mediaServerRow.libraryKey
+      val sort = when (mediaServerRow.kind) {
+        net.streamdek.mobile.nativeapp.mediaserver.MediaServerRowKind.RecentlyAdded -> net.streamdek.mobile.nativeapp.mediaserver.MediaServerSort.RecentlyAdded
+        net.streamdek.mobile.nativeapp.mediaserver.MediaServerRowKind.Library -> net.streamdek.mobile.nativeapp.mediaserver.MediaServerSort.Title
+        else -> null
+      }
+      val provider = mediaServers.provider(net.streamdek.mobile.nativeapp.mediaserver.PLEX_PROVIDER_ID)
+      if (library == null || sort == null || provider == null) emptyList() else withContext(Dispatchers.IO) {
+        runCatching { provider.browse(mediaServerRow.serverId, library, skip, 60, sort).items }.getOrDefault(emptyList())
+      }
+    } else if (addonId != null) {
       val addon = uiState.addons.firstOrNull { it.id == addonId && it.enabled }
       if (addon == null) {
         android.util.Log.d("StreamDekPaging", "loadMoreRowItems row=$rowId: addon $addonId not found/enabled")
@@ -5329,7 +5635,13 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     if (isDownloadMediaId(item.id) && playSavedDownload(item.id, ownerKey)) return true
     val candidates = playbackResumeStore.loadAll(ownerKey)
       .filter { it.mediaId == item.id && normalizedMediaType(it.mediaType) == normalizedMediaType(item.type) && !it.isLive }
-    val entry = if (item.isNextUp) PlaybackMemoryEntry(
+    val entry = if (isMediaServerId(item.id)) PlaybackMemoryEntry(
+      // A media server card: nothing is stored here for it. The server's own position is read
+      // when its sources are, so the entry only has to say which episode.
+      mediaId = item.id, mediaType = item.type, title = item.title, poster = item.poster, backdrop = item.backdrop,
+      seasonNumber = item.resumeSeasonNumber, episodeNumber = item.resumeEpisodeNumber,
+      progressPercent = 0.0, positionSeconds = null,
+    ) else if (item.isNextUp) PlaybackMemoryEntry(
       mediaId = item.id, mediaType = item.type, title = item.title, poster = item.poster, backdrop = item.backdrop,
       seasonNumber = item.resumeSeasonNumber, episodeNumber = item.resumeEpisodeNumber,
       progressPercent = 0.0, positionSeconds = 0.0,
@@ -5591,6 +5903,51 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     CloudStreamPlugins.manager.onSourceSettingsChanged = { viewModelScope.launch(Dispatchers.Main) { syncCloudStreamSourceSettings() } }
   }
 
+  /**
+   * Opens a title from a personal media server: the server describes it, its seasons and episodes
+   * come from the server, and the server is its only source. The ordinary page and Series → Seasons
+   * → Episodes flow are used unchanged, so nothing downstream needs to know where it came from.
+   */
+  private fun loadMediaServerDetail(type: String, id: String, ref: MediaServerReference, fallbackItem: MediaItem?) {
+    val provider = mediaServers.providerFor(ref)
+    val item = fallbackItem ?: MediaItem(id = id, type = type, title = "", year = null, poster = null, backdrop = null, rating = null, description = "")
+    val detailGeneration = ++detailRequestGeneration
+    detailSettleJob?.cancel()
+    detailSourceAddonId = null
+    detailSourceCatalogType = null
+    detailLocalStreamId = null
+    detailAddonMetaId = null
+    detailLocalEpisodes = emptyList()
+    detailDirectStream = null
+    detailMediaServerRef = ref
+    launchWork(
+      onStart = { uiState = uiState.copy(detailLoading = true, detail = null, detailIsLive = false, detailFallbackItem = item, selectedPerson = null, personLoading = false, selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null, detailSelectedTab = null, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = false, availableStreams = emptyList(), errorMessage = null) },
+      block = {
+        val detail = provider?.let { withTimeoutOrNull(20_000) { it.detail(ref) } }
+        if (detail == null) Result.failure(IllegalStateException(strings.getString(R.string.plex_title_unavailable))) else Result.success(detail)
+      },
+      onSuccess = { detail ->
+        if (detailGeneration != detailRequestGeneration) return@launchWork
+        val resolved = detail.withCatalogFallback(item)
+        uiState = uiState.copy(detailLoading = false, detail = resolved, detailIsLive = false, streamLoading = false, errorMessage = null)
+        if (resolved.type == "tv" && resolved.seasons.isNotEmpty()) {
+          loadResumeAwareSeries(resolved, item.resumeSeasonNumber, item.resumeEpisodeNumber, resumeKnownSource = pendingDirectContinueEntry != null)
+        } else if (!playPendingContinue(resolved, continueFallbackEpisode(item))) {
+          loadStreamsAfterDetailSettles(null)
+        }
+      },
+      onFailure = { message ->
+        if (detailGeneration != detailRequestGeneration) return@launchWork
+        if (pendingDirectContinueEntry != null) {
+          invalidatePendingPlaybackRequest()
+          uiState = uiState.copy(playerLaunchSession = null, playerLaunching = false, playerLaunchingLabel = null, streamLoading = false)
+        }
+        // The card is enough to draw the page; the server being away is said, not hidden.
+        uiState = uiState.copy(detailLoading = false, detail = item.toFallbackDetail(), detailIsLive = false, errorMessage = message)
+      },
+    )
+  }
+
   fun loadDetail(type: String, id: String, fallbackItem: MediaItem? = null, preservePendingContinue: Boolean = false) {
     AddonMediaReference.decode(id)?.let { origin ->
       val item = (fallbackItem ?: MediaItem(id = origin.id, type = type, title = "", year = null,
@@ -5618,6 +5975,13 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     detailCorrelationId = Telemetry.newCorrelationId()
     Telemetry.contentOpened(mediaId = id, mediaType = type, title = fallbackItem?.title)
     detailCloudStreamOrigin = null
+    detailMediaServerRef = null
+    // A title from a personal media server is described by that server, and nothing else can
+    // answer for it: its id names one item on one server.
+    MediaServerReference.decode(id)?.let { ref ->
+      loadMediaServerDetail(type, id, ref, fallbackItem)
+      return
+    }
     // A title from a CloudStream provider's row is described by that provider rather than by a
     // catalogue, and must be routed before the live check: provider names like "Live Events" would
     // otherwise send it down the live-channel path, which only asks add-ons for streams.
@@ -5826,6 +6190,31 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   fun closePerson() { uiState = uiState.copy(selectedPerson = null, personLoading = false) }
   fun loadSeason(tvId: String, seasonNumber: Int, preferredEpisodeNumber: Int? = null, resumeKnownSource: Boolean = false) {
+    val mediaServerRef = detailMediaServerRef?.takeIf { uiState.detail?.id == tvId }
+    if (mediaServerRef != null) {
+      launchWork(
+        onStart = { uiState = uiState.copy(seasonLoading = true, selectedSeasonNumber = seasonNumber, errorMessage = null) },
+        block = {
+          val episodes = mediaServers.providerFor(mediaServerRef)?.let { withTimeoutOrNull(20_000) { it.season(mediaServerRef, seasonNumber) } }
+          if (episodes == null) Result.failure(IllegalStateException(strings.getString(R.string.plex_title_unavailable))) else Result.success(episodes)
+        },
+        onSuccess = { episodes ->
+          if (detailMediaServerRef != mediaServerRef) return@launchWork
+          uiState = uiState.copy(seasonLoading = false, selectedSeasonEpisodes = episodes, selectedSeasonNumber = seasonNumber)
+          val episode = episodes.firstOrNull { it.episodeNumber == preferredEpisodeNumber }
+            ?: episodes.firstOrNull()
+            ?: pendingDirectContinueEpisode?.takeIf { it.seasonNumber == seasonNumber }
+          episode?.let {
+            if (!resumeKnownSource || !playPendingContinue(uiState.detail ?: return@let, it)) loadStreamsForCurrentDetail(it)
+          }
+        },
+        onFailure = { message ->
+          if (resumeKnownSource) invalidatePendingPlaybackRequest()
+          uiState = uiState.copy(seasonLoading = false, playerLaunchSession = if (resumeKnownSource) null else uiState.playerLaunchSession, playerLaunching = if (resumeKnownSource) false else uiState.playerLaunching, errorMessage = message)
+        },
+      )
+      return
+    }
     if (detailLocalEpisodes.isNotEmpty()) {
       val episodes = detailLocalEpisodes.filter { it.seasonNumber == seasonNumber }.sortedBy(EpisodeItem::episodeNumber)
       uiState = uiState.copy(seasonLoading = false, selectedSeasonEpisodes = episodes, selectedSeasonNumber = seasonNumber, errorMessage = null)
@@ -5916,6 +6305,12 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       uiState = uiState.copy(streamLoading = false, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = true, availableStreams = listOf(stream), selectedEpisode = episode, errorMessage = null)
       return
     }
+    // A title from a personal media server: that server is its only source, and it answers with
+    // Direct Play, Direct Stream and Transcode in the order they should be tried.
+    detailMediaServerRef?.takeIf { detail.id == it.encode() }?.let { ref ->
+      loadMediaServerStreams(detail, ref, episode)
+      return
+    }
     // A page built from a CloudStream provider's own description: nothing but that provider knows
     // what the title is, so it is the one source asked — by the title's own link.
     detailCloudStreamOrigin?.takeIf { it.exclusive }?.let { origin ->
@@ -5973,6 +6368,49 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       }
     }
     beginProgressiveStreamLoad(detail = detail, type = type, ids = ids, episode = episode)
+  }
+
+  /**
+   * Sources for a media server title, with the server's own resume point read alongside - so the
+   * player starts where Plex says the viewer was, not where this phone last saw them.
+   */
+  private fun loadMediaServerStreams(detail: MediaDetail, ref: MediaServerReference, episode: EpisodeItem?) {
+    if (detail.type == "tv" && episode == null) {
+      uiState = uiState.copy(streamLoading = false, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = true, errorMessage = strings.getString(R.string.error_choose_episode_first))
+      return
+    }
+    val provider = mediaServers.providerFor(ref)
+    val label = provider?.label ?: strings.getString(R.string.media_server_plex)
+    val generation = ++streamRequestGeneration
+    uiState = uiState.copy(streamLoading = true, pendingStreamSources = 1, totalStreamSources = 1, searchingStreamSources = listOf(label), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = true, availableStreams = emptyList(), selectedEpisode = episode, errorMessage = null, streamsUnavailableReason = null)
+    val context = mediaServerPlaybackContext()
+    viewModelScope.launch {
+      val (streams, progress) = withContext(Dispatchers.IO) {
+        if (provider == null) return@withContext emptyList<AddonStream>() to null
+        val target = episode.asMediaServerEpisode()
+        coroutineScope {
+          val progress = async { withTimeoutOrNull(8_000) { runCatching { provider.progress(ref, target) }.getOrNull() } }
+          val streams = withTimeoutOrNull(25_000) { runCatching { provider.streams(ref, target, context) }.getOrNull() }.orEmpty()
+          streams to progress.await()
+        }
+      }
+      if (generation != streamRequestGeneration) return@launch
+      val key = mediaServerResumeKey(detail.id, episode?.seasonNumber, episode?.episodeNumber)
+      val position = progress?.takeIf { !it.watched && it.positionMs > 0 }?.positionMs?.div(1000.0)
+      if (position != null) mediaServerResumeSec[key] = position else if (progress != null) mediaServerResumeSec.remove(key)
+      uiState = uiState.copy(
+        streamLoading = false,
+        pendingStreamSources = 0,
+        totalStreamSources = 1,
+        searchingStreamSources = emptyList(),
+        failedStreamSources = if (streams.isEmpty()) listOf(label) else emptyList(),
+        // The provider's order is the decision (Direct Play, Direct Stream, Transcode), so it is
+        // kept rather than re-ranked against add-on results it has nothing in common with.
+        availableStreams = streams,
+        selectedEpisode = episode,
+        errorMessage = if (streams.isEmpty()) strings.getString(R.string.plex_title_unavailable) else null,
+      )
+    }
   }
 
   private fun beginProgressiveStreamLoad(detail: MediaDetail, type: String, ids: List<String>, episode: EpisodeItem?) {
@@ -6898,7 +7336,21 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       },
       block = {
         val cloudStreamOrigin = detailCloudStreamOrigin?.takeIf { it.exclusive }
+        val mediaServerRef = detailMediaServerRef?.takeIf { it.encode() == detail.id }
         when {
+          // A media server title: its server is the only source, and its position the resume point.
+          mediaServerRef != null -> runCatching {
+            val provider = mediaServers.providerFor(mediaServerRef) ?: throw IllegalStateException(strings.getString(R.string.plex_title_unavailable))
+            if (detail.type == "tv" && selectedEpisode == null) throw IllegalStateException(strings.getString(R.string.error_choose_episode_first))
+            val target = selectedEpisode.asMediaServerEpisode()
+            withContext(Dispatchers.IO) {
+              withTimeoutOrNull(8_000) { runCatching { provider.progress(mediaServerRef, target) }.getOrNull() }?.let { progress ->
+                val key = mediaServerResumeKey(detail.id, selectedEpisode?.seasonNumber, selectedEpisode?.episodeNumber)
+                if (!progress.watched && progress.positionMs > 0) mediaServerResumeSec[key] = progress.positionMs / 1000.0 else mediaServerResumeSec.remove(key)
+              }
+              provider.streams(mediaServerRef, target, mediaServerPlaybackContext())
+            }
+          }
           // Only the provider a CloudStream-described page came from knows its title, live or not.
           cloudStreamOrigin != null -> runCatching {
             withContext(Dispatchers.IO) {
@@ -6940,7 +7392,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           Log.i("StreamDekPlayback", "Dropped a finished source search for ${detail.id}: another playback was requested while it ran")
           return@launchWork
         }
-        val ranked = rankedProfileStreams(mediaStreamsOnly(streams, detail))
+        // A media server's own order (Direct Play, Direct Stream, Transcode) is the decision.
+        val ranked = if (isMediaServerId(detail.id)) streams else rankedProfileStreams(mediaStreamsOnly(streams, detail))
         uiState = uiState.copy(streamLoading = false, availableStreams = ranked, selectedEpisode = selectedEpisode)
         val preferred = remembered?.stream?.takeIf { uiState.detailIsLive && uiState.rememberLastSource }
           ?.let { saved -> preferredRememberedStream(ranked, saved) } ?: ranked.firstOrNull()
@@ -7811,7 +8264,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   /** Only streams playable through Media3 with a plain HTTP(S) URL can be downloaded - no
    * torrent-only (`infoHash`) streams, and never live channels (there's no finite file). */
   fun isDownloadEligible(stream: AddonStream, isLive: Boolean): Boolean =
-    uiState.downloadsEnabled && !isLive && stream.infoHash.isNullOrBlank() && !stream.url.isNullOrBlank() &&
+    // Not a media server's source: the download manager does not carry the server's credentials,
+    // and the file is already the viewer's own, a tap away on their network.
+    uiState.downloadsEnabled && !isLive && !stream.addonId.startsWith(MediaServerReference.SOURCE_PREFIX) &&
+      stream.infoHash.isNullOrBlank() && !stream.url.isNullOrBlank() &&
       (stream.url.startsWith("http://", ignoreCase = true) || stream.url.startsWith("https://", ignoreCase = true))
 
   fun downloadStream(stream: AddonStream, title: String) {
@@ -9444,6 +9900,17 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   fun toggleWatchlist(item: MediaItem) {
+    // A media server title is kept on the watchlist by its TMDB id - the watchlist is StreamDek's
+    // and syncs to Trakt, neither of which can do anything with one server's private id.
+    if (isMediaServerId(item.id)) {
+      val tmdbId = MediaServerIdentities.of(item.id)?.tmdbId
+      if (tmdbId == null) {
+        uiState = uiState.copy(infoMessage = strings.getString(R.string.plex_needs_tmdb_watchlist))
+        return
+      }
+      toggleWatchlist(item.copy(id = tmdbId.toString(), sourceAddonId = null, sourceAddonName = null, sourceCatalogId = null, sourceCatalogName = null, sourceMediaType = null, progress = null))
+      return
+    }
     val ownerKey = activeOwnerKey() ?: return
     val previousLocal = loadLocalWatchlist()
     val previousTrakt = uiState.traktWatchlist
@@ -9749,6 +10216,13 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   fun markWatched(item: MediaItem) {
+    MediaServerReference.decode(item.id)?.let { ref ->
+      val episode = if (item.resumeSeasonNumber != null && item.resumeEpisodeNumber != null) MediaServerEpisode(item.resumeSeasonNumber, item.resumeEpisodeNumber) else null
+      if (episode != null) showMediaServerEpisodeWatched(item.id, listOf(episode), true)
+      uiState = uiState.withMediaServer { state -> state.copy(continueWatching = state.continueWatching.filterNot { it.item.id == item.id }) }
+      mediaServerAction(ref) { it.setWatched(ref, episode, true) }
+      return
+    }
     val ownerKey = activeOwnerKey() ?: return
     watchedTitleStore.add(ownerKey, item)
     val seasonNumber = item.resumeSeasonNumber
@@ -9852,6 +10326,12 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   fun toggleEpisodeWatched(detail: MediaDetail, episode: EpisodeItem, currentlyWatched: Boolean) {
+    MediaServerReference.decode(detail.id)?.let { ref ->
+      val target = MediaServerEpisode(episode.seasonNumber, episode.episodeNumber)
+      showMediaServerEpisodeWatched(detail.id, listOf(target), !currentlyWatched)
+      mediaServerAction(ref) { it.setWatched(ref, target, !currentlyWatched) }
+      return
+    }
     val ownerKey = activeOwnerKey() ?: return
     val targetWatched = !currentlyWatched
     val key = watchedEpisodeKey(detail.id, episode.seasonNumber, episode.episodeNumber)
@@ -9945,6 +10425,12 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   fun setSeasonWatched(detail: MediaDetail, episodes: List<EpisodeItem>, watched: Boolean) {
+    MediaServerReference.decode(detail.id)?.let { ref ->
+      val seasons = episodes.map { it.seasonNumber }.distinct()
+      showMediaServerEpisodeWatched(detail.id, episodes.map { MediaServerEpisode(it.seasonNumber, it.episodeNumber) }, watched)
+      mediaServerAction(ref) { provider -> seasons.all { season -> provider.setSeasonWatched(ref, season, watched) } }
+      return
+    }
     val ownerKey = activeOwnerKey() ?: return
     if (episodes.isEmpty()) return
     val seasonKeys = episodes.map { watchedEpisodeKey(detail.id, it.seasonNumber, it.episodeNumber) }.toSet()
@@ -10013,6 +10499,17 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
   }
 
   fun markPreviousEpisodesWatched(detail: MediaDetail, selected: EpisodeItem) {
+    MediaServerReference.decode(detail.id)?.let { ref ->
+      // Whole earlier seasons in one call each; this season episode by episode.
+      val earlierSeasons = detail.seasons.map { it.seasonNumber }.filter { it in 1 until selected.seasonNumber }
+      val earlierHere = uiState.selectedSeasonEpisodes.filter { it.seasonNumber == selected.seasonNumber && it.episodeNumber < selected.episodeNumber }
+      showMediaServerEpisodeWatched(detail.id, earlierHere.map { MediaServerEpisode(it.seasonNumber, it.episodeNumber) }, true)
+      mediaServerAction(ref) { provider ->
+        earlierSeasons.all { provider.setSeasonWatched(ref, it, true) } &&
+          earlierHere.all { provider.setWatched(ref, MediaServerEpisode(it.seasonNumber, it.episodeNumber), true) }
+      }
+      return
+    }
     val ownerKey = activeOwnerKey() ?: return
     viewModelScope.launch {
       val seasonNumbers = detail.seasons.map { it.seasonNumber }
@@ -10114,6 +10611,12 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
    * replaces it with an in-progress event.
    */
   fun removeFromContinueWatching(item: MediaItem) {
+    MediaServerReference.decode(item.id)?.let { ref ->
+      val episode = if (item.resumeSeasonNumber != null && item.resumeEpisodeNumber != null) MediaServerEpisode(item.resumeSeasonNumber, item.resumeEpisodeNumber) else null
+      uiState = uiState.withMediaServer { state -> state.copy(continueWatching = state.continueWatching.filterNot { it.item.id == item.id }) }
+      mediaServerAction(ref) { it.removeFromContinueWatching(ref, episode) }
+      return
+    }
     val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
     val seasonNumber = item.resumeSeasonNumber
     val episodeNumber = item.resumeEpisodeNumber
@@ -12025,6 +12528,45 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     return getSeriesResumeState(detail.id, seriesEpisodeSlots(detail.seasons), remoteEvents + localEvents + providerEvents, watched)
   }
 
+  /**
+   * Opens a media server series at the episode to watch next, by the server's own record: the one
+   * part-way through, else the one after the last watched. The server's watched marks are copied
+   * into this device's watched ticks for the page to draw - a display copy, never pushed anywhere.
+   */
+  private fun loadMediaServerSeries(
+    detail: MediaDetail,
+    ref: MediaServerReference,
+    preferredSeasonNumber: Int?,
+    preferredEpisodeNumber: Int?,
+    resumeKnownSource: Boolean,
+  ) {
+    viewModelScope.launch {
+      val standing = withContext(Dispatchers.IO) {
+        withTimeoutOrNull(10_000) { runCatching { mediaServers.providerFor(ref)?.seriesProgress(ref) }.getOrNull() }
+      }.orEmpty()
+      if (uiState.detail?.id != detail.id) return@launch
+      if (standing.isNotEmpty()) {
+        val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
+        val watched = standing.filter { it.progress.watched }.map { watchedEpisodeKey(detail.id, it.seasonNumber, it.episodeNumber) }
+        watchedEpisodeStore.save(ownerKey, detail.id, watched)
+        standing.forEach { episode ->
+          val key = mediaServerResumeKey(detail.id, episode.seasonNumber, episode.episodeNumber)
+          val position = episode.progress.positionMs.takeIf { !episode.progress.watched && it > 0 }
+          if (position != null) mediaServerResumeSec[key] = position / 1000.0 else mediaServerResumeSec.remove(key)
+        }
+        uiState = uiState.copy(watchedEpisodeRevision = uiState.watchedEpisodeRevision + 1)
+      }
+      val ordered = standing.filter { it.seasonNumber > 0 }.sortedWith(compareBy({ it.seasonNumber }, { it.episodeNumber }))
+      val inProgress = standing.filter { !it.progress.watched && it.progress.positionMs > 0 }.maxByOrNull { it.progress.lastViewedAtMs }
+      val lastWatched = ordered.lastOrNull { it.progress.watched }
+      val next = inProgress
+        ?: lastWatched?.let { last -> ordered.firstOrNull { !it.progress.watched && (it.seasonNumber to it.episodeNumber).let { (s, e) -> s > last.seasonNumber || (s == last.seasonNumber && e > last.episodeNumber) } } }
+      val season = preferredSeasonNumber ?: next?.seasonNumber ?: detail.seasons.firstOrNull { it.seasonNumber > 0 }?.seasonNumber ?: detail.seasons.first().seasonNumber
+      val episode = if (preferredSeasonNumber != null) preferredEpisodeNumber else next?.episodeNumber
+      loadSeason(detail.id, season, episode, resumeKnownSource)
+    }
+  }
+
   private fun loadResumeAwareSeries(
     detail: MediaDetail,
     preferredSeasonNumber: Int? = null,
@@ -12038,6 +12580,11 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     // watched state independently.
     if (resumeKnownSource && preferredSeasonNumber != null && preferredEpisodeNumber != null) {
       loadSeason(detail.id, preferredSeasonNumber, preferredEpisodeNumber, resumeKnownSource = true)
+      return
+    }
+    // A media server series: the server knows what has been watched, and it is the only one asked.
+    detailMediaServerRef?.takeIf { it.encode() == detail.id }?.let { ref ->
+      loadMediaServerSeries(detail, ref, preferredSeasonNumber, preferredEpisodeNumber, resumeKnownSource)
       return
     }
     viewModelScope.launch {
@@ -12261,6 +12808,9 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
    * doing it with the app in the background. This asks for the rows the page can actually use.
    */
   fun refreshTitlePlaybackProgress(mediaId: String) {
+    // A media server title's progress is its server's, read with its sources; StreamDek holds
+    // none for it, and its id names the viewer's own server, so it is not sent to be asked about.
+    if (isMediaServerId(mediaId)) return
     if (mediaId.isNotBlank()) startPlaybackPull(titleId = mediaId)
   }
 
@@ -12550,6 +13100,15 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   }
 
   private fun loadPlaybackMemoryEntry(detail: MediaDetail, episode: EpisodeItem?): PlaybackMemoryEntry? {
+    // A media server title resumes from the server's own position, read with its sources.
+    if (isMediaServerId(detail.id)) {
+      val seconds = mediaServerResumeSec[mediaServerResumeKey(detail.id, episode?.seasonNumber, episode?.episodeNumber)] ?: return null
+      return PlaybackMemoryEntry(
+        mediaId = detail.id, mediaType = if (detail.type == "series") "tv" else detail.type, title = detail.title,
+        poster = detail.poster, backdrop = detail.backdrop, seasonNumber = episode?.seasonNumber, episodeNumber = episode?.episodeNumber,
+        progressPercent = 0.0, positionSeconds = seconds,
+      )
+    }
     val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
     val mediaType = if (detail.type == "series") "tv" else detail.type
     return playbackResumeStore.loadAll(ownerKey).firstOrNull {
@@ -12564,10 +13123,17 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   private var lastPlaybackPositionSec: Double = 0.0
   private var lastPlaybackDurationSec: Double = 0.0
 
-  private fun saveCurrentPlaybackSnapshot(progressPercent: Double) {
+  private fun saveCurrentPlaybackSnapshot(progressPercent: Double, mediaServerState: MediaServerPlaybackState = MediaServerPlaybackState.Playing) {
     val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
     val player = uiState.playerSession ?: return
     val normalizedProgress = progressPercent.coerceIn(0.0, 100.0)
+    // A media server title's position belongs to its server. It is reported there, live, and
+    // nothing is written to this phone's resume list, StreamDek's progress or Trakt - so the server
+    // is never overwritten by an older copy from here.
+    MediaServerReference.decode(player.mediaId)?.let { ref ->
+      reportMediaServerPlayback(ref, player, normalizedProgress, mediaServerState)
+      return
+    }
     if (player.isLive) {
       // Live has no meaningful resume position, but the entry is still worth keeping
       // as a record of the source that worked. Continue Watching filters live entries
@@ -12635,6 +13201,49 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       )
     }
     uiState = uiState.copy(localContinueWatching = loadLocalContinueWatching(), localResumeEntries = loadResumeEntries())
+  }
+
+  /**
+   * Runs one change against a media server and reads its Continue Watching again afterwards. The
+   * screen has already been updated optimistically; a refusal is said out loud and the server's
+   * own state is read back, so what shows is what the server holds.
+   */
+  private fun mediaServerAction(ref: MediaServerReference, work: suspend (net.streamdek.mobile.nativeapp.mediaserver.MediaServerProvider) -> Boolean) {
+    val provider = mediaServers.providerFor(ref) ?: return
+    viewModelScope.launch {
+      val ok = withContext(Dispatchers.IO) { withTimeoutOrNull(20_000) { runCatching { work(provider) }.getOrDefault(false) } } == true
+      if (!ok) uiState = uiState.copy(errorMessage = strings.getString(R.string.plex_marked_failed))
+      refreshMediaServerContinueWatching()
+      val detail = uiState.detail
+      if (!ok && detail != null && detail.id == ref.encode() && detail.type == "tv") {
+        loadMediaServerSeries(detail, ref, uiState.selectedSeasonNumber, uiState.selectedEpisode?.episodeNumber, resumeKnownSource = false)
+      }
+    }
+  }
+
+  /** The page's watched ticks for a media server series, set at once; the server is told separately. */
+  private fun showMediaServerEpisodeWatched(showId: String, episodes: List<MediaServerEpisode>, watched: Boolean) {
+    val ownerKey = activeOwnerKey() ?: GUEST_OWNER_KEY
+    val keys = episodes.map { watchedEpisodeKey(showId, it.seasonNumber, it.episodeNumber) }.toSet()
+    val existing = watchedEpisodeStore.load(ownerKey, showId)
+    watchedEpisodeStore.save(ownerKey, showId, if (watched) (existing + keys).distinct() else existing.filterNot { it in keys })
+    episodes.forEach { mediaServerResumeSec.remove(mediaServerResumeKey(showId, it.seasonNumber, it.episodeNumber)) }
+    uiState = uiState.copy(watchedEpisodeRevision = uiState.watchedEpisodeRevision + 1)
+  }
+
+  private fun reportMediaServerPlayback(ref: MediaServerReference, player: PlayerSession, progressPercent: Double, state: MediaServerPlaybackState) {
+    val duration = lastPlaybackDurationSec.takeIf { it > 0.0 } ?: return
+    val position = if (progressPercent >= 95.0) duration else lastPlaybackPositionSec.coerceIn(0.0, duration)
+    val episode = if (player.seasonNumber != null && player.episodeNumber != null) MediaServerEpisode(player.seasonNumber, player.episodeNumber) else null
+    val key = mediaServerResumeKey(player.mediaId, player.seasonNumber, player.episodeNumber)
+    if (progressPercent >= 95.0 || position <= 1.0) mediaServerResumeSec.remove(key) else mediaServerResumeSec[key] = position
+    val provider = mediaServers.providerFor(ref) ?: return
+    viewModelScope.launch(Dispatchers.IO) {
+      runCatching { provider.reportProgress(ref, episode, (position * 1000).toLong(), (duration * 1000).toLong(), state) }
+      if (state == MediaServerPlaybackState.Stopped) {
+        withContext(Dispatchers.Main) { refreshMediaServerContinueWatching() }
+      }
+    }
   }
 
   fun refreshNextUp() {
@@ -12705,6 +13314,12 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   }
 
   private fun scrobbleCurrentPlayer(action: String, progressPercent: Double) {
+    // Trakt only hears about StreamDek's own titles. A media server title reports to its server
+    // (see [saveCurrentPlaybackSnapshot]); its end is the one thing worth saying from here.
+    if (isMediaServerId(uiState.playerSession?.mediaId)) {
+      if (action == "stop") saveCurrentPlaybackSnapshot(progressPercent, MediaServerPlaybackState.Stopped)
+      return
+    }
     // Pausing settles the position, whoever is or is not connected. This used to sit below the
     // Trakt check, so an account without Trakt only ever persisted on the periodic checkpoint --
     // survivable at ten seconds, and a visible loss now that the checkpoint is every thirty.
@@ -13919,6 +14534,19 @@ private fun MainScene(
   val requestDownloadNotificationPermission = rememberNotificationPermissionRequest()
   var selectedTab by rememberSaveable { mutableStateOf(MainTab.Home) }
   var previousTab by rememberSaveable { mutableStateOf(MainTab.Home) }
+  val plexNavigationVisible = uiState.mediaServerState.navigationVisible
+  // The tab set follows the Plex connection: a tab that is no longer offered hands over to the one
+  // that now holds its content, rather than leaving the viewer on a page the bar does not show.
+  LaunchedEffect(plexNavigationVisible) {
+    fun mapped(tab: MainTab): MainTab = when {
+      plexNavigationVisible && (tab == MainTab.Continue || tab == MainTab.Watchlist) -> MainTab.Library
+      !plexNavigationVisible && tab == MainTab.Library -> MainTab.Continue
+      !plexNavigationVisible && tab == MainTab.Plex -> MainTab.Home
+      else -> tab
+    }
+    selectedTab = mapped(selectedTab)
+    previousTab = mapped(previousTab)
+  }
   var openDetail by rememberSaveable { mutableStateOf(uiState.detail?.let { it.type to it.id }) }
   LaunchedEffect(uiState.pendingEndRecommendation, uiState.detail?.id, uiState.availableStreams) {
     val item = uiState.pendingEndRecommendation ?: return@LaunchedEffect
@@ -14485,13 +15113,21 @@ private fun MainScene(
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically,
                   ) {
-                    listOf(
+                    // Five places either way, so connecting Plex never reflows the bar: Continue and
+                    // Watchlist become one Library, and Plex takes the freed place.
+                    (if (plexNavigationVisible) listOf(
+                      MainTab.Home to Icons.Rounded.Home,
+                      MainTab.Search to Icons.Rounded.Search,
+                      MainTab.Plex to PlexIcons.Chevron,
+                      MainTab.Library to Icons.Rounded.VideoLibrary,
+                      MainTab.Settings to Icons.Rounded.ManageAccounts,
+                    ) else listOf(
                       MainTab.Home to Icons.Rounded.Home,
                       MainTab.Search to Icons.Rounded.Search,
                       MainTab.Continue to Icons.Rounded.PlayCircleOutline,
                       MainTab.Watchlist to Icons.Rounded.Bookmark,
                       MainTab.Settings to Icons.Rounded.ManageAccounts,
-                    ).forEach { (tab, icon) ->
+                    )).forEach { (tab, icon) ->
                       val selected = selectedTab == tab
                       Column(
                         modifier = Modifier
@@ -14706,13 +15342,50 @@ private fun MainScene(
           ) { tab ->
           when (tab) {
             MainTab.Home -> browseStateHolder.SaveableStateProvider("tab_home") {
-              HomeTab(uiState = uiState, scrollToTopSignal = homeScrollToTopSignal, onReload = { viewModel.loadHome(force = true) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onPlayContinueWatching = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onViewAll = { row -> if (row.id == MEDIA_HUB_ROW_ID) viewModel.setMediaHubOpen(true) else if (row.id == "continue") selectedTab = MainTab.Continue else if (row.id == "watchlist") selectedTab = MainTab.Watchlist else viewModel.setBrowseRow(when (row.id) { "m3u_playlists_live" -> row.copy(items = uiState.m3uChannels); "m3u_playlists_vod" -> row.copy(items = uiState.m3uVodItems); else -> fullSectionRow(uiState, row) }) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onMarkEarlierEpisodesWatched = viewModel::markEarlierEpisodesWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onRemoveFromContinueWatching = viewModel::removeFromContinueWatching, onResolveHeroTitleLogos = viewModel::resolveHomeHeroTitleLogos, onResolveAddonRatings = viewModel::resolveAddonCatalogRatings, onToggleFavourite = viewModel::toggleFavouriteChannel, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel, onHandoffContinueWatching = viewModel::handoffContinueWatching)
+              HomeTab(uiState = uiState, scrollToTopSignal = homeScrollToTopSignal, onReload = { viewModel.loadHome(force = true) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onPlayContinueWatching = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onViewAll = { row -> if (row.id == MEDIA_HUB_ROW_ID) viewModel.setMediaHubOpen(true) else if (row.id == "continue") selectedTab = if (plexNavigationVisible) MainTab.Library else MainTab.Continue else if (row.id == "watchlist") selectedTab = if (plexNavigationVisible) MainTab.Library else MainTab.Watchlist else viewModel.setBrowseRow(when (row.id) { "m3u_playlists_live" -> row.copy(items = uiState.m3uChannels); "m3u_playlists_vod" -> row.copy(items = uiState.m3uVodItems); else -> fullSectionRow(uiState, row) }) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onMarkEarlierEpisodesWatched = viewModel::markEarlierEpisodesWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onRemoveFromContinueWatching = viewModel::removeFromContinueWatching, onResolveHeroTitleLogos = viewModel::resolveHomeHeroTitleLogos, onResolveAddonRatings = viewModel::resolveAddonCatalogRatings, onToggleFavourite = viewModel::toggleFavouriteChannel, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel, onHandoffContinueWatching = viewModel::handoffContinueWatching)
             }
             MainTab.Search -> browseStateHolder.SaveableStateProvider("tab_search") {
               SearchTab(uiState = uiState, ownerKey = watchedOwnerKey(uiState.session, uiState.activeProfileId), onSearch = viewModel::search, onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched)
             }
             MainTab.Continue -> browseStateHolder.SaveableStateProvider("tab_continue") {
               ContinueTab(uiState = uiState, onOpen = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) })) { openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onOpenDetails = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onMarkEarlierEpisodesWatched = viewModel::markEarlierEpisodesWatched, onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onRemoveFromContinueWatching = viewModel::removeFromContinueWatching, onClearContinueWatching = viewModel::clearContinueWatching, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffContinueWatching = viewModel::handoffContinueWatching)
+            }
+            MainTab.Plex -> browseStateHolder.SaveableStateProvider("tab_plex") {
+              val openItem: (MediaItem) -> Unit = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }
+              PlexTab(
+                uiState = uiState,
+                onLoad = viewModel::loadMediaServerPage,
+                onOpen = openItem,
+                onOpenCollection = viewModel::openMediaServerCollection,
+                onPlayContinueWatching = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openItem(item) })) openItem(item) },
+                onViewAll = viewModel::setBrowseRow,
+                onToggleWatchlist = viewModel::toggleWatchlist,
+                onMarkWatched = viewModel::markWatched,
+                onMarkEarlierEpisodesWatched = viewModel::markEarlierEpisodesWatched,
+                onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openItem(item) },
+                onRemoveFromContinueWatching = viewModel::removeFromContinueWatching,
+                onOpenSettings = {
+                  previousTab = selectedTab
+                  selectedTab = MainTab.Settings
+                  setSettingsRoute(SettingsRoute.MediaServers)
+                },
+              )
+            }
+            MainTab.Library -> browseStateHolder.SaveableStateProvider("tab_library") {
+              val openItem: (MediaItem) -> Unit = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }
+              LibraryTab(
+                uiState = uiState,
+                onOpen = openItem,
+                onPlay = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openItem(item) })) openItem(item) },
+                onOpenDetails = openItem,
+                onToggleWatchlist = viewModel::toggleWatchlist,
+                onMarkWatched = viewModel::markWatched,
+                onMarkEarlierEpisodesWatched = viewModel::markEarlierEpisodesWatched,
+                onRestartFromBeginning = { item -> viewModel.restartFromBeginning(item); openItem(item) },
+                onRemoveFromContinueWatching = viewModel::removeFromContinueWatching,
+                onRefreshHandoffDevices = viewModel::refreshHandoffDevices,
+                onHandoffContinueWatching = viewModel::handoffContinueWatching,
+              )
             }
             MainTab.Watchlist -> browseStateHolder.SaveableStateProvider("tab_watchlist") {
               WatchlistTab(uiState = uiState, onOpen = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }, onToggleWatchlist = viewModel::toggleWatchlist, onMarkWatched = viewModel::markWatched, onClearWatchlist = viewModel::clearWatchlist)
@@ -15001,7 +15674,8 @@ private fun combinedContinueWatching(uiState: AppUiState): List<MediaItem> {
     }
   }
   val next = uiState.nextUpItems.takeIf { uiState.nextUpOwner == settingsOwnerKey(uiState) }.orEmpty().filterNot { item -> uiState.playbackProgressRecords.any { progressRecordSuppressesProviderItem(it, item) } }
-  return mergeNextUpContinueWatching(resume, next)
+  // Titles part-way through on a personal media server join in, once each, newest position winning.
+  return reconcileContinueWatching(mergeNextUpContinueWatching(resume, next), uiState.mediaServerContinueWatching)
     .filterNot { isLiveChannelResumeItem(it, liveChannelIds) }
 }
 
@@ -15200,7 +15874,7 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
     return
   }
 
-  val continueWatching = remember(uiState.traktContinueWatching, uiState.localContinueWatching, uiState.nextUpItems, uiState.playbackProgressRecords, uiState.favouriteChannels, uiState.m3uChannels) { combinedContinueWatching(uiState) }
+  val continueWatching = remember(uiState.traktContinueWatching, uiState.localContinueWatching, uiState.nextUpItems, uiState.playbackProgressRecords, uiState.favouriteChannels, uiState.m3uChannels, uiState.mediaServerContinueWatching) { combinedContinueWatching(uiState) }
   val rawHeroItems = remember(uiState.allHomeSections, uiState.homeSections, continueWatching, uiState.mergedWatchlist) {
     mixedHeroItems(uiState.allHomeSections.ifEmpty { uiState.homeSections }, continueWatching, uiState.mergedWatchlist)
   }
@@ -19137,7 +19811,7 @@ private fun ContinueTab(
   var filter by rememberSaveable { mutableStateOf(MediaFilter.All) }
   var columns by rememberSaveable { mutableStateOf(3) }
   var showClearConfirm by rememberSaveable { mutableStateOf(false) }
-  val allItems = remember(uiState.traktContinueWatching, uiState.localContinueWatching, uiState.nextUpItems, uiState.playbackProgressRecords, uiState.favouriteChannels, uiState.m3uChannels) { combinedContinueWatching(uiState) }
+  val allItems = remember(uiState.traktContinueWatching, uiState.localContinueWatching, uiState.nextUpItems, uiState.playbackProgressRecords, uiState.favouriteChannels, uiState.m3uChannels, uiState.mediaServerContinueWatching) { combinedContinueWatching(uiState) }
   val items = remember(allItems, filter) { allItems.filteredBy(filter) }
   val modernHeader = uiState.headerStyle == HeaderStyle.Modern
   val listState = rememberLazyListState()
@@ -19191,6 +19865,209 @@ private fun ContinueTab(
           )
         }
       }
+  }
+}
+
+/**
+ * The Plex page: the viewer's own library, in StreamDek's look.
+ *
+ * Continue Watching from Plex first, then each enabled library's Recently Added, the libraries
+ * themselves and their collections, grouped under their server when there is more than one. A server
+ * that is away says so in one compact line rather than emptying the page, and the page keeps the
+ * rows it had while it reloads, so coming back to it never shows it blank or jumps the scroll.
+ */
+@Composable
+private fun PlexTab(
+  uiState: AppUiState,
+  onLoad: (Boolean) -> Unit,
+  onOpen: (MediaItem) -> Unit,
+  onOpenCollection: (MediaItem) -> Unit,
+  onPlayContinueWatching: (MediaItem) -> Unit,
+  onViewAll: (HomeRow) -> Unit,
+  onToggleWatchlist: (MediaItem) -> Unit,
+  onMarkWatched: (MediaItem) -> Unit,
+  onMarkEarlierEpisodesWatched: (MediaItem) -> Unit,
+  onRestartFromBeginning: (MediaItem) -> Unit,
+  onRemoveFromContinueWatching: (MediaItem) -> Unit,
+  onOpenSettings: () -> Unit,
+) {
+  val state = uiState.mediaServerState
+  LaunchedEffect(state.linked) { if (state.linked) onLoad(false) }
+  val listState = rememberLazyListState()
+  ReportScrollTop { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
+  val continueItems = remember(uiState.mediaServerContinueWatching) {
+    uiState.mediaServerContinueWatching.sortedByDescending { it.lastViewedAtMs }.map { it.item }
+  }
+  val rows = remember(uiState.mediaServerPageRows) { uiState.mediaServerPageRows.filter { it.items.isNotEmpty() } }
+  val enabledServers = state.servers.filter { it.enabled }
+  val multipleServers = enabledServers.size > 1
+  val offline = enabledServers.filter { it.reachability is net.streamdek.mobile.nativeapp.mediaserver.MediaServerReachability.Offline }
+  val loading = uiState.mediaServerPageLoading || state.refreshing
+  val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+  LazyColumn(
+    state = listState,
+    modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+    contentPadding = PaddingValues(top = statusTop + 12.dp, bottom = 126.dp),
+    verticalArrangement = Arrangement.spacedBy(20.dp),
+  ) {
+    item(key = "plex-header") {
+      Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Image(painterResource(R.drawable.plex_logo), contentDescription = null, modifier = Modifier.size(40.dp).clip(CircleShape))
+        Column(Modifier.weight(1f)) {
+          Text(stringResource(R.string.media_server_plex), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+          val subtitle = listOfNotNull(state.accountName, enabledServers.takeIf { it.isNotEmpty() }?.joinToString(" · ") { it.name }).joinToString(" · ")
+          if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (loading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = PlexGold)
+        else IconButton(onClick = { onLoad(true) }) { Icon(Icons.Rounded.Refresh, contentDescription = stringResource(R.string.plex_refresh), tint = MaterialTheme.colorScheme.onBackground) }
+        IconButton(onClick = onOpenSettings) { Icon(Icons.Rounded.Settings, contentDescription = stringResource(R.string.plex_manage), tint = MaterialTheme.colorScheme.onBackground) }
+      }
+    }
+    offline.forEach { server ->
+      item(key = "plex-offline-${server.id}") {
+        val refused = (server.reachability as? net.streamdek.mobile.nativeapp.mediaserver.MediaServerReachability.Offline)?.reason == net.streamdek.mobile.nativeapp.mediaserver.OfflineReason.Unauthorized
+        Row(
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).clip(RoundedCornerShape(14.dp))
+            .background(Color(0xFFF59E0B).copy(alpha = 0.12f)).clickable(onClick = onOpenSettings).padding(horizontal = 14.dp, vertical = 10.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+          Box(Modifier.size(8.dp).background(Color(0xFFF59E0B), CircleShape))
+          Text(
+            stringResource(if (refused) R.string.plex_page_server_refused else R.string.plex_page_server_offline, server.name),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.85f),
+          )
+        }
+      }
+    }
+    if (continueItems.isNotEmpty()) {
+      item(key = "plex-continue") {
+        HomeStrip(
+          rowId = "continue", title = stringResource(R.string.plex_page_continue), items = continueItems,
+          continueWatchingStyle = uiState.continueWatchingStyle, homeCardTextMode = uiState.homeCardTextMode, liveLandscapeCards = false,
+          watchlistItems = uiState.mergedWatchlist, onOpen = onOpen, onViewAll = {}, onToggleWatchlist = onToggleWatchlist,
+          onMarkWatched = onMarkWatched, onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched, onRestartFromBeginning = onRestartFromBeginning,
+          onRemoveFromContinueWatching = onRemoveFromContinueWatching, onPlayContinueWatching = onPlayContinueWatching,
+        )
+      }
+    }
+    rows.forEachIndexed { index, row ->
+      if (multipleServers && (index == 0 || rows[index - 1].serverId != row.serverId)) {
+        item(key = "plex-server-${row.serverId}-$index") {
+          Text(row.serverName, modifier = Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = PlexGold)
+        }
+      }
+      item(key = "plex-row-$index-${row.id}") {
+        HomeStrip(
+          rowId = row.id.ifEmpty { "plex-collections-$index" }, title = row.title, items = row.items,
+          continueWatchingStyle = uiState.continueWatchingStyle, homeCardTextMode = uiState.homeCardTextMode, liveLandscapeCards = false,
+          watchlistItems = uiState.mergedWatchlist,
+          onOpen = { item -> if (item.type == "collection") onOpenCollection(item) else onOpen(item) },
+          onViewAll = { if (row.id.isNotEmpty()) onViewAll(HomeRow(row.id, row.title, row.items)) },
+          onToggleWatchlist = onToggleWatchlist, onMarkWatched = onMarkWatched, onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched,
+          onRestartFromBeginning = onRestartFromBeginning, onRemoveFromContinueWatching = onRemoveFromContinueWatching, onPlayContinueWatching = onPlayContinueWatching,
+        )
+      }
+    }
+    if (rows.isEmpty() && continueItems.isEmpty()) {
+      item(key = "plex-empty") {
+        when {
+          loading -> Box(Modifier.fillMaxWidth().padding(top = 48.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = PlexGold) }
+          offline.isNotEmpty() && offline.size == enabledServers.size -> LibraryEmptyState(
+            icon = { Icon(Icons.Rounded.CloudOff, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), modifier = Modifier.size(54.dp)) },
+            title = stringResource(R.string.plex_page_offline_title), subtitle = stringResource(R.string.plex_page_offline_note),
+          )
+          else -> LibraryEmptyState(
+            icon = { Icon(PlexIcons.Chevron, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), modifier = Modifier.size(54.dp)) },
+            title = stringResource(R.string.plex_page_empty_title), subtitle = stringResource(R.string.plex_page_empty_note),
+          )
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Library: Continue Watching and the Watchlist on one page, shown in place of those two tabs while
+ * a media server is connected so the navigation keeps its five places. In-progress titles first,
+ * then the watchlist; a title in both appears once, under Continue Watching, where it resumes.
+ */
+@Composable
+private fun LibraryTab(
+  uiState: AppUiState,
+  onOpen: (MediaItem) -> Unit,
+  onPlay: (MediaItem) -> Unit,
+  onOpenDetails: (MediaItem) -> Unit,
+  onToggleWatchlist: (MediaItem) -> Unit,
+  onMarkWatched: (MediaItem) -> Unit,
+  onMarkEarlierEpisodesWatched: (MediaItem) -> Unit,
+  onRestartFromBeginning: (MediaItem) -> Unit,
+  onRemoveFromContinueWatching: (MediaItem) -> Unit,
+  onRefreshHandoffDevices: () -> Unit,
+  onHandoffContinueWatching: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt>,
+) {
+  var filter by rememberSaveable { mutableStateOf(MediaFilter.All) }
+  var columns by rememberSaveable { mutableStateOf(3) }
+  val continueWatching = remember(uiState.traktContinueWatching, uiState.localContinueWatching, uiState.nextUpItems, uiState.playbackProgressRecords, uiState.favouriteChannels, uiState.m3uChannels, uiState.mediaServerContinueWatching) { combinedContinueWatching(uiState) }
+  val watchlist = remember(uiState.mergedWatchlist) {
+    uiState.mergedWatchlist.sortedWith(compareByDescending<MediaItem> { it.addedAt ?: Long.MIN_VALUE }.thenByDescending { it.updatedAt ?: Long.MIN_VALUE })
+  }
+  val library = remember(continueWatching, watchlist, filter) { unifiedLibrary(continueWatching.filteredBy(filter), watchlist.filteredBy(filter)) }
+  val listState = rememberLazyListState()
+  ReportScrollTop { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
+  LibraryPage(
+    title = stringResource(R.string.nav_library),
+    count = library.continueWatching.size + library.watchlist.size,
+    selectedFilter = filter,
+    onFilterChange = { filter = it },
+    columns = columns,
+    onToggleColumns = { columns = if (columns == 3) 2 else 3 },
+    style = uiState.headerStyle,
+    listState = listState,
+    trailingAction = null,
+  ) {
+    if (library.isEmpty) {
+      item(key = "library-empty") {
+        LibraryEmptyState(
+          icon = { Icon(Icons.Rounded.VideoLibrary, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), modifier = Modifier.size(54.dp)) },
+          title = stringResource(R.string.library_unified_empty), subtitle = stringResource(R.string.library_unified_empty_note),
+        )
+      }
+    }
+    if (library.continueWatching.isNotEmpty()) {
+      item(key = "library-continue-title") { LibrarySectionTitle(stringResource(R.string.library_section_continue), library.continueWatching.size) }
+      item(key = "library-continue") {
+        MediaGrid(
+          library.continueWatching, onPlay, columns = columns, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist,
+          onMarkWatched = onMarkWatched, onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched, continueWatchingActions = true,
+          onRestartFromBeginning = onRestartFromBeginning, onRemoveFromContinueWatching = onRemoveFromContinueWatching, onOpenDetails = onOpenDetails,
+          handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = onRefreshHandoffDevices, onHandoffToTv = onHandoffContinueWatching,
+        )
+      }
+    }
+    if (library.watchlist.isNotEmpty()) {
+      item(key = "library-watchlist-title") { LibrarySectionTitle(stringResource(R.string.library_section_watchlist), library.watchlist.size) }
+      item(key = "library-watchlist") {
+        MediaGrid(library.watchlist, onOpen, columns = columns, showMeta = false, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, includeRemoveAction = true, onMarkWatched = onMarkWatched)
+      }
+    }
+  }
+}
+
+@Composable
+private fun LibrarySectionTitle(title: String, count: Int) {
+  Row(
+    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+    verticalAlignment = Alignment.Bottom,
+    horizontalArrangement = Arrangement.spacedBy(8.dp),
+  ) {
+    Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+    Text(count.toString(), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f))
   }
 }
 
@@ -19542,6 +20419,9 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
     playlistGroup?.let { group -> playlistVod.filter { it.sourceCatalogName == group } } ?: playlistVod
   }
   val hasPlaylistMatches = visiblePlaylistLive.isNotEmpty() || visiblePlaylistVod.isNotEmpty()
+  val mediaServerMatches = remember(uiState.mediaServerSearchResults, filter) {
+    uiState.mediaServerSearchResults.filteredBy(filter)
+  }
   val addonMatches = remember(uiState.addonSearchResults) {
     uiState.addonSearchResults.distinctBy { "${it.type}-${it.id}" }
   }
@@ -19672,7 +20552,7 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
   val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
   var classicHeaderHeight by remember { mutableStateOf(220.dp) }
   var sectionSlotHeight by remember { mutableStateOf(100.dp) }
-  val resultsPopulated = query.isNotBlank() && (uiState.searchResults.isNotEmpty() || hasPlaylistMatches || addonMatches.isNotEmpty())
+  val resultsPopulated = query.isNotBlank() && (uiState.searchResults.isNotEmpty() || hasPlaylistMatches || addonMatches.isNotEmpty() || mediaServerMatches.isNotEmpty())
   // Discover and Results both pin beneath the search field; Discover sits after Recent searches.
   val sectionSlotIndex = if (query.isBlank() && recentSearches.isNotEmpty()) 1 else 0
   val sectionPins = query.isBlank() || resultsPopulated
@@ -19736,11 +20616,20 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
     } else {
       // Reserve the original section's space; animation never changes grid geometry.
       item(key = "search-results-header") { Spacer(Modifier.height(sectionSlotHeight)) }
+      // The viewer's own library first, labelled with where it is: a match there plays from home.
+      if (mediaServerMatches.isNotEmpty()) {
+        item(key = "media-server-results") {
+          PlaylistResultsHeader(mediaServerMatches.first().sourceAddonName ?: stringResource(R.string.media_server_plex), mediaServerMatches.size)
+        }
+        item(key = "media-server-grid") {
+          MediaGrid(mediaServerMatches.take(60), onOpen, columns = columns, showMeta = true, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched)
+        }
+      }
       when {
-        uiState.searchLoading && searchResults.isEmpty() && !hasPlaylistMatches && addonMatches.isEmpty() && pluginMatches.isEmpty() -> {
+        uiState.searchLoading && searchResults.isEmpty() && !hasPlaylistMatches && addonMatches.isEmpty() && pluginMatches.isEmpty() && mediaServerMatches.isEmpty() -> {
           item { SearchGridSkeleton(columns = columns) }
         }
-        searchResults.isEmpty() && !hasPlaylistMatches && addonMatches.isEmpty() && pluginMatches.isEmpty() &&
+        searchResults.isEmpty() && !hasPlaylistMatches && addonMatches.isEmpty() && pluginMatches.isEmpty() && mediaServerMatches.isEmpty() &&
           !uiState.addonSearchLoading && !uiState.pluginSearch.loading -> {
           item {
             LibraryEmptyState(
@@ -21663,6 +22552,9 @@ private fun SettingsTab(
       }
       item {
         SettingsSection(stringResource(R.string.settings_m_sources)) {
+          // The viewer's own library first: it is where people look for "add a source".
+          PlexSettingsNavRow(uiState.mediaServerState, onClick = { onRouteChange(SettingsRoute.MediaServers) })
+          SettingsDivider()
           SettingsNavRow("+", Color(0xFF22C55E), stringResource(R.string.settings_m_add_ons), stringResource(R.string.settings_summary_addons, uiState.addons.count { it.enabled }, uiState.addons.sumOf { supportedHomeCatalogCount(it) }), onClick = { onRouteChange(SettingsRoute.Addons) })
           SettingsDivider()
           SettingsNavRow("JS", Color(0xFFF59E0B), stringResource(R.string.settings_m_plugins), pluralStringResource(R.plurals.settings_summary_streaming_sources, enabledStreamingSourceCount(), enabledStreamingSourceCount()), onClick = { onRouteChange(SettingsRoute.Plugins) })
@@ -22385,6 +23277,15 @@ private fun SettingsTab(
           }
         }
         SettingsRoute.Plugins -> item { PluginsSettingsSummary(uiState.pluginsLoading, onRefreshPlugins, highlightedSources = highlightedPluginSources, onHighlightShown = { highlightedPluginSources = emptyList() }) }
+        SettingsRoute.MediaServers -> item {
+          MediaServerSettingsPage(
+            manager = playerSettingsViewModel.mediaServers,
+            signedIn = uiState.session != null,
+            remoteQualityKbps = playerSettingsViewModel::mediaServerRemoteQualityKbps,
+            onRemoteQualityChange = playerSettingsViewModel::setMediaServerRemoteQualityKbps,
+            onMessage = playerSettingsViewModel::showMediaServerMessage,
+          )
+        }
         SettingsRoute.ContentServices -> item {
           ContentServicesSettings(
             state = uiState.contentServices,

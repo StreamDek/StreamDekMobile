@@ -55,6 +55,10 @@ class MainApplication : Application(), ImageLoaderFactory {
         // Deep enough that those parallel requests reuse connections instead of paying a TLS
         // handshake each, and idle long enough to still be warm when the next row scrolls in.
         .connectionPool(okhttp3.ConnectionPool(32, 5, TimeUnit.MINUTES))
+        // Artwork from the viewer's own media server is fetched with that server's token as a
+        // header, added here per request - so the token is never in an image URL, and never in
+        // the image cache's keys. See MediaServerAuth.
+        .addNetworkInterceptor(net.streamdek.mobile.nativeapp.mediaserver.MediaServerAuth.interceptor)
         .build()
     }
     .memoryCache {

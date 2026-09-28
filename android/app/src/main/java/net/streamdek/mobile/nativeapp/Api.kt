@@ -656,6 +656,14 @@ class StreamDekApiClient(context: Context? = null) {
   private val clientIdentity = appContext?.let { ClientIdentityStore(it).load() }
 
   /**
+   * This phone's stable id and display name, for a media server's client headers. The id is the
+   * same one StreamDek already uses for the device, so Plex's "Authorized Devices" lists the phone
+   * once however many times it links.
+   */
+  val mediaServerDeviceIdentity: Pair<String, String>?
+    get() = clientIdentity?.let { it.deviceId to it.deviceName }
+
+  /**
    * The session store, so the HTTP layer can renew a token and clear a suspended session without
    * every call site having to be taught about either.
    */
@@ -3247,6 +3255,40 @@ class StreamDekApiClient(context: Context? = null) {
     }
   }
 
+  /**
+   * One call to the personal media server routes (`/media-servers/...`), for MediaServerManager.
+   *
+   * Answers with the body of a successful response and null for anything else. Kept to one
+   * generic call because the manager, not this client, owns what those routes mean, and the same
+   * manager runs on the television against that app's own client.
+   *
+   * The body of a server list carries per-server tokens, so nothing here logs a response.
+   */
+  suspend fun mediaServerRequest(
+    session: AuthSession,
+    profileId: String?,
+    method: String,
+    path: String,
+    body: Map<String, Any?>?,
+  ): String? = withContext(Dispatchers.IO) {
+    runCatching {
+      val payload = body?.let { com.google.gson.Gson().toJson(it) }
+      val requestBody = when {
+        payload != null -> payload.toRequestBody(jsonMediaType)
+        method == "GET" -> null
+        else -> "{}".toRequestBody(jsonMediaType)
+      }
+      val response = execute(
+        Request.Builder()
+          .url("$apiBaseUrl$path")
+          .method(method, requestBody)
+          .headers(authHeaders(session, profileId = profileId))
+          .build(),
+      )
+      if (response.ok) response.json.toString() else null
+    }.getOrNull()
+  }
+
   suspend fun fetchTraktStatus(session: AuthSession, profileId: String): Result<TraktStatus> = withContext(Dispatchers.IO) {
     runCatching {
       val response = execute(
@@ -3909,7 +3951,8 @@ class StreamDekApiClient(context: Context? = null) {
         .put("size", stream?.size ?: player.sizeLabel)
         .put("bingeGroup", stream?.bingeGroup)
         .put("source", stream?.source)
-        .put("requestHeaders", JSONObject(player.requestHeaders))
+        // A media server's token never travels in a hand-off; the television reaches its own copy.
+        .put("requestHeaders", JSONObject(withoutMediaServerHeaders(player.requestHeaders)))
       val payload = JSONObject()
         .put("mediaId", player.mediaId)
         .put("mediaType", player.mediaType)

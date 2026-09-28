@@ -104,12 +104,28 @@ object Telemetry {
   // ── Emission ────────────────────────────────────────────────────────────────
 
   fun contentOpened(mediaId: String?, mediaType: String?, title: String?) {
+    val personal = isPersonalMedia(mediaId)
     track(CONTENT_OPENED) {
-      putOpt("mediaId", mediaId)
+      putOpt("mediaId", if (personal) PERSONAL_MEDIA else mediaId)
       putOpt("mediaType", normaliseMediaType(mediaType))
-      putOpt("mediaTitle", title)
+      if (!personal) putOpt("mediaTitle", title)
     }
   }
+
+  /**
+   * Whether a title comes from the viewer's own media server (Plex). Such a title's id names their
+   * server and an item in their private library, and its title is what they keep at home - none of
+   * it is sent. The event still counts, as "personal media", so playback health stays measurable.
+   */
+  private fun isPersonalMedia(mediaId: String?): Boolean = isMediaServerId(mediaId)
+
+  /** An add-on key, with a media server's own identity reduced to its provider. */
+  private fun safeAddonKey(addonKey: String?): String? =
+    if (addonKey?.startsWith(net.streamdek.mobile.nativeapp.mediaserver.MediaServerReference.SOURCE_PREFIX) == true) {
+      net.streamdek.mobile.nativeapp.mediaserver.MediaServerReference.SOURCE_PREFIX + addonKey.removePrefix(net.streamdek.mobile.nativeapp.mediaserver.MediaServerReference.SOURCE_PREFIX).substringBefore(':')
+    } else addonKey
+
+  private const val PERSONAL_MEDIA = "personal-media"
 
   /**
    * A search and how many results it produced.
@@ -135,12 +151,13 @@ object Telemetry {
     durationMs: Long?,
     sourcesTried: Int,
   ) {
+    val personal = isPersonalMedia(mediaId)
     track(PLAYBACK_STARTED) {
       putOpt("correlationId", correlationId)
-      putOpt("mediaId", mediaId)
+      putOpt("mediaId", if (personal) PERSONAL_MEDIA else mediaId)
       putOpt("mediaType", normaliseMediaType(mediaType))
-      putOpt("mediaTitle", title)
-      putOpt("addonKey", addonKey)
+      if (!personal) putOpt("mediaTitle", title)
+      putOpt("addonKey", safeAddonKey(addonKey))
       putOpt("provider", provider)
       put("outcome", "success")
       durationMs?.let { put("durationMs", it.coerceIn(0L, Int.MAX_VALUE.toLong())) }
@@ -169,12 +186,13 @@ object Telemetry {
     durationMs: Long?,
     sourcesTried: Int,
   ) {
+    val personal = isPersonalMedia(mediaId)
     track(PLAYBACK_FAILED) {
       putOpt("correlationId", correlationId)
-      putOpt("mediaId", mediaId)
+      putOpt("mediaId", if (personal) PERSONAL_MEDIA else mediaId)
       putOpt("mediaType", normaliseMediaType(mediaType))
-      putOpt("mediaTitle", title)
-      putOpt("addonKey", addonKey)
+      if (!personal) putOpt("mediaTitle", title)
+      putOpt("addonKey", safeAddonKey(addonKey))
       putOpt("provider", provider)
       put("outcome", "failure")
       put("errorCategory", errorCategory)

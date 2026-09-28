@@ -7,6 +7,7 @@ package net.streamdek.mobile.nativeapp
  * StreamDekNativeApp.kt's is at the JVM's class-size limit.
  */
 internal fun settingsRouteKeywords(route: SettingsRoute): String = when (route) {
+  SettingsRoute.MediaServers -> "plex media server personal library libraries own nas home server link account plex.tv jellyfin emby remote quality transcode"
   SettingsRoute.Player -> "player engine mpv media3 exoplayer pip picture in picture floating " +
     "gesture gestures hold speed swipe seek scrub brightness volume level dim loudness " +
     "controls labels layout status bar title"

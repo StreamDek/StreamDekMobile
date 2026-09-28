@@ -1951,7 +1951,7 @@
   <string name="plex_browse_empty">Na razie nic tu nie ma</string>
   <string name="plex_page_section">Strona Plex</string>
   <string name="plex_ambient">Kolor otoczenia</string>
-  <string name="plex_ambient_detail">Delikatna fioletowa, niebieska, czerwona i zielona poświata za stroną Plex</string>
+  <string name="plex_ambient_detail">Delikatna fioletowa, niebieska, czerwona i zielona poświata za stroną i listami Plex</string>
   <string name="plex_search_badge">Z Plex</string>
   <string name="plex_title_unavailable">Serwer Plex z tym tytułem nie odpowiada. Spróbuj ponownie, gdy wróci.</string>
   <string name="plex_open_link">Otwórz plex.tv/link</string>

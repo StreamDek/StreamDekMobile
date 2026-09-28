@@ -1855,7 +1855,7 @@
   <string name="plex_browse_empty">Nada aqui ainda</string>
   <string name="plex_page_section">Página do Plex</string>
   <string name="plex_ambient">Cor ambiente</string>
-  <string name="plex_ambient_detail">Um brilho suave roxo, azul, vermelho e verde atrás da página do Plex</string>
+  <string name="plex_ambient_detail">Um brilho suave roxo, azul, vermelho e verde atrás da página e das listas do Plex</string>
   <string name="plex_search_badge">Do Plex</string>
   <string name="plex_title_unavailable">O servidor Plex com este título não está respondendo. Tente novamente quando ele voltar.</string>
   <string name="plex_open_link">Abrir plex.tv/link</string>

@@ -15332,7 +15332,7 @@ private fun MainScene(
           }
         } else if (browseRow != null) {
           browseStateHolder.SaveableStateProvider("browse_row_${browseRow.id}") {
-            BrowseSectionScreen(row = browseRow, loadedItems = uiState.browseLoadedItems, returnItemId = uiState.browseReturnItemId, headerStyle = uiState.headerStyle, lastWatchedChannel = uiState.lastWatchedLiveChannel(), networkCardStyle = uiState.networkCardStyle, liveLandscapeCards = uiState.liveLandscapeCards, categoriesEnabled = uiState.liveCategoriesEnabled, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel, onBack = { viewModel.setBrowseRow(null) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { viewModel.rememberBrowseReturnItem(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onToggleWatchlist = viewModel::toggleWatchlist, onToggleFavourite = viewModel::toggleFavouriteChannel, onClearFavourites = viewModel::clearFavouriteChannels, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, onMarkWatched = viewModel::markWatched, pageableRowIds = pageableCatalogRowIds(uiState.catalogDefinitions) + setOfNotNull(browseRow.id.takeIf(::isMediaServerBrowseRowId)), onLoadMore = viewModel::loadMoreRowItems)
+            BrowseSectionScreen(row = browseRow, loadedItems = uiState.browseLoadedItems, returnItemId = uiState.browseReturnItemId, headerStyle = uiState.headerStyle, lastWatchedChannel = uiState.lastWatchedLiveChannel(), networkCardStyle = uiState.networkCardStyle, liveLandscapeCards = uiState.liveLandscapeCards, categoriesEnabled = uiState.liveCategoriesEnabled, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel, onBack = { viewModel.setBrowseRow(null) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { viewModel.rememberBrowseReturnItem(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onToggleWatchlist = viewModel::toggleWatchlist, onToggleFavourite = viewModel::toggleFavouriteChannel, onClearFavourites = viewModel::clearFavouriteChannels, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, onMarkWatched = viewModel::markWatched, pageableRowIds = pageableCatalogRowIds(uiState.catalogDefinitions) + setOfNotNull(browseRow.id.takeIf(::isMediaServerBrowseRowId)), onLoadMore = viewModel::loadMoreRowItems, plexAmbient = viewModel.plexAmbientEnabled)
           }
         } else {
           AnimatedContent(
@@ -17973,7 +17973,7 @@ private enum class BrowseItemKind(
 }
 
 @Composable
-private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, returnItemId: String?, headerStyle: HeaderStyle, lastWatchedChannel: MediaItem? = null, networkCardStyle: NetworkCardStyle = NetworkCardStyle.Branded, liveLandscapeCards: Boolean, categoriesEnabled: Boolean = true, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onBack: () -> Unit, onOpen: (MediaItem) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onClearFavourites: () -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, pageableRowIds: Set<String> = emptySet(), onLoadMore: (suspend (String, MediaItem?, Int) -> List<MediaItem>)? = null) {
+private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, returnItemId: String?, headerStyle: HeaderStyle, lastWatchedChannel: MediaItem? = null, networkCardStyle: NetworkCardStyle = NetworkCardStyle.Branded, liveLandscapeCards: Boolean, categoriesEnabled: Boolean = true, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onBack: () -> Unit, onOpen: (MediaItem) -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onClearFavourites: () -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, pageableRowIds: Set<String> = emptySet(), onLoadMore: (suspend (String, MediaItem?, Int) -> List<MediaItem>)? = null, plexAmbient: Boolean = false) {
   fun isFavourite(item: MediaItem): Boolean = favouriteItems.hasFavouriteChannel(item)
   var filter by rememberSaveable(row.id) { mutableStateOf(MediaFilter.All) }
   var layout by rememberSaveable(row.id) { mutableStateOf(BrowseLayout.Cards3) }
@@ -18289,7 +18289,10 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
       modifier = Modifier
         .fillMaxSize()
         .background(MaterialTheme.colorScheme.background)
-        .glassSource(browseHazeState),
+        .glassSource(browseHazeState)
+        // A Plex list wears the Plex page's colour wash when that is switched on, inside the glass
+        // source so the header's glass carries it too.
+        .then(if (plexAmbient && isMediaServerBrowseRowId(row.id)) Modifier.plexAmbientGlow() else Modifier),
       contentPadding = run {
         val sideMargin = if (showsList) 20.dp else MediaGridSideMargin
         if (sideHeader) {
@@ -21075,8 +21078,16 @@ private fun ScrollAwareHeaderScope.HeaderSearchField(
     },
     leadingIcon = {
       if (leadingBadge == null) Icon(Icons.Rounded.Search, contentDescription = null)
-      else Row(modifier = Modifier.padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        leadingBadge()
+      else Row(verticalAlignment = Alignment.CenterVertically) {
+        // Only once the header has condensed to the field: the full header already says whose
+        // list this is, and the badge takes over that job when the header's title has gone.
+        androidx.compose.animation.AnimatedVisibility(
+          visible = compacted,
+          enter = fadeIn() + androidx.compose.animation.expandHorizontally(expandFrom = Alignment.Start),
+          exit = fadeOut() + androidx.compose.animation.shrinkHorizontally(shrinkTowards = Alignment.Start),
+        ) {
+          Box(modifier = Modifier.padding(start = 12.dp, end = 8.dp)) { leadingBadge() }
+        }
         Icon(Icons.Rounded.Search, contentDescription = null)
       }
     },

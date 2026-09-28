@@ -39,6 +39,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -92,51 +93,50 @@ private fun LazyListState.condenseProgress(distancePx: Float): Float =
   if (firstVisibleItemIndex > 0) 1f else (firstVisibleItemScrollOffset / distancePx).coerceIn(0f, 1f)
 
 /**
- * The Plex page's colour wash: purple, blue, red and green fields of light drifting slowly behind
- * the page, under the header's glass so the blur picks them up. Quieter on a light theme, and still
- * when the app's reduced-motion setting is on.
+ * The Plex colour wash: purple, blue, red and green fields of light drifting slowly behind a Plex
+ * page. Drawn by this modifier behind the node's content - put it after the page's glass source so
+ * the header's glass picks it up. Quieter on a light theme, and still when the app's reduced-motion
+ * setting is on. The drift is read while drawing, so it redraws the wash and recomposes nothing.
  */
 @Composable
-private fun PlexAmbientBackground(modifier: Modifier = Modifier) {
+internal fun Modifier.plexAmbientGlow(): Modifier {
   val motionless = LocalMotionSettings.current.motionless
   val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
   val strength = if (dark) 0.34f else 0.18f
-  val drift = if (motionless) {
-    0.5f
+  val drift: State<Float> = if (motionless) {
+    remember { mutableFloatStateOf(0.5f) }
   } else {
-    val transition = rememberInfiniteTransition(label = "plexAmbient")
-    val value by transition.animateFloat(
+    rememberInfiniteTransition(label = "plexAmbient").animateFloat(
       initialValue = 0f,
       targetValue = 1f,
       animationSpec = infiniteRepeatable(tween(durationMillis = 18_000, easing = LinearEasing), RepeatMode.Reverse),
       label = "plexAmbientDrift",
     )
-    value
   }
-  val purple = Color(0xFF8B5CF6)
-  val blue = Color(0xFF3B82F6)
-  val red = Color(0xFFEF4444)
-  val green = Color(0xFF22C55E)
-  Box(
-    modifier = modifier.fillMaxSize().drawBehind {
-      val w = size.width
-      val h = size.height
-      val radius = maxOf(w, h) * 0.55f
-      fun glow(color: Color, x: Float, y: Float, scale: Float = 1f) {
-        val center = Offset(x * w, y * h)
-        drawCircle(
-          brush = Brush.radialGradient(listOf(color.copy(alpha = strength), color.copy(alpha = 0f)), center = center, radius = radius * scale),
-          radius = radius * scale,
-          center = center,
-        )
-      }
-      glow(purple, 0.10f + 0.10f * drift, 0.06f + 0.05f * drift, 1.05f)
-      glow(blue, 0.92f - 0.08f * drift, 0.12f + 0.08f * drift)
-      glow(red, 0.18f + 0.06f * drift, 0.58f - 0.07f * drift, 0.9f)
-      glow(green, 0.86f - 0.10f * drift, 0.78f - 0.05f * drift, 0.95f)
-    },
-  )
+  return drawBehind {
+    val d = drift.value
+    val w = size.width
+    val h = size.height
+    val radius = maxOf(w, h) * 0.55f
+    fun glow(color: Color, x: Float, y: Float, scale: Float = 1f) {
+      val center = Offset(x * w, y * h)
+      drawCircle(
+        brush = Brush.radialGradient(listOf(color.copy(alpha = strength), color.copy(alpha = 0f)), center = center, radius = radius * scale),
+        radius = radius * scale,
+        center = center,
+      )
+    }
+    glow(PlexAmbientPurple, 0.10f + 0.10f * d, 0.06f + 0.05f * d, 1.05f)
+    glow(PlexAmbientBlue, 0.92f - 0.08f * d, 0.12f + 0.08f * d)
+    glow(PlexAmbientRed, 0.18f + 0.06f * d, 0.58f - 0.07f * d, 0.9f)
+    glow(PlexAmbientGreen, 0.86f - 0.10f * d, 0.78f - 0.05f * d, 0.95f)
+  }
 }
+
+private val PlexAmbientPurple = Color(0xFF8B5CF6)
+private val PlexAmbientBlue = Color(0xFF3B82F6)
+private val PlexAmbientRed = Color(0xFFEF4444)
+private val PlexAmbientGreen = Color(0xFF22C55E)
 
 /**
  * The Plex page: the viewer's own library, in StreamDek's look.
@@ -183,7 +183,6 @@ internal fun PlexTab(
   val loading = pageLoading || state.refreshing
   val density = LocalDensity.current
   val hazeState = rememberHazeState()
-  val headerScope = remember { ScrollAwareHeaderScope() }
   val condensePx = with(density) { CondenseDistance.toPx() }
   var headerHeight by remember { mutableStateOf(120.dp) }
   // Derived, so scrolling recomposes only on the frame the page leaves or returns to the top.
@@ -192,7 +191,7 @@ internal fun PlexTab(
   Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
     // The glass samples everything in here, the colour wash included.
     Box(modifier = Modifier.fillMaxSize().glassSource(hazeState)) {
-      if (ambient) PlexAmbientBackground()
+      if (ambient) Box(Modifier.fillMaxSize().plexAmbientGlow())
       LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
@@ -267,22 +266,23 @@ internal fun PlexTab(
     if (scrolled) {
       ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f))
     }
-    // Nothing behind the header at the top of the page: it sits straight on the page's colour. The
-    // glass pill forms around the title row only as the page scrolls, and fades back out on return.
-    ScrollAwareHeader(
-      surface = ScrollAwareHeaderSurface.Solid(Color.Transparent, pillAroundAnchor = true, hazeState = hazeState),
-      modifier = Modifier.align(Alignment.TopCenter).zIndex(5f).fillMaxWidth().statusBarsPadding()
-        .onSizeChanged { size -> headerHeight = maxOf(headerHeight, with(density) { size.height.toDp() }) },
-      keepAnchorVisible = true,
-      contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
-      // Room inside the pill around the row, so it does not end at the title's letters.
-      anchorPaddingHorizontal = 12.dp,
-      anchorPaddingVertical = 6.dp,
-      headerScope = headerScope,
-      fractionOverride = { listState.condenseProgress(condensePx) },
+    // Nothing behind the header at the top of the page: it sits straight on the page and its colour.
+    // As the page scrolls a glass pill fades in behind the row - the same glass as Search, frosted in
+    // the Modern style and dark in the Default one - and fades back out at the top.
+    Box(
+      modifier = Modifier.align(Alignment.TopCenter).zIndex(5f).fillMaxWidth()
+        .onSizeChanged { size -> headerHeight = with(density) { size.height.toDp() } }
+        .statusBarsPadding()
+        .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
     ) {
+      HeaderGlassSurface(
+        hazeState = hazeState,
+        shape = RoundedCornerShape(26.dp),
+        darkInDarkTheme = headerStyle != HeaderStyle.Modern,
+        modifier = Modifier.matchParentSize().graphicsLayer { alpha = listState.condenseProgress(condensePx) },
+      )
       Row(
-        modifier = Modifier.fillMaxWidth().compactAnchor(),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
       ) {

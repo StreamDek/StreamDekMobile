@@ -1841,7 +1841,7 @@
   <string name="plex_browse_empty">Hier staat nog niets</string>
   <string name="plex_page_section">Plex-pagina</string>
   <string name="plex_ambient">Sfeerkleur</string>
-  <string name="plex_ambient_detail">Een zachte paarse, blauwe, rode en groene gloed achter de Plex-pagina</string>
+  <string name="plex_ambient_detail">Een zachte paarse, blauwe, rode en groene gloed achter de Plex-pagina en Plex-lijsten</string>
   <string name="plex_search_badge">Uit Plex</string>
   <string name="plex_title_unavailable">De Plex-server met deze titel reageert niet. Probeer het opnieuw zodra hij terug is.</string>
   <string name="plex_open_link">plex.tv/link openen</string>

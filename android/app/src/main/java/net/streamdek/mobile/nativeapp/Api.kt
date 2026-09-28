@@ -3285,7 +3285,13 @@ class StreamDekApiClient(context: Context? = null) {
           .headers(authHeaders(session, profileId = profileId))
           .build(),
       )
+      if (!response.ok) {
+        // Status and route only: a media server response can carry a server token, so no body.
+        android.util.Log.w("StreamDekMediaServers", "$method ${path.substringBefore('?')} answered ${response.statusCode}")
+      }
       if (response.ok) response.json.toString() else null
+    }.onFailure { error ->
+      android.util.Log.w("StreamDekMediaServers", "$method ${path.substringBefore('?')} failed: ${error.javaClass.simpleName}")
     }.getOrNull()
   }
 

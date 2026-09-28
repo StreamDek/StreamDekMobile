@@ -438,7 +438,7 @@ private enum class SeasonTabStyle { Regular, Posters }
  * already knows how to do.
  */
 private enum class EpisodeLayout { Strip, Stack }
-private enum class ContinueWatchingStyle { Cinematic, Glass, Ticket, Mini, Stacked }
+internal enum class ContinueWatchingStyle { Cinematic, Glass, Ticket, Mini, Stacked }
 
 /**
  * How the Streaming Networks row draws its cards.
@@ -448,7 +448,7 @@ private enum class ContinueWatchingStyle { Cinematic, Glass, Ticket, Mini, Stack
  * because the artwork already carries the wordmark. A service with no bundled tile still draws in
  * the branded shape -- its logo centred on a dark tile -- so a row never mixes card heights.
  */
-private enum class NetworkCardStyle { Classic, Branded }
+internal enum class NetworkCardStyle { Classic, Branded }
 
 /**
  * How artwork appears behind a page.
@@ -622,7 +622,7 @@ internal fun backgroundModeDescription(mode: BackgroundMode): String = stringRes
   }
 )
 private enum class AppAppearance { System, Dark, Light }
-private enum class HeaderStyle { Classic, Modern }
+internal enum class HeaderStyle { Classic, Modern }
 
 // Public because it appears in PlayerSession, which is public.
 data class UserSubtitleSource(
@@ -722,7 +722,7 @@ private fun settingsOwnerKey(uiState: AppUiState): String {
  * The pills used to draw `option.name` - the Kotlin constant - so they read English whatever the
  * app was set to, and renaming a constant would have renamed the button.
  */
-private enum class MediaFilter(@StringRes val labelRes: Int) {
+internal enum class MediaFilter(@StringRes val labelRes: Int) {
   All(R.string.search_filter_all),
   Movies(R.string.search_filter_movies),
   Series(R.string.search_filter_series),
@@ -1441,10 +1441,7 @@ internal data class UpdateMessage(@StringRes val textRes: Int, val arg: String? 
   @Composable fun resolve(): String = arg?.let { stringResource(textRes, it) } ?: stringResource(textRes)
 }
 
-/** A browsable row holding one media server collection's titles; the rest of the id is the collection's card id. */
-private const val MEDIA_SERVER_COLLECTION_ROW_PREFIX = "mediaserver-collection:"
-
-private data class HomeRow(
+internal data class HomeRow(
   val id: String,
   val title: String,
   val items: List<MediaItem>,
@@ -3854,6 +3851,15 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   /** Upper bound for anything not on the local network, in kbps; null is original quality. Kept on the device. */
   fun mediaServerRemoteQualityKbps(): Int? = mediaServerPrefs.getInt("remoteMaxKbps", 0).takeIf { it > 0 }
+
+  /** The Plex page's colour wash. On by default; kept on this device. */
+  var plexAmbientEnabled by mutableStateOf(application.getSharedPreferences("streamdek_media_servers", android.content.Context.MODE_PRIVATE).getBoolean("plexAmbient", true))
+    private set
+
+  fun changePlexAmbient(enabled: Boolean) {
+    plexAmbientEnabled = enabled
+    mediaServerPrefs.edit().putBoolean("plexAmbient", enabled).apply()
+  }
 
   fun showMediaServerMessage(message: String) {
     uiState = uiState.copy(infoMessage = message, errorMessage = null)
@@ -15325,7 +15331,7 @@ private fun MainScene(
           }
         } else if (browseRow != null) {
           browseStateHolder.SaveableStateProvider("browse_row_${browseRow.id}") {
-            BrowseSectionScreen(row = browseRow, loadedItems = uiState.browseLoadedItems, returnItemId = uiState.browseReturnItemId, headerStyle = uiState.headerStyle, lastWatchedChannel = uiState.lastWatchedLiveChannel(), networkCardStyle = uiState.networkCardStyle, liveLandscapeCards = uiState.liveLandscapeCards, categoriesEnabled = uiState.liveCategoriesEnabled, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel, onBack = { viewModel.setBrowseRow(null) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { viewModel.rememberBrowseReturnItem(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onToggleWatchlist = viewModel::toggleWatchlist, onToggleFavourite = viewModel::toggleFavouriteChannel, onClearFavourites = viewModel::clearFavouriteChannels, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, onMarkWatched = viewModel::markWatched, pageableRowIds = pageableCatalogRowIds(uiState.catalogDefinitions), onLoadMore = viewModel::loadMoreRowItems)
+            BrowseSectionScreen(row = browseRow, loadedItems = uiState.browseLoadedItems, returnItemId = uiState.browseReturnItemId, headerStyle = uiState.headerStyle, lastWatchedChannel = uiState.lastWatchedLiveChannel(), networkCardStyle = uiState.networkCardStyle, liveLandscapeCards = uiState.liveLandscapeCards, categoriesEnabled = uiState.liveCategoriesEnabled, watchlistItems = uiState.mergedWatchlist, favouriteItems = uiState.favouriteChannels, addons = uiState.addons, handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = viewModel::refreshHandoffDevices, onHandoffLive = viewModel::handoffLiveChannel, onBack = { viewModel.setBrowseRow(null) }, onOpen = { item -> if (item.type == "network") viewModel.setNetworkBrowseItem(item) else { viewModel.rememberBrowseReturnItem(item); openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) } }, onToggleWatchlist = viewModel::toggleWatchlist, onToggleFavourite = viewModel::toggleFavouriteChannel, onClearFavourites = viewModel::clearFavouriteChannels, onEnableAddon = { addon -> viewModel.toggleAddon(addon, true) }, onMarkWatched = viewModel::markWatched, pageableRowIds = pageableCatalogRowIds(uiState.catalogDefinitions) + setOfNotNull(browseRow.id.takeIf(::isMediaServerBrowseRowId)), onLoadMore = viewModel::loadMoreRowItems)
           }
         } else {
           AnimatedContent(
@@ -15353,7 +15359,15 @@ private fun MainScene(
             MainTab.Plex -> browseStateHolder.SaveableStateProvider("tab_plex") {
               val openItem: (MediaItem) -> Unit = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }
               PlexTab(
-                uiState = uiState,
+                state = uiState.mediaServerState,
+                serverContinueWatching = uiState.mediaServerContinueWatching,
+                pageRows = uiState.mediaServerPageRows,
+                pageLoading = uiState.mediaServerPageLoading,
+                continueWatchingStyle = uiState.continueWatchingStyle,
+                homeCardTextMode = uiState.homeCardTextMode,
+                watchlist = uiState.mergedWatchlist,
+                headerStyle = uiState.headerStyle,
+                ambient = viewModel.plexAmbientEnabled,
                 onLoad = viewModel::loadMediaServerPage,
                 onOpen = openItem,
                 onOpenCollection = viewModel::openMediaServerCollection,
@@ -15373,8 +15387,12 @@ private fun MainScene(
             }
             MainTab.Library -> browseStateHolder.SaveableStateProvider("tab_library") {
               val openItem: (MediaItem) -> Unit = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }
+              val libraryContinue = remember(uiState.traktContinueWatching, uiState.localContinueWatching, uiState.nextUpItems, uiState.playbackProgressRecords, uiState.favouriteChannels, uiState.m3uChannels, uiState.mediaServerContinueWatching) { combinedContinueWatching(uiState) }
               LibraryTab(
-                uiState = uiState,
+                continueWatching = libraryContinue,
+                watchlistItems = uiState.mergedWatchlist,
+                headerStyle = uiState.headerStyle,
+                handoffDevices = uiState.handoffDevices,
                 onOpen = openItem,
                 onPlay = { item -> if (!viewModel.resumeContinueWatching(item, onUnavailable = { openItem(item) })) openItem(item) },
                 onOpenDetails = openItem,
@@ -18236,6 +18254,8 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
     else -> BrowseItemKind.Titles
   }
   val headerTitle = selectedCategory ?: row.title
+  // A list from the viewer's own Plex server says so, in its search field, where it stays in view.
+  val plexSearchBadge: (@Composable () -> Unit)? = if (isMediaServerBrowseRowId(row.id)) ({ PlexSearchBadge() }) else null
   val headerCount = when {
     showCategoryGrid -> stringResource(
       R.string.browse_categories_and_items,
@@ -18383,6 +18403,7 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
           },
           onClearAll = clearFavouritesAction,
           clearAllDescription = "Clear Live Favourites",
+          searchBadge = plexSearchBadge,
           layoutButtonHazeState = browseHazeState,
         )
       }
@@ -18423,6 +18444,7 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
           },
           onClearAll = clearFavouritesAction,
           clearAllDescription = "Clear Live Favourites",
+          searchBadge = plexSearchBadge,
           layoutButtonHazeState = null,
         )
         }
@@ -18486,6 +18508,7 @@ private fun ScrollAwareHeaderScope.BrowseSectionHeaderContent(
   onUpNavigate: (() -> Unit)? = null,
   showLayoutToggle: Boolean = true,
   layoutButtonHazeState: HazeState? = null,
+  searchBadge: (@Composable () -> Unit)? = null,
 ) {
   // The layout button stays when the rest of the title row goes, coming down beside the search field
   // as it narrows — the same movement as a network's page.
@@ -18543,6 +18566,7 @@ private fun ScrollAwareHeaderScope.BrowseSectionHeaderContent(
         compactPlaceholder = stringResource(R.string.hint_search_named_list, title),
         compactTrailingLabel = countLabel,
         yieldsToJoinedControl = showLayoutToggle,
+        leadingBadge = searchBadge,
       )
     }
     if (showFilters) {
@@ -18745,7 +18769,7 @@ private fun NetworkHomeCard(item: MediaItem, sports: Boolean = false, branded: B
 }
 
 @Composable
-private fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, continueWatchingStyle: ContinueWatchingStyle, homeCardTextMode: HomeCardTextMode, networkCardStyle: NetworkCardStyle = NetworkCardStyle.Branded, liveLandscapeCards: Boolean, newEpisodesLandscape: Boolean = true, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onHandoffContinueWatching: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onOpen: (MediaItem) -> Unit, onViewAll: () -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, onMarkEarlierEpisodesWatched: (MediaItem) -> Unit, onRestartFromBeginning: (MediaItem) -> Unit, onRemoveFromContinueWatching: (MediaItem) -> Unit = {}, onPlayContinueWatching: (MediaItem) -> Unit) {
+internal fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, continueWatchingStyle: ContinueWatchingStyle, homeCardTextMode: HomeCardTextMode, networkCardStyle: NetworkCardStyle = NetworkCardStyle.Branded, liveLandscapeCards: Boolean, newEpisodesLandscape: Boolean = true, watchlistItems: List<MediaItem>, favouriteItems: List<MediaItem> = emptyList(), addons: List<InstalledAddon> = emptyList(), handoffDevices: List<LinkedTvDevice> = emptyList(), onRefreshHandoffDevices: () -> Unit = {}, onHandoffLive: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onHandoffContinueWatching: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt> = { _, _ -> Result.failure(IllegalStateException("Handoff is unavailable.")) }, onOpen: (MediaItem) -> Unit, onViewAll: () -> Unit, onToggleWatchlist: (MediaItem) -> Unit, onToggleFavourite: (MediaItem) -> Unit = {}, onEnableAddon: (InstalledAddon) -> Unit = {}, onMarkWatched: (MediaItem) -> Unit, onMarkEarlierEpisodesWatched: (MediaItem) -> Unit, onRestartFromBeginning: (MediaItem) -> Unit, onRemoveFromContinueWatching: (MediaItem) -> Unit = {}, onPlayContinueWatching: (MediaItem) -> Unit) {
   fun isFavourite(item: MediaItem): Boolean = favouriteItems.hasFavouriteChannel(item)
   val isAddonRow = rowId.startsWith("addon:")
   val isFavouritesRow = rowId == "favourites"
@@ -19027,14 +19051,14 @@ internal fun List<MediaItem>.matchingPlaylistItems(query: String, limit: Int = P
     .map { it.second }
 }
 
-private fun List<MediaItem>.filteredBy(filter: MediaFilter): List<MediaItem> = when (filter) {
+internal fun List<MediaItem>.filteredBy(filter: MediaFilter): List<MediaItem> = when (filter) {
   MediaFilter.All -> this
   MediaFilter.Movies -> filter { it.type == "movie" }
   MediaFilter.Series -> filter { it.type == "tv" || it.type == "series" }
 }
 
 @Composable
-private fun LibraryEmptyState(icon: @Composable () -> Unit, title: String, subtitle: String) {
+internal fun LibraryEmptyState(icon: @Composable () -> Unit, title: String, subtitle: String) {
   Box(modifier = Modifier.fillMaxWidth().height(520.dp), contentAlignment = Alignment.Center) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp), modifier = Modifier.padding(horizontal = 28.dp)) {
       Box(
@@ -19384,7 +19408,7 @@ private fun AmbientActionRow(label: String, icon: ImageVector, onClick: () -> Un
 }
 
 @Composable
-private fun MediaGrid(
+internal fun MediaGrid(
   items: List<MediaItem>,
   onOpen: (MediaItem) -> Unit,
   columns: Int = 3,
@@ -19710,7 +19734,7 @@ private object LibraryHeaderInset {
  * which rest in the page beneath it, gather into their own rounded row pinned below that pill.
  */
 @Composable
-private fun LibraryPage(
+internal fun LibraryPage(
   title: String,
   count: Int,
   selectedFilter: MediaFilter,
@@ -19720,6 +19744,8 @@ private fun LibraryPage(
   style: HeaderStyle,
   listState: androidx.compose.foundation.lazy.LazyListState,
   trailingAction: (@Composable () -> Unit)?,
+  /** A section heading carried in the filter row, as Search carries Discover; null for none. */
+  pinnedTitle: String? = null,
   content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit,
 ) {
   val modernHeader = style == HeaderStyle.Modern
@@ -19744,7 +19770,8 @@ private fun LibraryPage(
       content()
     }
     PinnedSectionChrome(
-      title = null,
+      title = pinnedTitle,
+      titleAbove = true,
       progress = progress,
       hazeState = headerHazeState,
       defaultStyle = !modernHeader,
@@ -19865,209 +19892,6 @@ private fun ContinueTab(
           )
         }
       }
-  }
-}
-
-/**
- * The Plex page: the viewer's own library, in StreamDek's look.
- *
- * Continue Watching from Plex first, then each enabled library's Recently Added, the libraries
- * themselves and their collections, grouped under their server when there is more than one. A server
- * that is away says so in one compact line rather than emptying the page, and the page keeps the
- * rows it had while it reloads, so coming back to it never shows it blank or jumps the scroll.
- */
-@Composable
-private fun PlexTab(
-  uiState: AppUiState,
-  onLoad: (Boolean) -> Unit,
-  onOpen: (MediaItem) -> Unit,
-  onOpenCollection: (MediaItem) -> Unit,
-  onPlayContinueWatching: (MediaItem) -> Unit,
-  onViewAll: (HomeRow) -> Unit,
-  onToggleWatchlist: (MediaItem) -> Unit,
-  onMarkWatched: (MediaItem) -> Unit,
-  onMarkEarlierEpisodesWatched: (MediaItem) -> Unit,
-  onRestartFromBeginning: (MediaItem) -> Unit,
-  onRemoveFromContinueWatching: (MediaItem) -> Unit,
-  onOpenSettings: () -> Unit,
-) {
-  val state = uiState.mediaServerState
-  LaunchedEffect(state.linked) { if (state.linked) onLoad(false) }
-  val listState = rememberLazyListState()
-  ReportScrollTop { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
-  val continueItems = remember(uiState.mediaServerContinueWatching) {
-    uiState.mediaServerContinueWatching.sortedByDescending { it.lastViewedAtMs }.map { it.item }
-  }
-  val rows = remember(uiState.mediaServerPageRows) { uiState.mediaServerPageRows.filter { it.items.isNotEmpty() } }
-  val enabledServers = state.servers.filter { it.enabled }
-  val multipleServers = enabledServers.size > 1
-  val offline = enabledServers.filter { it.reachability is net.streamdek.mobile.nativeapp.mediaserver.MediaServerReachability.Offline }
-  val loading = uiState.mediaServerPageLoading || state.refreshing
-  val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-  LazyColumn(
-    state = listState,
-    modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
-    contentPadding = PaddingValues(top = statusTop + 12.dp, bottom = 126.dp),
-    verticalArrangement = Arrangement.spacedBy(20.dp),
-  ) {
-    item(key = "plex-header") {
-      Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        Image(painterResource(R.drawable.plex_logo), contentDescription = null, modifier = Modifier.size(40.dp).clip(CircleShape))
-        Column(Modifier.weight(1f)) {
-          Text(stringResource(R.string.media_server_plex), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
-          val subtitle = listOfNotNull(state.accountName, enabledServers.takeIf { it.isNotEmpty() }?.joinToString(" · ") { it.name }).joinToString(" · ")
-          if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        if (loading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = PlexGold)
-        else IconButton(onClick = { onLoad(true) }) { Icon(Icons.Rounded.Refresh, contentDescription = stringResource(R.string.plex_refresh), tint = MaterialTheme.colorScheme.onBackground) }
-        IconButton(onClick = onOpenSettings) { Icon(Icons.Rounded.Settings, contentDescription = stringResource(R.string.plex_manage), tint = MaterialTheme.colorScheme.onBackground) }
-      }
-    }
-    offline.forEach { server ->
-      item(key = "plex-offline-${server.id}") {
-        val refused = (server.reachability as? net.streamdek.mobile.nativeapp.mediaserver.MediaServerReachability.Offline)?.reason == net.streamdek.mobile.nativeapp.mediaserver.OfflineReason.Unauthorized
-        Row(
-          modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).clip(RoundedCornerShape(14.dp))
-            .background(Color(0xFFF59E0B).copy(alpha = 0.12f)).clickable(onClick = onOpenSettings).padding(horizontal = 14.dp, vertical = 10.dp),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-          Box(Modifier.size(8.dp).background(Color(0xFFF59E0B), CircleShape))
-          Text(
-            stringResource(if (refused) R.string.plex_page_server_refused else R.string.plex_page_server_offline, server.name),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.85f),
-          )
-        }
-      }
-    }
-    if (continueItems.isNotEmpty()) {
-      item(key = "plex-continue") {
-        HomeStrip(
-          rowId = "continue", title = stringResource(R.string.plex_page_continue), items = continueItems,
-          continueWatchingStyle = uiState.continueWatchingStyle, homeCardTextMode = uiState.homeCardTextMode, liveLandscapeCards = false,
-          watchlistItems = uiState.mergedWatchlist, onOpen = onOpen, onViewAll = {}, onToggleWatchlist = onToggleWatchlist,
-          onMarkWatched = onMarkWatched, onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched, onRestartFromBeginning = onRestartFromBeginning,
-          onRemoveFromContinueWatching = onRemoveFromContinueWatching, onPlayContinueWatching = onPlayContinueWatching,
-        )
-      }
-    }
-    rows.forEachIndexed { index, row ->
-      if (multipleServers && (index == 0 || rows[index - 1].serverId != row.serverId)) {
-        item(key = "plex-server-${row.serverId}-$index") {
-          Text(row.serverName, modifier = Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = PlexGold)
-        }
-      }
-      item(key = "plex-row-$index-${row.id}") {
-        HomeStrip(
-          rowId = row.id.ifEmpty { "plex-collections-$index" }, title = row.title, items = row.items,
-          continueWatchingStyle = uiState.continueWatchingStyle, homeCardTextMode = uiState.homeCardTextMode, liveLandscapeCards = false,
-          watchlistItems = uiState.mergedWatchlist,
-          onOpen = { item -> if (item.type == "collection") onOpenCollection(item) else onOpen(item) },
-          onViewAll = { if (row.id.isNotEmpty()) onViewAll(HomeRow(row.id, row.title, row.items)) },
-          onToggleWatchlist = onToggleWatchlist, onMarkWatched = onMarkWatched, onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched,
-          onRestartFromBeginning = onRestartFromBeginning, onRemoveFromContinueWatching = onRemoveFromContinueWatching, onPlayContinueWatching = onPlayContinueWatching,
-        )
-      }
-    }
-    if (rows.isEmpty() && continueItems.isEmpty()) {
-      item(key = "plex-empty") {
-        when {
-          loading -> Box(Modifier.fillMaxWidth().padding(top = 48.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = PlexGold) }
-          offline.isNotEmpty() && offline.size == enabledServers.size -> LibraryEmptyState(
-            icon = { Icon(Icons.Rounded.CloudOff, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), modifier = Modifier.size(54.dp)) },
-            title = stringResource(R.string.plex_page_offline_title), subtitle = stringResource(R.string.plex_page_offline_note),
-          )
-          else -> LibraryEmptyState(
-            icon = { Icon(PlexIcons.Chevron, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), modifier = Modifier.size(54.dp)) },
-            title = stringResource(R.string.plex_page_empty_title), subtitle = stringResource(R.string.plex_page_empty_note),
-          )
-        }
-      }
-    }
-  }
-}
-
-/**
- * Library: Continue Watching and the Watchlist on one page, shown in place of those two tabs while
- * a media server is connected so the navigation keeps its five places. In-progress titles first,
- * then the watchlist; a title in both appears once, under Continue Watching, where it resumes.
- */
-@Composable
-private fun LibraryTab(
-  uiState: AppUiState,
-  onOpen: (MediaItem) -> Unit,
-  onPlay: (MediaItem) -> Unit,
-  onOpenDetails: (MediaItem) -> Unit,
-  onToggleWatchlist: (MediaItem) -> Unit,
-  onMarkWatched: (MediaItem) -> Unit,
-  onMarkEarlierEpisodesWatched: (MediaItem) -> Unit,
-  onRestartFromBeginning: (MediaItem) -> Unit,
-  onRemoveFromContinueWatching: (MediaItem) -> Unit,
-  onRefreshHandoffDevices: () -> Unit,
-  onHandoffContinueWatching: suspend (MediaItem, LinkedTvDevice) -> Result<PlaybackHandoffReceipt>,
-) {
-  var filter by rememberSaveable { mutableStateOf(MediaFilter.All) }
-  var columns by rememberSaveable { mutableStateOf(3) }
-  val continueWatching = remember(uiState.traktContinueWatching, uiState.localContinueWatching, uiState.nextUpItems, uiState.playbackProgressRecords, uiState.favouriteChannels, uiState.m3uChannels, uiState.mediaServerContinueWatching) { combinedContinueWatching(uiState) }
-  val watchlist = remember(uiState.mergedWatchlist) {
-    uiState.mergedWatchlist.sortedWith(compareByDescending<MediaItem> { it.addedAt ?: Long.MIN_VALUE }.thenByDescending { it.updatedAt ?: Long.MIN_VALUE })
-  }
-  val library = remember(continueWatching, watchlist, filter) { unifiedLibrary(continueWatching.filteredBy(filter), watchlist.filteredBy(filter)) }
-  val listState = rememberLazyListState()
-  ReportScrollTop { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
-  LibraryPage(
-    title = stringResource(R.string.nav_library),
-    count = library.continueWatching.size + library.watchlist.size,
-    selectedFilter = filter,
-    onFilterChange = { filter = it },
-    columns = columns,
-    onToggleColumns = { columns = if (columns == 3) 2 else 3 },
-    style = uiState.headerStyle,
-    listState = listState,
-    trailingAction = null,
-  ) {
-    if (library.isEmpty) {
-      item(key = "library-empty") {
-        LibraryEmptyState(
-          icon = { Icon(Icons.Rounded.VideoLibrary, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), modifier = Modifier.size(54.dp)) },
-          title = stringResource(R.string.library_unified_empty), subtitle = stringResource(R.string.library_unified_empty_note),
-        )
-      }
-    }
-    if (library.continueWatching.isNotEmpty()) {
-      item(key = "library-continue-title") { LibrarySectionTitle(stringResource(R.string.library_section_continue), library.continueWatching.size) }
-      item(key = "library-continue") {
-        MediaGrid(
-          library.continueWatching, onPlay, columns = columns, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist,
-          onMarkWatched = onMarkWatched, onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched, continueWatchingActions = true,
-          onRestartFromBeginning = onRestartFromBeginning, onRemoveFromContinueWatching = onRemoveFromContinueWatching, onOpenDetails = onOpenDetails,
-          handoffDevices = uiState.handoffDevices, onRefreshHandoffDevices = onRefreshHandoffDevices, onHandoffToTv = onHandoffContinueWatching,
-        )
-      }
-    }
-    if (library.watchlist.isNotEmpty()) {
-      item(key = "library-watchlist-title") { LibrarySectionTitle(stringResource(R.string.library_section_watchlist), library.watchlist.size) }
-      item(key = "library-watchlist") {
-        MediaGrid(library.watchlist, onOpen, columns = columns, showMeta = false, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, includeRemoveAction = true, onMarkWatched = onMarkWatched)
-      }
-    }
-  }
-}
-
-@Composable
-private fun LibrarySectionTitle(title: String, count: Int) {
-  Row(
-    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-    verticalAlignment = Alignment.Bottom,
-    horizontalArrangement = Arrangement.spacedBy(8.dp),
-  ) {
-    Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
-    Text(count.toString(), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f))
   }
 }
 
@@ -21195,6 +21019,8 @@ private fun ScrollAwareHeaderScope.HeaderSearchField(
   compactPlaceholder: String? = null,
   /** Shown at the end of the empty field once compacted — a list's count, which left with its title. */
   compactTrailingLabel: String? = null,
+  /** Drawn before the search icon to say whose list this is — the Plex mark on a Plex list. */
+  leadingBadge: (@Composable () -> Unit)? = null,
 ) {
   // Derived, so a scrolled frame recomposes only on the one frame the answer flips.
   val compacted by remember(this) { derivedStateOf { compactProgress() > 0.5f } }
@@ -21212,7 +21038,13 @@ private fun ScrollAwareHeaderScope.HeaderSearchField(
         Text(text, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.50f), fontSize = (androidx.compose.material3.LocalTextStyle.current.fontSize.value - 1f).sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
       }
     },
-    leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+    leadingIcon = {
+      if (leadingBadge == null) Icon(Icons.Rounded.Search, contentDescription = null)
+      else Row(modifier = Modifier.padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        leadingBadge()
+        Icon(Icons.Rounded.Search, contentDescription = null)
+      }
+    },
     trailingIcon = when {
       query.isNotBlank() -> ({ IconButton(onClick = onClear) { Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.action_clear)) } })
       compactTrailingLabel != null -> ({
@@ -23284,6 +23116,8 @@ private fun SettingsTab(
             remoteQualityKbps = playerSettingsViewModel::mediaServerRemoteQualityKbps,
             onRemoteQualityChange = playerSettingsViewModel::setMediaServerRemoteQualityKbps,
             onMessage = playerSettingsViewModel::showMediaServerMessage,
+            ambientEnabled = playerSettingsViewModel.plexAmbientEnabled,
+            onAmbientChange = playerSettingsViewModel::changePlexAmbient,
           )
         }
         SettingsRoute.ContentServices -> item {

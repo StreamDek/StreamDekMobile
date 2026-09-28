@@ -2003,6 +2003,10 @@
   <string name="plex_sort_title">A–Z</string>
   <string name="plex_sort_release">Release date</string>
   <string name="plex_browse_empty">Nothing in here yet</string>
+  <string name="plex_page_section">Plex page</string>
+  <string name="plex_ambient">Ambient colour</string>
+  <string name="plex_ambient_detail">A soft purple, blue, red and green glow behind the Plex page</string>
+  <string name="plex_search_badge">From Plex</string>
   <string name="plex_title_unavailable">The Plex server with this title isn\'t answering. Try again when it\'s back.</string>
   <string name="plex_open_link">Open plex.tv/link</string>
   <string name="plex_link_phone_hint">Opens Plex in your browser with this code filled in. Approve StreamDek there and come back.</string>

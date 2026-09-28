@@ -1888,6 +1888,10 @@
   <string name="plex_sort_title">A–Z</string>
   <string name="plex_sort_release">Date de sortie</string>
   <string name="plex_browse_empty">Rien ici pour l’instant</string>
+  <string name="plex_page_section">Page Plex</string>
+  <string name="plex_ambient">Couleur d’ambiance</string>
+  <string name="plex_ambient_detail">Une douce lueur violette, bleue, rouge et verte derrière la page Plex</string>
+  <string name="plex_search_badge">Depuis Plex</string>
   <string name="plex_title_unavailable">Le serveur Plex de ce titre ne répond pas. Réessayez quand il sera de retour.</string>
   <string name="plex_open_link">Ouvrir plex.tv/link</string>
   <string name="plex_link_phone_hint">Ouvre Plex dans le navigateur avec ce code. Autorisez StreamDek puis revenez.</string>

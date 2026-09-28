@@ -1838,6 +1838,10 @@
   <string name="plex_sort_title">A–Z</string>
   <string name="plex_sort_release">Erscheinungsdatum</string>
   <string name="plex_browse_empty">Hier ist noch nichts</string>
+  <string name="plex_page_section">Plex-Seite</string>
+  <string name="plex_ambient">Umgebungsfarbe</string>
+  <string name="plex_ambient_detail">Ein sanftes Leuchten in Lila, Blau, Rot und Grün hinter der Plex-Seite</string>
+  <string name="plex_search_badge">Aus Plex</string>
   <string name="plex_title_unavailable">Der Plex-Server mit diesem Titel antwortet nicht. Versuche es erneut, wenn er wieder da ist.</string>
   <string name="plex_open_link">plex.tv/link öffnen</string>
   <string name="plex_link_phone_hint">Öffnet Plex im Browser mit diesem Code. Bestätige StreamDek dort und kehre zurück.</string>

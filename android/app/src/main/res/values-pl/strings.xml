@@ -1948,6 +1948,10 @@
   <string name="plex_sort_title">A–Z</string>
   <string name="plex_sort_release">Data premiery</string>
   <string name="plex_browse_empty">Na razie nic tu nie ma</string>
+  <string name="plex_page_section">Strona Plex</string>
+  <string name="plex_ambient">Kolor otoczenia</string>
+  <string name="plex_ambient_detail">Delikatna fioletowa, niebieska, czerwona i zielona poświata za stroną Plex</string>
+  <string name="plex_search_badge">Z Plex</string>
   <string name="plex_title_unavailable">Serwer Plex z tym tytułem nie odpowiada. Spróbuj ponownie, gdy wróci.</string>
   <string name="plex_open_link">Otwórz plex.tv/link</string>
   <string name="plex_link_phone_hint">Otwiera Plex w przeglądarce z tym kodem. Zatwierdź tam StreamDek i wróć.</string>

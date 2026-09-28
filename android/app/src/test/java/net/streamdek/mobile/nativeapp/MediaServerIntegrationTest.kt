@@ -73,6 +73,13 @@ class MediaServerIntegrationTest {
 
   private fun isMediaServerHomeRowSourceOf(id: String) = id.split(':').getOrNull(1)?.startsWith("mediaserver.") == true
 
+  @Test fun `Plex lists are recognised so they page through the server and wear its mark`() {
+    assertTrue(isMediaServerBrowseRowId(mediaServerHomeRowId("plex", "server-1", "movie", "library-1", 3)))
+    assertTrue(isMediaServerBrowseRowId(MEDIA_SERVER_COLLECTION_ROW_PREFIX + plexId("77")))
+    assertFalse(isMediaServerBrowseRowId("addon:com.example.addon:movie:top:0"))
+    assertFalse(isMediaServerBrowseRowId("trending_movies"))
+  }
+
   @Test fun `media server ids are recognised and nothing else is`() {
     assertTrue(isMediaServerId(plexId("1")))
     assertFalse(isMediaServerId("tt0133093"))

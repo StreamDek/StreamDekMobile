@@ -20,6 +20,18 @@ import net.streamdek.mobile.nativeapp.mediaserver.MediaServerRowKind
 /** Whether a title, by its id, belongs to a personal media server rather than to StreamDek or an add-on. */
 internal fun isMediaServerId(id: String?): Boolean = MediaServerReference.isReference(id)
 
+/** A browsable row holding one media server collection's titles; the rest of the id is the collection's card id. */
+internal const val MEDIA_SERVER_COLLECTION_ROW_PREFIX = "mediaserver-collection:"
+
+/**
+ * Whether a "View all" list is a media server's: one of its library rows - add-on shaped, with a
+ * `mediaserver.` source (see [net.streamdek.mobile.nativeapp.mediaserver.mediaServerHomeRowId]) - or
+ * one of its collections. Such a list pages through the server and wears its mark.
+ */
+internal fun isMediaServerBrowseRowId(id: String): Boolean =
+  id.startsWith(MEDIA_SERVER_COLLECTION_ROW_PREFIX) ||
+    (id.startsWith("addon:") && id.split(':').getOrNull(1)?.startsWith(net.streamdek.mobile.nativeapp.mediaserver.HOME_ROW_SOURCE_PREFIX) == true)
+
 /**
  * The media server rows Home last received, for Home Rows.
  *

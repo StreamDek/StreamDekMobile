@@ -146,6 +146,8 @@ internal fun MediaServerSettingsPage(
   remoteQualityKbps: () -> Int?,
   onRemoteQualityChange: (Int?) -> Unit,
   onMessage: (String) -> Unit,
+  ambientEnabled: Boolean = true,
+  onAmbientChange: (Boolean) -> Unit = {},
 ) {
   val state by manager.state.collectAsState()
   val scope = rememberCoroutineScope()
@@ -271,6 +273,17 @@ internal fun MediaServerSettingsPage(
             fontWeight = FontWeight.Bold,
           )
         }
+      }
+
+      SettingsSection(stringResource(R.string.plex_page_section)) {
+        PlexSwitchRow(
+          title = stringResource(R.string.plex_ambient),
+          detail = stringResource(R.string.plex_ambient_detail),
+          detailColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+          checked = ambientEnabled,
+          indent = false,
+          onToggle = { onAmbientChange(!ambientEnabled) },
+        )
       }
 
       SettingsSection(stringResource(R.string.plex_manage)) {

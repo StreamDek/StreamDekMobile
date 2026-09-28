@@ -108,3 +108,9 @@
 -dontwarn torrServer.**
 # jsoup 1.22 (pulled in by NiceHttp) has optional re2j-backed regex support that is not bundled.
 -dontwarn com.google.re2j.**
+
+# Personal media servers (Plex). Link, server-list and Plex responses and the encrypted
+# on-device snapshot are read with Gson; R8 renaming their fields leaves every value empty
+# ("could not reach Plex", no libraries), so the whole package keeps its names.
+-keepattributes Signature,*Annotation*
+-keep class net.streamdek.mobile.nativeapp.mediaserver.** { *; }

@@ -1903,6 +1903,9 @@
   <string name="plex_link_expired">Ten kod wygasł.</string>
   <string name="plex_link_getting_code">Pobieranie kodu…</string>
   <string name="plex_episode_number">Odcinek %1$d</string>
+  <string name="plex_page_section">Strona Plex</string>
+  <string name="plex_ambient">Kolor otoczenia</string>
+  <string name="plex_ambient_detail">Delikatna fioletowa, niebieska, czerwona i zielona poświata za stroną i listami Plex</string>
   <string name="plex_link_new_code">Pobierz nowy kod</string>
   <string name="plex_link_failed">Nie udało się połączyć Plex. Spróbuj ponownie.</string>
   <string name="plex_link_unavailable">StreamDek nie może połączyć się z Plex. Sprawdź połączenie i spróbuj ponownie.</string>
@@ -1949,9 +1952,6 @@
   <string name="plex_sort_title">A–Z</string>
   <string name="plex_sort_release">Data premiery</string>
   <string name="plex_browse_empty">Na razie nic tu nie ma</string>
-  <string name="plex_page_section">Strona Plex</string>
-  <string name="plex_ambient">Kolor otoczenia</string>
-  <string name="plex_ambient_detail">Delikatna fioletowa, niebieska, czerwona i zielona poświata za stroną i listami Plex</string>
   <string name="plex_search_badge">Z Plex</string>
   <string name="plex_title_unavailable">Serwer Plex z tym tytułem nie odpowiada. Spróbuj ponownie, gdy wróci.</string>
   <string name="plex_open_link">Otwórz plex.tv/link</string>

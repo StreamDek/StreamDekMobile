@@ -5567,22 +5567,18 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val addonId = anchorItem?.sourceAddonId
     val mediaServerRow = (MediaServerHomeRows.rows + uiState.mediaServerPageRows).firstOrNull { it.id == rowId && it.id.isNotEmpty() }
     val collectionRef = rowId.takeIf { it.startsWith(MEDIA_SERVER_COLLECTION_ROW_PREFIX) }?.let { MediaServerReference.decode(it.removePrefix(MEDIA_SERVER_COLLECTION_ROW_PREFIX)) }
-    val fetched = if (collectionRef != null) {
-      val provider = mediaServers.providerFor(collectionRef)
-      if (provider == null) emptyList() else withContext(Dispatchers.IO) {
-        runCatching { provider.collection(collectionRef, skip, 60).items }.getOrDefault(emptyList())
-      }
-    } else if (mediaServerRow != null) {
-      // A media server row pages through its own library on the server.
-      val library = mediaServerRow.libraryKey
-      val sort = when (mediaServerRow.kind) {
-        net.streamdek.mobile.nativeapp.mediaserver.MediaServerRowKind.RecentlyAdded -> net.streamdek.mobile.nativeapp.mediaserver.MediaServerSort.RecentlyAdded
-        net.streamdek.mobile.nativeapp.mediaserver.MediaServerRowKind.Library -> net.streamdek.mobile.nativeapp.mediaserver.MediaServerSort.Title
-        else -> null
-      }
-      val provider = mediaServers.provider(net.streamdek.mobile.nativeapp.mediaserver.PLEX_PROVIDER_ID)
-      if (library == null || sort == null || provider == null) emptyList() else withContext(Dispatchers.IO) {
-        runCatching { provider.browse(mediaServerRow.serverId, library, skip, 60, sort).items }.getOrDefault(emptyList())
+    val collectionProvider = collectionRef?.let(mediaServers::providerFor)
+    val rowProvider = mediaServerRow?.let { mediaServers.provider(net.streamdek.mobile.nativeapp.mediaserver.PLEX_PROVIDER_ID) }
+    val fetched = if (collectionRef != null || mediaServerRow != null) {
+      // A media server row, or one of its collections, reads on through the server in the row's own order.
+      val known = uiState.browseLoadedItems.takeIf { uiState.browseRow?.id == rowId }.orEmpty()
+      withContext(Dispatchers.IO) {
+        MediaServerRowPaging.more(rowId, skip, known) { start ->
+          runCatching {
+            if (collectionRef != null) collectionProvider?.collection(collectionRef, start, MediaServerRowPaging.PAGE_SIZE)
+            else rowProvider?.rowPage(mediaServerRow!!, start, MediaServerRowPaging.PAGE_SIZE)
+          }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }.getOrNull()
+        }
       }
     } else if (addonId != null) {
       val addon = uiState.addons.firstOrNull { it.id == addonId && it.enabled }
@@ -5915,6 +5911,29 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
    * come from the server, and the server is its only source. The ordinary page and Series → Seasons
    * → Episodes flow are used unchanged, so nothing downstream needs to know where it came from.
    */
+  /**
+   * A server's own description of a title is thin: no logo, trailers, ratings, similar titles or
+   * where-to-watch. Where the server knows the title's TMDB or IMDb id, StreamDek's catalogue entry
+   * for it fills those in, as for any catalogue title. The page stays the server's - its id, seasons
+   * and playback - and only the catalogue's ids, never the server's, leave the device.
+   */
+  private fun enrichMediaServerDetail(shown: MediaDetail, generation: Int) {
+    val known = MediaServerIdentities.of(shown.id)
+    val lookupId = known?.tmdbId?.let { "tmdb:$it" } ?: known?.imdbId ?: shown.imdbId ?: return
+    launchWork(
+      onStart = {},
+      block = { apiClient.fetchDetails(shown.type, lookupId, shown.title, shown.year) },
+      onSuccess = { catalog ->
+        if (generation != detailRequestGeneration) return@launchWork
+        val current = uiState.detail?.takeIf { it.id == shown.id } ?: return@launchWork
+        uiState = uiState.copy(detail = current.enrichedFromCatalog(catalog))
+        refreshExternalRatings(catalog, shownId = shown.id)
+        refreshTraktComments(catalog, shownId = shown.id)
+      },
+      onFailure = {},
+    )
+  }
+
   private fun loadMediaServerDetail(type: String, id: String, ref: MediaServerReference, fallbackItem: MediaItem?) {
     val provider = mediaServers.providerFor(ref)
     val item = fallbackItem ?: MediaItem(id = id, type = type, title = "", year = null, poster = null, backdrop = null, rating = null, description = "")
@@ -5937,6 +5956,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         if (detailGeneration != detailRequestGeneration) return@launchWork
         val resolved = detail.withCatalogFallback(item)
         uiState = uiState.copy(detailLoading = false, detail = resolved, detailIsLive = false, streamLoading = false, errorMessage = null)
+        enrichMediaServerDetail(resolved, detailGeneration)
         if (resolved.type == "tv" && resolved.seasons.isNotEmpty()) {
           loadResumeAwareSeries(resolved, item.resumeSeasonNumber, item.resumeEpisodeNumber, resumeKnownSource = pendingDirectContinueEntry != null)
         } else if (!playPendingContinue(resolved, continueFallbackEpisode(item))) {
@@ -11740,7 +11760,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
    * backend for an account key. This only has to know whether the viewer has one at all,
    * so it can offer to set one up instead of quietly showing nothing.
    */
-  private fun refreshExternalRatings(detail: MediaDetail) {
+  /** [shownId] is the page the answer belongs to, when that is not [detail]'s own (a Plex title described by its catalogue entry). */
+  private fun refreshExternalRatings(detail: MediaDetail, shownId: String = detail.id) {
     if (!uiState.externalRatingsEnabled || uiState.enabledRatingProviders.isEmpty()) return
     // Only skipped once the credential state is actually known. Before the first read has
     // landed, the request is made anyway: the backend resolves the key and answers with an
@@ -11756,7 +11777,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       onSuccess = { ratings ->
         if (ratings.isEmpty()) return@launchWork
         val current = uiState.detail ?: return@launchWork
-        if (current.id == detail.id && current.type == detail.type) {
+        if (current.id == shownId && current.type == detail.type) {
           uiState = uiState.copy(detail = current.copy(externalRatings = ratings))
         }
       },
@@ -11764,14 +11785,14 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     )
   }
 
-  private fun refreshTraktComments(detail: MediaDetail) {
+  private fun refreshTraktComments(detail: MediaDetail, shownId: String = detail.id) {
     launchWork(
       onStart = {},
       block = { apiClient.fetchTraktComments(uiState.session, detail.type, detail.id, detail.imdbId) },
       onSuccess = { comments ->
         if (comments.isEmpty()) return@launchWork
         val current = uiState.detail ?: return@launchWork
-        if (current.id == detail.id && current.type == detail.type) {
+        if (current.id == shownId && current.type == detail.type) {
           uiState = uiState.copy(detail = current.copy(traktComments = comments))
         }
       },
@@ -18419,10 +18440,13 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
         )
       }
     } else {
+      // A Plex list's header has no ground of its own at rest: the page (and its colour wash) shows
+      // through it, and only the condensed search pill takes on glass once the list scrolls.
+      val headerGround = if (isMediaServerBrowseRowId(row.id)) Color.Transparent else MaterialTheme.colorScheme.background
       Column(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f).fillMaxWidth()) {
-        DefaultHeaderStatusStrip(color = MaterialTheme.colorScheme.background, fadesWithHeader = true)
+        DefaultHeaderStatusStrip(color = headerGround, fadesWithHeader = true)
         ScrollAwareHeader(
-          surface = ScrollAwareHeaderSurface.Solid(MaterialTheme.colorScheme.background, pillAroundAnchor = showSearch, hazeState = browseHazeState),
+          surface = ScrollAwareHeaderSurface.Solid(headerGround, pillAroundAnchor = showSearch, hazeState = browseHazeState),
           modifier = Modifier.fillMaxWidth(),
           keepAnchorVisible = showSearch,
           contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = 12.dp),

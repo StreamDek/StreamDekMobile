@@ -825,7 +825,10 @@ internal fun ScrollAwareHeader(
                     val progress = if (surface.pillAroundAnchor) headerScope.compactProgress() else 0f
                     val alpha = if (glass != null) DefaultHeaderAlpha * (1f - progress)
                       else DefaultHeaderAlpha + (DefaultHeaderPillAlpha - DefaultHeaderAlpha) * progress
-                    if (alpha > 0.005f) drawRect(surface.color.copy(alpha = alpha))
+                    // Scaled by the colour's own alpha: Color.Transparent is transparent black, and copying it
+                    // to a stronger alpha painted a black band where a see-through header was asked for.
+                    val tint = alpha * surface.color.alpha
+                    if (tint > 0.005f) drawRect(surface.color.copy(alpha = tint))
                   },
               )
               if (glass != null) {
@@ -983,7 +986,9 @@ internal fun DefaultHeaderStatusStrip(color: Color, fadesWithHeader: Boolean, mo
           0f
         }
         val tint = DefaultHeaderAlpha * (1f - compact)
-        if (tint > 0.005f) drawRect(color.copy(alpha = tint))
+        // As in the header band: a transparent colour stays transparent.
+        val strip = tint * color.alpha
+        if (strip > 0.005f) drawRect(color.copy(alpha = strip))
         val scrim = if (fadesWithHeader) (contrast?.statusBar?.value ?: 0f) * compact else 0f
         if (scrim > 0.005f) {
           // Feathered past the bottom of the bar, as [ChromeStatusBarScrim] is. Stopping the gradient

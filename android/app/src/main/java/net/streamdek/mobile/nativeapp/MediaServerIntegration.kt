@@ -4,6 +4,7 @@ import android.content.Context
 import net.streamdek.mobile.R
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerIdentities
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerLabels
+import net.streamdek.mobile.nativeapp.mediaserver.MediaServerPage
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerReference
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerResume
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerRow
@@ -31,6 +32,39 @@ internal const val MEDIA_SERVER_COLLECTION_ROW_PREFIX = "mediaserver-collection:
 internal fun isMediaServerBrowseRowId(id: String): Boolean =
   id.startsWith(MEDIA_SERVER_COLLECTION_ROW_PREFIX) ||
     (id.startsWith("addon:") && id.split(':').getOrNull(1)?.startsWith(net.streamdek.mobile.nativeapp.mediaserver.HOME_ROW_SOURCE_PREFIX) == true)
+
+/**
+ * "View all" for a media server row, read on from where the server's order last stopped.
+ *
+ * The list asks with how many titles it holds. That is not always where the server's order stands
+ * - a stretch can hold titles already shown (a series with episodes added days apart) or ones set
+ * aside (never watched, for Recently Watched) - so each row remembers where its last read ended
+ * and for which count, and carries on from there. A stretch with nothing new in it is read past,
+ * a few at most, rather than taken as the end.
+ */
+internal object MediaServerRowPaging {
+  private val cursors = java.util.concurrent.ConcurrentHashMap<String, Pair<Int, Int>>()
+
+  suspend fun more(rowId: String, skip: Int, known: Collection<MediaItem>, read: suspend (start: Int) -> MediaServerPage?): List<MediaItem> {
+    var start = cursors[rowId]?.takeIf { it.first == skip }?.second ?: skip
+    val seen = known.mapTo(HashSet()) { "${it.type}-${it.id}" }
+    val fresh = mutableListOf<MediaItem>()
+    repeat(MAX_PAGES) {
+      val page = read(start) ?: return fresh
+      start = page.nextStart
+      page.items.filterTo(fresh) { seen.add("${it.type}-${it.id}") }
+      if (page.end || fresh.isNotEmpty()) {
+        cursors[rowId] = (skip + fresh.size) to start
+        return fresh
+      }
+    }
+    cursors[rowId] = (skip + fresh.size) to start
+    return fresh
+  }
+
+  const val PAGE_SIZE = 60
+  private const val MAX_PAGES = 5
+}
 
 /**
  * The media server rows Home last received, for Home Rows.
@@ -162,3 +196,37 @@ internal class AppMediaServerLabels(private val context: () -> Context) : MediaS
   override fun season(number: Int) = s(R.string.detail_season_number, number)
   override fun episode(number: Int) = s(R.string.detail_episode_number, number)
 }
+
+/**
+ * A media server's title page with the catalogue's description of the same title filled in.
+ *
+ * The server's own identity, title, seasons and poster stay: they are what plays, and what the
+ * viewer chose on their server. Everything the server does not know - logo, trailers, ratings,
+ * similar titles, where it streams, certification - comes from the catalogue, and the catalogue's
+ * cast (with photos and pages) is preferred to the server's list of names.
+ */
+internal fun MediaDetail.enrichedFromCatalog(catalog: MediaDetail): MediaDetail = copy(
+  titleLogo = titleLogo ?: catalog.titleLogo,
+  tagline = tagline ?: catalog.tagline,
+  year = year ?: catalog.year,
+  releaseDate = releaseDate ?: catalog.releaseDate,
+  description = description.ifBlank { catalog.description },
+  poster = poster ?: catalog.poster,
+  backdrop = backdrop ?: catalog.backdrop,
+  trailerUrl = trailerUrl ?: catalog.trailerUrl,
+  trailerSite = trailerSite ?: catalog.trailerSite,
+  trailers = trailers.ifEmpty { catalog.trailers },
+  trailerKeys = trailerKeys.ifEmpty { catalog.trailerKeys },
+  rating = rating ?: catalog.rating,
+  imdbRating = imdbRating ?: catalog.imdbRating,
+  tmdbRating = tmdbRating ?: catalog.tmdbRating,
+  externalRatings = externalRatings.ifEmpty { catalog.externalRatings },
+  genres = genres.ifEmpty { catalog.genres },
+  runtimeMinutes = runtimeMinutes ?: catalog.runtimeMinutes,
+  imdbId = imdbId ?: catalog.imdbId,
+  cast = catalog.cast.ifEmpty { cast },
+  similarTitles = similarTitles.ifEmpty { catalog.similarTitles },
+  availableOn = availableOn.ifEmpty { catalog.availableOn },
+  certification = certification ?: catalog.certification,
+  certificationCountry = certificationCountry ?: catalog.certificationCountry,
+)

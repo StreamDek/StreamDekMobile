@@ -29,6 +29,14 @@ interface MediaServerProvider {
     suspend fun continueWatching(): List<MediaServerResume>
     suspend fun browse(serverId: String, libraryKey: String, start: Int, size: Int, sort: MediaServerSort): MediaServerPage
     suspend fun collection(ref: MediaServerReference, start: Int, size: Int): MediaServerPage
+
+    /**
+     * More of one of [rows]'s rows, in the row's own order, so a row can keep growing as it is
+     * scrolled rather than stopping at its first stretch. A page may repeat titles the row already
+     * shows (a series added to twice, say); the caller drops those.
+     */
+    suspend fun rowPage(row: MediaServerRow, start: Int, size: Int): MediaServerPage =
+        MediaServerPage(emptyList(), start, start)
     suspend fun detail(ref: MediaServerReference): MediaDetail?
     suspend fun season(ref: MediaServerReference, seasonNumber: Int): List<EpisodeItem>?
     suspend fun search(query: String, limit: Int): List<MediaItem>

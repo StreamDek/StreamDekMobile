@@ -1807,6 +1807,9 @@
   <string name="plex_link_expired">Esse código expirou.</string>
   <string name="plex_link_getting_code">Obtendo um código…</string>
   <string name="plex_episode_number">Episódio %1$d</string>
+  <string name="plex_page_section">Página do Plex</string>
+  <string name="plex_ambient">Cor ambiente</string>
+  <string name="plex_ambient_detail">Um brilho suave roxo, azul, vermelho e verde atrás da página e das listas do Plex</string>
   <string name="plex_link_new_code">Gerar novo código</string>
   <string name="plex_link_failed">Não foi possível vincular o Plex. Tente novamente.</string>
   <string name="plex_link_unavailable">O StreamDek não conseguiu acessar o Plex. Verifique a conexão e tente novamente.</string>
@@ -1853,9 +1856,6 @@
   <string name="plex_sort_title">A–Z</string>
   <string name="plex_sort_release">Data de lançamento</string>
   <string name="plex_browse_empty">Nada aqui ainda</string>
-  <string name="plex_page_section">Página do Plex</string>
-  <string name="plex_ambient">Cor ambiente</string>
-  <string name="plex_ambient_detail">Um brilho suave roxo, azul, vermelho e verde atrás da página e das listas do Plex</string>
   <string name="plex_search_badge">Do Plex</string>
   <string name="plex_title_unavailable">O servidor Plex com este título não está respondendo. Tente novamente quando ele voltar.</string>
   <string name="plex_open_link">Abrir plex.tv/link</string>

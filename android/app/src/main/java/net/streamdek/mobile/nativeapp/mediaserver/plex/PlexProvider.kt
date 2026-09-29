@@ -400,16 +400,57 @@ internal class PlexProvider(
         }
         val container = get(serverId, "/library/sections/$libraryKey/all", query, start, size)
             ?: return MediaServerPage(emptyList(), start, 0)
-        val items = container.allMetadata().mapNotNull { PlexMapping.item(it, context, libraryKey) }
-        return MediaServerPage(items, start, container.totalSize ?: (start + items.size))
+        return pageOf(container, start, size) { PlexMapping.item(it, context, libraryKey) }
     }
 
     override suspend fun collection(ref: MediaServerReference, start: Int, size: Int): MediaServerPage {
         val context = contextFor(ref.serverId) ?: return MediaServerPage(emptyList(), start, 0)
         val container = get(ref.serverId, "/library/collections/${ref.itemKey}/children", start = start, size = size)
             ?: return MediaServerPage(emptyList(), start, 0)
-        val items = container.allMetadata().mapNotNull { PlexMapping.item(it, context) }
-        return MediaServerPage(items, start, container.totalSize ?: (start + items.size))
+        return pageOf(container, start, size) { PlexMapping.item(it, context) }
+    }
+
+    override suspend fun rowPage(row: MediaServerRow, start: Int, size: Int): MediaServerPage {
+        val none = MediaServerPage(emptyList(), start, start)
+        val section = row.libraryKey ?: return none
+        val directory = libraryPairs(row.serverId, false).firstOrNull { it.first.key == section }?.first ?: return none
+        val context = contextFor(row.serverId) ?: return none
+        val map: (PlexMetadata) -> MediaItem? = { PlexMapping.item(it, context, section) }
+        return when (row.kind) {
+            // The same orders the rows were first built in, so a row carries on rather than reshuffles.
+            MediaServerRowKind.Library -> browse(row.serverId, section, start, size, MediaServerSort.ReleaseDate)
+            MediaServerRowKind.RecentlyAdded ->
+                if (directory.type.equals("show", true)) {
+                    pageOf(get(row.serverId, "/library/sections/$section/recentlyAdded", start = start, size = size), start, size, map = map)
+                } else {
+                    browse(row.serverId, section, start, size, MediaServerSort.RecentlyAdded)
+                }
+            MediaServerRowKind.RecentlyWatched -> {
+                val query = buildMap {
+                    put("sort", "lastViewedAt:desc")
+                    put("includeGuids", "1")
+                    typeParam(directory)?.let { put("type", it) }
+                }
+                val page = pageOf(get(row.serverId, "/library/sections/$section/all", query, start, size), start, size, map = { meta ->
+                    if ((meta.viewCount ?: 0) > 0 || (meta.viewedLeafCount ?: 0) > 0) map(meta) else null
+                })
+                // Sorted by when last watched, so a stretch with nothing watched in it is the end.
+                if (page.items.isEmpty()) page.copy(total = page.nextStart) else page
+            }
+            MediaServerRowKind.Collections ->
+                pageOf(get(row.serverId, "/library/sections/$section/collections", start = start, size = size), start, size, map = map)
+        }
+    }
+
+    /**
+     * A page from one container. Where the server did not say how many there are, a full page
+     * means there may be more and a short one means there are not.
+     */
+    private fun pageOf(container: PlexContainer?, start: Int, size: Int, map: (PlexMetadata) -> MediaItem?): MediaServerPage {
+        container ?: return MediaServerPage(emptyList(), start, start)
+        val raw = container.allMetadata()
+        val total = container.totalSize ?: if (raw.size >= size) Int.MAX_VALUE else start + raw.size
+        return MediaServerPage(raw.mapNotNull(map), start, total, returned = raw.size)
     }
 
     // ── Continue Watching ───────────────────────────────────────────────────────────────────────

@@ -137,9 +137,14 @@ data class MediaServerPage(
     val items: List<MediaItem>,
     val start: Int,
     val total: Int,
+    /**
+     * How many entries the server gave for this page, before any were set aside (a title it could
+     * not map, one that was never watched). The next page starts after these, not after [items].
+     */
+    val returned: Int = items.size,
 ) {
-    val nextStart: Int get() = start + items.size
-    val end: Boolean get() = items.isEmpty() || nextStart >= total
+    val nextStart: Int get() = start + returned
+    val end: Boolean get() = returned == 0 || nextStart >= total
 }
 
 /**

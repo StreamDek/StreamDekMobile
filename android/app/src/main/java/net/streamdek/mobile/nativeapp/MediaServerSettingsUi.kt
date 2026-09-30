@@ -377,7 +377,7 @@ private fun PlexLinkCard(code: MediaServerLinkCode, expired: Boolean, onOpen: ()
 }
 
 @Composable
-private fun PlexNote(text: String, indent: Boolean = false) {
+internal fun PlexNote(text: String, indent: Boolean = false) {
   Text(
     text,
     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
@@ -387,7 +387,7 @@ private fun PlexNote(text: String, indent: Boolean = false) {
 }
 
 @Composable
-private fun reachabilityLabel(server: MediaServerView): Pair<String, Color> = when {
+internal fun reachabilityLabel(server: MediaServerView): Pair<String, Color> = when {
   !server.enabled -> stringResource(R.string.plex_status_off) to MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
   else -> when (val reach = server.reachability) {
     is MediaServerReachability.Online -> when (reach.route) {
@@ -405,7 +405,7 @@ private fun reachabilityLabel(server: MediaServerView): Pair<String, Color> = wh
 }
 
 @Composable
-private fun PlexSwitchRow(title: String, detail: String, detailColor: Color, checked: Boolean, indent: Boolean, onToggle: () -> Unit) {
+internal fun PlexSwitchRow(title: String, detail: String, detailColor: Color, checked: Boolean, indent: Boolean, accent: Color = PlexGold, onToggle: () -> Unit) {
   Row(
     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(onClick = onToggle)
       .padding(start = if (indent) 20.dp else 0.dp, top = 8.dp, bottom = 8.dp),
@@ -425,20 +425,20 @@ private fun PlexSwitchRow(title: String, detail: String, detailColor: Color, che
     Switch(
       checked = checked,
       onCheckedChange = { onToggle() },
-      colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = PlexGold, checkedThumbColor = Color.White),
+      colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = accent, checkedThumbColor = Color.White),
     )
   }
 }
 
 @Composable
-private fun PlexServerSwitch(server: MediaServerView, onToggle: () -> Unit) {
+internal fun PlexServerSwitch(server: MediaServerView, accent: Color = PlexGold, onToggle: () -> Unit) {
   val (status, color) = reachabilityLabel(server)
   val owner = server.ownerName?.takeIf { !server.owned }?.let { stringResource(R.string.plex_server_shared_by, it) }
-  PlexSwitchRow(server.name, listOfNotNull(status, owner).joinToString(" · "), color, server.enabled, indent = false, onToggle = onToggle)
+  PlexSwitchRow(server.name, listOfNotNull(status, owner).joinToString(" · "), color, server.enabled, indent = false, accent = accent, onToggle = onToggle)
 }
 
 @Composable
-private fun PlexLibrarySwitch(library: MediaServerLibrary, onToggle: () -> Unit) {
+internal fun PlexLibrarySwitch(library: MediaServerLibrary, accent: Color = PlexGold, onToggle: () -> Unit) {
   PlexSwitchRow(
     title = library.title,
     detail = stringResource(
@@ -451,6 +451,7 @@ private fun PlexLibrarySwitch(library: MediaServerLibrary, onToggle: () -> Unit)
     detailColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
     checked = library.enabled,
     indent = true,
+    accent = accent,
     onToggle = onToggle,
   )
 }

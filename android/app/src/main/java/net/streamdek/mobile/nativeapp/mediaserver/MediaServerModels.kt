@@ -55,6 +55,8 @@ data class MediaServerView(
     val enabled: Boolean,
     val reachability: MediaServerReachability,
     val libraries: List<MediaServerLibrary>,
+    /** What last went wrong reading its titles (a route and a status only), for when its rows do not come. */
+    val problem: String? = null,
 )
 
 /**
@@ -130,7 +132,13 @@ data class MediaServerRow(
     val libraryKey: String? = null,
 )
 
-enum class MediaServerRowKind { RecentlyAdded, Library, Collections, RecentlyWatched }
+enum class MediaServerRowKind {
+    RecentlyAdded, Library, Collections, RecentlyWatched,
+    /** The next unwatched episode of each series in progress (Jellyfin's Next Up). */
+    NextUp,
+    /** Titles the viewer marked as favourites on the server. */
+    Favourites,
+}
 
 /** One page of a library, for grids that load as they scroll. */
 data class MediaServerPage(
@@ -152,6 +160,19 @@ data class MediaServerPage(
  * two integers on [net.streamdek.mobile.nativeapp.EpisodeItem] and on cards; this is the pair.
  */
 data class MediaServerEpisode(val seasonNumber: Int, val episodeNumber: Int)
+
+/**
+ * A critic's review of a title, as the server holds it: who wrote it, where it ran, the review
+ * itself and where to read it in full. [positive] is the critic's verdict when the server gives
+ * one (fresh or rotten, say), and null when it does not.
+ */
+data class MediaServerReview(
+    val author: String,
+    val publication: String?,
+    val text: String,
+    val link: String?,
+    val positive: Boolean?,
+)
 
 /** A title's in-progress state on the server, for the unified Continue Watching. */
 data class MediaServerResume(
@@ -182,6 +203,7 @@ data class MediaServerEpisodeProgress(
 enum class MediaServerPlaybackState { Playing, Paused, Stopped }
 
 const val PLEX_PROVIDER_ID = "plex"
+const val JELLYFIN_PROVIDER_ID = "jellyfin"
 
 /**
  * The Home Rows id for a media server row.

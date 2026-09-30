@@ -20,12 +20,24 @@ import java.util.concurrent.ConcurrentHashMap
 object MediaServerAuth {
     const val TOKEN_HEADER = "X-Plex-Token"
 
-    private val tokensByOrigin = ConcurrentHashMap<String, String>()
+    /** Header name and value, by server origin. Plex's is its token header; Jellyfin's is `Authorization`. */
+    private val tokensByOrigin = ConcurrentHashMap<String, Pair<String, String>>()
 
-    /** Remembers [token] for requests to [uri]'s scheme, host and port. */
+    /** Remembers a Plex [token] for requests to [uri]'s scheme, host and port. */
     fun register(uri: String, token: String?) {
         val origin = originOf(uri) ?: return
-        if (token.isNullOrBlank()) tokensByOrigin.remove(origin) else tokensByOrigin[origin] = token
+        if (token.isNullOrBlank()) tokensByOrigin.remove(origin) else tokensByOrigin[origin] = TOKEN_HEADER to token
+    }
+
+    /** Remembers a whole header for requests to [uri]'s origin - Jellyfin's `Authorization: MediaBrowser ...`. */
+    fun registerHeader(uri: String, name: String, value: String?) {
+        val origin = originOf(uri) ?: return
+        if (value.isNullOrBlank()) tokensByOrigin.remove(origin) else tokensByOrigin[origin] = name to value
+    }
+
+    /** Forgets one server's addresses, when it is disconnected. */
+    fun forget(uri: String) {
+        originOf(uri)?.let(tokensByOrigin::remove)
     }
 
     /** Forgets every server: on disconnect, sign-out and profile switch. */
@@ -35,17 +47,18 @@ object MediaServerAuth {
 
     /** The header a request to [url] needs, or nothing when [url] is not a known server. */
     fun headersFor(url: String): Map<String, String> {
-        val token = originOf(url)?.let(tokensByOrigin::get) ?: return emptyMap()
-        return mapOf(TOKEN_HEADER to token)
+        val (name, value) = originOf(url)?.let(tokensByOrigin::get) ?: return emptyMap()
+        return mapOf(name to value)
     }
 
     fun isKnownServerUrl(url: String): Boolean = originOf(url)?.let(tokensByOrigin::containsKey) == true
 
     val interceptor: Interceptor = Interceptor { chain ->
         val request = chain.request()
-        if (request.header(TOKEN_HEADER) != null) return@Interceptor chain.proceed(request)
-        val token = tokensByOrigin[originOf(request.url.scheme, request.url.host, request.url.port)]
-        if (token == null) chain.proceed(request) else chain.proceed(request.newBuilder().header(TOKEN_HEADER, token).build())
+        val header = tokensByOrigin[originOf(request.url.scheme, request.url.host, request.url.port)]
+            ?: return@Interceptor chain.proceed(request)
+        if (request.header(header.first) != null) chain.proceed(request)
+        else chain.proceed(request.newBuilder().header(header.first, header.second).build())
     }
 
     internal fun originOf(url: String): String? {

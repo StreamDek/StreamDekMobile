@@ -178,9 +178,43 @@ internal fun unifiedLibrary(continueWatching: List<MediaItem>, watchlist: List<M
  * sent to that server by [net.streamdek.mobile.nativeapp.mediaserver.MediaServerAuth] at request
  * time; it is never part of what is stored or sent on.
  */
-internal fun withoutMediaServerHeaders(headers: Map<String, String>): Map<String, String> =
-  if (headers.keys.none { it.startsWith("X-Plex-", ignoreCase = true) }) headers
-  else headers.filterKeys { !it.startsWith("X-Plex-", ignoreCase = true) }
+internal fun withoutMediaServerHeaders(headers: Map<String, String>): Map<String, String> {
+  // Plex's token headers, and Jellyfin's `Authorization: MediaBrowser ... Token=...`.
+  fun isServerHeader(name: String, value: String) =
+    name.startsWith("X-Plex-", ignoreCase = true) ||
+      (name.equals("Authorization", ignoreCase = true) && value.startsWith("MediaBrowser", ignoreCase = true))
+  return if (headers.none { (name, value) -> isServerHeader(name, value) }) headers
+  else headers.filterNot { (name, value) -> isServerHeader(name, value) }
+}
+
+/**
+ * Which media server provider a row or list belongs to, from its id: a library row
+ * (`addon:mediaserver.<provider>.<server>:...`) or a collection list. Null for everything else.
+ */
+/**
+ * One provider's fresh rows in place of its old ones, the others left as they were. A provider that
+ * did not answer in time (null) or came back with nothing (a server not reached yet) keeps what it
+ * showed: one slow server never empties another's rows, or its own.
+ */
+internal fun mergeMediaServerRows(previous: List<MediaServerRow>, fetched: Map<String, List<MediaServerRow>?>): List<MediaServerRow> =
+  fetched.flatMap { (provider, rows) ->
+    rows?.takeIf { it.isNotEmpty() } ?: previous.filter { mediaServerProviderOfRowId(it.id) == provider }
+  }
+
+/** As [mergeMediaServerRows], for Continue Watching: only a provider that did not answer keeps its old entries. */
+internal fun mergeMediaServerResume(previous: List<MediaServerResume>, fetched: Map<String, List<MediaServerResume>?>): List<MediaServerResume> =
+  fetched.flatMap { (provider, entries) ->
+    entries ?: previous.filter { MediaServerReference.providerOfSource(it.item.sourceAddonId) == provider }
+  }.sortedByDescending { it.lastViewedAtMs }
+
+internal fun mediaServerProviderOfRowId(id: String): String? {
+  if (id.startsWith(MEDIA_SERVER_COLLECTION_ROW_PREFIX)) return MediaServerReference.decode(id.removePrefix(MEDIA_SERVER_COLLECTION_ROW_PREFIX))?.provider
+  return id.split(':').getOrNull(1)
+    ?.takeIf { it.startsWith(net.streamdek.mobile.nativeapp.mediaserver.HOME_ROW_SOURCE_PREFIX) }
+    ?.removePrefix(net.streamdek.mobile.nativeapp.mediaserver.HOME_ROW_SOURCE_PREFIX)
+    ?.substringBefore('.')
+    ?.takeIf { it.isNotBlank() }
+}
 
 /** Words the provider puts on rows and sources, in the app's language. Read per call so a language change is honoured. */
 internal class AppMediaServerLabels(private val context: () -> Context) : MediaServerLabels {
@@ -195,6 +229,8 @@ internal class AppMediaServerLabels(private val context: () -> Context) : MediaS
     if (multipleServers) s(R.string.media_server_attribution, provider, serverName) else provider
   override fun season(number: Int) = s(R.string.detail_season_number, number)
   override fun episode(number: Int) = s(R.string.detail_episode_number, number)
+  override fun nextUp() = s(R.string.media_server_next_up)
+  override fun favourites() = s(R.string.media_server_favourites)
 }
 
 /**

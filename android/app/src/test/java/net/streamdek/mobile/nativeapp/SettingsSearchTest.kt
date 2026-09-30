@@ -33,6 +33,7 @@ class SettingsSearchTest {
     SettingsRoute.Streams to "Streams and Quality",
     SettingsRoute.Downloads to "Downloads",
     SettingsRoute.MediaServers to "Plex",
+    SettingsRoute.Jellyfin to "Jellyfin",
     SettingsRoute.Addons to "Add-ons",
     SettingsRoute.Plugins to "Plugins",
     SettingsRoute.M3uPlaylists to "Playlists",

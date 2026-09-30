@@ -251,6 +251,8 @@ data class MediaDetail(
   val traktComments: List<TraktComment> = emptyList(),
   val certification: String? = null,
   val certificationCountry: String? = null,
+  /** Critics' reviews from the viewer's own media server, for a title that came from one. */
+  val serverReviews: List<net.streamdek.mobile.nativeapp.mediaserver.MediaServerReview> = emptyList(),
 )
 
 data class MediaSection(

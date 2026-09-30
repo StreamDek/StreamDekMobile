@@ -99,6 +99,20 @@ internal data class PlexMetadata(
     @SerializedName("Director") val directors: List<PlexTag>? = null,
     @SerializedName("Media") val media: List<PlexMedia>? = null,
     @SerializedName("Image") val images: List<PlexImage>? = null,
+    /** Only present when asked for with includeReviews=1. */
+    @SerializedName("Review") val reviews: List<PlexReview>? = null,
+)
+
+/** One critic's review, as Plex's metadata carries it. */
+internal data class PlexReview(
+    /** The critic. */
+    val tag: String? = null,
+    val text: String? = null,
+    /** The verdict as an image name, such as "rottentomatoes://image.review.fresh". */
+    val image: String? = null,
+    val link: String? = null,
+    /** The publication. */
+    val source: String? = null,
 )
 
 internal data class PlexTag(

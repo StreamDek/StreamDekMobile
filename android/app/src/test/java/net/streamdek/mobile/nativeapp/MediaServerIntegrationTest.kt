@@ -71,6 +71,19 @@ class MediaServerIntegrationTest {
     assertEquals(2, mediaServerHomeSections(listOf(row(MediaServerRowKind.RecentlyAdded, 0), row(MediaServerRowKind.Library, 1), row(MediaServerRowKind.Collections, 2))).size)
   }
 
+  @Test fun `a slow or empty provider keeps its rows and never empties the other's`() {
+    fun row(provider: String, index: Int, title: String) = MediaServerRow(
+      id = mediaServerHomeRowId(provider, "s", "movie", "library-1", index), title = title,
+      serverId = "s", serverName = "S", kind = MediaServerRowKind.Library, mediaType = "movie", items = listOf(item(plexId("1"))), libraryKey = "1",
+    )
+    val before = listOf(row("plex", 0, "old plex"), row("jellyfin", 0, "old jellyfin"))
+    val merged = mergeMediaServerRows(before, linkedMapOf("plex" to listOf(row("plex", 0, "new plex")), "jellyfin" to null))
+    assertEquals(listOf("new plex", "old jellyfin"), merged.map { it.title })
+    assertEquals(listOf("old plex", "new jellyfin"), mergeMediaServerRows(before, linkedMapOf("plex" to emptyList(), "jellyfin" to listOf(row("jellyfin", 0, "new jellyfin")))).map { it.title })
+    // A provider no longer linked is not asked, and its rows go.
+    assertEquals(listOf("old plex"), mergeMediaServerRows(before, mapOf("plex" to null)).map { it.title })
+  }
+
   private fun isMediaServerHomeRowSourceOf(id: String) = id.split(':').getOrNull(1)?.startsWith("mediaserver.") == true
 
   @Test fun `Plex lists are recognised so they page through the server and wear its mark`() {
@@ -130,5 +143,39 @@ class MediaServerIntegrationTest {
     assertEquals(listOf("99"), merged.similarTitles.map { it.id })
     assertEquals(1, merged.cast.size)
     assertEquals("tt1", merged.imdbId)
+  }
+
+  @Test
+  fun `jellyfin credentials never travel with a stored or handed-off stream`() {
+    val headers = mapOf("Authorization" to "MediaBrowser Client=\"StreamDek\", Token=\"secret\"", "User-Agent" to "x", "X-Plex-Token" to "p")
+    assertEquals(mapOf("User-Agent" to "x"), withoutMediaServerHeaders(headers))
+    val basic = mapOf("Authorization" to "Basic abc")
+    assertEquals(basic, withoutMediaServerHeaders(basic))
+  }
+
+  @Test
+  fun `a row or list id names its provider`() {
+    val jellyfinRow = mediaServerHomeRowId("jellyfin", "srv", "movie", "library-abc", 0)
+    assertEquals("jellyfin", mediaServerProviderOfRowId(jellyfinRow))
+    val collection = MEDIA_SERVER_COLLECTION_ROW_PREFIX + MediaServerReference("jellyfin", "srv", "box1").encode()
+    assertEquals("jellyfin", mediaServerProviderOfRowId(collection))
+    assertEquals(null, mediaServerProviderOfRowId("addon:com.example:movie:top:0"))
+    assertTrue(isMediaServerBrowseRowId(jellyfinRow))
+  }
+
+  @Test
+  fun `a jellyfin film maps to a card with its ids remembered`() {
+    val context = net.streamdek.mobile.nativeapp.mediaserver.jellyfin.JellyfinMappingContext(serverId = "srv", baseUrl = "http://10.0.0.2:8096", attribution = "Jellyfin")
+    val film = net.streamdek.mobile.nativeapp.mediaserver.jellyfin.JellyfinItem(
+      id = "m1", name = "Film", type = "Movie", productionYear = 1999,
+      providerIds = mapOf("Tmdb" to "603", "Imdb" to "tt0133093"),
+      imageTags = mapOf("Primary" to "t"),
+    )
+    val card = net.streamdek.mobile.nativeapp.mediaserver.jellyfin.JellyfinMapping.item(film, context)!!
+    assertEquals("Film", card.title)
+    assertEquals("1999", card.year)
+    assertEquals(603, MediaServerIdentities.of(card.id)?.tmdbId)
+    assertEquals("tt0133093", MediaServerIdentities.of(card.id)?.imdbId)
+    assertEquals("jellyfin", MediaServerReference.providerOfSource(card.sourceAddonId))
   }
 }

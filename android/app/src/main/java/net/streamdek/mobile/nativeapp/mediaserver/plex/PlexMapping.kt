@@ -7,6 +7,7 @@ import net.streamdek.mobile.nativeapp.MediaItem
 import net.streamdek.mobile.nativeapp.SeasonSummary
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerIdentities
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerReference
+import net.streamdek.mobile.nativeapp.mediaserver.MediaServerReview
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerResume
 import net.streamdek.mobile.nativeapp.mediaserver.PLEX_PROVIDER_ID
 import java.net.URLEncoder
@@ -51,6 +52,26 @@ internal object PlexMapping {
     private val legacyTmdb = Regex("themoviedb://(\\d{1,12})")
 
     const val COLLECTION_TYPE = "collection"
+
+    /**
+     * A title's reviews, those with something to read. A link is kept only when it is an ordinary
+     * web address, since it is opened outside the app.
+     */
+    fun reviews(meta: PlexMetadata): List<MediaServerReview> = meta.reviews.orEmpty().mapNotNull { review ->
+        val text = review.text?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+        val verdict = review.image?.lowercase(java.util.Locale.US).orEmpty()
+        MediaServerReview(
+            author = review.tag?.trim()?.takeIf { it.isNotEmpty() } ?: review.source?.trim().orEmpty(),
+            publication = review.source?.trim()?.takeIf { it.isNotEmpty() && it != review.tag?.trim() },
+            text = text,
+            link = review.link?.trim()?.takeIf { it.startsWith("https://", true) || it.startsWith("http://", true) },
+            positive = when {
+                "fresh" in verdict || "upright" in verdict -> true
+                "rotten" in verdict || "spilled" in verdict -> false
+                else -> null
+            },
+        )
+    }.filter { it.author.isNotEmpty() }
 
     fun reference(context: PlexMappingContext, ratingKey: String): MediaServerReference =
         MediaServerReference(PLEX_PROVIDER_ID, context.serverId, ratingKey)

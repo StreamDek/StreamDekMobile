@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -55,6 +57,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -70,7 +73,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import dev.chrisbanes.haze.rememberHazeState
 import net.streamdek.mobile.R
+import kotlinx.coroutines.launch
+import net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerReachability
+import net.streamdek.mobile.nativeapp.mediaserver.MediaServerReference
+import net.streamdek.mobile.nativeapp.mediaserver.PLEX_PROVIDER_ID
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerResume
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerRow
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerUiState
@@ -113,7 +120,8 @@ internal fun Modifier.plexAmbientGlow(): Modifier {
       label = "plexAmbientDrift",
     )
   }
-  return drawBehind {
+  // The pages sit side by side and nothing clips them: the light stays on its own page.
+  return clipToBounds().drawBehind {
     val d = drift.value
     val w = size.width
     val h = size.height
@@ -139,17 +147,66 @@ private val PlexAmbientRed = Color(0xFFEF4444)
 private val PlexAmbientGreen = Color(0xFF22C55E)
 
 /**
- * The Plex page: the viewer's own library, in StreamDek's look.
+ * Jellyfin's colour wash: orange and red fields of light rising out of black, drifting as Plex's
+ * does. The page is first taken down toward black in a dark theme, so the colours glow rather than
+ * tint grey; on a light theme it stays a light touch.
+ */
+@Composable
+internal fun Modifier.jellyfinAmbientGlow(): Modifier {
+  val motionless = LocalMotionSettings.current.motionless
+  val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+  val strength = if (dark) 0.34f else 0.16f
+  val drift: State<Float> = if (motionless) {
+    remember { mutableFloatStateOf(0.5f) }
+  } else {
+    rememberInfiniteTransition(label = "jellyfinAmbient").animateFloat(
+      initialValue = 0f,
+      targetValue = 1f,
+      animationSpec = infiniteRepeatable(tween(durationMillis = 18_000, easing = LinearEasing), RepeatMode.Reverse),
+      label = "jellyfinAmbientDrift",
+    )
+  }
+  return clipToBounds().drawBehind {
+    if (dark) drawRect(Color.Black.copy(alpha = 0.55f))
+    val d = drift.value
+    val w = size.width
+    val h = size.height
+    val radius = maxOf(w, h) * 0.55f
+    fun glow(color: Color, x: Float, y: Float, scale: Float = 1f, weight: Float = 1f) {
+      val center = Offset(x * w, y * h)
+      drawCircle(
+        brush = Brush.radialGradient(listOf(color.copy(alpha = strength * weight), color.copy(alpha = 0f)), center = center, radius = radius * scale),
+        radius = radius * scale,
+        center = center,
+      )
+    }
+    glow(JellyfinAmbientOrange, 0.12f + 0.10f * d, 0.08f + 0.05f * d, 1.05f)
+    glow(JellyfinAmbientRed, 0.90f - 0.08f * d, 0.16f + 0.08f * d)
+    glow(JellyfinAmbientEmber, 0.20f + 0.06f * d, 0.62f - 0.07f * d, 0.9f, 0.8f)
+    glow(JellyfinAmbientCrimson, 0.84f - 0.10f * d, 0.82f - 0.05f * d, 0.95f)
+  }
+}
+
+private val JellyfinAmbientOrange = Color(0xFFF97316)
+private val JellyfinAmbientRed = Color(0xFFEF4444)
+private val JellyfinAmbientEmber = Color(0xFFEA580C)
+private val JellyfinAmbientCrimson = Color(0xFFB91C1C)
+
+/**
+ * The media page: the viewer's own libraries, in StreamDek's look.
  *
- * Plex's Continue Watching first, then each enabled library's Recently Added, the libraries and
+ * One page for every connected server. With only Plex or only Jellyfin it is that server's page;
+ * with both, a Plex / Jellyfin switch sits in the header and the two pages sit side by side, so a
+ * swipe moves between them too. Each page carries its server's Continue Watching first, then Next
+ * Up where the server has it, each enabled library's Recently Added, the libraries themselves and
  * their collections, grouped under their server when there is more than one. The header condenses
- * into a floating glass pill as the page scrolls, with the same glass as Search. A server that is
- * away says so in one compact line rather than emptying the page, and the page keeps the rows it
- * had while it reloads, so coming back never shows it blank or jumps the scroll.
+ * into a floating glass pill as the page scrolls, and the colour wash is the server's own.
  */
 @Composable
 internal fun PlexTab(
-  state: MediaServerUiState,
+  plexState: MediaServerUiState,
+  jellyfinState: MediaServerUiState,
+  initialProvider: String,
   serverContinueWatching: List<MediaServerResume>,
   pageRows: List<MediaServerRow>,
   pageLoading: Boolean,
@@ -157,8 +214,10 @@ internal fun PlexTab(
   homeCardTextMode: HomeCardTextMode,
   watchlist: List<MediaItem>,
   headerStyle: HeaderStyle,
-  ambient: Boolean,
+  plexAmbient: Boolean,
+  jellyfinAmbient: Boolean,
   onLoad: (Boolean) -> Unit,
+  onProviderShown: (String) -> Unit,
   onOpen: (MediaItem) -> Unit,
   onOpenCollection: (MediaItem) -> Unit,
   onPlayContinueWatching: (MediaItem) -> Unit,
@@ -168,107 +227,77 @@ internal fun PlexTab(
   onMarkEarlierEpisodesWatched: (MediaItem) -> Unit,
   onRestartFromBeginning: (MediaItem) -> Unit,
   onRemoveFromContinueWatching: (MediaItem) -> Unit,
-  onOpenSettings: () -> Unit,
+  onOpenSettings: (String) -> Unit,
 ) {
-  LaunchedEffect(state.linked) { if (state.linked) onLoad(false) }
-  val listState = rememberLazyListState()
-  ReportScrollTop { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
-  val continueItems = remember(serverContinueWatching) {
-    serverContinueWatching.sortedByDescending { it.lastViewedAtMs }.map { it.item }
+  val providers = remember(plexState.navigationVisible, jellyfinState.navigationVisible) {
+    buildList {
+      if (plexState.navigationVisible) add(PLEX_PROVIDER_ID)
+      if (jellyfinState.navigationVisible) add(JELLYFIN_PROVIDER_ID)
+    }.ifEmpty { listOf(if (jellyfinState.linked && !plexState.linked) JELLYFIN_PROVIDER_ID else PLEX_PROVIDER_ID) }
   }
-  val rows = remember(pageRows) { pageRows.filter { it.items.isNotEmpty() } }
-  val enabledServers = state.servers.filter { it.enabled }
-  val multipleServers = enabledServers.size > 1
-  val offline = enabledServers.filter { it.reachability is MediaServerReachability.Offline }
-  val loading = pageLoading || state.refreshing
+  val linked = plexState.linked || jellyfinState.linked
+  LaunchedEffect(linked) { if (linked) onLoad(false) }
+  val pagerState = androidx.compose.foundation.pager.rememberPagerState(
+    initialPage = providers.indexOf(initialProvider).coerceAtLeast(0),
+    pageCount = { providers.size },
+  )
+  val current = providers.getOrElse(pagerState.currentPage) { providers.first() }
+  LaunchedEffect(current) { onProviderShown(current) }
+  val listStates = remember { mutableMapOf<String, LazyListState>() }
+  fun listStateOf(provider: String) = listStates.getOrPut(provider) { LazyListState() }
+  val currentList = listStateOf(current)
+  ReportScrollTop { currentList.firstVisibleItemIndex == 0 && currentList.firstVisibleItemScrollOffset == 0 }
+  val loading = pageLoading || plexState.refreshing || jellyfinState.refreshing
   val density = LocalDensity.current
   val hazeState = rememberHazeState()
   val condensePx = with(density) { CondenseDistance.toPx() }
   var headerHeight by remember { mutableStateOf(120.dp) }
-  // Derived, so scrolling recomposes only on the frame the page leaves or returns to the top.
-  val scrolled by remember { derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0 } }
+  val scrolled by remember { derivedStateOf { currentList.firstVisibleItemIndex > 0 || currentList.firstVisibleItemScrollOffset > 0 } }
+  val scope = androidx.compose.runtime.rememberCoroutineScope()
+  val currentState = if (current == JELLYFIN_PROVIDER_ID) jellyfinState else plexState
 
   Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-    // The glass samples everything in here, the colour wash included.
+    // The glass samples everything in here, each page's colour wash included.
     Box(modifier = Modifier.fillMaxSize().glassSource(hazeState)) {
-      if (ambient) Box(Modifier.fillMaxSize().plexAmbientGlow())
-      LazyColumn(
-        state = listState,
+      androidx.compose.foundation.pager.HorizontalPager(
+        state = pagerState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(top = headerHeight + 8.dp, bottom = 126.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp),
-      ) {
-        offline.forEach { server ->
-          item(key = "plex-offline-${server.id}") {
-            val refused = (server.reachability as? MediaServerReachability.Offline)?.reason == OfflineReason.Unauthorized
-            Row(
-              modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).clip(RoundedCornerShape(14.dp))
-                .background(Color(0xFFF59E0B).copy(alpha = 0.14f)).clickable(onClick = onOpenSettings).padding(horizontal = 14.dp, vertical = 10.dp),
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-              Box(Modifier.size(8.dp).background(Color(0xFFF59E0B), CircleShape))
-              Text(
-                stringResource(if (refused) R.string.plex_page_server_refused else R.string.plex_page_server_offline, server.name),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.85f),
-              )
-            }
-          }
-        }
-        if (continueItems.isNotEmpty()) {
-          item(key = "plex-continue") {
-            HomeStrip(
-              rowId = "continue", title = stringResource(R.string.plex_page_continue), items = continueItems,
-              continueWatchingStyle = continueWatchingStyle, homeCardTextMode = homeCardTextMode, liveLandscapeCards = false,
-              watchlistItems = watchlist, onOpen = onOpen, onViewAll = {}, onToggleWatchlist = onToggleWatchlist,
-              onMarkWatched = onMarkWatched, onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched, onRestartFromBeginning = onRestartFromBeginning,
-              onRemoveFromContinueWatching = onRemoveFromContinueWatching, onPlayContinueWatching = onPlayContinueWatching,
-            )
-          }
-        }
-        rows.forEachIndexed { index, row ->
-          if (multipleServers && (index == 0 || rows[index - 1].serverId != row.serverId)) {
-            item(key = "plex-server-${row.serverId}-$index") {
-              Text(row.serverName, modifier = Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = PlexGold)
-            }
-          }
-          item(key = "plex-row-$index-${row.id}") {
-            HomeStrip(
-              rowId = row.id.ifEmpty { "plex-collections-$index" }, title = row.title, items = row.items,
-              continueWatchingStyle = continueWatchingStyle, homeCardTextMode = homeCardTextMode, liveLandscapeCards = false,
-              watchlistItems = watchlist,
-              onOpen = { item -> if (item.type == "collection") onOpenCollection(item) else onOpen(item) },
-              onViewAll = { if (row.id.isNotEmpty()) onViewAll(HomeRow(row.id, row.title, row.items)) },
-              onToggleWatchlist = onToggleWatchlist, onMarkWatched = onMarkWatched, onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched,
-              onRestartFromBeginning = onRestartFromBeginning, onRemoveFromContinueWatching = onRemoveFromContinueWatching, onPlayContinueWatching = onPlayContinueWatching,
-            )
-          }
-        }
-        if (rows.isEmpty() && continueItems.isEmpty()) {
-          item(key = "plex-empty") {
-            when {
-              loading -> Box(Modifier.fillMaxWidth().padding(top = 48.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = PlexGold) }
-              offline.isNotEmpty() && offline.size == enabledServers.size -> LibraryEmptyState(
-                icon = { Icon(Icons.Rounded.CloudOff, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), modifier = Modifier.size(54.dp)) },
-                title = stringResource(R.string.plex_page_offline_title), subtitle = stringResource(R.string.plex_page_offline_note),
-              )
-              else -> LibraryEmptyState(
-                icon = { Icon(PlexIcons.Chevron, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), modifier = Modifier.size(54.dp)) },
-                title = stringResource(R.string.plex_page_empty_title), subtitle = stringResource(R.string.plex_page_empty_note),
-              )
-            }
-          }
-        }
+        beyondViewportPageCount = 1,
+        key = { providers[it] },
+      ) { page ->
+        val provider = providers[page]
+        MediaServerProviderPage(
+          provider = provider,
+          state = if (provider == JELLYFIN_PROVIDER_ID) jellyfinState else plexState,
+          listState = listStateOf(provider),
+          serverContinueWatching = serverContinueWatching,
+          pageRows = pageRows,
+          loading = loading,
+          ambient = if (provider == JELLYFIN_PROVIDER_ID) jellyfinAmbient else plexAmbient,
+          topPadding = headerHeight + 8.dp,
+          continueWatchingStyle = continueWatchingStyle,
+          homeCardTextMode = homeCardTextMode,
+          watchlist = watchlist,
+          onOpen = onOpen,
+          onOpenCollection = onOpenCollection,
+          onPlayContinueWatching = onPlayContinueWatching,
+          onViewAll = onViewAll,
+          onToggleWatchlist = onToggleWatchlist,
+          onMarkWatched = onMarkWatched,
+          onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched,
+          onRestartFromBeginning = onRestartFromBeginning,
+          onRemoveFromContinueWatching = onRemoveFromContinueWatching,
+          onOpenSettings = { onOpenSettings(provider) },
+          onRetry = { onLoad(true) },
+        )
       }
     }
-    // Only once scrolled: at the top the status bar sits on the page's own colour, like the header.
     if (scrolled) {
       ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f))
     }
     // Nothing behind the header at the top of the page: it sits straight on the page and its colour.
-    // As the page scrolls a glass pill fades in behind the row - the same glass as Search, frosted in
-    // the Modern style and dark in the Default one - and fades back out at the top.
+    // As the page scrolls a glass pill fades in behind it - the same glass as Search - and fades
+    // back out at the top.
     Box(
       modifier = Modifier.align(Alignment.TopCenter).zIndex(5f).fillMaxWidth()
         .onSizeChanged { size -> headerHeight = with(density) { size.height.toDp() } }
@@ -279,25 +308,206 @@ internal fun PlexTab(
         hazeState = hazeState,
         shape = RoundedCornerShape(26.dp),
         darkInDarkTheme = headerStyle != HeaderStyle.Modern,
-        modifier = Modifier.matchParentSize().graphicsLayer { alpha = listState.condenseProgress(condensePx) },
+        modifier = Modifier.matchParentSize().graphicsLayer { alpha = currentList.condenseProgress(condensePx) },
       )
-      Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        Image(painterResource(R.drawable.plex_logo), contentDescription = null, modifier = Modifier.size(36.dp).clip(CircleShape))
-        Column(Modifier.weight(1f)) {
-          Text(stringResource(R.string.media_server_plex), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground, maxLines = 1)
-          val subtitle = listOfNotNull(state.accountName, enabledServers.takeIf { it.isNotEmpty() }?.joinToString(" · ") { it.name }).joinToString(" · ")
-          if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+      Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(12.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          if (current == JELLYFIN_PROVIDER_ID) {
+            Image(painterResource(R.drawable.jellyfin_logo), contentDescription = null, modifier = Modifier.size(34.dp))
+          } else {
+            Image(painterResource(R.drawable.plex_logo), contentDescription = null, modifier = Modifier.size(36.dp).clip(CircleShape))
+          }
+          Column(Modifier.weight(1f)) {
+            Text(
+              stringResource(if (current == JELLYFIN_PROVIDER_ID) R.string.media_server_jellyfin else R.string.media_server_plex),
+              style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground, maxLines = 1,
+            )
+            val enabledServers = currentState.servers.filter { it.enabled }
+            val subtitle = listOfNotNull(currentState.accountName, enabledServers.takeIf { it.isNotEmpty() }?.joinToString(" · ") { it.name }).joinToString(" · ")
+            if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+          }
+          if (loading) {
+            CircularProgressIndicator(modifier = Modifier.padding(horizontal = 12.dp).size(18.dp), strokeWidth = 2.dp, color = accentOf(current))
+          } else {
+            IconButton(onClick = { onLoad(true) }) { Icon(Icons.Rounded.Refresh, contentDescription = stringResource(R.string.plex_refresh), tint = MaterialTheme.colorScheme.onBackground) }
+          }
+          IconButton(onClick = { onOpenSettings(current) }) { Icon(Icons.Rounded.Settings, contentDescription = stringResource(R.string.plex_manage), tint = MaterialTheme.colorScheme.onBackground) }
         }
-        if (loading) {
-          CircularProgressIndicator(modifier = Modifier.padding(horizontal = 12.dp).size(18.dp), strokeWidth = 2.dp, color = PlexGold)
-        } else {
-          IconButton(onClick = { onLoad(true) }) { Icon(Icons.Rounded.Refresh, contentDescription = stringResource(R.string.plex_refresh), tint = MaterialTheme.colorScheme.onBackground) }
+        if (providers.size > 1) {
+          // Both servers connected: which one this page shows. A swipe does the same.
+          Row(
+            modifier = Modifier.clip(RoundedCornerShape(50)).background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.08f)).padding(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+          ) {
+            providers.forEachIndexed { index, provider ->
+              val selected = provider == current
+              Row(
+                modifier = Modifier.clip(RoundedCornerShape(50))
+                  .background(if (selected) MaterialTheme.colorScheme.onBackground.copy(alpha = 0.16f) else Color.Transparent)
+                  .clickable { scope.launch { pagerState.animateScrollToPage(index) } }
+                  .padding(horizontal = 14.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+              ) {
+                Icon(
+                  if (provider == JELLYFIN_PROVIDER_ID) JellyfinIcons.Mark else PlexIcons.Chevron,
+                  contentDescription = null,
+                  tint = if (selected) accentOf(provider) else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                  modifier = Modifier.size(16.dp),
+                )
+                Text(
+                  stringResource(if (provider == JELLYFIN_PROVIDER_ID) R.string.media_server_jellyfin else R.string.media_server_plex),
+                  style = MaterialTheme.typography.labelLarge,
+                  fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                  color = MaterialTheme.colorScheme.onBackground.copy(alpha = if (selected) 1f else 0.7f),
+                )
+              }
+            }
+          }
         }
-        IconButton(onClick = onOpenSettings) { Icon(Icons.Rounded.Settings, contentDescription = stringResource(R.string.plex_manage), tint = MaterialTheme.colorScheme.onBackground) }
+      }
+    }
+  }
+}
+
+private val JellyfinAccent = Color(0xFFAA5CC3)
+
+private fun accentOf(provider: String): Color = if (provider == JELLYFIN_PROVIDER_ID) JellyfinAccent else PlexGold
+
+/** One server's page inside the media page. */
+@Composable
+private fun MediaServerProviderPage(
+  provider: String,
+  state: MediaServerUiState,
+  listState: LazyListState,
+  serverContinueWatching: List<MediaServerResume>,
+  pageRows: List<MediaServerRow>,
+  loading: Boolean,
+  ambient: Boolean,
+  topPadding: androidx.compose.ui.unit.Dp,
+  continueWatchingStyle: ContinueWatchingStyle,
+  homeCardTextMode: HomeCardTextMode,
+  watchlist: List<MediaItem>,
+  onOpen: (MediaItem) -> Unit,
+  onOpenCollection: (MediaItem) -> Unit,
+  onPlayContinueWatching: (MediaItem) -> Unit,
+  onViewAll: (HomeRow) -> Unit,
+  onToggleWatchlist: (MediaItem) -> Unit,
+  onMarkWatched: (MediaItem) -> Unit,
+  onMarkEarlierEpisodesWatched: (MediaItem) -> Unit,
+  onRestartFromBeginning: (MediaItem) -> Unit,
+  onRemoveFromContinueWatching: (MediaItem) -> Unit,
+  onOpenSettings: () -> Unit,
+  onRetry: () -> Unit,
+) {
+  val jellyfin = provider == JELLYFIN_PROVIDER_ID
+  val continueItems = remember(serverContinueWatching, provider) {
+    serverContinueWatching
+      .filter { MediaServerReference.providerOfSource(it.item.sourceAddonId) == provider }
+      .sortedByDescending { it.lastViewedAtMs }.map { it.item }
+  }
+  val rows = remember(pageRows, provider) { pageRows.filter { it.items.isNotEmpty() && mediaServerProviderOfRowId(it.id) == provider } }
+  val enabledServers = state.servers.filter { it.enabled }
+  val multipleServers = enabledServers.size > 1
+  val offline = enabledServers.filter { it.reachability is MediaServerReachability.Offline }
+  val problem = enabledServers.firstNotNullOfOrNull { it.problem }
+  Box(modifier = Modifier.fillMaxSize()) {
+    if (ambient) Box(Modifier.fillMaxSize().then(if (jellyfin) Modifier.jellyfinAmbientGlow() else Modifier.plexAmbientGlow()))
+    LazyColumn(
+      state = listState,
+      modifier = Modifier.fillMaxSize(),
+      contentPadding = PaddingValues(top = topPadding, bottom = 126.dp),
+      verticalArrangement = Arrangement.spacedBy(20.dp),
+    ) {
+      offline.forEach { server ->
+        item(key = "media-offline-${server.id}") {
+          val refused = (server.reachability as? MediaServerReachability.Offline)?.reason == OfflineReason.Unauthorized
+          Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).clip(RoundedCornerShape(14.dp))
+              .background(Color(0xFFF59E0B).copy(alpha = 0.14f)).clickable(onClick = onOpenSettings).padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+          ) {
+            Box(Modifier.size(8.dp).background(Color(0xFFF59E0B), CircleShape))
+            Text(
+              stringResource(
+                when {
+                  !refused -> R.string.plex_page_server_offline
+                  jellyfin -> R.string.jellyfin_page_server_refused
+                  else -> R.string.plex_page_server_refused
+                },
+                server.name,
+              ),
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.85f),
+            )
+          }
+        }
+      }
+      if (continueItems.isNotEmpty()) {
+        item(key = "media-continue") {
+          HomeStrip(
+            rowId = "continue", title = stringResource(R.string.plex_page_continue), items = continueItems,
+            continueWatchingStyle = continueWatchingStyle, homeCardTextMode = homeCardTextMode, liveLandscapeCards = false,
+            watchlistItems = watchlist, onOpen = onOpen, onViewAll = {}, onToggleWatchlist = onToggleWatchlist,
+            onMarkWatched = onMarkWatched, onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched, onRestartFromBeginning = onRestartFromBeginning,
+            onRemoveFromContinueWatching = onRemoveFromContinueWatching, onPlayContinueWatching = onPlayContinueWatching,
+          )
+        }
+      }
+      if (rows.isEmpty() && continueItems.isNotEmpty() && !loading && offline.size < enabledServers.size) {
+        // Continue Watching came but the libraries did not: say so, and what the server said.
+        item(key = "media-rows-missing") {
+          Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).clip(RoundedCornerShape(14.dp))
+              .background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.06f)).clickable(onClick = onRetry)
+              .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+          ) {
+            Text(stringResource(R.string.media_server_rows_missing_title), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+            Text(stringResource(R.string.media_server_rows_missing_note), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f))
+            if (problem != null) Text(problem, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f))
+          }
+        }
+      }
+      rows.forEachIndexed { index, row ->
+        if (multipleServers && (index == 0 || rows[index - 1].serverId != row.serverId)) {
+          item(key = "media-server-${row.serverId}-$index") {
+            Text(row.serverName, modifier = Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = accentOf(provider))
+          }
+        }
+        item(key = "media-row-$index-${row.id}") {
+          HomeStrip(
+            rowId = row.id.ifEmpty { "media-collections-$index" }, title = row.title, items = row.items,
+            continueWatchingStyle = continueWatchingStyle, homeCardTextMode = homeCardTextMode, liveLandscapeCards = false,
+            watchlistItems = watchlist,
+            onOpen = { item -> if (item.type == "collection") onOpenCollection(item) else onOpen(item) },
+            onViewAll = { if (row.id.isNotEmpty()) onViewAll(HomeRow(row.id, row.title, row.items)) },
+            onToggleWatchlist = onToggleWatchlist, onMarkWatched = onMarkWatched, onMarkEarlierEpisodesWatched = onMarkEarlierEpisodesWatched,
+            onRestartFromBeginning = onRestartFromBeginning, onRemoveFromContinueWatching = onRemoveFromContinueWatching, onPlayContinueWatching = onPlayContinueWatching,
+          )
+        }
+      }
+      if (rows.isEmpty() && continueItems.isEmpty()) {
+        item(key = "media-empty") {
+          when {
+            loading -> Box(Modifier.fillMaxWidth().padding(top = 48.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = accentOf(provider)) }
+            offline.isNotEmpty() && offline.size == enabledServers.size -> LibraryEmptyState(
+              icon = { Icon(Icons.Rounded.CloudOff, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), modifier = Modifier.size(54.dp)) },
+              title = stringResource(if (jellyfin) R.string.jellyfin_page_offline_title else R.string.plex_page_offline_title),
+              subtitle = stringResource(R.string.plex_page_offline_note),
+            )
+            else -> LibraryEmptyState(
+              icon = { Icon(if (jellyfin) JellyfinIcons.Mark else PlexIcons.Chevron, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), modifier = Modifier.size(54.dp)) },
+              title = stringResource(R.string.plex_page_empty_title),
+              subtitle = stringResource(if (jellyfin) R.string.jellyfin_page_empty_note else R.string.plex_page_empty_note) + (problem?.let { "\n\n$it" } ?: ""),
+            )
+          }
+        }
       }
     }
   }
@@ -490,12 +700,98 @@ private fun DockingSectionTitle(
 /** The pinned row's compact heading scale; see PinnedSectionChrome. */
 private const val DockedTitleScale = 0.82f
 
-/** The Plex mark in a Plex list's search field, before the search icon, so the list reads as Plex's. */
+/** The server's mark in one of its lists' search field, before the search icon, so the list reads as that server's. */
 @Composable
-internal fun PlexSearchBadge() {
-  Image(
-    painterResource(R.drawable.plex_logo),
-    contentDescription = stringResource(R.string.plex_search_badge),
-    modifier = Modifier.size(22.dp).clip(CircleShape),
-  )
+internal fun PlexSearchBadge(provider: String = PLEX_PROVIDER_ID) {
+  if (provider == JELLYFIN_PROVIDER_ID) {
+    Image(
+      painterResource(R.drawable.jellyfin_logo),
+      contentDescription = stringResource(R.string.jellyfin_search_badge),
+      modifier = Modifier.size(20.dp),
+    )
+  } else {
+    Image(
+      painterResource(R.drawable.plex_logo),
+      contentDescription = stringResource(R.string.plex_search_badge),
+      modifier = Modifier.size(22.dp).clip(CircleShape),
+    )
+  }
 }
+
+/**
+ * Critics' reviews of a Plex title, from the viewer's own server: a second row under the Trakt
+ * comments, in the same cards. A review with a link opens it in full outside the app.
+ */
+@Composable
+internal fun PlexReviewsSection(reviews: List<net.streamdek.mobile.nativeapp.mediaserver.MediaServerReview>) {
+  val context = androidx.compose.ui.platform.LocalContext.current
+  Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Text(
+      stringResource(R.string.plex_reviews_title),
+      style = MaterialTheme.typography.headlineSmall,
+      fontWeight = FontWeight.Black,
+      color = MaterialTheme.colorScheme.onBackground,
+      modifier = Modifier.padding(horizontal = 24.dp),
+    )
+    androidx.compose.foundation.lazy.LazyRow(
+      contentPadding = PaddingValues(horizontal = 24.dp),
+      horizontalArrangement = Arrangement.spacedBy(12.dp),
+      modifier = Modifier.fillMaxWidth(),
+    ) {
+      items(reviews.size) { index ->
+        val review = reviews[index]
+        PlexReviewCard(review = review, onOpen = review.link?.let { link ->
+          {
+            runCatching {
+              context.startActivity(
+                android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(link))
+                  .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+              )
+            }
+          }
+        })
+      }
+    }
+  }
+}
+
+@Composable
+private fun PlexReviewCard(review: net.streamdek.mobile.nativeapp.mediaserver.MediaServerReview, onOpen: (() -> Unit)?) {
+  val ink = MaterialTheme.colorScheme.onBackground
+  Column(
+    modifier = Modifier
+      .width(310.dp)
+      .height(206.dp)
+      .clip(StreamDekRadius.panelShape)
+      .background(ink.copy(alpha = 0.07f))
+      .then(if (onOpen != null) Modifier.clickable(onClick = onOpen) else Modifier)
+      .padding(18.dp),
+    verticalArrangement = Arrangement.SpaceBetween,
+  ) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+      Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(modifier = Modifier.weight(1f)) {
+          Text(review.author, color = ink, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+          review.publication?.let {
+            Text(it, color = ink.copy(alpha = 0.62f), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+          }
+        }
+        review.positive?.let { fresh ->
+          Box(modifier = Modifier.clip(StreamDekRadius.pill).background(ink.copy(alpha = if (fresh) 0.16f else 0.08f)).padding(horizontal = 12.dp, vertical = 6.dp)) {
+            Text(
+              stringResource(if (fresh) R.string.plex_review_fresh else R.string.plex_review_rotten),
+              color = ink.copy(alpha = 0.80f),
+              fontSize = 12.sp,
+              fontWeight = FontWeight.Bold,
+            )
+          }
+        }
+      }
+      Text(review.text, color = ink.copy(alpha = 0.76f), fontSize = 15.sp, lineHeight = 22.sp, maxLines = 4, overflow = TextOverflow.Ellipsis)
+    }
+    if (onOpen != null) {
+      Text(stringResource(R.string.plex_review_read), color = ink.copy(alpha = 0.70f), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+    }
+  }
+}
+

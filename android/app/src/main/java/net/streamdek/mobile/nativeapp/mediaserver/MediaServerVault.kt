@@ -50,6 +50,9 @@ internal class MediaServerVault(private val context: Context, private val gson: 
         val libraries: List<StoredLibrary>? = null,
         /** The connection that last answered, tried first next time. */
         val preferredUri: String? = null,
+        /** Jellyfin only: the signed-in user on that server. */
+        val userId: String? = null,
+        val userName: String? = null,
     ) {
         override fun toString(): String = "StoredServer(id=$id, name=$name)"
     }

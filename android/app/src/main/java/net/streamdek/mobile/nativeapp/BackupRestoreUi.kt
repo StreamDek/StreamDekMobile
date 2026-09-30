@@ -325,7 +325,10 @@ private fun BackupCreatedDialog(created: BackupCreated, onShare: () -> Unit, onD
 
 /** Restorable groups in the order they are offered; credentials only when the backup has any. */
 private fun restorableCategories(summary: BackupSummary): List<BackupCategory> =
-  BackupCategory.values().filter { it != BackupCategory.Credentials || summary.credentials > 0 }
+  BackupCategory.values().filter {
+    (it != BackupCategory.Credentials || summary.credentials > 0) &&
+      (it != BackupCategory.MediaServers || BackupCategory.MediaServers in summary.categories)
+  }
 
 @Composable
 private fun categoryLabel(category: BackupCategory): String = stringResource(
@@ -337,6 +340,7 @@ private fun categoryLabel(category: BackupCategory): String = stringResource(
     BackupCategory.Appearance -> R.string.backup_category_appearance
     BackupCategory.General -> R.string.backup_category_general
     BackupCategory.Library -> R.string.backup_category_library
+    BackupCategory.MediaServers -> R.string.backup_category_media_servers
     BackupCategory.Credentials -> R.string.backup_category_credentials
   },
 )
@@ -444,9 +448,12 @@ private fun RestoreReportDialog(report: RestoreReport, onDismiss: () -> Unit) {
           SummaryLine(stringResource(R.string.backup_summary_playlists), report.playlists.toString())
           SummaryLine(stringResource(R.string.backup_summary_library), report.libraryItems.toString())
           if (report.credentials > 0) SummaryLine(stringResource(R.string.backup_summary_credentials), report.credentials.toString())
+          if (report.mediaServersRestored.isNotEmpty()) SummaryLine(stringResource(R.string.backup_summary_media_servers), report.mediaServersRestored.joinToString(", "))
         }
         val attention = buildList {
           if (report.needsSettingUp.isNotEmpty()) add(stringResource(R.string.backup_attention_left_out, report.needsSettingUp.joinToString(", ")))
+          if (report.mediaServersNeedSignIn.isNotEmpty()) add(stringResource(R.string.backup_attention_media_sign_in, report.mediaServersNeedSignIn.joinToString(", ")))
+          if (report.mediaServersKeptNewer.isNotEmpty()) add(stringResource(R.string.backup_attention_media_kept_newer, report.mediaServersKeptNewer.joinToString(", ")))
           if (report.addonsNotRestored.isNotEmpty()) add(stringResource(R.string.backup_attention_addons_failed, report.addonsNotRestored.joinToString(", ")))
           if (report.pluginRepositoriesNotReached.isNotEmpty()) add(stringResource(R.string.backup_attention_repos_failed, report.pluginRepositoriesNotReached.joinToString(", ")))
           if (report.otherPlatform != null) add(stringResource(R.string.backup_attention_platform))

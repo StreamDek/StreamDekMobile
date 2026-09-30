@@ -53,6 +53,11 @@ internal class MediaServerVault(private val context: Context, private val gson: 
         /** Jellyfin only: the signed-in user on that server. */
         val userId: String? = null,
         val userName: String? = null,
+        /** Jellyfin only: how this sign-in stands with the profile's copy at StreamDek. See JellyfinAccount. */
+        val cloudSynced: Boolean? = null,
+        val signedInAtMs: Long? = null,
+        val choicesChangedAtMs: Long? = null,
+        val fromBackup: Boolean? = null,
     ) {
         override fun toString(): String = "StoredServer(id=$id, name=$name)"
     }

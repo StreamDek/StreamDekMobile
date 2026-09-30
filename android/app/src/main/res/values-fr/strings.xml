@@ -1845,10 +1845,10 @@
   <string name="plex_episode_number">Épisode %1$d</string>
   <string name="jellyfin_link_waiting">En attente de Jellyfin. Cet écran se met à jour tout seul.</string>
   <string name="jellyfin_refreshed">Bibliothèques Jellyfin actualisées</string>
-  <string name="jellyfin_signed_out_note">Connectez-vous d’abord à StreamDek. Jellyfin est associé à votre profil StreamDek sur cet appareil.</string>
+  <string name="jellyfin_signed_out_note">Connectez-vous d’abord à StreamDek. Jellyfin est enregistré avec votre profil StreamDek : chaque appareil qui l’utilise retrouve vos serveurs.</string>
   <string name="jellyfin_search_badge">Liste Jellyfin</string>
   <string name="settings_dest_jellyfin_description">Connectez votre serveur Jellyfin et choisissez les bibliothèques affichées</string>
-  <string name="jellyfin_intro_body">Connectez-vous une fois à votre serveur Jellyfin. Ses bibliothèques apparaissent alors dans Accueil, Recherche et la page des médias de cet appareil.</string>
+  <string name="jellyfin_intro_body">Connectez-vous une fois à votre propre serveur Jellyfin. Ses bibliothèques apparaissent alors sur l’Accueil, dans la Recherche et sur la page des médias de chaque appareil utilisant ce profil.</string>
   <string name="jellyfin_needs_attention">Reconnectez-vous à Jellyfin pour continuer</string>
   <string name="jellyfin_find_server">Trouver votre serveur</string>
   <string name="jellyfin_enter_address">Saisir l’adresse du serveur</string>
@@ -1868,9 +1868,9 @@
   <string name="jellyfin_ambient_detail">Une lueur orange et rouge sur fond noir derrière la page et les listes Jellyfin</string>
   <string name="jellyfin_add_server">Ajouter un autre serveur</string>
   <string name="jellyfin_sign_out">Se déconnecter de Jellyfin</string>
-  <string name="jellyfin_sign_out_note">La déconnexion met fin à la session de cet appareil sur vos serveurs. Vos bibliothèques et votre historique restent sur Jellyfin.</string>
+  <string name="jellyfin_sign_out_note">La déconnexion retire Jellyfin de ce profil sur tous vos appareils et met fin à la session StreamDek sur vos serveurs. Vos bibliothèques et votre historique restent dans Jellyfin.</string>
   <string name="jellyfin_sign_out_title">Se déconnecter de Jellyfin ?</string>
-  <string name="jellyfin_sign_out_body">Les titres Jellyfin quittent Accueil, Recherche et la page des médias sur cet appareil jusqu’à votre prochaine connexion.</string>
+  <string name="jellyfin_sign_out_body">Les titres Jellyfin quittent l’Accueil, la Recherche et la page des médias sur chaque appareil utilisant ce profil jusqu’à votre prochaine connexion.</string>
   <string name="jellyfin_signed_out">Déconnecté de Jellyfin</string>
   <string name="jellyfin_logo_credit">Logo Jellyfin © contributeurs de Jellyfin, CC BY-SA 4.0</string>
   <string name="jellyfin_address_hint">L’adresse à laquelle vous ouvrez Jellyfin dans un navigateur. Sur votre réseau domestique, c’est souvent l’adresse IP du serveur et le port 8096.</string>
@@ -1951,4 +1951,12 @@
   <string name="library_section_watchlist">Ma liste</string>
   <string name="media_server_rows_missing_title">Vos bibliothèques ne se sont pas chargées</string>
   <string name="media_server_rows_missing_note">Touchez pour réessayer. La réponse du serveur est indiquée ci-dessous.</string>
+  <string name="backup_category_media_servers">Plex et Jellyfin</string>
+  <string name="backup_summary_media_servers">Serveurs multimédias</string>
+  <string name="backup_progress_media_servers">Restauration de Plex et Jellyfin…</string>
+  <string name="backup_attention_media_sign_in">Reconnectez-vous pour terminer la restauration de %1$s. L’adresse et les choix sont prêts dans les Réglages.</string>
+  <string name="backup_attention_media_kept_newer">La configuration plus récente de ce profil a été conservée pour %1$s.</string>
+  <string name="jellyfin_restored_title">Depuis votre sauvegarde</string>
+  <string name="jellyfin_restored_note">Ces serveurs sont revenus d’une sauvegarde sans leur connexion. Connectez-vous pour les réutiliser.</string>
+  <string name="jellyfin_restored_dismiss">Pas maintenant</string>
 </resources>

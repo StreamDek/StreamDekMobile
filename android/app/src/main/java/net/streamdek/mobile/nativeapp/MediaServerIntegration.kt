@@ -241,6 +241,33 @@ internal class AppMediaServerLabels(private val context: () -> Context) : MediaS
  * similar titles, where it streams, certification - comes from the catalogue, and the catalogue's
  * cast (with photos and pages) is preferred to the server's list of names.
  */
+/**
+ * StreamDek's catalogue entry for a media server title, as that title's page: the catalogue's
+ * words, pictures, cast and seasons under the server's id, so streams, progress and episodes are
+ * still asked of the server and nothing else.
+ */
+internal fun MediaDetail.asMediaServerPage(id: String, type: String, card: MediaItem?): MediaDetail = copy(
+  id = id,
+  type = type,
+  poster = poster ?: card?.poster,
+  backdrop = backdrop ?: card?.backdrop,
+)
+
+/**
+ * The server's seasons - the ones it actually has - in place of the catalogue's, wearing the
+ * catalogue's names and artwork where the numbers match.
+ */
+internal fun MediaDetail.withServerSeasons(server: MediaDetail): MediaDetail {
+  if (server.seasons.isEmpty()) return this
+  val catalogue = seasons.associateBy { it.seasonNumber }
+  val merged = server.seasons.map { season ->
+    catalogue[season.seasonNumber]?.let { known ->
+      season.copy(name = known.name.ifBlank { season.name }, poster = known.poster ?: season.poster, airDate = known.airDate ?: season.airDate)
+    } ?: season
+  }
+  return copy(seasons = merged, seasonsCount = merged.count { it.seasonNumber > 0 })
+}
+
 internal fun MediaDetail.enrichedFromCatalog(catalog: MediaDetail): MediaDetail = copy(
   titleLogo = titleLogo ?: catalog.titleLogo,
   tagline = tagline ?: catalog.tagline,

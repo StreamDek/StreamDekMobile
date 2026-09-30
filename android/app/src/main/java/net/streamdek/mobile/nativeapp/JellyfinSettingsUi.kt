@@ -55,6 +55,7 @@ import net.streamdek.mobile.R
 import net.streamdek.mobile.nativeapp.mediaserver.JellyfinQuickConnectCode
 import net.streamdek.mobile.nativeapp.mediaserver.JellyfinServerCandidate
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerLinkStatus
+import net.streamdek.mobile.nativeapp.mediaserver.JellyfinBackupServer
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerManager
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerUiState
 
@@ -106,6 +107,7 @@ internal fun JellyfinSettingsPage(
 ) {
   val state by manager.jellyfinState.collectAsState()
   val ambient by manager.jellyfinAmbient.collectAsState()
+  val restored by manager.jellyfinRestored.collectAsState()
   val scope = rememberCoroutineScope()
   val resources = LocalContext.current.resources
 
@@ -174,6 +176,26 @@ internal fun JellyfinSettingsPage(
     }
   }
 
+  /** A server a backup brought back: found at the addresses it had, with its user filled in. */
+  fun resume(server: JellyfinBackupServer) {
+    if (finding) return
+    finding = true
+    addressFailed = false
+    scope.launch {
+      val candidate = server.addresses.firstNotNullOfOrNull { manager.findJellyfinServer(it) }
+      finding = false
+      if (candidate == null) {
+        adding = true
+        address = server.addresses.firstOrNull().orEmpty()
+        addressFailed = true
+      } else {
+        adding = true
+        username = server.userName.orEmpty()
+        choose(candidate)
+      }
+    }
+  }
+
   fun finished(result: MediaServerLinkStatus) {
     when (result) {
       is MediaServerLinkStatus.Linked -> {
@@ -216,6 +238,27 @@ internal fun JellyfinSettingsPage(
   Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
     JellyfinHeaderCard(state, signedIn)
 
+    if (signedIn && chosen == null && restored.isNotEmpty()) {
+      SettingsSection(stringResource(R.string.jellyfin_restored_title)) {
+        PlexNote(stringResource(R.string.jellyfin_restored_note))
+        restored.forEach { entry ->
+          Row(
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable { resume(entry) }.padding(vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+          ) {
+            Image(painterResource(R.drawable.jellyfin_logo), contentDescription = null, modifier = Modifier.size(28.dp))
+            Column(Modifier.weight(1f)) {
+              Text(entry.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+              SettingsSubtitle(listOfNotNull(entry.addresses.firstOrNull()?.removePrefix("http://")?.removePrefix("https://"), entry.userName).joinToString(" · "))
+            }
+            TextButton(onClick = { manager.dismissRestoredJellyfin(entry.id) }) {
+              Text(stringResource(R.string.jellyfin_restored_dismiss), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+            }
+          }
+        }
+      }
+    }
     if (signedIn && connecting) {
       val server = chosen
       if (server == null) {

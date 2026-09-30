@@ -1905,10 +1905,10 @@
   <string name="plex_episode_number">Odcinek %1$d</string>
   <string name="jellyfin_link_waiting">Czekamy na Jellyfin. Ten ekran odświeży się sam.</string>
   <string name="jellyfin_refreshed">Odświeżono biblioteki Jellyfin</string>
-  <string name="jellyfin_signed_out_note">Najpierw zaloguj się do StreamDek. Jellyfin jest łączony z Twoim profilem StreamDek na tym urządzeniu.</string>
+  <string name="jellyfin_signed_out_note">Najpierw zaloguj się w StreamDek. Jellyfin jest zapisywany w Twoim profilu StreamDek, więc każde urządzenie z tym profilem ma Twoje serwery.</string>
   <string name="jellyfin_search_badge">Lista Jellyfin</string>
   <string name="settings_dest_jellyfin_description">Połącz swój serwer Jellyfin i wybierz widoczne biblioteki</string>
-  <string name="jellyfin_intro_body">Zaloguj się raz do swojego serwera Jellyfin. Jego biblioteki pojawią się na tym urządzeniu na stronie głównej, w wyszukiwarce i na stronie multimediów.</string>
+  <string name="jellyfin_intro_body">Zaloguj się raz na własnym serwerze Jellyfin. Jego biblioteki pojawią się na stronie głównej, w wyszukiwaniu i na stronie multimediów na każdym urządzeniu z tym profilem.</string>
   <string name="jellyfin_needs_attention">Zaloguj się ponownie do Jellyfin, aby kontynuować</string>
   <string name="jellyfin_find_server">Znajdź swój serwer</string>
   <string name="jellyfin_enter_address">Wpisz adres serwera</string>
@@ -1928,9 +1928,9 @@
   <string name="jellyfin_ambient_detail">Pomarańczowa i czerwona poświata na czarnym tle za stroną i listami Jellyfin</string>
   <string name="jellyfin_add_server">Dodaj kolejny serwer</string>
   <string name="jellyfin_sign_out">Wyloguj z Jellyfin</string>
-  <string name="jellyfin_sign_out_note">Wylogowanie kończy sesję tego urządzenia na serwerach. Biblioteki i historia oglądania zostają w Jellyfin.</string>
+  <string name="jellyfin_sign_out_note">Wylogowanie usuwa Jellyfin z tego profilu na wszystkich Twoich urządzeniach i kończy sesję StreamDek na Twoich serwerach. Biblioteki i historia zostają w Jellyfin.</string>
   <string name="jellyfin_sign_out_title">Wylogować z Jellyfin?</string>
-  <string name="jellyfin_sign_out_body">Tytuły Jellyfin znikną ze strony głównej, wyszukiwarki i strony multimediów na tym urządzeniu, dopóki nie zalogujesz się ponownie.</string>
+  <string name="jellyfin_sign_out_body">Tytuły Jellyfin znikają ze strony głównej, wyszukiwania i strony multimediów na każdym urządzeniu z tym profilem, dopóki nie zalogujesz się ponownie.</string>
   <string name="jellyfin_signed_out">Wylogowano z Jellyfin</string>
   <string name="jellyfin_logo_credit">Logo Jellyfin © współtwórcy Jellyfin, CC BY-SA 4.0</string>
   <string name="jellyfin_address_hint">Adres, pod którym otwierasz Jellyfin w przeglądarce. W sieci domowej to często adres IP serwera i port 8096.</string>
@@ -2011,4 +2011,12 @@
   <string name="library_section_watchlist">Do obejrzenia</string>
   <string name="media_server_rows_missing_title">Twoje biblioteki się nie wczytały</string>
   <string name="media_server_rows_missing_note">Dotknij, aby spróbować ponownie. Odpowiedź serwera jest poniżej.</string>
+  <string name="backup_category_media_servers">Plex i Jellyfin</string>
+  <string name="backup_summary_media_servers">Serwery multimediów</string>
+  <string name="backup_progress_media_servers">Przywracanie Plex i Jellyfin…</string>
+  <string name="backup_attention_media_sign_in">Zaloguj się ponownie, aby dokończyć przywracanie: %1$s. Adres i wybory czekają w Ustawieniach.</string>
+  <string name="backup_attention_media_kept_newer">Dla %1$s zachowano nowszą konfigurację tego profilu.</string>
+  <string name="jellyfin_restored_title">Z Twojej kopii zapasowej</string>
+  <string name="jellyfin_restored_note">Te serwery wróciły z kopii zapasowej bez logowania. Zaloguj się, aby znów z nich korzystać.</string>
+  <string name="jellyfin_restored_dismiss">Nie teraz</string>
 </resources>

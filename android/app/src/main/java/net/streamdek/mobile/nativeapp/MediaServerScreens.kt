@@ -59,6 +59,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -120,8 +121,7 @@ internal fun Modifier.plexAmbientGlow(): Modifier {
       label = "plexAmbientDrift",
     )
   }
-  // The pages sit side by side and nothing clips them: the light stays on its own page.
-  return clipToBounds().drawBehind {
+  return drawBehind {
     val d = drift.value
     val w = size.width
     val h = size.height
@@ -166,7 +166,7 @@ internal fun Modifier.jellyfinAmbientGlow(): Modifier {
       label = "jellyfinAmbientDrift",
     )
   }
-  return clipToBounds().drawBehind {
+  return drawBehind {
     if (dark) drawRect(Color.Black.copy(alpha = 0.55f))
     val d = drift.value
     val w = size.width
@@ -249,16 +249,13 @@ internal fun PlexTab(
   ReportScrollTop { currentList.firstVisibleItemIndex == 0 && currentList.firstVisibleItemScrollOffset == 0 }
   val loading = pageLoading || plexState.refreshing || jellyfinState.refreshing
   val density = LocalDensity.current
-  val hazeState = rememberHazeState()
-  val condensePx = with(density) { CondenseDistance.toPx() }
   var headerHeight by remember { mutableStateOf(120.dp) }
-  val scrolled by remember { derivedStateOf { currentList.firstVisibleItemIndex > 0 || currentList.firstVisibleItemScrollOffset > 0 } }
   val scope = androidx.compose.runtime.rememberCoroutineScope()
   val currentState = if (current == JELLYFIN_PROVIDER_ID) jellyfinState else plexState
 
   Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
     // The glass samples everything in here, each page's colour wash included.
-    Box(modifier = Modifier.fillMaxSize().glassSource(hazeState)) {
+    Box(modifier = Modifier.fillMaxSize()) {
       androidx.compose.foundation.pager.HorizontalPager(
         state = pagerState,
         modifier = Modifier.fillMaxSize(),
@@ -274,7 +271,7 @@ internal fun PlexTab(
           pageRows = pageRows,
           loading = loading,
           ambient = if (provider == JELLYFIN_PROVIDER_ID) jellyfinAmbient else plexAmbient,
-          topPadding = headerHeight + 8.dp,
+          headerBottom = headerHeight,
           continueWatchingStyle = continueWatchingStyle,
           homeCardTextMode = homeCardTextMode,
           watchlist = watchlist,
@@ -292,24 +289,15 @@ internal fun PlexTab(
         )
       }
     }
-    if (scrolled) {
-      ChromeStatusBarScrim(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f))
-    }
-    // Nothing behind the header at the top of the page: it sits straight on the page and its colour.
-    // As the page scrolls a glass pill fades in behind it - the same glass as Search - and fades
-    // back out at the top.
+    // The header stays put and has nothing behind it, scrolled or not: the page's colour shows
+    // through. The lists begin below it and fade out at its edge, so titles pass out of sight
+    // beneath it rather than behind its words.
     Box(
       modifier = Modifier.align(Alignment.TopCenter).zIndex(5f).fillMaxWidth()
         .onSizeChanged { size -> headerHeight = with(density) { size.height.toDp() } }
         .statusBarsPadding()
         .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
     ) {
-      HeaderGlassSurface(
-        hazeState = hazeState,
-        shape = RoundedCornerShape(26.dp),
-        darkInDarkTheme = headerStyle != HeaderStyle.Modern,
-        modifier = Modifier.matchParentSize().graphicsLayer { alpha = currentList.condenseProgress(condensePx) },
-      )
       Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
           modifier = Modifier.fillMaxWidth(),
@@ -376,6 +364,19 @@ internal fun PlexTab(
 
 private val JellyfinAccent = Color(0xFFAA5CC3)
 
+/** Fades the top [fade] of what is drawn to nothing, so content leaving the list's top edge melts away. */
+private fun Modifier.fadeTopEdge(fade: androidx.compose.ui.unit.Dp): Modifier =
+  graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
+    .drawWithContent {
+      drawContent()
+      val band = fade.toPx().coerceAtMost(size.height)
+      drawRect(
+        brush = Brush.verticalGradient(0f to Color.Transparent, 1f to Color.Black, startY = 0f, endY = band),
+        size = androidx.compose.ui.geometry.Size(size.width, band),
+        blendMode = androidx.compose.ui.graphics.BlendMode.DstIn,
+      )
+    }
+
 private fun accentOf(provider: String): Color = if (provider == JELLYFIN_PROVIDER_ID) JellyfinAccent else PlexGold
 
 /** One server's page inside the media page. */
@@ -388,7 +389,7 @@ private fun MediaServerProviderPage(
   pageRows: List<MediaServerRow>,
   loading: Boolean,
   ambient: Boolean,
-  topPadding: androidx.compose.ui.unit.Dp,
+  headerBottom: androidx.compose.ui.unit.Dp,
   continueWatchingStyle: ContinueWatchingStyle,
   homeCardTextMode: HomeCardTextMode,
   watchlist: List<MediaItem>,
@@ -416,11 +417,12 @@ private fun MediaServerProviderPage(
   val offline = enabledServers.filter { it.reachability is MediaServerReachability.Offline }
   val problem = enabledServers.firstNotNullOfOrNull { it.problem }
   Box(modifier = Modifier.fillMaxSize()) {
-    if (ambient) Box(Modifier.fillMaxSize().then(if (jellyfin) Modifier.jellyfinAmbientGlow() else Modifier.plexAmbientGlow()))
+    // The pages sit side by side and nothing clips them, so each page's light is kept on its own page.
+    if (ambient) Box(Modifier.fillMaxSize().clipToBounds().then(if (jellyfin) Modifier.jellyfinAmbientGlow() else Modifier.plexAmbientGlow()))
     LazyColumn(
       state = listState,
-      modifier = Modifier.fillMaxSize(),
-      contentPadding = PaddingValues(top = topPadding, bottom = 126.dp),
+      modifier = Modifier.fillMaxSize().padding(top = headerBottom).fadeTopEdge(18.dp),
+      contentPadding = PaddingValues(top = 10.dp, bottom = 126.dp),
       verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
       offline.forEach { server ->

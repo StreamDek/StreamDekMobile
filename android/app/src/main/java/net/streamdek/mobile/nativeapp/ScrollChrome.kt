@@ -484,8 +484,17 @@ sealed interface ScrollAwareHeaderSurface {
    * [hazeState], when given, turns the compact pill into glass: the opaque band gives way to a blur of
    * the page as it closes on the field — dark glass in a dark theme, the light glass in a light one.
    */
+  /**
+   * [restFade], when given, clears the band at the very top of the page - 0 there, 1 once the page
+   * has scrolled a little - so the page shows through at rest and the header behaves as usual after.
+   */
   @Immutable
-  data class Solid(val color: Color, val pillAroundAnchor: Boolean = false, val hazeState: HazeState? = null) : ScrollAwareHeaderSurface
+  data class Solid(
+    val color: Color,
+    val pillAroundAnchor: Boolean = false,
+    val hazeState: HazeState? = null,
+    val restFade: (() -> Float)? = null,
+  ) : ScrollAwareHeaderSurface
 
   /** The Modern style: a glass panel that closes into a floating pill around the search field. */
   @Immutable
@@ -825,9 +834,7 @@ internal fun ScrollAwareHeader(
                     val progress = if (surface.pillAroundAnchor) headerScope.compactProgress() else 0f
                     val alpha = if (glass != null) DefaultHeaderAlpha * (1f - progress)
                       else DefaultHeaderAlpha + (DefaultHeaderPillAlpha - DefaultHeaderAlpha) * progress
-                    // Scaled by the colour's own alpha: Color.Transparent is transparent black, and copying it
-                    // to a stronger alpha painted a black band where a see-through header was asked for.
-                    val tint = alpha * surface.color.alpha
+                    val tint = alpha * (surface.restFade?.invoke() ?: 1f)
                     if (tint > 0.005f) drawRect(surface.color.copy(alpha = tint))
                   },
               )
@@ -968,7 +975,7 @@ internal const val DefaultHeaderPillAlpha = 0.92f
  * changes size because of it.
  */
 @Composable
-internal fun DefaultHeaderStatusStrip(color: Color, fadesWithHeader: Boolean, modifier: Modifier = Modifier) {
+internal fun DefaultHeaderStatusStrip(color: Color, fadesWithHeader: Boolean, modifier: Modifier = Modifier, restFade: (() -> Float)? = null) {
   val chrome = LocalScrollChrome.current
   val contrast = LocalGlassContrast.current
   val headerCollapseEnabled = LocalHeaderCollapseEnabled.current
@@ -985,10 +992,9 @@ internal fun DefaultHeaderStatusStrip(color: Color, fadesWithHeader: Boolean, mo
         } else {
           0f
         }
-        val tint = DefaultHeaderAlpha * (1f - compact)
-        // As in the header band: a transparent colour stays transparent.
-        val strip = tint * color.alpha
-        if (strip > 0.005f) drawRect(color.copy(alpha = strip))
+        // Cleared at the very top of a page that asks for it, as its header band is.
+        val tint = DefaultHeaderAlpha * (1f - compact) * (restFade?.invoke() ?: 1f)
+        if (tint > 0.005f) drawRect(color.copy(alpha = tint))
         val scrim = if (fadesWithHeader) (contrast?.statusBar?.value ?: 0f) * compact else 0f
         if (scrim > 0.005f) {
           // Feathered past the bottom of the bar, as [ChromeStatusBarScrim] is. Stopping the gradient

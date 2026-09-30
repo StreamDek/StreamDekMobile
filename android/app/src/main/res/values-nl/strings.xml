@@ -1795,10 +1795,10 @@
   <string name="plex_episode_number">Aflevering %1$d</string>
   <string name="jellyfin_link_waiting">Wachten op Jellyfin. Dit scherm werkt zichzelf bij.</string>
   <string name="jellyfin_refreshed">Jellyfin-bibliotheken vernieuwd</string>
-  <string name="jellyfin_signed_out_note">Meld je eerst aan bij StreamDek. Jellyfin wordt op dit apparaat aan je StreamDek-profiel gekoppeld.</string>
+  <string name="jellyfin_signed_out_note">Meld je eerst aan bij StreamDek. Jellyfin wordt bij je StreamDek-profiel bewaard, zodat elk apparaat met dat profiel je servers krijgt.</string>
   <string name="jellyfin_search_badge">Jellyfin-lijst</string>
   <string name="settings_dest_jellyfin_description">Koppel je Jellyfin-server en kies welke bibliotheken verschijnen</string>
-  <string name="jellyfin_intro_body">Meld je één keer aan bij je Jellyfin-server. De bibliotheken verschijnen dan op dit apparaat op Home, in Zoeken en op de mediapagina.</string>
+  <string name="jellyfin_intro_body">Meld je één keer aan bij je eigen Jellyfin-server. De bibliotheken verschijnen dan op Home, in Zoeken en op de mediapagina van elk apparaat met dit profiel.</string>
   <string name="jellyfin_needs_attention">Meld je opnieuw aan bij Jellyfin om verder te gaan</string>
   <string name="jellyfin_find_server">Je server zoeken</string>
   <string name="jellyfin_enter_address">Serveradres invoeren</string>
@@ -1818,9 +1818,9 @@
   <string name="jellyfin_ambient_detail">Een oranje en rode gloed op zwart achter de Jellyfin-pagina en Jellyfin-lijsten</string>
   <string name="jellyfin_add_server">Nog een server toevoegen</string>
   <string name="jellyfin_sign_out">Afmelden bij Jellyfin</string>
-  <string name="jellyfin_sign_out_note">Afmelden beëindigt de sessie van dit apparaat op je servers. Je bibliotheken en kijkgeschiedenis blijven in Jellyfin.</string>
+  <string name="jellyfin_sign_out_note">Afmelden verwijdert Jellyfin uit dit profiel op al je apparaten en beëindigt de StreamDek-sessie op je servers. Je bibliotheken en kijkgeschiedenis blijven in Jellyfin.</string>
   <string name="jellyfin_sign_out_title">Afmelden bij Jellyfin?</string>
-  <string name="jellyfin_sign_out_body">Jellyfin-titels verdwijnen op dit apparaat van Home, Zoeken en de mediapagina tot je je opnieuw aanmeldt.</string>
+  <string name="jellyfin_sign_out_body">Jellyfin-titels verdwijnen van Home, Zoeken en de mediapagina op elk apparaat met dit profiel tot je je opnieuw aanmeldt.</string>
   <string name="jellyfin_signed_out">Afgemeld bij Jellyfin</string>
   <string name="jellyfin_logo_credit">Jellyfin-logo © Jellyfin-bijdragers, CC BY-SA 4.0</string>
   <string name="jellyfin_address_hint">Het adres waarop je Jellyfin in een browser opent. Thuis is dat vaak het IP-adres van de server met poort 8096.</string>
@@ -1901,4 +1901,12 @@
   <string name="library_section_watchlist">Watchlist</string>
   <string name="media_server_rows_missing_title">Je bibliotheken zijn niet geladen</string>
   <string name="media_server_rows_missing_note">Tik om het opnieuw te proberen. Wat de server antwoordde staat hieronder.</string>
+  <string name="backup_category_media_servers">Plex en Jellyfin</string>
+  <string name="backup_summary_media_servers">Mediaservers</string>
+  <string name="backup_progress_media_servers">Plex en Jellyfin herstellen…</string>
+  <string name="backup_attention_media_sign_in">Meld je opnieuw aan om het herstellen van %1$s af te ronden. Het adres en de keuzes staan klaar in Instellingen.</string>
+  <string name="backup_attention_media_kept_newer">Voor %1$s is de nieuwere instelling van dit profiel behouden.</string>
+  <string name="jellyfin_restored_title">Uit je back-up</string>
+  <string name="jellyfin_restored_note">Deze servers kwamen zonder aanmelding terug uit een back-up. Meld je aan om ze weer te gebruiken.</string>
+  <string name="jellyfin_restored_dismiss">Niet nu</string>
 </resources>

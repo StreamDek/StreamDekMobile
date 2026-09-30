@@ -146,6 +146,31 @@ class MediaServerIntegrationTest {
   }
 
   @Test
+  fun `a jellyfin title opens on the catalogue under its own id, then takes the server's seasons`() {
+    fun seasons(vararg n: Int, name: String, poster: String?) = n.map { SeasonSummary(seasonNumber = it, name = "$name $it", episodeCount = 10, poster = poster, airDate = null) }
+    val catalog = MediaDetail(
+      id = "1399", type = "tv", title = "Catalogue Show", titleLogo = "logo.png", tagline = null, year = "2011", releaseDate = null,
+      description = "From TMDB", poster = null, backdrop = "tmdb-backdrop", trailerUrl = null, rating = null, imdbRating = null,
+      tmdbRating = null, genres = emptyList(), runtimeMinutes = null, seasonsCount = 3, imdbId = "tt1",
+      seasons = seasons(0, 1, 2, 3, name = "TMDB Season", poster = "tmdb-season"),
+    )
+    val id = MediaServerReference("jellyfin", "srv", "abc").encode()
+    val page = catalog.asMediaServerPage(id, "tv", item(id).copy(poster = "card-poster"))
+    assertEquals(id, page.id)
+    assertEquals("From TMDB", page.description)
+    assertEquals("card-poster", page.poster)
+    assertEquals(4, page.seasons.size)
+    val server = page.copy(id = id, seasons = seasons(1, 2, name = "Server Season", poster = null).map { it.copy(episodeCount = 6) })
+    val settled = page.withServerSeasons(server)
+    assertEquals(listOf(1, 2), settled.seasons.map { it.seasonNumber })
+    assertEquals("TMDB Season 1", settled.seasons.first().name)
+    assertEquals("tmdb-season", settled.seasons.first().poster)
+    assertEquals(6, settled.seasons.first().episodeCount)
+    assertEquals(2, settled.seasonsCount)
+    assertEquals("From TMDB", settled.description)
+  }
+
+  @Test
   fun `jellyfin credentials never travel with a stored or handed-off stream`() {
     val headers = mapOf("Authorization" to "MediaBrowser Client=\"StreamDek\", Token=\"secret\"", "User-Agent" to "x", "X-Plex-Token" to "p")
     assertEquals(mapOf("User-Agent" to "x"), withoutMediaServerHeaders(headers))

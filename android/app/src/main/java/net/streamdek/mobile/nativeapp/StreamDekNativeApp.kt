@@ -4073,6 +4073,15 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
     override fun currentAddons(): List<InstalledAddon> = uiState.addons
 
+    override fun mediaServerBackup(profile: BackupProfileRef, includeSecrets: Boolean): org.json.JSONObject? {
+      // Plex and Jellyfin belong to an account's profiles; a guest has neither.
+      val userId = uiState.session?.user?.uid ?: return null
+      return mediaServers.backupSection("$userId:${profile.id ?: "default"}", includeSecrets)
+    }
+
+    override suspend fun restoreMediaServers(section: org.json.JSONObject, backupCreatedAt: Long, withCredentials: Boolean) =
+      mediaServers.restoreFromBackup(section, backupCreatedAt, withCredentials)
+
     override fun restoreDebridKeys(keys: List<DebridKeyStore.StoredKey>) {
       val existing = DebridKeyStore.load(getApplication())
       val restoredProviders = keys.mapTo(HashSet()) { it.provider }
@@ -6015,6 +6024,16 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     )
   }
 
+  /**
+   * Opens a title from a personal media server.
+   *
+   * A Jellyfin title whose TMDB (or IMDb) id is known opens on StreamDek's own catalogue entry for
+   * it - quick, and richer than the server's - while the server is asked in parallel. The page keeps
+   * the server's id, so its streams, progress and episodes still come only from the server; when the
+   * server answers, its seasons (the ones it actually has) replace the catalogue's. A title the
+   * catalogue does not know, or a Plex one, waits for the server as before, and is then filled in
+   * from the catalogue.
+   */
   private fun loadMediaServerDetail(type: String, id: String, ref: MediaServerReference, fallbackItem: MediaItem?) {
     val provider = mediaServers.providerFor(ref)
     val item = fallbackItem ?: MediaItem(id = id, type = type, title = "", year = null, poster = null, backdrop = null, rating = null, description = "")
@@ -6027,34 +6046,73 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     detailLocalEpisodes = emptyList()
     detailDirectStream = null
     detailMediaServerRef = ref
-    launchWork(
-      onStart = { uiState = uiState.copy(detailLoading = true, detail = null, detailIsLive = false, detailFallbackItem = item, selectedPerson = null, personLoading = false, selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null, detailSelectedTab = null, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = false, availableStreams = emptyList(), errorMessage = null) },
-      block = {
-        val detail = provider?.let { withTimeoutOrNull(20_000) { it.detail(ref) } }
-        if (detail == null) Result.failure(IllegalStateException(strings.getString(R.string.plex_title_unavailable))) else Result.success(detail)
-      },
-      onSuccess = { detail ->
-        if (detailGeneration != detailRequestGeneration) return@launchWork
-        val resolved = detail.withCatalogFallback(item)
-        uiState = uiState.copy(detailLoading = false, detail = resolved, detailIsLive = false, streamLoading = false, errorMessage = null)
-        enrichMediaServerDetail(resolved, detailGeneration)
-        loadMediaServerReviews(resolved.id, ref, detailGeneration)
-        if (resolved.type == "tv" && resolved.seasons.isNotEmpty()) {
-          loadResumeAwareSeries(resolved, item.resumeSeasonNumber, item.resumeEpisodeNumber, resumeKnownSource = pendingDirectContinueEntry != null)
-        } else if (!playPendingContinue(resolved, continueFallbackEpisode(item))) {
-          loadStreamsAfterDetailSettles(null)
+    val pageType = if (type == "series" || item.type == "series") "tv" else type
+    val known = MediaServerIdentities.of(id)
+    val lookupId = if (ref.provider == net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID) {
+      known?.tmdbId?.let { "tmdb:$it" } ?: known?.imdbId
+    } else null
+    uiState = uiState.copy(detailLoading = true, detail = null, detailIsLive = false, detailFallbackItem = item, selectedPerson = null, personLoading = false, selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null, detailSelectedTab = null, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = false, availableStreams = emptyList(), errorMessage = null)
+    viewModelScope.launch {
+      val fromServer = async(Dispatchers.IO) {
+        provider?.let { p -> withTimeoutOrNull(20_000) { runCatching { p.detail(ref) }.getOrNull() } }
+      }
+      val catalog = lookupId?.let { lookup ->
+        withContext(Dispatchers.IO) { withTimeoutOrNull(8_000) { apiClient.fetchDetails(pageType, lookup, item.title, item.year).getOrNull() } }
+      }
+      if (detailGeneration != detailRequestGeneration) { fromServer.cancel(); return@launch }
+      if (catalog != null && !fromServer.isCompleted) {
+        // The catalogue answered first: open on it now, and take the server's seasons when they come.
+        showMediaServerDetail(catalog.asMediaServerPage(id, pageType, item), item, ref, detailGeneration)
+        refreshExternalRatings(catalog, shownId = id)
+        refreshTraktComments(catalog, shownId = id)
+        val server = fromServer.await() ?: return@launch
+        if (detailGeneration != detailRequestGeneration) return@launch
+        val current = uiState.detail?.takeIf { it.id == id } ?: return@launch
+        if (current.type == "tv") uiState = uiState.copy(detail = current.withServerSeasons(server))
+        return@launch
+      }
+      val server = fromServer.await()
+      if (detailGeneration != detailRequestGeneration) return@launch
+      when {
+        server != null -> {
+          val resolved = server.withCatalogFallback(item)
+          if (catalog != null) {
+            showMediaServerDetail(resolved.enrichedFromCatalog(catalog), item, ref, detailGeneration)
+            refreshExternalRatings(catalog, shownId = id)
+            refreshTraktComments(catalog, shownId = id)
+          } else {
+            showMediaServerDetail(resolved, item, ref, detailGeneration)
+            enrichMediaServerDetail(resolved, detailGeneration)
+          }
         }
-      },
-      onFailure = { message ->
-        if (detailGeneration != detailRequestGeneration) return@launchWork
-        if (pendingDirectContinueEntry != null) {
-          invalidatePendingPlaybackRequest()
-          uiState = uiState.copy(playerLaunchSession = null, playerLaunching = false, playerLaunchingLabel = null, streamLoading = false)
+        // The server is away but the catalogue knows the title: the page still opens, and says so
+        // only if a stream is asked for and the server cannot give one.
+        catalog != null -> {
+          showMediaServerDetail(catalog.asMediaServerPage(id, pageType, item), item, ref, detailGeneration)
+          refreshExternalRatings(catalog, shownId = id)
+          refreshTraktComments(catalog, shownId = id)
         }
-        // The card is enough to draw the page; the server being away is said, not hidden.
-        uiState = uiState.copy(detailLoading = false, detail = item.toFallbackDetail(), detailIsLive = false, errorMessage = message)
-      },
-    )
+        else -> {
+          if (pendingDirectContinueEntry != null) {
+            invalidatePendingPlaybackRequest()
+            uiState = uiState.copy(playerLaunchSession = null, playerLaunching = false, playerLaunchingLabel = null, streamLoading = false)
+          }
+          // The card is enough to draw the page; the server being away is said, not hidden.
+          uiState = uiState.copy(detailLoading = false, detail = item.toFallbackDetail(), detailIsLive = false, errorMessage = strings.getString(R.string.plex_title_unavailable))
+        }
+      }
+    }
+  }
+
+  /** Puts a media server title's page on screen and starts what follows: reviews, then episodes or streams. */
+  private fun showMediaServerDetail(page: MediaDetail, item: MediaItem, ref: MediaServerReference, generation: Int) {
+    uiState = uiState.copy(detailLoading = false, detail = page, detailIsLive = false, streamLoading = false, errorMessage = null)
+    loadMediaServerReviews(page.id, ref, generation)
+    if (page.type == "tv" && page.seasons.isNotEmpty()) {
+      loadResumeAwareSeries(page, item.resumeSeasonNumber, item.resumeEpisodeNumber, resumeKnownSource = pendingDirectContinueEntry != null)
+    } else if (!playPendingContinue(page, continueFallbackEpisode(item))) {
+      loadStreamsAfterDetailSettles(null)
+    }
   }
 
   fun loadDetail(type: String, id: String, fallbackItem: MediaItem? = null, preservePendingContinue: Boolean = false) {
@@ -18379,11 +18437,11 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
   // A list from the viewer's own Plex server says so, in its search field, where it stays in view.
   val browseProvider = mediaServerProviderOfRowId(row.id)
   val plexSearchBadge: (@Composable () -> Unit)? = if (isMediaServerBrowseRowId(row.id)) ({ PlexSearchBadge(browseProvider ?: net.streamdek.mobile.nativeapp.mediaserver.PLEX_PROVIDER_ID) }) else null
-  // A Plex list's header stays condensed while the list is scrolled, whichever way, and only opens
-  // again at the top - as a library page's does - rather than following each change of direction.
-  val condensePx = with(LocalDensity.current) { 96.dp.toPx() }
-  val plexHeaderFraction: (() -> Float)? = if (isMediaServerBrowseRowId(row.id)) ({
-    if (gridState.firstVisibleItemIndex > 0) 1f else (gridState.firstVisibleItemScrollOffset / condensePx).coerceIn(0f, 1f)
+  // A media server list's header is clear at the very top, so the page and its colour wash show
+  // through; once the list scrolls a little it is the ordinary scroll-aware header.
+  val clearHeaderPx = with(LocalDensity.current) { 24.dp.toPx() }
+  val mediaServerHeaderFade: (() -> Float)? = if (isMediaServerBrowseRowId(row.id)) ({
+    if (gridState.firstVisibleItemIndex > 0) 1f else (gridState.firstVisibleItemScrollOffset / clearHeaderPx).coerceIn(0f, 1f)
   }) else null
   val headerCount = when {
     showCategoryGrid -> stringResource(
@@ -18502,7 +18560,6 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
           .statusBarsPadding(),
         enabled = !sideHeader,
         keepAnchorVisible = showSearch,
-        fractionOverride = plexHeaderFraction,
         panelPadding = if (sideHeader) {
           PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 6.dp)
         } else {
@@ -18547,17 +18604,13 @@ private fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, retu
         )
       }
     } else {
-      // A Plex list's header has no ground of its own at rest: the page (and its colour wash) shows
-      // through it, and only the condensed search pill takes on glass once the list scrolls.
-      val headerGround = if (isMediaServerBrowseRowId(row.id)) Color.Transparent else MaterialTheme.colorScheme.background
       Column(modifier = Modifier.align(Alignment.TopCenter).zIndex(4f).fillMaxWidth()) {
-        DefaultHeaderStatusStrip(color = headerGround, fadesWithHeader = true)
+        DefaultHeaderStatusStrip(color = MaterialTheme.colorScheme.background, fadesWithHeader = true, restFade = mediaServerHeaderFade)
         ScrollAwareHeader(
-          surface = ScrollAwareHeaderSurface.Solid(headerGround, pillAroundAnchor = showSearch, hazeState = browseHazeState),
+          surface = ScrollAwareHeaderSurface.Solid(MaterialTheme.colorScheme.background, pillAroundAnchor = showSearch, hazeState = browseHazeState, restFade = mediaServerHeaderFade),
           modifier = Modifier.fillMaxWidth(),
           keepAnchorVisible = showSearch,
           contentPadding = PaddingValues(horizontal = HeaderSearchInset.content, vertical = 12.dp),
-          fractionOverride = plexHeaderFraction,
         ) {
           BrowseSectionHeaderContent(
           title = headerTitle,

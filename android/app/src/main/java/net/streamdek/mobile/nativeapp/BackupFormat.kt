@@ -88,6 +88,12 @@ internal enum class BackupCategory(val id: String) {
   General("general"),
   /** Watchlist, Continue Watching, watched history and favourite channels. */
   Library("library"),
+  /**
+   * Plex and Jellyfin: which servers and libraries are on, and each Jellyfin server's address and
+   * user. Their sign-ins are credentials and travel only in an encrypted backup; see
+   * mediaserver/MediaServerBackup.kt.
+   */
+  MediaServers("media-servers"),
   /** Service API keys and premium-service keys. Only ever present in an encrypted backup. */
   Credentials("credentials"),
   ;

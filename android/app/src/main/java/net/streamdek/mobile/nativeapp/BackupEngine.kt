@@ -65,6 +65,8 @@ internal class BackupEngine(context: Context) {
     includeSecrets: Boolean,
     appVersion: String,
     now: Long = System.currentTimeMillis(),
+    /** Each profile's Plex and Jellyfin setup by owner key, already shaped for a backup. */
+    mediaServersByOwner: Map<String, JSONObject> = emptyMap(),
   ): BackupBuildResult {
     val omitted = mutableListOf<BackupOmission>()
     val counts = BackupCounter()
@@ -84,8 +86,21 @@ internal class BackupEngine(context: Context) {
 
     val ownerKeys = profiles.map { it.ownerKey }
     val profileArray = JSONArray()
+    var mediaServerProfiles = 0
     profiles.forEach { profile ->
-      profileArray.put(buildProfile(profile, ownerKeys, addonsByProfile, includeSecrets, omitted, counts))
+      val section = buildProfile(profile, ownerKeys, addonsByProfile, includeSecrets, omitted, counts)
+      mediaServersByOwner[profile.ownerKey]?.let { media ->
+        section.put("mediaServers", media)
+        mediaServerProfiles += 1
+        // A Jellyfin sign-in is a credential, and is only ever in an encrypted backup.
+        if (includeSecrets) {
+          val servers = media.optJSONObject("jellyfin")?.optJSONArray("servers")
+          counts.credentials += (0 until (servers?.length() ?: 0)).count { servers?.optJSONObject(it)?.has("accessToken") == true }
+        } else if (media.optJSONObject("jellyfin") != null) {
+          omitted += BackupOmission(BackupCategory.Credentials, "Jellyfin sign-in (${profile.name})", BackupOmissionReason.NeedsPassphrase)
+        }
+      }
+      profileArray.put(section)
     }
 
     val payload = JSONObject()
@@ -103,6 +118,7 @@ internal class BackupEngine(context: Context) {
       if (counts.pluginSources > 0 || counts.pluginRepositories > 0) add(BackupCategory.Plugins)
       add(BackupCategory.Playlists)
       if (counts.libraryItems > 0) add(BackupCategory.Library)
+      if (mediaServerProfiles > 0) add(BackupCategory.MediaServers)
       if (includeSecrets && counts.credentials > 0) add(BackupCategory.Credentials)
     }
     val summary = BackupSummary(
@@ -501,6 +517,10 @@ internal class BackupEngine(context: Context) {
       }
     }
 
+    // Plex and Jellyfin are applied after the files, by the media server manager, because they are
+    // reconciled with the profile's setup at StreamDek rather than written over it.
+    val mediaServers = if (BackupCategory.MediaServers in categories) source.optJSONObject("mediaServers") else null
+
     // What the backup itself said it had to leave out, so the summary can name it.
     jsonObjectList(payload.optJSONArray("omitted")).forEach { item ->
       val category = BackupCategory.fromId(item.optString("category")) ?: return@forEach
@@ -517,6 +537,7 @@ internal class BackupEngine(context: Context) {
       debridKeys = debridKeys,
       serviceKeys = serviceKeys,
       report = report,
+      mediaServers = mediaServers,
     )
   }
 
@@ -819,6 +840,8 @@ internal class StagedRestore(
   val debridKeys: List<DebridKeyStore.StoredKey>,
   val serviceKeys: Map<ContentService, String>,
   val report: RestoreReportBuilder,
+  /** The backed-up profile's Plex and Jellyfin section, when that part was chosen. */
+  val mediaServers: JSONObject? = null,
 )
 
 /** What a restore did, gathered as it goes; see [RestoreReport] for the finished form. */

@@ -1960,10 +1960,10 @@
   <string name="plex_episode_number">Episode %1$d</string>
   <string name="jellyfin_link_waiting">Waiting for Jellyfin. This screen updates by itself.</string>
   <string name="jellyfin_refreshed">Jellyfin libraries refreshed</string>
-  <string name="jellyfin_signed_out_note">Sign in to StreamDek first. Jellyfin is connected to your StreamDek profile on this device.</string>
+  <string name="jellyfin_signed_out_note">Sign in to StreamDek first. Jellyfin is kept with your StreamDek profile, so every device on it gets your servers.</string>
   <string name="jellyfin_search_badge">Jellyfin list</string>
   <string name="settings_dest_jellyfin_description">Connect your Jellyfin server and choose which libraries appear</string>
-  <string name="jellyfin_intro_body">Sign in to your own Jellyfin server once. Its libraries then appear on Home, in Search and on the media page on this device.</string>
+  <string name="jellyfin_intro_body">Sign in to your own Jellyfin server once. Its libraries then appear on Home, in Search and on the media page on every device using this profile.</string>
   <string name="jellyfin_needs_attention">Sign in to Jellyfin again to continue</string>
   <string name="jellyfin_find_server">Find your server</string>
   <string name="jellyfin_enter_address">Enter server address</string>
@@ -1983,9 +1983,9 @@
   <string name="jellyfin_ambient_detail">A glow of orange and red on black behind the Jellyfin page and Jellyfin lists</string>
   <string name="jellyfin_add_server">Add another server</string>
   <string name="jellyfin_sign_out">Sign out of Jellyfin</string>
-  <string name="jellyfin_sign_out_note">Signing out ends this device’s session on your servers. Your libraries and watch history stay on Jellyfin.</string>
+  <string name="jellyfin_sign_out_note">Signing out removes Jellyfin from this profile on all your devices and ends StreamDek’s session on your servers. Your libraries and watch history stay on Jellyfin.</string>
   <string name="jellyfin_sign_out_title">Sign out of Jellyfin?</string>
-  <string name="jellyfin_sign_out_body">Jellyfin titles leave Home, Search and the media page on this device until you sign in again.</string>
+  <string name="jellyfin_sign_out_body">Jellyfin titles leave Home, Search and the media page on every device using this profile until you sign in again.</string>
   <string name="jellyfin_signed_out">Signed out of Jellyfin</string>
   <string name="jellyfin_logo_credit">Jellyfin logo © Jellyfin contributors, CC BY-SA 4.0</string>
   <string name="jellyfin_address_hint">The address you open Jellyfin at in a browser. On your home network that is often the server’s IP address and port 8096.</string>
@@ -2066,4 +2066,12 @@
   <string name="library_section_watchlist">Watchlist</string>
   <string name="media_server_rows_missing_title">Your libraries didn\'t load</string>
   <string name="media_server_rows_missing_note">Tap to try again. What the server said is below.</string>
+  <string name="backup_category_media_servers">Plex and Jellyfin</string>
+  <string name="backup_summary_media_servers">Media servers</string>
+  <string name="backup_progress_media_servers">Restoring Plex and Jellyfin…</string>
+  <string name="backup_attention_media_sign_in">Sign in again to finish restoring %1$s. Its address and choices are ready in Settings.</string>
+  <string name="backup_attention_media_kept_newer">Kept the newer setup already on this profile for %1$s.</string>
+  <string name="jellyfin_restored_title">From your backup</string>
+  <string name="jellyfin_restored_note">These servers came back from a backup without their sign-in. Sign in to use them again.</string>
+  <string name="jellyfin_restored_dismiss">Not now</string>
 </resources>

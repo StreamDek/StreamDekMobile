@@ -61,6 +61,14 @@ data class JellyfinAccount(
     val token: String,
     val enabled: Boolean = true,
     val libraryChoices: Map<String, Boolean> = emptyMap(),
+    /** Whether the profile's copy at StreamDek has this sign-in: false for one made offline, or before sync. */
+    val cloudSynced: Boolean = false,
+    /** When this device signed in, to tell a sign-in here from a removal made elsewhere afterwards. */
+    val signedInAtMs: Long = 0L,
+    /** When choices were changed here without StreamDek having heard yet; 0 when nothing is waiting. */
+    val choicesChangedAtMs: Long = 0L,
+    /** Put back from a backup: the profile's own sign-in, when it has one, is preferred to this one. */
+    val fromBackup: Boolean = false,
 ) {
     override fun toString(): String = "JellyfinAccount(serverId=$serverId, name=$name, addresses=${addresses.size}, token=[redacted])"
 }
@@ -116,7 +124,7 @@ internal class JellyfinProvider(
         libraries.keys.retainAll(incoming.keys)
         incoming.forEach { (id, account) ->
             val previous = servers[id]
-            val same = previous != null && previous.account.token == account.token && previous.account.addresses == account.addresses
+            val same = previous != null && previous.account.token == account.token && previous.account.addresses.toSet() == account.addresses.toSet()
             servers[id] = if (same) previous!!.copy(account = account) else ServerState(account)
             // Choices are applied to libraries already read, so a switch shows at once.
             libraries[id]?.let { cached ->

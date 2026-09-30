@@ -1795,10 +1795,10 @@
   <string name="plex_episode_number">Folge %1$d</string>
   <string name="jellyfin_link_waiting">Warte auf Jellyfin. Dieser Bildschirm aktualisiert sich selbst.</string>
   <string name="jellyfin_refreshed">Jellyfin-Mediatheken aktualisiert</string>
-  <string name="jellyfin_signed_out_note">Melde dich zuerst bei StreamDek an. Jellyfin wird auf diesem Gerät mit deinem StreamDek-Profil verbunden.</string>
+  <string name="jellyfin_signed_out_note">Melde dich zuerst bei StreamDek an. Jellyfin wird mit deinem StreamDek-Profil gespeichert, sodass jedes Gerät damit deine Server erhält.</string>
   <string name="jellyfin_search_badge">Jellyfin-Liste</string>
   <string name="settings_dest_jellyfin_description">Verbinde deinen Jellyfin-Server und wähle die angezeigten Mediatheken</string>
-  <string name="jellyfin_intro_body">Melde dich einmal bei deinem Jellyfin-Server an. Seine Mediatheken erscheinen dann auf diesem Gerät auf der Startseite, in der Suche und auf der Medienseite.</string>
+  <string name="jellyfin_intro_body">Melde dich einmal bei deinem eigenen Jellyfin-Server an. Seine Mediatheken erscheinen dann auf der Startseite, in der Suche und auf der Medienseite jedes Geräts mit diesem Profil.</string>
   <string name="jellyfin_needs_attention">Melde dich erneut bei Jellyfin an, um fortzufahren</string>
   <string name="jellyfin_find_server">Server finden</string>
   <string name="jellyfin_enter_address">Serveradresse eingeben</string>
@@ -1818,9 +1818,9 @@
   <string name="jellyfin_ambient_detail">Ein Leuchten in Orange und Rot auf Schwarz hinter der Jellyfin-Seite und Jellyfin-Listen</string>
   <string name="jellyfin_add_server">Weiteren Server hinzufügen</string>
   <string name="jellyfin_sign_out">Von Jellyfin abmelden</string>
-  <string name="jellyfin_sign_out_note">Die Abmeldung beendet die Sitzung dieses Geräts auf deinen Servern. Mediatheken und Verlauf bleiben in Jellyfin.</string>
+  <string name="jellyfin_sign_out_note">Die Abmeldung entfernt Jellyfin aus diesem Profil auf allen deinen Geräten und beendet die StreamDek-Sitzung auf deinen Servern. Deine Mediatheken und dein Verlauf bleiben in Jellyfin.</string>
   <string name="jellyfin_sign_out_title">Von Jellyfin abmelden?</string>
-  <string name="jellyfin_sign_out_body">Jellyfin-Titel verschwinden auf diesem Gerät von Startseite, Suche und Medienseite, bis du dich erneut anmeldest.</string>
+  <string name="jellyfin_sign_out_body">Jellyfin-Titel verschwinden von der Startseite, aus der Suche und von der Medienseite auf jedem Gerät mit diesem Profil, bis du dich erneut anmeldest.</string>
   <string name="jellyfin_signed_out">Von Jellyfin abgemeldet</string>
   <string name="jellyfin_logo_credit">Jellyfin-Logo © Jellyfin-Mitwirkende, CC BY-SA 4.0</string>
   <string name="jellyfin_address_hint">Die Adresse, unter der du Jellyfin im Browser öffnest. Im Heimnetz ist das oft die IP-Adresse des Servers mit Port 8096.</string>
@@ -1901,4 +1901,12 @@
   <string name="library_section_watchlist">Merkliste</string>
   <string name="media_server_rows_missing_title">Deine Mediatheken wurden nicht geladen</string>
   <string name="media_server_rows_missing_note">Tippe, um es erneut zu versuchen. Die Antwort des Servers steht darunter.</string>
+  <string name="backup_category_media_servers">Plex und Jellyfin</string>
+  <string name="backup_summary_media_servers">Medienserver</string>
+  <string name="backup_progress_media_servers">Plex und Jellyfin werden wiederhergestellt…</string>
+  <string name="backup_attention_media_sign_in">Melde dich erneut an, um %1$s fertig wiederherzustellen. Adresse und Auswahl liegen in den Einstellungen bereit.</string>
+  <string name="backup_attention_media_kept_newer">Für %1$s wurde die neuere Einrichtung dieses Profils beibehalten.</string>
+  <string name="jellyfin_restored_title">Aus deiner Sicherung</string>
+  <string name="jellyfin_restored_note">Diese Server kamen ohne Anmeldung aus einer Sicherung zurück. Melde dich an, um sie wieder zu nutzen.</string>
+  <string name="jellyfin_restored_dismiss">Nicht jetzt</string>
 </resources>

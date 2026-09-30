@@ -1809,10 +1809,10 @@
   <string name="plex_episode_number">Episodio %1$d</string>
   <string name="jellyfin_link_waiting">Esperando a Jellyfin. Esta pantalla se actualiza sola.</string>
   <string name="jellyfin_refreshed">Bibliotecas de Jellyfin actualizadas</string>
-  <string name="jellyfin_signed_out_note">Inicia sesión en StreamDek primero. Jellyfin se conecta a tu perfil de StreamDek en este dispositivo.</string>
+  <string name="jellyfin_signed_out_note">Primero inicia sesión en StreamDek. Jellyfin se guarda con tu perfil de StreamDek, así que todos los dispositivos que lo usan tienen tus servidores.</string>
   <string name="jellyfin_search_badge">Lista de Jellyfin</string>
   <string name="settings_dest_jellyfin_description">Conecta tu servidor Jellyfin y elige qué bibliotecas aparecen</string>
-  <string name="jellyfin_intro_body">Inicia sesión una vez en tu servidor Jellyfin. Sus bibliotecas aparecerán en Inicio, en Buscar y en la página de medios de este dispositivo.</string>
+  <string name="jellyfin_intro_body">Inicia sesión una vez en tu propio servidor Jellyfin. Sus bibliotecas aparecerán en Inicio, en Buscar y en la página de medios de todos los dispositivos que usan este perfil.</string>
   <string name="jellyfin_needs_attention">Vuelve a iniciar sesión en Jellyfin para continuar</string>
   <string name="jellyfin_find_server">Busca tu servidor</string>
   <string name="jellyfin_enter_address">Introducir dirección del servidor</string>
@@ -1832,9 +1832,9 @@
   <string name="jellyfin_ambient_detail">Un brillo naranja y rojo sobre negro detrás de la página y las listas de Jellyfin</string>
   <string name="jellyfin_add_server">Añadir otro servidor</string>
   <string name="jellyfin_sign_out">Cerrar sesión en Jellyfin</string>
-  <string name="jellyfin_sign_out_note">Cerrar sesión termina la sesión de este dispositivo en tus servidores. Tus bibliotecas y tu historial siguen en Jellyfin.</string>
+  <string name="jellyfin_sign_out_note">Cerrar sesión quita Jellyfin de este perfil en todos tus dispositivos y termina la sesión de StreamDek en tus servidores. Tus bibliotecas y tu historial siguen en Jellyfin.</string>
   <string name="jellyfin_sign_out_title">¿Cerrar sesión en Jellyfin?</string>
-  <string name="jellyfin_sign_out_body">Los títulos de Jellyfin desaparecen de Inicio, Buscar y la página de medios en este dispositivo hasta que vuelvas a iniciar sesión.</string>
+  <string name="jellyfin_sign_out_body">Los títulos de Jellyfin desaparecen de Inicio, Buscar y la página de medios en todos los dispositivos con este perfil hasta que vuelvas a iniciar sesión.</string>
   <string name="jellyfin_signed_out">Sesión de Jellyfin cerrada</string>
   <string name="jellyfin_logo_credit">Logotipo de Jellyfin © colaboradores de Jellyfin, CC BY-SA 4.0</string>
   <string name="jellyfin_address_hint">La dirección con la que abres Jellyfin en el navegador. En tu red doméstica suele ser la IP del servidor y el puerto 8096.</string>
@@ -1915,4 +1915,12 @@
   <string name="library_section_watchlist">Mi lista</string>
   <string name="media_server_rows_missing_title">Tus bibliotecas no se cargaron</string>
   <string name="media_server_rows_missing_note">Toca para volver a intentarlo. Abajo está lo que respondió el servidor.</string>
+  <string name="backup_category_media_servers">Plex y Jellyfin</string>
+  <string name="backup_summary_media_servers">Servidores multimedia</string>
+  <string name="backup_progress_media_servers">Restaurando Plex y Jellyfin…</string>
+  <string name="backup_attention_media_sign_in">Vuelve a iniciar sesión para terminar de restaurar %1$s. Su dirección y opciones están listas en Ajustes.</string>
+  <string name="backup_attention_media_kept_newer">Se mantuvo la configuración más reciente de este perfil para %1$s.</string>
+  <string name="jellyfin_restored_title">De tu copia de seguridad</string>
+  <string name="jellyfin_restored_note">Estos servidores volvieron de una copia de seguridad sin su inicio de sesión. Inicia sesión para usarlos de nuevo.</string>
+  <string name="jellyfin_restored_dismiss">Ahora no</string>
 </resources>

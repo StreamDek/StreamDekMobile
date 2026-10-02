@@ -4450,7 +4450,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     sessionStore.clear()
     preferencesSyncJob?.cancel()
     preferencesSyncJob = null
-    appSettingsStore.selectProfileStorage(GUEST_OWNER_KEY)
+    val guestProfiles = guestProfileStore.load()
+    val guestProfile = guestProfiles.firstOrNull { it.id == profileSelectionStore.load(GUEST_OWNER_KEY) }
+      ?: guestProfiles.firstOrNull { it.isDefault } ?: guestProfiles.firstOrNull()
+    appSettingsStore.selectProfileStorage(guestProfile?.id?.let { "guest:$it" } ?: GUEST_OWNER_KEY)
     // The media server link is the profile's, kept on StreamDek; this device's copy goes with the account.
     mediaServers.clearDevice()
     MediaServerHomeRows.rows = emptyList()
@@ -4462,7 +4465,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     // viewer's key, and leaving it behind would hand it to whoever signs in next.
     apiClient.serviceCredentials?.clearAll()
     deviceDebridManager = null
-    uiState = appSettingsStore.applyTo(AppUiState(booting = false, rememberedEmail = authEntryStore.loadEmail(), mergedWatchlist = watchlistStore.load(GUEST_OWNER_KEY), favouriteChannels = favouriteChannelStore.load(GUEST_OWNER_KEY)))
+    uiState = appSettingsStore.applyTo(AppUiState(booting = false, rememberedEmail = authEntryStore.loadEmail(), profiles = guestProfiles, activeProfileId = guestProfile?.id, mergedWatchlist = watchlistStore.load(GUEST_OWNER_KEY), favouriteChannels = favouriteChannelStore.load(GUEST_OWNER_KEY)))
     refreshProfileScopedData()
     bootstrapAfterAuth(forceHome = true)
   }

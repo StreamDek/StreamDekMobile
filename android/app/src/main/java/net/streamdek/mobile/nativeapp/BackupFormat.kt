@@ -160,7 +160,7 @@ internal object BackupSettingsRegistry {
         "hold_to_speed_enabled", "hold_to_speed_multiplier", "swipe_to_seek_enabled", "double_tap_seek_enabled",
         "double_tap_seek_seconds", "double_tap_play_pause_enabled", "show_player_control_labels", "player_control_layout",
         "fullscreen_status_bar", "player_title_display", "player_level_gestures_enabled", "dv7_hevc_fallback",
-        "tunneled_playback", "playback_buffer_seconds", "downloads_enabled",
+        "tunneled_playback", "playback_buffer_seconds", "downloads_enabled", "default_audio_delay_ms",
         "torrent_enabled", "torrent_streaming_mode", "torrent_profile", "torrent_cache_size_gb", "torrent_port", "torrent_run_foreground",
       ),
     )

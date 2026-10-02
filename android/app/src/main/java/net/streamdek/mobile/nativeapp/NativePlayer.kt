@@ -2442,7 +2442,10 @@ private fun PlayerDockButton(
   val context = LocalContext.current
   Row(
     verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp),
+    // Centred, which only shows in Minimal: there the button is wider than its lone icon, and
+    // start-aligned the spare width all fell to the icon's right - so the dock had a margin after
+    // its last icon and none before its first.
+    horizontalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp, Alignment.CenterHorizontally),
     modifier = Modifier
       .heightIn(min = 48.dp)
       .then(if (minimal) Modifier.widthIn(min = 42.dp) else Modifier)

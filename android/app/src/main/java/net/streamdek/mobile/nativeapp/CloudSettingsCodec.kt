@@ -156,7 +156,7 @@ internal fun cloudPreferencesPayload(preferences: CloudPlaybackPreferences): JSO
 }
 
 internal fun cloudProfilePreferencesPayload(preferences: CloudPlaybackPreferences, payload: JSONObject = cloudPreferencesPayload(preferences)): JSONObject {
-  val profileDetail = JSONObject(payload.optJSONObject("detail").toString()).apply { remove("mdblistApiKey") }
+  val profileDetail = JSONObject((payload.optJSONObject("detail") ?: JSONObject()).toString()).apply { remove("mdblistApiKey") }
   // The IntroDB key stays out of this payload for the same reason the MDBList one is removed
   // above: both are account-level in the cloud and profile-scoped on the device.
   val profilePlayback = JSONObject()

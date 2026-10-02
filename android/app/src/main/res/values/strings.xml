@@ -15,6 +15,8 @@
     <string name="restart_episode_prompt">Start S%1$d E%2$d again from the beginning?</string>
   <!-- The product name. Never translated: a brand reads the same in every language. -->
   <string name="app_name" translatable="false">StreamDek</string>
+  <string name="settings_community_discord" translatable="false">Discord</string>
+  <string name="settings_community_telegram" translatable="false">Telegram</string>
   <string name="download_channel_name">Downloads</string>
   <string name="download_channel_description">Shows progress while StreamDek downloads a title for offline playback.</string>
   <string name="download_status_downloading_percent">Downloading — %1$d%%</string>

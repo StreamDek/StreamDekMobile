@@ -1724,6 +1724,7 @@ class StreamDekApiClient(context: Context? = null) {
     val catalogResults = supervisorScope {
       enabledAddons.flatMap { addon ->
         addon.manifest.catalogs.mapIndexedNotNull { index, catalog ->
+          if (!catalog.hasHomePreview) return@mapIndexedNotNull null
           val mappedType = mapHomeCatalogType(catalog.type) ?: return@mapIndexedNotNull null
           // A catalog that declares genre as required has nothing to answer with until one is
           // picked, so its preview row uses the add-on's own first option. Catalogs with an
@@ -5259,7 +5260,7 @@ private fun parseAddonGenreRequired(item: JSONObject): Boolean {
   return parseAddonStringList(item.optJSONArray("extraRequired")).any { it.equals("genre", ignoreCase = true) }
 }
 
-private fun parseAddonCatalogs(values: JSONArray?): List<AddonCatalog> = buildList {
+internal fun parseAddonCatalogs(values: JSONArray?): List<AddonCatalog> = buildList {
   val source = values ?: return@buildList
   for (index in 0 until source.length()) {
     val item = source.optJSONObject(index) ?: continue
@@ -5273,9 +5274,21 @@ private fun parseAddonCatalogs(values: JSONArray?): List<AddonCatalog> = buildLi
         genreOptions = parseAddonGenreOptions(item),
         requiresGenre = parseAddonGenreRequired(item),
         supportsSearch = parseAddonSearchSupported(item),
+        requiresSearch = parseAddonSearchRequired(item),
       ),
     )
   }
+}
+
+private fun parseAddonSearchRequired(item: JSONObject): Boolean {
+  val extra = item.optJSONArray("extra")
+  if (extra != null) {
+    for (index in 0 until extra.length()) {
+      val entry = extra.optJSONObject(index) ?: continue
+      if (entry.optString("name").equals("search", true) && entry.optBoolean("isRequired")) return true
+    }
+  }
+  return parseAddonStringList(item.optJSONArray("extraRequired")).any { it.equals("search", true) }
 }
 
 /** Maps an add-on's own catalog type onto the app's, or null when the app has nowhere to show it.

@@ -466,6 +466,8 @@ data class AddonCatalog(
    * is the only way an add-on's own titles — live channels especially — are findable: they are
    * not in TMDB, and the app never holds a complete copy of a catalog to filter locally. */
   val supportsSearch: Boolean = false,
+  /** Search-only catalogs cannot supply a Home preview without a query. */
+  val requiresSearch: Boolean = false,
 )
 
 data class AddonManifest(

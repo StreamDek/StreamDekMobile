@@ -36,38 +36,6 @@ private fun stringList(values: JSONArray?): List<String> = buildList {
   }
 }
 
-private fun genreOptions(item: JSONObject): List<String> {
-  val extra = item.optJSONArray("extra") ?: return stringList(item.optJSONArray("genres"))
-  for (i in 0 until extra.length()) {
-    val entry = extra.optJSONObject(i) ?: continue
-    if (!entry.optString("name").equals("genre", ignoreCase = true)) continue
-    val options = entry.optJSONArray("options") ?: continue
-    return buildList { for (j in 0 until options.length()) options.optString(j).takeIf { it.isNotBlank() }?.let(::add) }
-  }
-  return emptyList()
-}
-
-/** Whether the catalog declares genre as a required extra, so it cannot be listed without one. */
-private fun genreRequired(item: JSONObject): Boolean {
-  item.optJSONArray("extra")?.let { extra ->
-    for (i in 0 until extra.length()) {
-      val entry = extra.optJSONObject(i) ?: continue
-      if (entry.optString("name").equals("genre", ignoreCase = true) && entry.optBoolean("isRequired")) return true
-    }
-  }
-  return stringList(item.optJSONArray("extraRequired")).any { it.equals("genre", ignoreCase = true) }
-}
-
-private fun catalogList(values: JSONArray?): List<AddonCatalog> = buildList {
-  val source = values ?: return@buildList
-  for (i in 0 until source.length()) {
-    val item = source.optJSONObject(i) ?: continue
-    val id = item.optString("id").trim()
-    if (id.isEmpty()) continue
-    add(AddonCatalog(type = item.optString("type").trim(), id = id, name = item.optString("name").ifBlank { id }, genreOptions = genreOptions(item), requiresGenre = genreRequired(item)))
-  }
-}
-
 private fun parseLocalManifest(id: String, manifestUrl: String, json: JSONObject, enabled: Boolean, position: Int, favourite: Boolean): InstalledAddon {
   val behaviorHints = json.optJSONObject("behaviorHints") ?: JSONObject()
   val baseUrl = manifestUrl.substringBeforeLast("/manifest.json", missingDelimiterValue = manifestUrl).trimEnd('/')
@@ -92,7 +60,7 @@ private fun parseLocalManifest(id: String, manifestUrl: String, json: JSONObject
       transportUrl = baseUrl,
       resources = stringList(json.optJSONArray("resources")),
       types = stringList(json.optJSONArray("types")),
-      catalogs = catalogList(json.optJSONArray("catalogs")),
+      catalogs = parseAddonCatalogs(json.optJSONArray("catalogs")),
       behaviorConfigurable = behaviorHints.optBoolean("configurable"),
       configurationRequired = behaviorHints.optBoolean("configurationRequired"),
     ),

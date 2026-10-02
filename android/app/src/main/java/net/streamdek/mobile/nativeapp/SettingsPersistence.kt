@@ -56,7 +56,7 @@ internal class DurableSettingsPreferences(
     return document.keys().asSequence().associateWith { document.optLong(it) }
   }
 
-  fun acknowledge(sent: Map<String, Long>) {
+  fun acknowledge(sent: Map<String, Long>) = synchronized(storage) {
     val remaining = pending().toMutableMap()
     sent.forEach { (key, revision) -> if (remaining[key] == revision) remaining.remove(key) }
     if (!storage.edit().putString(PENDING, JSONObject(remaining as Map<*, *>).toString()).commit()) failed()

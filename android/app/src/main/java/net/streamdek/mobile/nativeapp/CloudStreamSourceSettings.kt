@@ -386,7 +386,7 @@ internal object CloudStreamSourcePrefs {
       store.startsWith("AmazonWebView") || store.startsWith("AwOrigin")
 
   private fun prefs(context: Context, store: String): SharedPreferences =
-    context.applicationContext.getSharedPreferences(fileOf(context, store), Context.MODE_PRIVATE)
+    context.durableSettingsPreferences(fileOf(context, store))
 
   /** Every store an extension may have written: the shared two, and any file StreamDek does not own. */
   private fun candidateStores(context: Context): Set<String> {
@@ -429,8 +429,7 @@ internal object CloudStreamSourcePrefs {
           CS_VALUE_STRING_SET -> (value.value as? List<*>)?.map { it.toString() }?.toSet()?.let { editor.putStringSet(value.key, it) }
         }
       }
-      editor.commit()
-      wrote = true
+      if (editor.commit()) wrote = true
     }
     return wrote
   }

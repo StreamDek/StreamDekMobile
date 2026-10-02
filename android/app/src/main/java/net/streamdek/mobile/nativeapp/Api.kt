@@ -2450,15 +2450,14 @@ class StreamDekApiClient(context: Context? = null) {
         val changedSections = JSONObject().apply {
           profilePayload.keys().forEach { key -> put(key, mergedProfile.opt(key)) }
         }
+        val supportsSparseMerge = existing.json.optInt("settingsPatchVersion", 0) >= 1
         val profileRequest = Request.Builder()
           .url(apiBaseUrl + "/profiles/" + encodeQuery(profileId) + "/preferences")
-          .put(JSONObject().put("preferences", changedSections).toString().toRequestBody(jsonMediaType))
+          .put(JSONObject().put("preferences", if (supportsSparseMerge) profilePayload else changedSections)
+            .put("merge", supportsSparseMerge).toString().toRequestBody(jsonMediaType))
           .headers(authHeaders(session, profileId = profileId))
           .build()
         ensureOk(execute(profileRequest), "Failed to sync profile preferences")
-        preferences.preferredAudioLanguage?.let { language ->
-          updateProfileAudioLanguage(session, profileId, language).getOrThrow()
-        }
       }
     }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
   }

@@ -116,4 +116,17 @@ class AppSettingsLifecycleTest {
     assertEquals("de", value(state(relaunched), "preferredAudioLanguage"))
     assertTrue("preferred_audio_language" in (call(relaunched, "pendingWrite") as PendingSettingsWrite).keys)
   }
+  @Test fun `legacy installation preferences are never migrated into a different account`() {
+    files[APP_SETTINGS_PREFERENCES] = SettingsTestPreferences().apply {
+      edit().putBoolean("subtitle_bold", true).putString("preferred_audio_language", "fr").commit()
+    }
+    val first = store("first:a")
+    assertEquals(true, value(state(first), "subtitleBold"))
+    call(first, "selectProfileStorage", "second:a")
+    assertEquals(false, value(state(first), "subtitleBold"))
+    assertFalse("subtitle_bold" in (call(first, "pendingWrite") as PendingSettingsWrite).keys)
+    restart()
+    assertEquals(true, value(state(store("first:a")), "subtitleBold"))
+  }
+
 }

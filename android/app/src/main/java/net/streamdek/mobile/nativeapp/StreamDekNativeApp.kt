@@ -700,7 +700,7 @@ internal object UserSubtitleSourceStore {
         put(JSONObject().put("id", source.id).put("name", source.name).put("baseUrl", source.baseUrl).put("enabled", source.enabled))
       }
     }
-    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putString(sourcesKey(ownerKey), array.toString()).apply()
+    context.durableSettingsPreferences(PREFS_NAME).edit().putString(sourcesKey(ownerKey), array.toString()).apply()
   }
 
   private fun normalizeBaseUrl(rawUrl: String): String {
@@ -1989,6 +1989,9 @@ private class AppSettingsStore(
   fun selectProfileStorage(ownerKey: String) {
     if (selectedOwner == ownerKey) return
     val accountKey = ownerKey.substringBefore(':').ifBlank { GUEST_OWNER_KEY }
+    val legacyAccountKey = device.getString("__settings_legacy_account_owner_v1", null) ?: accountKey.also {
+      device.edit().putString("__settings_legacy_account_owner_v1", it).commit()
+    }
     account = DurableSettingsPreferences(openPreferences("streamdek_settings_account_" + accountKey.hashCode().toUInt().toString(16)), accountSettingKeys, diagnostic)
     // Only the first owner inherits the old installation cache. A different account must restore
     // its own cloud choices, and must never upload the departing account's values.
@@ -2002,7 +2005,7 @@ private class AppSettingsStore(
     if (!profilePrefs.contains("__profile_keys_migrated_v2")) {
       val editor = profilePrefs.edit()
       // Repair the incomplete old allow-list even when a profile already contains other settings.
-      device.all.filterKeys { it in profileSettingKeys && !profilePrefs.contains(it) }
+      device.all.filterKeys { accountKey == legacyAccountKey && it in profileSettingKeys && !profilePrefs.contains(it) }
         .forEach { (key, value) -> editor.putSetting(key, value) }
       editor.putBoolean("__profile_keys_migrated_v2", true).commit()
     }
@@ -11007,7 +11010,13 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       download = { owner ->
         val session = uiState.session
         if (session?.user?.uid != owner.accountId) Result.failure(IllegalStateException("Settings owner changed"))
-        else apiClient.fetchCloudPlaybackPreferences(session, owner.profileId)
+        else apiClient.fetchCloudPlaybackPreferences(session, owner.profileId).mapCatching { preferences ->
+          // Profile metadata is the language contract used by older clients. Read it in this
+          // reconciliation too; a separately launched profile refresh may still be in flight.
+          val profiles = apiClient.fetchProfiles(session).getOrThrow()
+          if (settingsSyncOwner() == owner) uiState = uiState.copy(profiles = profiles)
+          preferences
+        }
       },
       applyRemote = { preferences ->
         val before = homeLayoutSignature()

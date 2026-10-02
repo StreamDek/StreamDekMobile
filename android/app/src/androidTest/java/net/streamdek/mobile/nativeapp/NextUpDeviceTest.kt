@@ -11,6 +11,16 @@ class NextUpDeviceInstrumentation : Instrumentation() {
   override fun onCreate(arguments: Bundle?) { this.arguments = arguments ?: Bundle(); super.onCreate(arguments); start() }
   override fun onStart() {
     val result = Bundle()
+    if (arguments.getString("suite") == "settings") {
+      try {
+        result.putString("stream", SettingsDeviceChecks(targetContext).run(arguments.getString("phase") ?: "write"))
+        finish(Activity.RESULT_OK, result)
+      } catch (failure: Throwable) {
+        result.putString("stream", "Settings FAILED: ${failure.stackTraceToString().take(2500)}")
+        finish(Activity.RESULT_CANCELED, result)
+      }
+      return
+    }
     if (arguments.getString("suite") == "content-safety") {
       try {
         result.putString("stream", ContentSafetyDeviceChecks(targetContext).run(arguments.getString("phase") ?: "write"))

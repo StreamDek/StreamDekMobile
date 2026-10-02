@@ -21,7 +21,7 @@ val StreamDekDoHProviders = listOf(
 )
 
 class DoHSettings(context: Context) {
-  private val preferences = context.applicationContext.getSharedPreferences("streamdek_network", Context.MODE_PRIVATE)
+  private val preferences = context.durableSettingsPreferences("streamdek_network")
   var enabled: Boolean
     get() = preferences.getBoolean("doh_enabled", false)
     set(value) { preferences.edit().putBoolean("doh_enabled", value).apply() }

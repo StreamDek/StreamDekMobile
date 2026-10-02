@@ -1909,4 +1909,10 @@
   <string name="jellyfin_restored_title">Aus deiner Sicherung</string>
   <string name="jellyfin_restored_note">Diese Server kamen ohne Anmeldung aus einer Sicherung zurück. Melde dich an, um sie wieder zu nutzen.</string>
   <string name="jellyfin_restored_dismiss">Nicht jetzt</string>
+  <string name="settings_save_failed">Die Einstellungen konnten nicht gespeichert werden. Prüfe den verfügbaren Speicherplatz und versuche es erneut.</string>
+  <string name="settings_m_buffering">Pufferung</string>
+  <string name="settings_m_buffer_ahead">Vorauspuffern</string>
+  <string name="settings_m_buffer_ahead_description">Wie viel eines Videos im Voraus geladen wird. Mehr überbrückt eine schwache Verbindung und reicht auf der Suchleiste weiter, braucht aber mehr Speicher und Daten. Videos mit hoher Bitrate halten weniger. Gilt ab dem nächsten Video.</string>
+  <string name="settings_m_buffer_ahead_one_minute">1 Minute</string>
+  <string name="settings_m_buffer_ahead_minutes">%1$d Minuten</string>
 </resources>

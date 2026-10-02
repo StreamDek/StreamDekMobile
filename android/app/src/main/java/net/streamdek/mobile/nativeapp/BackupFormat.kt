@@ -157,12 +157,10 @@ internal object BackupSettingsRegistry {
       device(
         BackupCategory.Playback,
         "pip_enabled", "decoder_mode", "render_surface", "player_engine",
-        "preferred_audio_language", "secondary_audio_language", "preferred_subtitle_language", "secondary_subtitle_language",
-        "use_forced_subtitles", "show_only_preferred_subtitle_languages", "addon_subtitle_loading",
         "hold_to_speed_enabled", "hold_to_speed_multiplier", "swipe_to_seek_enabled", "double_tap_seek_enabled",
         "double_tap_seek_seconds", "double_tap_play_pause_enabled", "show_player_control_labels", "player_control_layout",
         "fullscreen_status_bar", "player_title_display", "player_level_gestures_enabled", "dv7_hevc_fallback",
-        "tunneled_playback", "downloads_enabled",
+        "tunneled_playback", "playback_buffer_seconds", "downloads_enabled",
         "torrent_enabled", "torrent_streaming_mode", "torrent_profile", "torrent_cache_size_gb", "torrent_port", "torrent_run_foreground",
       ),
     )
@@ -191,6 +189,8 @@ internal object BackupSettingsRegistry {
     addAll(
       profile(
         BackupCategory.Playback,
+        "preferred_audio_language", "secondary_audio_language", "preferred_subtitle_language", "secondary_subtitle_language",
+        "use_forced_subtitles", "show_only_preferred_subtitle_languages", "addon_subtitle_loading",
         "show_streams_list", "remember_last_source", "favorite_source_keys",
         "skip_intro_enabled", "skip_segments_enabled", "skip_recap_enabled", "skip_ending_enabled",
         "auto_skip_intro_enabled", "auto_skip_recap_enabled", "auto_skip_ending_enabled",
@@ -215,6 +215,12 @@ internal object BackupSettingsRegistry {
    * on first read; restoring it would put a plaintext key back on disk.
    */
   val excludedKeys: Set<String> = setOf("mdblist_api_key")
+
+  /** Older mobile backups kept these profile choices in the device section. */
+  val migratedDeviceKeys: Set<String> = setOf(
+    "preferred_audio_language", "secondary_audio_language", "preferred_subtitle_language", "secondary_subtitle_language",
+    "use_forced_subtitles", "show_only_preferred_subtitle_languages", "addon_subtitle_loading",
+  )
 
   private val byScopeAndKey = specs.associateBy { it.scope to it.key }
 

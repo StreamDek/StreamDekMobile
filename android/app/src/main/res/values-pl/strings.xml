@@ -2019,4 +2019,10 @@
   <string name="jellyfin_restored_title">Z Twojej kopii zapasowej</string>
   <string name="jellyfin_restored_note">Te serwery wróciły z kopii zapasowej bez logowania. Zaloguj się, aby znów z nich korzystać.</string>
   <string name="jellyfin_restored_dismiss">Nie teraz</string>
+  <string name="settings_save_failed">Nie udało się zapisać ustawień na tym urządzeniu. Sprawdź dostępne miejsce i spróbuj ponownie.</string>
+  <string name="settings_m_buffering">Buforowanie</string>
+  <string name="settings_m_buffer_ahead">Bufor z wyprzedzeniem</string>
+  <string name="settings_m_buffer_ahead_description">Ile wideo wczytywać z wyprzedzeniem. Więcej lepiej znosi słabe połączenie i sięga dalej na pasku postępu, ale zużywa więcej pamięci i danych. Filmy o wysokiej przepływności mieszczą mniej. Dotyczy następnego odtwarzanego wideo.</string>
+  <string name="settings_m_buffer_ahead_one_minute">1 minuta</string>
+  <string name="settings_m_buffer_ahead_minutes">%1$d min</string>
 </resources>

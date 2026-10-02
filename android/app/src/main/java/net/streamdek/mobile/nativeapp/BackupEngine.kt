@@ -382,12 +382,13 @@ internal class BackupEngine(context: Context) {
       for (index in 0 until array.length()) {
         val item = array.optJSONObject(index) ?: continue
         val key = item.optString("key")
-        val spec = BackupSettingsRegistry.spec(scope, key)
+        val migrated = scope == BackupSettingScope.Device && key in BackupSettingsRegistry.migratedDeviceKeys
+        val spec = BackupSettingsRegistry.spec(if (migrated) BackupSettingScope.Profile else scope, key)
         if (spec == null || spec.store != item.optString("store", BACKUP_APP_STORE)) { report.settingsSkipped += 1; continue }
         if (spec.category !in categories) continue
         val value = decodeBackupSettingValue(item)
         if (value == null) { report.settingsSkipped += 1; continue }
-        write(file(spec), key, value)
+        write(if (migrated) profileSettingsStorageName(owner) else file(spec), key, value)
         report.settingsRestored += 1
       }
     }

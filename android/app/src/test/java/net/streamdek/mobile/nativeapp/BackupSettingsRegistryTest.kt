@@ -30,7 +30,7 @@ class BackupSettingsRegistryTest {
       .findAll(source).map { it.groupValues[1] }.toSet()
     assertTrue("the scan found nothing, so it is not reading the store", keys.size > 50)
     val registered = BackupSettingsRegistry.specs.map { it.key }.toSet() + BackupSettingsRegistry.excludedKeys
-    val missing = keys - registered
+    val missing = keys.filterNot { it.startsWith("__") }.toSet() - registered
     assertTrue("add these to BackupSettingsRegistry (or excludedKeys): $missing", missing.isEmpty())
   }
 

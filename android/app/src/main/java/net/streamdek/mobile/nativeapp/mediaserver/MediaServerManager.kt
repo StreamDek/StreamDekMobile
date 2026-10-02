@@ -1,5 +1,6 @@
 package net.streamdek.mobile.nativeapp.mediaserver
 
+import net.streamdek.mobile.nativeapp.durableSettingsPreferences
 import android.content.Context
 import android.util.Log
 import net.streamdek.mobile.nativeapp.mediaserver.jellyfin.JellyfinAccount
@@ -99,7 +100,7 @@ class MediaServerManager internal constructor(
         provider.onEndpointChosen = { serverId, uri -> preferredUris[serverId] = uri }
     }
 
-    private val displayPrefs = context?.getSharedPreferences(DISPLAY_PREFS, Context.MODE_PRIVATE)
+    private val displayPrefs = context?.durableSettingsPreferences(DISPLAY_PREFS)
 
     private val jellyfinClient = JellyfinClient({
         val plexIdentity = identity()

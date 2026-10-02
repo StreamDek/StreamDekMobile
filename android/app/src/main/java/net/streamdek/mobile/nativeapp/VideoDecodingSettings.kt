@@ -1,6 +1,11 @@
 package net.streamdek.mobile.nativeapp
 
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import net.streamdek.mobile.R
@@ -48,6 +53,31 @@ internal fun LazyListScope.videoDecodingSettings(
         "TUN", Color(0xFF14B8A6), stringResource(R.string.settings_m_tunneled_playback),
         stringResource(R.string.settings_m_let_the_hardware_decode_and_display_as),
         tunneledPlayback, onTunneledPlaybackChange,
+      )
+    }
+  }
+  item {
+    // Read from and written to PlaybackCodecOptions directly rather than carried through the UI
+    // state: it is a device choice the player reads when it is built, and nothing else on screen
+    // depends on it, so the facade class that is already at its size limit does not have to grow.
+    val context = LocalContext.current
+    var bufferSeconds by remember { mutableIntStateOf(PlaybackCodecOptions.forwardBufferSeconds) }
+    val oneMinute = stringResource(R.string.settings_m_buffer_ahead_one_minute)
+    val minutes = PlaybackCodecOptions.forwardBufferOptions.associate { seconds ->
+      seconds.toString() to if (seconds == 60) oneMinute else stringResource(R.string.settings_m_buffer_ahead_minutes, seconds / 60)
+    }
+    SettingsSection(stringResource(R.string.settings_m_buffering)) {
+      SettingsChoiceRow(
+        "BUF", Color(0xFFF59E0B),
+        stringResource(R.string.settings_m_buffer_ahead),
+        stringResource(R.string.settings_m_buffer_ahead_description),
+        PlaybackCodecOptions.forwardBufferOptions.map(Int::toString), bufferSeconds.toString(),
+        optionLabel = { value -> minutes[value] ?: value },
+        onSelected = { value ->
+          val seconds = value.toIntOrNull() ?: PlaybackCodecOptions.DEFAULT_FORWARD_BUFFER_SECONDS
+          PlaybackCodecOptions.setForwardBufferSeconds(context.applicationContext, seconds)
+          bufferSeconds = PlaybackCodecOptions.forwardBufferSeconds
+        },
       )
     }
   }

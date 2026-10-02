@@ -13,7 +13,7 @@ internal fun settingsRouteKeywords(route: SettingsRoute): String = when (route) 
     "gesture gestures hold speed swipe seek scrub brightness volume level dim loudness " +
     "controls labels layout status bar title"
   SettingsRoute.VideoDecoding -> "decoding decoder hardware software compatibility codec hevc h265 " +
-    "dolby vision dv7 profile 7 hdr tunneled tunnelling display surface render black screen " +
+    "dolby vision dv7 profile 7 hdr tunneled tunnelling display surface render black screen buffer buffering cache ahead " +
     "green screen stutter video will not play won't play playback engine mpv"
   SettingsRoute.SkipAndAutoplay -> "autoplay auto play skip intro recap ending credits next episode binge threshold introdb intro db api key"
   SettingsRoute.Subtitles -> "subtitle subtitles caption captions language languages preferred secondary forced show only addon loading source position style " +

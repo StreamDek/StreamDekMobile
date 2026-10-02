@@ -160,7 +160,7 @@ object EpisodeNotificationSystem {
   }
 
   fun saveSettings(context: Context, owner: String, value: EpisodeNotificationSettings) {
-    prefs(context).edit()
+    context.durableSettingsPreferences(PREFS_NAME).edit()
       .putBoolean(key(owner, "available"), value.availableEnabled)
       .putBoolean(key(owner, "upcoming"), value.upcomingEnabled)
       .putInt(key(owner, "upcoming_days"), value.upcomingDays)

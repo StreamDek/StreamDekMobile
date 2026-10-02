@@ -22,6 +22,7 @@ import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
@@ -333,6 +334,21 @@ class ExoPlaybackView @JvmOverloads constructor(
     )
   }
 
+  /**
+   * What Media3 is holding, for the seek bar.
+   *
+   * Media3 keeps one continuous stretch from the playhead and throws the rest away on a seek
+   * outside it, so there is only ever one range to report. Both ends are in the current window,
+   * which is also what the progress callback reports - so a live channel with a seek window lines up.
+   */
+  fun bufferedRanges(): List<BufferedRange> {
+    val active = exoPlayer ?: return emptyList()
+    val position = active.currentPosition
+    val buffered = active.bufferedPosition
+    if (buffered == C.TIME_UNSET || buffered <= position) return emptyList()
+    return listOf(BufferedRange(position / 1000.0, buffered / 1000.0))
+  }
+
   fun setAudioTrack(trackId: Int) = applyTrackSelection(audioSelections[trackId])
 
   fun setSubtitleTrack(trackId: Int) {
@@ -620,9 +636,26 @@ class ExoPlaybackView @JvmOverloads constructor(
         }
         .onFailure { Log.w(TAG, "Unable to set up ClearKey DRM for $url, playback will likely fail to decrypt", it) }
     }
+    // How far ahead to load is the viewer's choice (Settings > Video Decoding > Buffer Ahead). The
+    // start-up thresholds are Media3's own, so playback begins exactly as quickly as before; only
+    // how much is kept once it is running changes.
+    val bufferMs = PlaybackCodecOptions.forwardBufferSeconds * 1_000
+    val loadControl = DefaultLoadControl.Builder()
+      .setBufferDurationsMs(
+        minOf(DefaultLoadControl.DEFAULT_MIN_BUFFER_MS, bufferMs),
+        bufferMs,
+        DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS,
+        DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
+      )
+      .apply {
+        forwardBufferBudgetBytes(PlaybackCodecOptions.forwardBufferSeconds, Runtime.getRuntime().maxMemory())
+          ?.let { setTargetBufferBytes(it) }
+      }
+      .build()
     val active = ExoPlayer.Builder(context)
       .setRenderersFactory(renderers)
       .setTrackSelector(trackSelector)
+      .setLoadControl(loadControl)
       .setMediaSourceFactory(mediaSourceFactory)
       .setBandwidthMeter(bandwidthMeter)
       .build()

@@ -2137,6 +2137,8 @@ private fun RefinedPlayerSlider(
   onProgressChange: (Float) -> Unit,
   onProgressFinished: () -> Unit,
   modifier: Modifier = Modifier,
+  buffered: List<BufferedSegment> = emptyList(),
+  bufferedColor: Color = Color.Transparent,
 ) {
   val activeColor = MaterialTheme.colorScheme.primary
   val trackColor = Color.White.copy(alpha = 0.26f)
@@ -2163,12 +2165,81 @@ private fun RefinedPlayerSlider(
         val trackWidth = (size.width - inset * 2f).coerceAtLeast(0f)
         val thumbX = inset + trackWidth * safeProgress
         drawLine(trackColor, Offset(inset, centerY), Offset(inset + trackWidth, centerY), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
+        // Buffered, between the track and the watched line. Slightly heavier than either so the
+        // softer tone still reads on a line this fine; the watched line and thumb are drawn over it.
+        buffered.forEach { segment ->
+          val from = inset + trackWidth * segment.start
+          val to = inset + trackWidth * segment.end
+          if (to > from) drawLine(bufferedColor, Offset(from, centerY), Offset(to, centerY), strokeWidth = 2.5.dp.toPx(), cap = StrokeCap.Butt)
+        }
+        // No dot at the playhead: it covered the start of the buffered stretch. The end of the
+        // watched line is the position.
         drawLine(activeColor, Offset(inset, centerY), Offset(thumbX, centerY), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
-        drawCircle(activeColor, radius = 4.5.dp.toPx(), center = Offset(thumbX, centerY))
       },
   )
 }
 
+/**
+ * Material's own slider track with the buffered tone laid over its unplayed part.
+ *
+ * The stock track is kept so the bar looks exactly as it did; this only adds one draw pass on top,
+ * starting where the unplayed track starts (past the thumb and the gap Material leaves beside it)
+ * and shaped to the track's own corners so nothing shows outside it.
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun BufferedSliderTrack(
+  sliderState: androidx.compose.material3.SliderState,
+  progress: Float,
+  buffered: List<BufferedSegment>,
+  bufferedColor: Color,
+) {
+  // No handle, so no gap either side of one and no end marker: watched runs straight into
+  // buffered, and buffered into what is left. See the note where the slider is built.
+  val thumbGap = 0.dp
+  val insideCorner = 0.dp
+  Box {
+    SliderDefaults.Track(
+      sliderState = sliderState,
+      drawStopIndicator = null,
+      thumbTrackGapSize = thumbGap,
+      trackInsideCornerSize = insideCorner,
+    )
+    if (buffered.isNotEmpty()) {
+      Box(
+        modifier = Modifier.matchParentSize().drawBehind {
+          val inside = androidx.compose.ui.geometry.CornerRadius(insideCorner.toPx(), insideCorner.toPx())
+          val outside = androidx.compose.ui.geometry.CornerRadius(size.height / 2f, size.height / 2f)
+          val unplayedStart = size.width * progress.coerceIn(0f, 1f) + thumbGap.toPx()
+          buffered.forEach { segment ->
+            val left = maxOf(size.width * segment.start, unplayedStart)
+            val right = (size.width * segment.end).coerceAtMost(size.width)
+            if (right - left >= 1f) {
+              val reachesEnd = right >= size.width - 0.5f
+              val shape = androidx.compose.ui.graphics.Path().apply {
+                addRoundRect(
+                  androidx.compose.ui.geometry.RoundRect(
+                    left = left,
+                    top = 0f,
+                    right = right,
+                    bottom = size.height,
+                    topLeftCornerRadius = inside,
+                    topRightCornerRadius = if (reachesEnd) outside else inside,
+                    bottomRightCornerRadius = if (reachesEnd) outside else inside,
+                    bottomLeftCornerRadius = inside,
+                  ),
+                )
+              }
+              drawPath(shape, bufferedColor)
+            }
+          }
+        },
+      )
+    }
+  }
+}
+
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun PlayerBottomControls(
   currentTime: Double,
@@ -2196,8 +2267,13 @@ private fun PlayerBottomControls(
   captionsAvailable: Boolean = false,
   captionsOn: Boolean = false,
   onCaptions: () -> Unit = {},
+  /** What the engine is holding, drawn on the bar ahead of the playhead. */
+  bufferedRanges: List<BufferedRange> = emptyList(),
 ) {
   val badge = LocalPlayerBadgeSetting.current
+  // Measured against the time the bar is showing, which follows the finger during a drag, so the
+  // buffered tone never appears behind the thumb.
+  val buffered = remember(bufferedRanges, duration, currentTime) { bufferedSegments(bufferedRanges, duration, currentTime) }
   // A live channel with no seekable window reports no duration, so there is no bar to draw and
   // nothing to drag. The elapsed time and a LIVE marker still answer what the toggle was asked
   // for - how long this has been playing - rather than showing a slider pinned at zero.
@@ -2237,12 +2313,16 @@ private fun PlayerBottomControls(
           // played, unplayed and thumb keep exactly the relationship Dark Mode already gives them —
           // including the accent from the viewer's chosen theme — with nothing to keep in step.
           MaterialTheme(colorScheme = LocalDarkColorScheme.current ?: MaterialTheme.colorScheme) {
+            // Watched is the theme's accent, as before; buffered is that same accent, softened.
+            val bufferedColor = playerBufferedColor(MaterialTheme.colorScheme.primary)
             if (layout == "Minimal") {
               RefinedPlayerSlider(
                 progress = progress,
                 onProgressChange = onProgressChange,
                 onProgressFinished = onProgressFinished,
                 modifier = Modifier.weight(0.85f),
+                buffered = buffered,
+                bufferedColor = bufferedColor,
               )
             } else {
               // Normal and Compact retain the original Material player progress bar. The
@@ -2252,6 +2332,11 @@ private fun PlayerBottomControls(
                 onValueChange = onProgressChange,
                 onValueChangeFinished = onProgressFinished,
                 modifier = Modifier.weight(0.85f).graphicsLayer { scaleY = if (layout == "Compact") 0.92f else 1f },
+                // The bar draws no handle: the end of the watched fill is the position, and a
+                // handle sat exactly where the buffered stretch begins and hid it. The whole bar
+                // still takes the drag, so seeking is unchanged.
+                thumb = { androidx.compose.foundation.layout.Spacer(Modifier.size(0.dp)) },
+                track = { sliderState -> BufferedSliderTrack(sliderState, progress, buffered, bufferedColor) },
               )
             }
           }
@@ -3334,6 +3419,8 @@ private class PlayerSourceState {
    */
   val reloadedInPlace = mutableStateOf(false)
   val playbackStats = mutableStateOf<PlaybackStats?>(null)
+  /** What the engine is holding, for the seek bar. Empty whenever the bar is not on screen. */
+  val bufferedRanges = mutableStateOf<List<BufferedRange>>(emptyList())
   val selectedAudioTrackId = mutableStateOf<Int?>(null)
   val selectedSubtitleTrackId = mutableStateOf<Int?>(null)
   val preferredAudioTrackKey = mutableStateOf<String?>(null)
@@ -4060,6 +4147,7 @@ private fun BoxScope.PlayerOverlays(
     PlayerBottomControls(
       currentTime = currentTime,
       duration = duration,
+      bufferedRanges = source.bufferedRanges.value,
       isLive = session.isLive,
       isVod = session.isVod,
       showLiveProgress = showLiveProgress,
@@ -4264,6 +4352,23 @@ LaunchedEffect(activePanel, activeEngine, exoPlayerView, playerView) {
   while (true) {
     playbackStats = if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.playbackStats() else playerView?.playbackStats()
     delay(1_000)
+  }
+}
+
+// The seek bar's buffered state, sampled the same way and for the same reason: only while the bar
+// that draws it is on screen. The holder it is written to belongs to one source, so a new stream
+// starts from nothing; the engine is a key so a switch of engine does too. The state is only
+// written when the answer changed, so a paused, fully buffered film costs no recomposition.
+LaunchedEffect(showControls, isLoading, controlsLocked, activePanel, activeEngine, exoPlayerView, playerView) {
+  val barOnScreen = showControls && !isLoading && !controlsLocked && activePanel == PlayerPanel.None
+  if (source.bufferedRanges.value.isNotEmpty()) source.bufferedRanges.value = emptyList()
+  if (!barOnScreen) return@LaunchedEffect
+  while (true) {
+    val sampled = runCatching {
+      if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.bufferedRanges() else playerView?.bufferedRanges()
+    }.getOrNull().orEmpty()
+    if (sampled != source.bufferedRanges.value) source.bufferedRanges.value = sampled
+    delay(500)
   }
 }
 

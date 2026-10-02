@@ -2076,4 +2076,10 @@
   <string name="jellyfin_restored_title">From your backup</string>
   <string name="jellyfin_restored_note">These servers came back from a backup without their sign-in. Sign in to use them again.</string>
   <string name="jellyfin_restored_dismiss">Not now</string>
+  <string name="settings_save_failed">Could not save settings to this device. Please check available storage and try again.</string>
+  <string name="settings_m_buffering">Buffering</string>
+  <string name="settings_m_buffer_ahead">Buffer Ahead</string>
+  <string name="settings_m_buffer_ahead_description">How much of a video to load ahead of where you are watching. More rides out a weak connection and shows further along the seek bar, and uses more memory and data. High-bitrate videos hold less than this. Applies to the next video you play.</string>
+  <string name="settings_m_buffer_ahead_one_minute">1 minute</string>
+  <string name="settings_m_buffer_ahead_minutes">%1$d minutes</string>
 </resources>

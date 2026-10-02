@@ -269,7 +269,7 @@ private fun domNodeHandle(raw: Any?): Int? = when (raw) {
 }
 
 class StreamDekPluginManager(context: Context) {
-  private val prefs = context.getSharedPreferences("streamdek_plugins", Context.MODE_PRIVATE)
+  private val prefs = context.durableSettingsPreferences("streamdek_plugins")
   private val http = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
   // Keyed by "${provider.id}:${provider.code.hashCode()}" so a provider refresh that changes
   // its scraper source naturally invalidates the cached bytecode instead of reusing stale code.

@@ -20,6 +20,11 @@ import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 object PlaybackCodecOptions {
   private const val DV7_HEVC_KEY = "dv7_hevc_fallback"
   private const val TUNNELED_KEY = "tunneled_playback"
+  private const val BUFFER_KEY = "playback_buffer_seconds"
+
+  /** How far ahead of the playhead the viewer can ask the player to load, in seconds. */
+  val forwardBufferOptions: List<Int> = listOf(60, 180, 300, 600)
+  const val DEFAULT_FORWARD_BUFFER_SECONDS = 300
 
   @Volatile
   var dv7HevcFallback: Boolean = true
@@ -29,24 +34,67 @@ object PlaybackCodecOptions {
   var tunneledPlayback: Boolean = false
     private set
 
+  /**
+   * How much media to hold ahead of the playhead.
+   *
+   * A device choice like the two above, and for the same reason: what a phone can afford to keep in
+   * memory says nothing about a television. Read when a player is built, so a change applies to the
+   * next thing played.
+   */
+  @Volatile
+  var forwardBufferSeconds: Int = DEFAULT_FORWARD_BUFFER_SECONDS
+    private set
+
   /** Seeds the in-memory copy the player reads. Safe to call more than once. */
   fun initialize(context: Context) {
-    val prefs = context.applicationContext.getSharedPreferences(APP_SETTINGS_PREFERENCES, Context.MODE_PRIVATE)
+    val prefs = context.durableSettingsPreferences(APP_SETTINGS_PREFERENCES)
     dv7HevcFallback = prefs.getBoolean(DV7_HEVC_KEY, true)
     tunneledPlayback = prefs.getBoolean(TUNNELED_KEY, false)
+    forwardBufferSeconds = normalizeForwardBufferSeconds(prefs.getInt(BUFFER_KEY, DEFAULT_FORWARD_BUFFER_SECONDS))
   }
+
+  fun setForwardBufferSeconds(context: Context, seconds: Int) {
+    val normalized = normalizeForwardBufferSeconds(seconds)
+    forwardBufferSeconds = normalized
+    context.durableSettingsPreferences(APP_SETTINGS_PREFERENCES)
+      .edit().putInt(BUFFER_KEY, normalized).apply()
+  }
+
+  /** A stored value from another build, or a hand-edited backup, lands on the nearest real option. */
+  internal fun normalizeForwardBufferSeconds(seconds: Int): Int =
+    forwardBufferOptions.minByOrNull { kotlin.math.abs(it - seconds) } ?: DEFAULT_FORWARD_BUFFER_SECONDS
 
   fun setDv7HevcFallback(context: Context, enabled: Boolean) {
     dv7HevcFallback = enabled
-    context.applicationContext.getSharedPreferences(APP_SETTINGS_PREFERENCES, Context.MODE_PRIVATE)
+    context.durableSettingsPreferences(APP_SETTINGS_PREFERENCES)
       .edit().putBoolean(DV7_HEVC_KEY, enabled).apply()
   }
 
   fun setTunneledPlayback(context: Context, enabled: Boolean) {
     tunneledPlayback = enabled
-    context.applicationContext.getSharedPreferences(APP_SETTINGS_PREFERENCES, Context.MODE_PRIVATE)
+    context.durableSettingsPreferences(APP_SETTINGS_PREFERENCES)
       .edit().putBoolean(TUNNELED_KEY, enabled).apply()
   }
+}
+
+/** What Media3 allows itself for a muxed stream when nothing is said: its own built-in ceiling. */
+private const val MEDIA3_DEFAULT_BUFFER_BYTES = 144L * 1024L * 1024L
+
+/**
+ * The memory Media3 may spend on the forward buffer, or null to leave its own ceiling in place.
+ *
+ * A duration alone does not make the buffer longer: Media3 stops loading when it has either the
+ * time asked for or its byte ceiling, whichever comes first, and at film bitrates the ceiling comes
+ * first. So a longer buffer needs a larger ceiling - sized for [seconds] of a 10 Mbit/s stream, and
+ * never more than about a third of the heap the app is allowed ([maxHeapBytes]), because these
+ * buffers live on that heap and a second player exists briefly during a source switch. A stream
+ * fatter than the budget simply holds less time than was asked for; it never over-allocates.
+ */
+internal fun forwardBufferBudgetBytes(seconds: Int, maxHeapBytes: Long): Int? {
+  val wanted = seconds.toLong() * 1_250_000L
+  val affordable = (maxHeapBytes * 0.35).toLong()
+  val budget = minOf(wanted, affordable)
+  return if (budget <= MEDIA3_DEFAULT_BUFFER_BYTES) null else budget.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
 }
 
 /**

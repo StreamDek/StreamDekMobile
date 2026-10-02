@@ -1967,47 +1967,83 @@ internal fun subtitleColorLabel(value: String): String =
 internal fun profileSettingsStorageName(ownerKey: String): String =
   "streamdek_native_profile_settings_" + ownerKey.ifBlank { GUEST_OWNER_KEY }.hashCode().toUInt().toString(16)
 
-private class AppSettingsStore(context: Context) {
-  private val prefs = context.getSharedPreferences(APP_SETTINGS_PREFERENCES, Context.MODE_PRIVATE)
-  private val appContext = context.applicationContext
-  private var profilePrefs = prefs
-  private val profileSettingKeys = setOf(
-    "detail_page_style", "season_tab_style", "show_streams_list", "hero_trailer_autoplay", "hero_trailer_resolution",
-    "hero_trailer_delay_seconds",
-    "hero_trailer_muted", "show_hero_synopsis", "continue_watching_style", "home_card_text_mode", "live_landscape_cards", "live_favourite_drawer_cards",
-    "live_categories_enabled", "live_progress_bar", "live_badge", "mdblist_api_key", "primary_sync_service",
-    "remember_last_source", "skip_intro_enabled", "skip_segments_enabled", "skip_recap_enabled", "skip_ending_enabled",
-    "auto_skip_intro_enabled", "auto_skip_recap_enabled", "auto_skip_ending_enabled",
-    "introdb_api_key",
-    "auto_play_next_episode", "prefer_binge_group", "auto_load_subtitles", "blur_unwatched_episodes", "favorite_source_keys",
-    "subtitle_text_size", "subtitle_vertical_offset", "subtitle_bold", "subtitle_text_color",
-    "subtitle_background_color", "subtitle_outline", "subtitle_outline_color", "subtitle_default_source",
-    "next_episode_threshold_mode", "next_episode_threshold_percent", "next_episode_threshold_minutes",
-    "end_of_playback_recommendations_enabled", "recommendation_timing", "recommendation_item_count",
-    "timing_provider", "timing_provider_fallback_enabled",
-    "ratings_enabled", "external_ratings_enabled", "enabled_rating_providers", "vivid_ambient", "ambient_tint_percent",
-    "detail_ambient_tint_percent",
-    "default_app_catalogs_enabled", "home_catalog_rows", HOME_ROW_MODE_PREFERENCE, HOME_ROW_SOURCE_ORDER_PREFERENCE,
-    "fusion_badges", "show_size_badges",
-    "preferred_quality", "max_file_size_gb", "badge_position", "fusion_badge_urls", "active_fusion_badge_url",
-  )
+private class AppSettingsStore(
+  private val openPreferences: (String) -> SharedPreferences,
+  private val diagnostic: (String) -> Unit = ::settingsDiagnostic,
+) {
+  constructor(context: Context) : this({ name -> context.applicationContext.getSharedPreferences(name, Context.MODE_PRIVATE) })
+
+  private val device = DurableSettingsPreferences(openPreferences(APP_SETTINGS_PREFERENCES), diagnostic = diagnostic)
+  private val profileSettingKeys = BackupSettingsRegistry.specs
+    .filter { it.scope == BackupSettingScope.Profile }.map { it.key }.toSet() + "mdblist_api_key"
+  private val accountSettingKeys = SettingsSyncRegistry.syncedKeys - profileSettingKeys
+  private var account = device
+  private var prefs: SharedPreferences = device
+  private var profilePrefs = device
+  private var selectedOwner: String? = null
+  var ownerGeneration = 0L
+    private set
+  var onWriteFailure: (() -> Unit)? = null
+    set(value) { field = value; device.onWriteFailure = value; account.onWriteFailure = value; profilePrefs.onWriteFailure = value }
 
   fun selectProfileStorage(ownerKey: String) {
-    profilePrefs = appContext.getSharedPreferences(profileSettingsStorageName(ownerKey), Context.MODE_PRIVATE)
-    if (profilePrefs.all.isEmpty()) {
-      val editor = profilePrefs.edit()
-      profileSettingKeys.forEach { key ->
-        when (val value = prefs.all[key]) {
-          is Boolean -> editor.putBoolean(key, value)
-          is Int -> editor.putInt(key, value)
-          is Long -> editor.putLong(key, value)
-          is Float -> editor.putFloat(key, value)
-          is String -> editor.putString(key, value)
-          is Set<*> -> @Suppress("UNCHECKED_CAST") editor.putStringSet(key, value as Set<String>)
-        }
-      }
-      editor.apply()
+    if (selectedOwner == ownerKey) return
+    val accountKey = ownerKey.substringBefore(':').ifBlank { GUEST_OWNER_KEY }
+    account = DurableSettingsPreferences(openPreferences("streamdek_settings_account_" + accountKey.hashCode().toUInt().toString(16)), accountSettingKeys, diagnostic)
+    // Only the first owner inherits the old installation cache. A different account must restore
+    // its own cloud choices, and must never upload the departing account's values.
+    if (!device.contains("__settings_account_migrated_v1")) {
+      val editor = account.edit()
+      device.all.filterKeys { it in accountSettingKeys }.forEach { (key, value) -> editor.putSetting(key, value) }
+      if (editor.commit()) device.edit().putBoolean("__settings_account_migrated_v1", true).commit()
     }
+    prefs = RoutedSettingsPreferences(device, account, accountSettingKeys)
+    profilePrefs = DurableSettingsPreferences(openPreferences(profileSettingsStorageName(ownerKey)), profileSettingKeys.intersect(SettingsSyncRegistry.syncedKeys), diagnostic)
+    if (!profilePrefs.contains("__profile_keys_migrated_v2")) {
+      val editor = profilePrefs.edit()
+      // Repair the incomplete old allow-list even when a profile already contains other settings.
+      device.all.filterKeys { it in profileSettingKeys && !profilePrefs.contains(it) }
+        .forEach { (key, value) -> editor.putSetting(key, value) }
+      editor.putBoolean("__profile_keys_migrated_v2", true).commit()
+    }
+    account.migrateOnce()
+    profilePrefs.migrateOnce()
+    selectedOwner = ownerKey
+    ownerGeneration++
+    onWriteFailure = onWriteFailure
+    // Direct startup readers use the installation projection. Remove keys absent in this account.
+    val mirror = device.edit()
+    accountSettingKeys.forEach { mirror.putSetting(it, account.all[it]) }
+    mirror.commit()
+    diagnostic("owner_hydrated pending=${pendingWrite().keys.size}")
+  }
+
+  fun importDeviceProjection() {
+    val editor = account.edit()
+    device.all.filterKeys { it in accountSettingKeys }.forEach { (key, value) -> editor.putSetting(key, value) }
+    editor.commit()
+  }
+
+  fun pendingWrite() = PendingSettingsWrite(listOf(account to account.pending(), profilePrefs to profilePrefs.pending()))
+
+  /**
+   * Adopts the audio language kept on the profile itself, once, when this device has none stored.
+   *
+   * Older builds never wrote this choice to the device at all - it lived only on the profile - so an
+   * upgraded install would otherwise read the default until the account answered, and on an offline
+   * launch would keep reading it. Written as a received value: it is the account's, not an edit to
+   * send back. A choice already stored here is left alone.
+   */
+  fun seedPreferredAudioLanguage(value: String) {
+    if (profilePrefs.contains("preferred_audio_language")) return
+    receive { savePreferredAudioLanguage(value) }
+  }
+  fun localRevision(): Long = account.revision + profilePrefs.revision
+  fun markForUpload() { account.markExistingForUpload(); profilePrefs.markExistingForUpload() }
+  fun receive(block: () -> Unit) {
+    account.receiving = true
+    profilePrefs.receiving = true
+    try { block() } finally { account.receiving = false; profilePrefs.receiving = false }
   }
 
   fun applyTo(state: AppUiState): AppUiState = state.copy(
@@ -2022,13 +2058,13 @@ private class AppSettingsStore(context: Context) {
     decoderMode = normalizeDecoderModeSetting(prefs.getString("decoder_mode", "HW+") ?: "HW+"),
     renderSurface = normalizeRenderSurfaceSetting(prefs.getString("render_surface", "Standard") ?: "Standard"),
     playerEngine = normalizePlayerEngineSetting(prefs.getString("player_engine", "Auto") ?: "Auto"),
-    preferredAudioLanguage = normalizePreferredAudioLanguage(prefs.getString("preferred_audio_language", "en")),
-    secondaryAudioLanguage = Languages.normalize(prefs.getString("secondary_audio_language", Languages.NONE)),
-    preferredSubtitleLanguage = Languages.normalize(prefs.getString("preferred_subtitle_language", "en")),
-    secondarySubtitleLanguage = Languages.normalize(prefs.getString("secondary_subtitle_language", Languages.NONE)),
-    useForcedSubtitles = prefs.getBoolean("use_forced_subtitles", false),
-    showOnlyPreferredSubtitleLanguages = prefs.getBoolean("show_only_preferred_subtitle_languages", false),
-    addonSubtitleLoading = prefs.getString("addon_subtitle_loading", ADDON_SUBTITLE_LOADING_ALL) ?: ADDON_SUBTITLE_LOADING_ALL,
+    preferredAudioLanguage = normalizePreferredAudioLanguage(profilePrefs.getString("preferred_audio_language", "en")),
+    secondaryAudioLanguage = Languages.normalize(profilePrefs.getString("secondary_audio_language", Languages.NONE)),
+    preferredSubtitleLanguage = Languages.normalize(profilePrefs.getString("preferred_subtitle_language", "en")),
+    secondarySubtitleLanguage = Languages.normalize(profilePrefs.getString("secondary_subtitle_language", Languages.NONE)),
+    useForcedSubtitles = profilePrefs.getBoolean("use_forced_subtitles", false),
+    showOnlyPreferredSubtitleLanguages = profilePrefs.getBoolean("show_only_preferred_subtitle_languages", false),
+    addonSubtitleLoading = profilePrefs.getString("addon_subtitle_loading", ADDON_SUBTITLE_LOADING_ALL) ?: ADDON_SUBTITLE_LOADING_ALL,
     detailPageStyle = runCatching { DetailPageStyle.valueOf(profilePrefs.getString("detail_page_style", DetailPageStyle.Classic.name) ?: DetailPageStyle.Classic.name) }.getOrDefault(DetailPageStyle.Classic),
     seasonTabStyle = runCatching { SeasonTabStyle.valueOf(profilePrefs.getString("season_tab_style", SeasonTabStyle.Regular.name) ?: SeasonTabStyle.Regular.name) }.getOrDefault(SeasonTabStyle.Regular),
     episodeLayout = runCatching { EpisodeLayout.valueOf(profilePrefs.getString("episode_layout", EpisodeLayout.Strip.name) ?: EpisodeLayout.Strip.name) }.getOrDefault(EpisodeLayout.Strip),
@@ -2175,13 +2211,13 @@ private class AppSettingsStore(context: Context) {
   fun saveDecoderMode(value: String) { prefs.edit().putString("decoder_mode", normalizeDecoderModeSetting(value)).apply() }
   fun saveRenderSurface(value: String) { prefs.edit().putString("render_surface", normalizeRenderSurfaceSetting(value)).apply() }
   fun savePlayerEngine(value: String) { prefs.edit().putString("player_engine", normalizePlayerEngineSetting(value)).apply() }
-  fun savePreferredAudioLanguage(value: String) { prefs.edit().putString("preferred_audio_language", normalizePreferredAudioLanguage(value)).apply() }
-  fun saveSecondaryAudioLanguage(value: String) { prefs.edit().putString("secondary_audio_language", Languages.normalize(value)).apply() }
-  fun savePreferredSubtitleLanguage(value: String) { prefs.edit().putString("preferred_subtitle_language", Languages.normalize(value)).apply() }
-  fun saveSecondarySubtitleLanguage(value: String) { prefs.edit().putString("secondary_subtitle_language", Languages.normalize(value)).apply() }
-  fun saveUseForcedSubtitles(value: Boolean) { prefs.edit().putBoolean("use_forced_subtitles", value).apply() }
-  fun saveShowOnlyPreferredSubtitleLanguages(value: Boolean) { prefs.edit().putBoolean("show_only_preferred_subtitle_languages", value).apply() }
-  fun saveAddonSubtitleLoading(value: String) { prefs.edit().putString("addon_subtitle_loading", value).apply() }
+  fun savePreferredAudioLanguage(value: String) { profilePrefs.edit().putString("preferred_audio_language", normalizePreferredAudioLanguage(value)).apply() }
+  fun saveSecondaryAudioLanguage(value: String) { profilePrefs.edit().putString("secondary_audio_language", Languages.normalize(value)).apply() }
+  fun savePreferredSubtitleLanguage(value: String) { profilePrefs.edit().putString("preferred_subtitle_language", Languages.normalize(value)).apply() }
+  fun saveSecondarySubtitleLanguage(value: String) { profilePrefs.edit().putString("secondary_subtitle_language", Languages.normalize(value)).apply() }
+  fun saveUseForcedSubtitles(value: Boolean) { profilePrefs.edit().putBoolean("use_forced_subtitles", value).apply() }
+  fun saveShowOnlyPreferredSubtitleLanguages(value: Boolean) { profilePrefs.edit().putBoolean("show_only_preferred_subtitle_languages", value).apply() }
+  fun saveAddonSubtitleLoading(value: String) { profilePrefs.edit().putString("addon_subtitle_loading", value).apply() }
   fun saveDetailPageStyle(value: DetailPageStyle) { profilePrefs.edit().putString("detail_page_style", value.name).apply() }
   fun saveSeasonTabStyle(value: SeasonTabStyle) { profilePrefs.edit().putString("season_tab_style", value.name).apply() }
   fun saveEpisodeLayout(value: EpisodeLayout) { profilePrefs.edit().putString("episode_layout", value.name).apply() }
@@ -2350,13 +2386,10 @@ private class AppSettingsStore(context: Context) {
   }
 
   /** Whether an owner has ever had profile settings written for it. */
-  fun hasProfileSettings(ownerKey: String): Boolean = profileStorageFor(ownerKey).all.isNotEmpty()
+  fun hasProfileSettings(ownerKey: String): Boolean = profileStorageFor(ownerKey).all.keys.any { it in profileSettingKeys }
 
 
-  private fun profileStorageFor(ownerKey: String): SharedPreferences = appContext.getSharedPreferences(
-    profileSettingsStorageName(ownerKey),
-    Context.MODE_PRIVATE,
-  )
+  private fun profileStorageFor(ownerKey: String): SharedPreferences = openPreferences(profileSettingsStorageName(ownerKey))
   fun saveFusionBadges(value: Boolean) { profilePrefs.edit().putBoolean("fusion_badges", value).apply() }
   fun saveStreamDekFormatting(value: Boolean) { profilePrefs.edit().putBoolean("streamdek_stream_formatting", value).apply() }
   fun saveShowSizeBadges(value: Boolean) { profilePrefs.edit().putBoolean("show_size_badges", value).apply() }
@@ -2392,7 +2425,7 @@ private fun parseRatingProviderIds(raw: String?): Set<String> {
       for (index in 0 until source.length()) {
         source.optString(index).trim().lowercase().ifBlank { null }?.let(::add)
       }
-    }.ifEmpty { DEFAULT_RATING_PROVIDER_IDS }
+    }
   }.getOrDefault(DEFAULT_RATING_PROVIDER_IDS)
 }
 
@@ -3806,7 +3839,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     identity = { mediaServerClientIdentity() },
     labels = { mediaServerLabels },
   )
-  private val mediaServerPrefs by lazy { application.getSharedPreferences("streamdek_media_servers", android.content.Context.MODE_PRIVATE) }
+  private val mediaServerPrefs by lazy { application.durableSettingsPreferences("streamdek_media_servers") }
 
   private fun mediaServerClientIdentity(): PlexClientIdentity {
     val (deviceId, deviceName) = apiClient.mediaServerDeviceIdentity ?: ("unknown" to "StreamDek Mobile")
@@ -4062,6 +4095,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
     /** The guest migration's reload, for the same reason: see [runGuestDataMigration]. */
     override suspend fun reloadAfterRestore() {
+      appSettingsStore.importDeviceProjection()
       PlaybackCodecOptions.initialize(getApplication())
       AudioSyncOptions.initialize(getApplication())
       uiState = appSettingsStore.applyTo(uiState)
@@ -4232,7 +4266,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         session = restoredSession,
         profilesLoading = restoredSession != null,
         profiles = restoredGuestProfiles,
-        activeProfileId = restoredGuestProfile?.id,
+        activeProfileId = restoredSession?.user?.uid?.let(profileSelectionStore::load) ?: restoredGuestProfile?.id,
         showProfilePicker = restoredSession != null || restoredGuestProfiles.size > 1,
         mergedWatchlist = if (restoredSession == null) {
           watchlistStore.load(restoredGuestProfile?.id?.let { "guest:$it" } ?: GUEST_OWNER_KEY)
@@ -4250,6 +4284,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     private set
 
   init {
+    appSettingsStore.onWriteFailure = {
+      viewModelScope.launch { uiState = uiState.copy(errorMessage = strings.getString(R.string.settings_save_failed)) }
+    }
     // The session is read lazily rather than captured: events queued before sign-in still get
     // attributed once one exists, and signed-out activity is sent anonymously rather than lost.
     Telemetry.configure(apiClient) { uiState.session }
@@ -4411,6 +4448,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   fun signOut() {
     sessionStore.clear()
+    preferencesSyncJob?.cancel()
+    preferencesSyncJob = null
+    appSettingsStore.selectProfileStorage(GUEST_OWNER_KEY)
     // The media server link is the profile's, kept on StreamDek; this device's copy goes with the account.
     mediaServers.clearDevice()
     MediaServerHomeRows.rows = emptyList()
@@ -4423,6 +4463,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     apiClient.serviceCredentials?.clearAll()
     deviceDebridManager = null
     uiState = appSettingsStore.applyTo(AppUiState(booting = false, rememberedEmail = authEntryStore.loadEmail(), mergedWatchlist = watchlistStore.load(GUEST_OWNER_KEY), favouriteChannels = favouriteChannelStore.load(GUEST_OWNER_KEY)))
+    refreshProfileScopedData()
     bootstrapAfterAuth(forceHome = true)
   }
 
@@ -7553,7 +7594,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     launchWork(
       onStart = { if (showLoading) uiState = uiState.copy(profilesLoading = true, errorMessage = null) },
       block = { apiClient.fetchProfiles(session) },
-      onSuccess = { profiles ->
+      onSuccess = profileResult@ { profiles ->
+        if (uiState.session?.user?.uid != session.user.uid) return@profileResult
         // The profile picker blocks on this and nothing else, so it is the launch milestone worth
         // timing: everything between `activity.firstComposition` and here is dark screen.
         Perf.startupMark("profiles.ready", "count=${profiles.size}")
@@ -9535,18 +9577,18 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       uiState = uiState.copy(infoMessage = strings.getString(R.string.notice_sync_paused_cellular))
       return
     }
+    val settingsProfileId = uiState.activeProfileId
     launchWork(
       onStart = { uiState = uiState.copy(syncRefreshing = true, errorMessage = null, infoMessage = null) },
       block = {
         coroutineScope {
-          val preferences = async { apiClient.fetchCloudPlaybackPreferences(session, uiState.activeProfileId) }
+          val preferences = async { reconcileCloudPreferences(session, settingsProfileId) }
           val minimumAnimation = async { delay(500) }
           minimumAnimation.await()
           preferences.await()
         }
       },
-      onSuccess = { preferences ->
-        applyCloudPlaybackPreferences(preferences)
+      onSuccess = {
         uiState = uiState.copy(syncRefreshing = false, infoMessage = strings.getString(R.string.notice_cloud_settings_refreshed))
         refreshProfiles(showLoading = false, refreshScopedData = false)
         refreshAddons()
@@ -9572,7 +9614,14 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val decoderMode = preferences.decoderMode?.let(::normalizeDecoderModeSetting)
     val renderSurface = preferences.renderSurface?.let(::normalizeRenderSurfaceSetting)
     val playerEngine = preferences.playerEngine?.let(::normalizePlayerEngineSetting)
-    val preferredAudioLanguage = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }?.audioLanguage?.takeIf { it.isNotBlank() }?.let(::normalizePreferredAudioLanguage) ?: preferences.preferredAudioLanguage?.let(::normalizePreferredAudioLanguage)
+    // The profile's own field leads, as it always has: it is the one every StreamDek client shares,
+    // so a change made on the web or another device arrives through it even when the settings
+    // document has never carried this value. Neither is taken while a choice made here is still
+    // waiting to be uploaded - that edit is newer than anything the account can say.
+    val audioLanguagePending = "preferred_audio_language" in appSettingsStore.pendingWrite().keys
+    val profileAudioLanguage = uiState.profiles.firstOrNull { it.id == uiState.activeProfileId }?.audioLanguage?.takeIf { it.isNotBlank() }
+    val preferredAudioLanguage = if (audioLanguagePending) null
+      else (profileAudioLanguage ?: preferences.preferredAudioLanguage)?.let(::normalizePreferredAudioLanguage)
     val ratingProviders = preferences.enabledRatingProviders?.map { it.trim().lowercase() }?.filter(String::isNotBlank)?.toSet()
     val fusionBadgeUrls = preferences.fusionBadgeUrls?.distinct()?.take(MAX_FUSION_BADGE_URLS)
     val activeFusionBadgeUrl = preferences.activeFusionBadgeUrl?.takeIf { it in (fusionBadgeUrls ?: uiState.fusionBadgeUrls) }
@@ -9771,6 +9820,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       autoUpdateChecksEnabled = preferences.autoUpdateChecksEnabled ?: uiState.autoUpdateChecksEnabled,
     )
     applyCloudSyncedLocalSettings(preferences)
+    uiState = appSettingsStore.applyTo(uiState)
     // A row list, a row mode or a source order from the account all describe the same thing - how
     // Home is arranged - so any of them arriving is a reason to lay it out again.
     if (homeCatalogRows != null || homeRowMode != null || homeRowSourceOrder != null) {
@@ -9883,19 +9933,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       newEpisodesLandscape = preferences.newEpisodesLandscape ?: uiState.newEpisodesLandscape,
     )
 
-    val accountIsMissingSome = listOf(
-      preferences.animationSpeed, preferences.appLanguage, preferences.visualEffects, preferences.navigationBehaviour,
-      preferences.homeDensity, preferences.mediaHubEnabled, preferences.heroTrailerMuted, preferences.playerControlLayout,
-      preferences.showPlayerControlLabels, preferences.playerTitleDisplay, preferences.fullscreenStatusBar,
-      preferences.holdToSpeedEnabled, preferences.holdToSpeedMultiplier, preferences.swipeToSeekEnabled,
-      preferences.doubleTapSeekEnabled, preferences.doubleTapSeekSeconds, preferences.doubleTapPlayPauseEnabled,
-      preferences.playerLevelGesturesEnabled, preferences.subtitleTextSize, preferences.subtitleVerticalOffset,
-      preferences.subtitleBold, preferences.subtitleTextColor, preferences.subtitleBackgroundColor,
-      preferences.subtitleOutline, preferences.subtitleOutlineColor, preferences.showNewEpisodesRow,
-      preferences.newEpisodesLandscape, preferences.subtitleDefaultSource, preferences.liveProgressBarEnabled,
-      preferences.liveBadgeEnabled,
-    ).any { it == null }
-    if (accountIsMissingSome) syncCloudPreferences()
+
   }
 
   fun refreshTraktData() {
@@ -10938,34 +10976,82 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   }
 }
 
-  private fun syncCloudPreferences(force: Boolean = false) {
-    val session = uiState.session ?: return
-    if (!force && !cloudSyncAllowed()) return
-    val preferences = cloudPreferencesSnapshot()
-    viewModelScope.launch { apiClient.patchCloudPreferences(session, preferences, uiState.activeProfileId) }
+  private fun settingsSyncOwner(): SettingsSyncOwner? {
+    val session = uiState.session ?: return null
+    val profileId = uiState.activeProfileId ?: return null
+    return SettingsSyncOwner(session.user.uid, profileId, appSettingsStore.ownerGeneration)
   }
 
+  private val preferencesSyncCoordinator by lazy {
+    SettingsSyncCoordinator(
+      currentOwner = ::settingsSyncOwner,
+      pending = appSettingsStore::pendingWrite,
+      snapshot = ::cloudPreferencesSnapshot,
+      upload = { owner, preferences ->
+        val session = uiState.session
+        if (session?.user?.uid != owner.accountId) Result.failure(IllegalStateException("Settings owner changed"))
+        else apiClient.patchCloudPreferences(session, preferences, owner.profileId).mapCatching {
+          // The audio language is also a field of the profile itself, and that field is what the
+          // television and the web read. It goes up in the same acknowledged step as the settings
+          // document: if either write fails the edit stays pending and both are sent again, so
+          // the two can never be left disagreeing about what was chosen.
+          preferences.preferredAudioLanguage?.let { language ->
+            apiClient.updateProfileAudioLanguage(session, owner.profileId, language).getOrThrow()
+          }
+          Unit
+        }
+      },
+      download = { owner ->
+        val session = uiState.session
+        if (session?.user?.uid != owner.accountId) Result.failure(IllegalStateException("Settings owner changed"))
+        else apiClient.fetchCloudPlaybackPreferences(session, owner.profileId)
+      },
+      applyRemote = { preferences ->
+        val before = homeLayoutSignature()
+        appSettingsStore.receive { applyCloudPlaybackPreferences(preferences) }
+        if (homeLayoutSignature() != before) loadHome(force = true, silent = true)
+      },
+    )
+  }
+  private var preferencesSyncJob: Job? = null
   private var lastPreferencesRefreshAt = 0L
 
-  private var settledSyncJob: Job? = null
+  private fun settingsOwnerMatches(session: AuthSession, profileId: String?, generation: Long): Boolean =
+    uiState.session?.user?.uid == session.user.uid && uiState.activeProfileId == profileId &&
+      appSettingsStore.ownerGeneration == generation
 
-  /**
-   * [syncCloudPreferences] once a slider has stopped moving. A slider reports every step of a drag,
-   * and one write per step would send a dozen settings documents to reach a single value.
-   */
-  private fun syncCloudPreferencesWhenSettled() {
-    settledSyncJob?.cancel()
-    settledSyncJob = viewModelScope.launch {
-      delay(600)
-      syncCloudPreferences()
+  private fun syncCloudPreferences(force: Boolean = false) {
+    val session = uiState.session ?: return
+    val profileId = uiState.activeProfileId ?: return
+    if (preferencesSyncJob?.isActive == true) return
+    val generation = appSettingsStore.ownerGeneration
+    preferencesSyncJob = viewModelScope.launch {
+      // The journal already reached disk in the setter, including slider edits. Only networking
+      // is delayed. A killed process resumes the pending work on its next startup/foreground.
+      delay(350)
+      for (attempt in 0..2) {
+        if (!settingsOwnerMatches(session, profileId, generation)) return@launch
+        if (!force && !cloudSyncAllowed()) return@launch
+        val result = preferencesSyncCoordinator.flush(SettingsSyncOwner(session.user.uid, profileId, generation))
+        if (result.isSuccess) return@launch
+        delay(if (attempt == 0) 2_000 else 15_000)
+      }
     }
   }
 
-  /** [syncCloudPreferences] for a caller that must know the account has the result before going on. */
+  private fun syncCloudPreferencesWhenSettled() = syncCloudPreferences()
+
+  private suspend fun reconcileCloudPreferences(session: AuthSession, profileId: String?): Result<Unit> {
+    if (profileId == null) return Result.success(Unit)
+    return preferencesSyncCoordinator.reconcile(SettingsSyncOwner(session.user.uid, profileId, appSettingsStore.ownerGeneration))
+  }
+
   private suspend fun pushCloudPreferencesNow() {
     val session = uiState.session ?: return
-    apiClient.patchCloudPreferences(session, cloudPreferencesSnapshot(), uiState.activeProfileId)
-      .onFailure { Log.w("StreamDekMigration", "Could not push the migrated preferences", it) }
+    val profileId = uiState.activeProfileId ?: return
+    appSettingsStore.markForUpload()
+    val generation = appSettingsStore.ownerGeneration
+    preferencesSyncCoordinator.flush(SettingsSyncOwner(session.user.uid, profileId, generation))
   }
 
   /** The profile's preferences as the account stores them. */
@@ -11079,7 +11165,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       maxFileSizeGb = uiState.maxFileSizeGb,
       badgePosition = uiState.badgePosition,
       fusionBadgeUrls = uiState.fusionBadgeUrls,
-      activeFusionBadgeUrl = uiState.activeFusionBadgeUrl,
+      activeFusionBadgeUrl = uiState.activeFusionBadgeUrl ?: "",
       autoUpdateChecksEnabled = uiState.autoUpdateChecksEnabled,
     )
   }
@@ -11128,24 +11214,14 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setPlayerEngine(value: String) { val normalized = normalizePlayerEngineSetting(value); appSettingsStore.savePlayerEngine(normalized); uiState = uiState.copy(playerEngine = normalized); syncCloudPreferences() }
   fun setPreferredAudioLanguage(value: String) {
     val normalized = normalizePreferredAudioLanguage(value)
+    appSettingsStore.savePreferredAudioLanguage(normalized)
     val profileId = uiState.activeProfileId
-    val updatedProfiles = if (profileId == null) uiState.profiles else uiState.profiles.map { profile ->
+    val updatedProfiles = uiState.profiles.map { profile ->
       if (profile.id == profileId) profile.copy(audioLanguage = normalized) else profile
     }
     uiState = uiState.copy(preferredAudioLanguage = normalized, profiles = updatedProfiles)
-    val session = uiState.session
-    if (profileId != null && session == null) {
-      guestProfileStore.save(updatedProfiles)
-    } else if (profileId != null && session != null) {
-      viewModelScope.launch {
-        apiClient.updateProfileAudioLanguage(session, profileId, normalized).onFailure { error ->
-          uiState = uiState.copy(errorMessage = error.message ?: "Could not save the profile audio language.")
-        }
-      }
-    } else {
-      appSettingsStore.savePreferredAudioLanguage(normalized)
-      syncCloudPreferences()
-    }
+    if (uiState.session == null && profileId != null) guestProfileStore.save(updatedProfiles)
+    syncCloudPreferences()
   }
   fun setDetailPageStyle(style: DetailPageStyle) { appSettingsStore.saveDetailPageStyle(style); uiState = uiState.copy(detailPageStyle = style); syncCloudPreferences() }
   fun setSeasonTabStyle(style: SeasonTabStyle) { appSettingsStore.saveSeasonTabStyle(style); uiState = uiState.copy(seasonTabStyle = style); syncCloudPreferences() }
@@ -11930,6 +12006,10 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       block = block,
       onSuccess = { session ->
         sessionStore.save(session)
+        preferencesSyncJob?.cancel()
+        preferencesSyncJob = null
+        val restoredProfileId = profileSelectionStore.load(session.user.uid)
+        appSettingsStore.selectProfileStorage(watchedOwnerKey(session, restoredProfileId))
         routeAfterProfileRefresh = true
         // authSubmitting deliberately stays set. The credentials are accepted but where to land
         // is not known yet -- it depends on how many profiles the account has and on whether the
@@ -11940,6 +12020,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
         uiState = appSettingsStore.applyTo(
           uiState.copy(
             session = session,
+            activeProfileId = restoredProfileId,
+            profiles = emptyList(),
             profilesLoading = true,
             showProfilePicker = true,
             guestTransfer = GuestSetupTransfer(pendingOwnerKey = guestDataOwnerKey),
@@ -12174,12 +12256,10 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     val now = android.os.SystemClock.elapsedRealtime()
     if (!force && now - lastPreferencesRefreshAt < PREFERENCES_REFRESH_DEBOUNCE_MS) return
     lastPreferencesRefreshAt = now
+    val profileId = uiState.activeProfileId
     viewModelScope.launch {
-      apiClient.fetchCloudPlaybackPreferences(session, uiState.activeProfileId).onSuccess { preferences ->
-        val before = homeLayoutSignature()
-        applyCloudPlaybackPreferences(preferences)
-        if (homeLayoutSignature() != before) loadHome(force = true, silent = true)
-      }
+      reconcileCloudPreferences(session, profileId)
+      syncCloudPreferences()
     }
   }
 
@@ -12191,18 +12271,6 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     // than in flight. The rest of this fan-out fills in screens that are not on top yet.
     if (uiState.session != null) refreshProfiles()
     syncPeerEngine()
-    uiState.session?.let { session ->
-      lastPreferencesRefreshAt = android.os.SystemClock.elapsedRealtime()
-      viewModelScope.launch {
-        apiClient.fetchCloudPlaybackPreferences(session, uiState.activeProfileId).onSuccess { preferences ->
-          val before = homeLayoutSignature()
-          applyCloudPlaybackPreferences(preferences)
-          // Only when the account actually asks for different rows. Reloading unconditionally
-          // spent a second full home request on every launch to arrive at what was already there.
-          if (homeLayoutSignature() != before) loadHome(force = true, silent = true)
-        }
-      }
-    }
     refreshFusionBadgeSources()
     refreshAddonEntitlements()
     loadHome(force = forceHome)
@@ -12237,6 +12305,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     uiState = uiState.copy(nextUpItems = emptyList(), nextUpOwner = ownerKey, playbackProgressRecords = emptyList())
     // Sorted catalogues belong to the profile that owns the playlists and favourites behind them.
     BrowseCategoryCache.clear()
+    preferencesSyncJob?.cancel()
+    preferencesSyncJob = null
     appSettingsStore.selectProfileStorage(ownerKey)
     LocalAddonManager.selectProfileStorage(ownerKey)
     M3uPlaylistManager.selectProfileStorage(ownerKey)
@@ -12251,6 +12321,9 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     refreshProfilePlugins()
     refreshProfileCloudStreamPlugins()
     refreshLiveFavouriteChannels()
+    // Before the store is read below: an install upgraded from a build that kept the audio language
+    // only on the profile has nothing stored for it yet.
+    activeProfile?.audioLanguage?.takeIf { it.isNotBlank() }?.let(appSettingsStore::seedPreferredAudioLanguage)
     uiState = appSettingsStore.applyTo(uiState.copy(
       mergedWatchlist = loadLocalWatchlist(),
       favouriteChannels = loadLocalFavouriteChannels(),
@@ -12263,15 +12336,9 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     val profileId = uiState.activeProfileId
     if (session != null && profileId != null) {
       viewModelScope.launch {
-        apiClient.fetchCloudPlaybackPreferences(session, profileId).onSuccess { preferences ->
-          if (uiState.activeProfileId == profileId) {
-            val before = homeLayoutSignature()
-            applyCloudPlaybackPreferences(preferences)
-            syncCloudPreferences(force = true)
-            // Switching profile already reloads home; this only has to catch the case where the
-            // profile's synced preferences turn out to want a different set of rows.
-            if (homeLayoutSignature() != before) loadHome(force = true, silent = true)
-          }
+        if (cloudSyncAllowed()) {
+          reconcileCloudPreferences(session, profileId)
+          syncCloudPreferences()
         }
       }
     }

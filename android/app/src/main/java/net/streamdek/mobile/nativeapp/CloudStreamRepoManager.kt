@@ -153,7 +153,7 @@ class CloudStreamRepoManager(private val context: Context) {
     const val TAG = "CloudStreamRepos"
     const val LEGACY_STORAGE_KEY = "state"
   }
-  private val prefs: SharedPreferences = context.applicationContext.getSharedPreferences("streamdek_cs_plugins", Context.MODE_PRIVATE)
+  private val prefs: SharedPreferences = context.durableSettingsPreferences("streamdek_cs_plugins")
   private val http = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).build()
 
   // Downloaded .cs3 files MUST live under the app-specific *external* files directory, not

@@ -12,7 +12,10 @@ import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.log2
 import net.streamdek.mobile.BuildConfig
+import net.streamdek.mobile.nativeapp.BufferedRange
+import net.streamdek.mobile.nativeapp.PlaybackCodecOptions
 import net.streamdek.mobile.nativeapp.PlaybackStats
+import net.streamdek.mobile.nativeapp.parseMpvSeekableRanges
 import net.streamdek.mobile.nativeapp.normalizePreferredAudioLanguage
 import net.streamdek.mobile.nativeapp.Languages
 import net.streamdek.mobile.nativeapp.orderedLanguageTags
@@ -253,7 +256,8 @@ class MPVView @JvmOverloads constructor(
         // Track changes in mkv/stream sources often force a refresh seek.
         // Give mpv enough cache headroom to survive that seek without draining
         // immediately back into buffering.
-        MPVLib.setOptionString("cache-secs", "300")
+        // The viewer's Buffer Ahead choice; five minutes unless they have changed it.
+        MPVLib.setOptionString("cache-secs", PlaybackCodecOptions.forwardBufferSeconds.toString())
         MPVLib.setOptionString("cache-on-disk", "yes")
         MPVLib.setOptionString("cache-pause-wait", "1")
         MPVLib.setOptionString("demuxer-seekable-cache", "yes")
@@ -483,6 +487,23 @@ class MPVView @JvmOverloads constructor(
     fun setVolume(volume: Double) {
         if (!initialized || isDestroyed) return
         MPVLib.setPropertyDouble("volume", (volume * 100.0).coerceIn(0.0, 100.0))
+    }
+
+    /**
+     * What mpv's demuxer cache is holding, for the seek bar.
+     *
+     * `demuxer-cache-state` lists every cached stretch, including ones left behind by a seek, which
+     * mpv can still play without the network. When that cannot be read, the single stretch ahead of
+     * the playhead is taken from `demuxer-cache-time` instead. Empty means mpv has nothing to say,
+     * and the bar then shows no buffered state rather than a made-up one.
+     */
+    fun bufferedRanges(): List<BufferedRange> {
+        if (!initialized || isDestroyed) return emptyList()
+        val cached = parseMpvSeekableRanges(runCatching { MPVLib.getPropertyString("demuxer-cache-state") }.getOrNull())
+        if (cached.isNotEmpty()) return cached
+        val position = MPVLib.getPropertyDouble("time-pos") ?: return emptyList()
+        val cachedUntil = MPVLib.getPropertyDouble("demuxer-cache-time") ?: return emptyList()
+        return if (cachedUntil > position) listOf(BufferedRange(position, cachedUntil)) else emptyList()
     }
 
     /**

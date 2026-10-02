@@ -1923,4 +1923,10 @@
   <string name="jellyfin_restored_title">Dal tuo backup</string>
   <string name="jellyfin_restored_note">Questi server sono tornati da un backup senza il loro accesso. Accedi per usarli di nuovo.</string>
   <string name="jellyfin_restored_dismiss">Non ora</string>
+  <string name="settings_save_failed">Impossibile salvare le impostazioni sul dispositivo. Controlla lo spazio disponibile e riprova.</string>
+  <string name="settings_m_buffering">Buffer</string>
+  <string name="settings_m_buffer_ahead">Buffer in anticipo</string>
+  <string name="settings_m_buffer_ahead_description">Quanta parte del video caricare in anticipo rispetto a ciò che stai guardando. Di più regge meglio una connessione debole e arriva più avanti sulla barra di avanzamento, ma usa più memoria e dati. I video ad alto bitrate ne conservano meno. Vale dal prossimo video riprodotto.</string>
+  <string name="settings_m_buffer_ahead_one_minute">1 minuto</string>
+  <string name="settings_m_buffer_ahead_minutes">%1$d minuti</string>
 </resources>

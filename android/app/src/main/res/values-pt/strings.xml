@@ -1923,4 +1923,10 @@
   <string name="jellyfin_restored_title">Da sua cópia de segurança</string>
   <string name="jellyfin_restored_note">Estes servidores voltaram de uma cópia de segurança sem a sessão iniciada. Entre para os voltar a usar.</string>
   <string name="jellyfin_restored_dismiss">Agora não</string>
+  <string name="settings_save_failed">Não foi possível guardar as definições neste dispositivo. Verifique o espaço disponível e tente novamente.</string>
+  <string name="settings_m_buffering">Buffer</string>
+  <string name="settings_m_buffer_ahead">Buffer antecipado</string>
+  <string name="settings_m_buffer_ahead_description">Quanto do vídeo carregar à frente do que está a ver. Mais aguenta melhor uma ligação fraca e chega mais longe na barra de progresso, mas usa mais memória e dados. Vídeos com taxa de bits elevada guardam menos. Aplica-se ao próximo vídeo reproduzido.</string>
+  <string name="settings_m_buffer_ahead_one_minute">1 minuto</string>
+  <string name="settings_m_buffer_ahead_minutes">%1$d minutos</string>
 </resources>

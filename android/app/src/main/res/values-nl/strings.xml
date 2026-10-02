@@ -1909,4 +1909,10 @@
   <string name="jellyfin_restored_title">Uit je back-up</string>
   <string name="jellyfin_restored_note">Deze servers kwamen zonder aanmelding terug uit een back-up. Meld je aan om ze weer te gebruiken.</string>
   <string name="jellyfin_restored_dismiss">Niet nu</string>
+  <string name="settings_save_failed">De instellingen konden niet worden opgeslagen. Controleer de beschikbare opslagruimte en probeer het opnieuw.</string>
+  <string name="settings_m_buffering">Bufferen</string>
+  <string name="settings_m_buffer_ahead">Vooruit bufferen</string>
+  <string name="settings_m_buffer_ahead_description">Hoeveel van een video vooruit wordt geladen. Meer vangt een zwakke verbinding beter op en reikt verder op de zoekbalk, maar gebruikt meer geheugen en data. Video’s met een hoge bitrate houden minder vast. Geldt vanaf de volgende video.</string>
+  <string name="settings_m_buffer_ahead_one_minute">1 minuut</string>
+  <string name="settings_m_buffer_ahead_minutes">%1$d minuten</string>
 </resources>

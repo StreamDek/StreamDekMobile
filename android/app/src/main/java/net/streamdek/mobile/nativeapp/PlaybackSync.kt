@@ -139,13 +139,13 @@ internal object AudioSyncOptions {
   val defaultDelaySeconds: Double get() = defaultDelayMs / 1000.0
 
   fun initialize(context: Context) {
-    defaultDelayMs = context.applicationContext.getSharedPreferences(APP_SETTINGS_PREFERENCES, Context.MODE_PRIVATE)
+    defaultDelayMs = context.durableSettingsPreferences(APP_SETTINGS_PREFERENCES)
       .getInt(DEFAULT_DELAY_KEY, 0).coerceIn(-limitMs, limitMs)
   }
 
   fun setDefaultDelayMs(context: Context, delayMs: Int) {
     defaultDelayMs = delayMs.coerceIn(-limitMs, limitMs)
-    context.applicationContext.getSharedPreferences(APP_SETTINGS_PREFERENCES, Context.MODE_PRIVATE)
+    context.durableSettingsPreferences(APP_SETTINGS_PREFERENCES)
       .edit().putInt(DEFAULT_DELAY_KEY, defaultDelayMs).apply()
   }
 }

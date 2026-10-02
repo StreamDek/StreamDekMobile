@@ -1959,4 +1959,10 @@
   <string name="jellyfin_restored_title">Depuis votre sauvegarde</string>
   <string name="jellyfin_restored_note">Ces serveurs sont revenus d’une sauvegarde sans leur connexion. Connectez-vous pour les réutiliser.</string>
   <string name="jellyfin_restored_dismiss">Pas maintenant</string>
+  <string name="settings_save_failed">Impossible d’enregistrer les paramètres sur cet appareil. Vérifiez l’espace disponible et réessayez.</string>
+  <string name="settings_m_buffering">Mise en mémoire tampon</string>
+  <string name="settings_m_buffer_ahead">Tampon en avance</string>
+  <string name="settings_m_buffer_ahead_description">Quantité de vidéo chargée en avance sur la lecture. Davantage résiste mieux à une connexion faible et va plus loin sur la barre de progression, mais utilise plus de mémoire et de données. Les vidéos à haut débit en conservent moins. S’applique à la prochaine vidéo lue.</string>
+  <string name="settings_m_buffer_ahead_one_minute">1 minute</string>
+  <string name="settings_m_buffer_ahead_minutes">%1$d minutes</string>
 </resources>

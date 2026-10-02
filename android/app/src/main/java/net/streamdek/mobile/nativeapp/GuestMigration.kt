@@ -408,7 +408,7 @@ internal fun copyMissingPreferences(source: SharedPreferences, target: SharedPre
   val editor = target.edit()
   var copied = 0
   source.all.forEach { (key, value) ->
-    if (value == null || (!overwrite && target.contains(key))) return@forEach
+    if (key.startsWith("__") || value == null || (!overwrite && target.contains(key))) return@forEach
     when (value) {
       is Boolean -> editor.putBoolean(key, value)
       is Int -> editor.putInt(key, value)

@@ -20,14 +20,19 @@ import androidx.media3.common.Tracks
 import androidx.media3.common.text.Cue
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.common.util.Util
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.decoder.ffmpeg.FfmpegLibrary
 import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
 import androidx.media3.exoplayer.drm.FrameworkMediaDrm
 import androidx.media3.exoplayer.drm.LocalMediaDrmCallback
+import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
@@ -53,6 +58,30 @@ class ExoPlaybackView @JvmOverloads constructor(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
+    /**
+     * Whether the bundled FFmpeg audio decoders loaded. They are what plays AC-3, E-AC-3, DTS and
+     * TrueHD on a phone with no decoder of its own for them - most phones - so without them the
+     * larger part of what people play has no sound in Media3. Loading can fail without any other
+     * sign (a release build that stripped what the native library looks up, a missing ABI), which
+     * is why it is checked and said out loud rather than assumed.
+     */
+    val softwareDecodersLoaded: Boolean by lazy { runCatching { FfmpegLibrary.isAvailable() }.getOrDefault(false) }
+    val softwareDecoderVersion: String? by lazy { runCatching { FfmpegLibrary.getVersion() }.getOrNull() }
+    private var softwareDecodersReported = false
+
+    private fun reportSoftwareDecoders() {
+      if (softwareDecodersReported) return
+      softwareDecodersReported = true
+      if (softwareDecodersLoaded) {
+        Log.i(TAG, "Software audio decoders loaded: FFmpeg $softwareDecoderVersion")
+      } else {
+        Log.e(TAG, "EXO_AUDIO_SOFTWARE_DECODERS_MISSING: the bundled FFmpeg decoders did not load; AC-3, E-AC-3, DTS and TrueHD audio will have no decoder in Media3 on this device")
+      }
+    }
+
+    /** An exception as one short line: its kind and what it said. */
+    private fun describeFailure(error: Throwable): String =
+      (error.javaClass.simpleName + ": " + (error.message ?: "no message")).replace('\n', ' ').take(240)
   }
 
   var onLoadCallback: ((duration: Double, width: Int, height: Int) -> Unit)? = null
@@ -109,6 +138,53 @@ class ExoPlaybackView @JvmOverloads constructor(
   private var externalSubtitleCues: List<androidx.media3.extractor.text.CuesWithTiming>? = null
   private var lastLoggedCueCount = -1
   private val audioSelections = mutableMapOf<Int, Pair<Tracks.Group, Int>>()
+
+  /**
+   * What each player's renderers have said about themselves: which decoders started and what went
+   * wrong in the audio path. Kept per player, because a live channel switch has two alive at once.
+   */
+  private class RendererLog : AnalyticsListener {
+    var audioDecoder: String? = null
+    var videoDecoder: String? = null
+    var audioDecoderError: String? = null
+    var audioOutputError: String? = null
+
+    override fun onAudioDecoderInitialized(eventTime: AnalyticsListener.EventTime, decoderName: String, initializedTimestampMs: Long, initializationDurationMs: Long) {
+      audioDecoder = decoderName
+      // A decoder that has started is past whatever stopped the one before it.
+      audioDecoderError = null
+      Log.i(TAG, "Audio decoder started: $decoderName in ${initializationDurationMs}ms")
+    }
+
+    override fun onVideoDecoderInitialized(eventTime: AnalyticsListener.EventTime, decoderName: String, initializedTimestampMs: Long, initializationDurationMs: Long) {
+      videoDecoder = decoderName
+    }
+
+    override fun onAudioCodecError(eventTime: AnalyticsListener.EventTime, audioCodecError: Exception) {
+      audioDecoderError = describeFailure(audioCodecError)
+      Log.w(TAG, "Audio decoder error: $audioDecoderError")
+    }
+
+    override fun onAudioSinkError(eventTime: AnalyticsListener.EventTime, audioSinkError: Exception) {
+      audioOutputError = describeFailure(audioSinkError)
+      Log.w(TAG, "Audio output error: $audioOutputError")
+    }
+  }
+  private val rendererLogs = java.util.WeakHashMap<ExoPlayer, RendererLog>()
+
+  /** The in-player audio recoveries already spent on this source; each is tried once. */
+  private val audioRecoveriesTried = mutableSetOf<ExoAudioRecovery>()
+
+  /** Set when an HLS source showed no audio: it is opened again reading its segments. See [buildPlayer]. */
+  private var probeHlsSegments = false
+  private var lastAudioReport: String? = null
+
+  /**
+   * The structured reason for the last fatal Media3 error on this source, for whoever decides what
+   * happens next. Null until there has been one.
+   */
+  var lastFailureReason: String? = null
+    private set
   private val subtitleSelections = mutableMapOf<Int, Pair<Tracks.Group, Int>>()
 
   /** See [setCaptionProbe]. */
@@ -203,6 +279,11 @@ class ExoPlaybackView @JvmOverloads constructor(
     if (next.isBlank() || next == source) return
     val hadActivePlayer = exoPlayer != null
     source = next
+    // A new source starts with every recovery available and nothing held against it.
+    audioRecoveriesTried.clear()
+    probeHlsSegments = false
+    lastFailureReason = null
+    lastAudioReport = null
     if (!isAttachedToWindow) return
     if (hadActivePlayer) prepareSourceInBackground(next) else prepareSource(next)
   }
@@ -264,8 +345,8 @@ class ExoPlaybackView @JvmOverloads constructor(
     applyLanguagePreferences()
   }
 
-  private fun applyLanguagePreferences() {
-    val active = exoPlayer ?: return
+  private fun applyLanguagePreferences(target: ExoPlayer? = exoPlayer) {
+    val active = target ?: return
     val audioTags = orderedLanguageTags(preferredAudioLanguage, secondaryAudioLanguage)
     val subtitleTags = (Languages.tags(preferredSubtitleLanguage) + Languages.tags(secondarySubtitleLanguage)).distinct()
     // Forced only applies when the spoken language is one the viewer reads: matched against the
@@ -628,13 +709,14 @@ class ExoPlaybackView @JvmOverloads constructor(
       }
     }
     val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
-    if (drmLicenseType.equals("clearkey", ignoreCase = true) && drmClearKeys.isNotEmpty()) {
+    val drmManager = if (drmLicenseType.equals("clearkey", ignoreCase = true) && drmClearKeys.isNotEmpty()) {
       runCatching { clearKeyDrmSessionManager(drmClearKeys) }
-        .onSuccess { manager ->
-          mediaSourceFactory.setDrmSessionManagerProvider { manager }
-          Log.i(TAG, "ClearKey DRM set up with ${drmClearKeys.size} key(s) for ${url.substringBefore('?')}")
-        }
         .onFailure { Log.w(TAG, "Unable to set up ClearKey DRM for $url, playback will likely fail to decrypt", it) }
+        .getOrNull()
+    } else null
+    if (drmManager != null) {
+      mediaSourceFactory.setDrmSessionManagerProvider { drmManager }
+      Log.i(TAG, "ClearKey DRM set up with ${drmClearKeys.size} key(s) for ${url.substringBefore('?')}")
     }
     // How far ahead to load is the viewer's choice (Settings > Video Decoding > Buffer Ahead). The
     // start-up thresholds are Media3's own, so playback begins exactly as quickly as before; only
@@ -659,18 +741,36 @@ class ExoPlaybackView @JvmOverloads constructor(
       .setMediaSourceFactory(mediaSourceFactory)
       .setBandwidthMeter(bandwidthMeter)
       .build()
+    val rendererLog = RendererLog()
+    rendererLogs[active] = rendererLog
+    active.addAnalyticsListener(rendererLog)
+    reportSoftwareDecoders()
     // Media3 picks the media source implementation for this URL's content type reflectively,
     // inside setMediaItem, on the calling thread - so a type whose module isn't on the classpath
     // throws right here rather than arriving as a PlaybackException. Releasing the half-built
     // player lets that failure travel out to the normal error/failover path instead of leaking a
     // decoder on its way to crashing the app.
     try {
-      applyLanguagePreferences()
+      // On the player being built. This used to go to the one already showing - or, for the first
+      // source, to none - so a new player started without the viewer's languages and relied on
+      // the track list coming back to have them applied after the fact.
+      applyLanguagePreferences(active)
       val item = MediaItem.Builder()
         .setUri(url)
         .apply { inferMimeType(url)?.let(::setMimeType) }
         .build()
-      active.setMediaItem(item, startPositionMs.coerceAtLeast(0L))
+      if (probeHlsSegments && isHlsSource(url)) {
+        // Media3 normally takes an HLS stream's tracks from the manifest's CODECS line without
+        // reading a segment. A manifest that names only the video codec there, while its segments
+        // carry sound, then plays silent: the audio is never offered at all. Reading the segments
+        // first costs a moment at start-up, so it is done only for a source that showed no audio.
+        val hls = HlsMediaSource.Factory(dataSourceFactory).setAllowChunklessPreparation(false)
+        if (drmManager != null) hls.setDrmSessionManagerProvider { drmManager }
+        Log.i(TAG, "Opening HLS by reading its segments, to find audio the manifest did not declare")
+        active.setMediaSource(hls.createMediaSource(item), startPositionMs.coerceAtLeast(0L))
+      } else {
+        active.setMediaItem(item, startPositionMs.coerceAtLeast(0L))
+      }
       active.setPlaybackSpeed(pendingSpeed.toFloat())
       active.volume = pendingVolume
       active.playWhenReady = !pendingPaused
@@ -792,9 +892,29 @@ class ExoPlaybackView @JvmOverloads constructor(
     }
 
     override fun onPlayerError(error: PlaybackException) {
-      Log.e(TAG, "Media3 playback failed", error)
+      val active = exoPlayer
+      val rendererError = (error as? ExoPlaybackException)?.takeIf { it.type == ExoPlaybackException.TYPE_RENDERER }
+      val fromAudio = rendererError != null && active != null &&
+        rendererError.rendererIndex in 0 until active.rendererCount &&
+        active.getRendererType(rendererError.rendererIndex) == C.TRACK_TYPE_AUDIO
+      val reason = exoErrorReason(error.errorCode, fromAudio)
+      val summary = reason.code + " code=" + error.errorCodeName +
+        (rendererError?.let { " renderer=" + it.rendererName + " format=" + (it.rendererFormat?.sampleMimeType ?: "unknown") } ?: "") +
+        " cause=\"" + describeFailure(error.cause ?: error) + "\""
+      lastFailureReason = summary
+      Log.e(TAG, summary, error)
       if (error.errorCode in PlaybackException.ERROR_CODE_DECODER_INIT_FAILED..PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED &&
         requestDv7Fallback(decoderFailed = true)) return
+      // An audio fault is given one chance to be put right inside Media3 - another track, or the
+      // renderers started again - before it is reported and the source goes to another engine.
+      if (reason != ExoFallbackReason.PlaybackFatalError && !awaitingFirstFrameAfterPromotion && active != null) {
+        rendererLogs[active]?.let { log ->
+          val failure = describeFailure(error.cause ?: error)
+          if (reason == ExoFallbackReason.AudioOutputFailed) log.audioOutputError = failure else log.audioDecoderError = failure
+        }
+        val finding = diagnoseAudio()
+        if (finding != null && recoverAudio(finding)) return
+      }
       if (awaitingFirstFrameAfterPromotion) restoreRetiringPlayer()
       onErrorCallback?.invoke(error.localizedMessage ?: "This source could not be played.")
     }
@@ -888,9 +1008,153 @@ class ExoPlaybackView @JvmOverloads constructor(
       }
     }
     onTracksChangedCallback?.invoke(audio, subtitles, audio.firstOrNull { it.selected }?.id, subtitles.firstOrNull { it.selected }?.id)
+    reportAudioTracks()
     reportDolbyVisionProfile7(tracks)
     // A live stream's tracks can arrive after playback starts; the probe is reconsidered each time.
     exoPlayer?.let(::probeUnconfirmedCaptions)
+  }
+
+  /**
+   * Everything Media3 knows about this source's audio right now: every track in it, including the
+   * ones this device cannot play (which the track menu leaves out), what was chosen, which decoder
+   * is running and whether anything has reached the speaker. Null when no player is up.
+   */
+  internal fun audioSnapshot(): ExoAudioSnapshot? {
+    val active = exoPlayer ?: return null
+    val log = rendererLogs[active]
+    val tracks = lastTracks ?: active.currentTracks
+    val audio = buildList {
+      tracks.groups.forEach { group ->
+        if (group.type != C.TRACK_TYPE_AUDIO) return@forEach
+        for (index in 0 until group.length) {
+          val format = group.getTrackFormat(index)
+          add(
+            ExoAudioTrackInfo(
+              mimeType = format.sampleMimeType,
+              codecs = format.codecs,
+              channelCount = format.channelCount.takeIf { it != Format.NO_VALUE },
+              sampleRateHz = format.sampleRate.takeIf { it != Format.NO_VALUE },
+              bitrateBps = format.bitrate.takeIf { it != Format.NO_VALUE },
+              language = format.language,
+              label = format.label,
+              support = when (group.getTrackSupport(index)) {
+                C.FORMAT_HANDLED -> ExoTrackSupport.Handled
+                C.FORMAT_EXCEEDS_CAPABILITIES -> ExoTrackSupport.ExceedsCapabilities
+                C.FORMAT_UNSUPPORTED_DRM -> ExoTrackSupport.UnsupportedDrm
+                C.FORMAT_UNSUPPORTED_SUBTYPE -> ExoTrackSupport.UnsupportedSubtype
+                else -> ExoTrackSupport.UnsupportedType
+              },
+              selected = group.isTrackSelected(index),
+            ),
+          )
+        }
+      }
+    }
+    val videoFormat = active.videoFormat
+    return ExoAudioSnapshot(
+      container = containerOf(activeSource, videoFormat ?: active.audioFormat),
+      videoMimeType = videoFormat?.sampleMimeType,
+      videoCodecs = videoFormat?.codecs,
+      videoDecoder = log?.videoDecoder,
+      tracks = audio,
+      audioDisabled = C.TRACK_TYPE_AUDIO in active.trackSelectionParameters.disabledTrackTypes,
+      softwareDecodersLoaded = softwareDecodersLoaded,
+      softwareDecoderVersion = softwareDecoderVersion,
+      audioDecoder = log?.audioDecoder,
+      audioDecoderError = log?.audioDecoderError,
+      audioOutputError = log?.audioOutputError,
+      audioBuffersRendered = active.audioDecoderCounters?.also { it.ensureUpdated() }?.renderedOutputBufferCount,
+      videoFramesRendered = active.videoDecoderCounters?.also { it.ensureUpdated() }?.renderedOutputBufferCount,
+      tunneling = !audioDelaySupported(),
+    )
+  }
+
+  /**
+   * Looks at the audio and says what, if anything, is wrong with it - in the log as one structured
+   * line, and to the caller. Null means Media3's audio is in order.
+   */
+  internal fun diagnoseAudio(): ExoAudioFinding? {
+    val snapshot = audioSnapshot() ?: return null
+    val finding = diagnoseExoAudio(snapshot)
+    val line = exoAudioLogLine(finding, snapshot)
+    if (finding == null) Log.i(TAG, line) else Log.w(TAG, line)
+    return finding
+  }
+
+  /**
+   * Tries to put [finding] right without leaving Media3. True when something was tried, in which
+   * case the audio is worth looking at again in a few seconds; false when nothing here can help
+   * and the source should go to another engine. Each kind of recovery is spent once per source.
+   */
+  internal fun recoverAudio(finding: ExoAudioFinding): Boolean {
+    val active = exoPlayer ?: return false
+    val snapshot = audioSnapshot() ?: return false
+    val recovery = exoAudioRecoveryFor(finding, snapshot, audioRecoveriesTried) ?: return false
+    audioRecoveriesTried += recovery
+    Log.w(TAG, finding.reason.code + " recovering inside Media3: " + recovery)
+    rendererLogs[active]?.let { log ->
+      log.audioDecoderError = null
+      log.audioOutputError = null
+    }
+    when (recovery) {
+      ExoAudioRecovery.ReselectAudio, ExoAudioRecovery.SwitchAudioTrack -> {
+        // The first track this device can decode that is not the one already chosen.
+        val choice = (lastTracks ?: active.currentTracks).groups.asSequence()
+          .filter { it.type == C.TRACK_TYPE_AUDIO }
+          .flatMap { group -> (0 until group.length).asSequence().map { group to it } }
+          .firstOrNull { (group, index) -> group.getTrackSupport(index) == C.FORMAT_HANDLED && !group.isTrackSelected(index) }
+        active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
+          .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+          .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+          .apply { choice?.let { (group, index) -> setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, index)) } }
+          .build()
+        if (active.playbackState == Player.STATE_IDLE) active.prepare()
+      }
+      ExoAudioRecovery.ProbeHlsSegments -> {
+        val current = source ?: return false
+        probeHlsSegments = true
+        prepareSource(current, active.currentPosition)
+      }
+      ExoAudioRecovery.RetryRenderers -> {
+        if (active.playbackState == Player.STATE_IDLE) {
+          // After a fatal error: preparing again rebuilds the decoder and the output where it stopped.
+          active.prepare()
+        } else {
+          // Still playing, silently: taking the audio renderer out and putting it back gives it a
+          // new decoder and a new output without touching the picture.
+          active.trackSelectionParameters = active.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true).build()
+          post {
+            if (exoPlayer === active) {
+              active.trackSelectionParameters = active.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false).build()
+            }
+          }
+        }
+      }
+    }
+    return true
+  }
+
+  /** The audio tracks, once each time they change, so a log shows what a source offered. */
+  private fun reportAudioTracks() {
+    val snapshot = audioSnapshot() ?: return
+    val report = snapshot.tracks.joinToString(", ") { it.describe() }
+    if (report == lastAudioReport) return
+    lastAudioReport = report
+    Log.i(TAG, "Audio tracks (" + (snapshot.container ?: "unknown") + "): [" + report + "] softwareDecoders=" + (if (snapshot.softwareDecodersLoaded) "loaded" else "NOT-LOADED"))
+  }
+
+  private fun isHlsSource(url: String): Boolean =
+    inferMimeType(url) == MimeTypes.APPLICATION_M3U8 || Util.inferContentType(Uri.parse(url)) == C.CONTENT_TYPE_HLS
+
+  private fun containerOf(url: String?, format: Format?): String? {
+    val containerMime = format?.containerMimeType
+    return when {
+      url != null && isHlsSource(url) || containerMime == MimeTypes.APPLICATION_M3U8 -> "hls"
+      url != null && Util.inferContentType(Uri.parse(url)) == C.CONTENT_TYPE_DASH || containerMime == MimeTypes.APPLICATION_MPD -> "dash"
+      url != null && Util.inferContentType(Uri.parse(url)) == C.CONTENT_TYPE_SS -> "smoothstreaming"
+      containerMime != null -> containerMime.substringAfter('/')
+      else -> url?.substringBefore('?')?.substringAfterLast('.', "")?.lowercase()?.takeIf { it.length in 2..5 }
+    }
   }
 
   private fun applyTrackSelection(selection: Pair<Tracks.Group, Int>?) {

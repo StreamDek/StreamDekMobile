@@ -139,6 +139,94 @@ class MediaServerManager internal constructor(
         displayPrefs?.edit()?.putBoolean(KEY_JELLYFIN_AMBIENT, enabled)?.apply()
     }
 
+    // ── The server list in Settings, on this device ──────────────────────────────────────────────
+
+    private val _removedEntries = MutableStateFlow<Set<String>>(emptySet())
+    /** What has been taken off this device's server list; see MediaServerListTidy.kt. */
+    val removedEntries: StateFlow<Set<String>> = _removedEntries.asStateFlow()
+
+    private val _collapsedServers = MutableStateFlow<Set<String>>(emptySet())
+    /** The servers whose libraries are folded away in Settings. */
+    val collapsedServers: StateFlow<Set<String>> = _collapsedServers.asStateFlow()
+
+    private fun loadListTidy(key: String?) {
+        _removedEntries.value = key?.let { displayPrefs?.getStringSet("$KEY_REMOVED_ENTRIES:$it", null) }.orEmpty().toSet()
+        _collapsedServers.value = key?.let { displayPrefs?.getStringSet("$KEY_COLLAPSED_SERVERS:$it", null) }.orEmpty().toSet()
+    }
+
+    private fun saveListTidy() {
+        val key = scopeKey() ?: return
+        displayPrefs?.edit()
+            ?.putStringSet("$KEY_REMOVED_ENTRIES:$key", _removedEntries.value)
+            ?.putStringSet("$KEY_COLLAPSED_SERVERS:$key", _collapsedServers.value)
+            ?.apply()
+    }
+
+    fun setServerCollapsed(provider: String, serverId: String, collapsed: Boolean) {
+        val entry = mediaServerEntryKey(provider, serverId)
+        _collapsedServers.value = if (collapsed) _collapsedServers.value + entry else _collapsedServers.value - entry
+        saveListTidy()
+    }
+
+    /**
+     * Takes one library off the list: it is switched off for the profile, and this device stops
+     * listing it. Every other library and server is left exactly as it was.
+     */
+    suspend fun removeLibrary(provider: String, serverId: String, libraryKey: String): Boolean {
+        val off = if (provider == JELLYFIN_PROVIDER_ID) setJellyfinLibraryEnabled(serverId, libraryKey, false) else setLibraryEnabled(serverId, libraryKey, false)
+        if (!off) return false
+        _removedEntries.value = _removedEntries.value + mediaServerEntryKey(provider, serverId, libraryKey)
+        saveListTidy()
+        return true
+    }
+
+    /** Brings a removed library back, switched on. */
+    suspend fun restoreLibrary(provider: String, serverId: String, libraryKey: String): Boolean {
+        val on = if (provider == JELLYFIN_PROVIDER_ID) setJellyfinLibraryEnabled(serverId, libraryKey, true) else setLibraryEnabled(serverId, libraryKey, true)
+        if (!on) return false
+        _removedEntries.value = _removedEntries.value - mediaServerEntryKey(provider, serverId, libraryKey)
+        saveListTidy()
+        return true
+    }
+
+    /**
+     * Takes one server off the list and leaves the others connected.
+     *
+     * A Jellyfin server has its own sign-in, so this signs out of that server alone. A Plex server
+     * comes with the Plex account and cannot be unlinked by itself, so it is switched off for the
+     * profile and no longer listed here, and can be brought back from "Removed".
+     */
+    suspend fun removeServer(provider: String, serverId: String): Boolean {
+        val entry = mediaServerEntryKey(provider, serverId)
+        if (provider == JELLYFIN_PROVIDER_ID) {
+            if (!disconnectJellyfin(serverId)) return false
+            // Nothing of a signed-out server is kept: not what was removed from it, nor how it was folded.
+            _removedEntries.value = _removedEntries.value.filterNot { it == entry || it.startsWith("$entry/") }.toSet()
+            _collapsedServers.value = _collapsedServers.value - entry
+            saveListTidy()
+            return true
+        }
+        if (!setServerEnabled(serverId, false)) return false
+        // What had been removed from this server goes with it. The server now stands for all of
+        // it under "Removed", so its libraries are not kept there as entries of their own - and
+        // bringing the server back brings back the whole server, not one with pieces still missing.
+        _removedEntries.value = _removedEntries.value.filterNot { it.startsWith("$entry/") }.toSet() + entry
+        saveListTidy()
+        return true
+    }
+
+    /**
+     * Brings a removed Plex server back, switched on, with all of its libraries listed again. One
+     * that had been removed before the server was comes back switched off, as removing left it.
+     */
+    suspend fun restoreServer(provider: String, serverId: String): Boolean {
+        if (provider == JELLYFIN_PROVIDER_ID) return false
+        if (!setServerEnabled(serverId, true)) return false
+        _removedEntries.value = _removedEntries.value - mediaServerEntryKey(provider, serverId)
+        saveListTidy()
+        return true
+    }
+
     private val providers: Map<String, MediaServerProvider> = mapOf(PLEX_PROVIDER_ID to plex, JELLYFIN_PROVIDER_ID to jellyfin)
 
     fun provider(id: String): MediaServerProvider? = providers[id]
@@ -170,6 +258,7 @@ class MediaServerManager internal constructor(
         val key = scopeKey()
         if (key == activeScope && _state.value.available == (key != null)) return
         activeScope = key
+        loadListTidy(key)
         refreshJob?.cancel()
         plex.reset()
         jellyfin.reset()
@@ -1391,4 +1480,6 @@ internal data class MediaServerLinkPollDto(
 
 private const val DISPLAY_PREFS = "streamdek_media_servers"
 private const val KEY_JELLYFIN_AMBIENT = "jellyfinAmbient"
+private const val KEY_REMOVED_ENTRIES = "removedEntries"
+private const val KEY_COLLAPSED_SERVERS = "collapsedServers"
 private const val KEY_LAST_PAGE_PROVIDER = "lastPageProvider"

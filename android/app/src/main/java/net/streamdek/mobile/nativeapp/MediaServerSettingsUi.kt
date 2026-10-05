@@ -2,6 +2,7 @@ package net.streamdek.mobile.nativeapp
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -20,6 +21,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
@@ -36,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -60,6 +63,12 @@ import net.streamdek.mobile.nativeapp.mediaserver.MediaServerRoute
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerUiState
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerView
 import net.streamdek.mobile.nativeapp.mediaserver.OfflineReason
+import net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID
+import net.streamdek.mobile.nativeapp.mediaserver.PLEX_PROVIDER_ID
+import net.streamdek.mobile.nativeapp.mediaserver.RemovedMediaServerEntry
+import net.streamdek.mobile.nativeapp.mediaserver.listedMediaServers
+import net.streamdek.mobile.nativeapp.mediaserver.mediaServerEntryKey
+import net.streamdek.mobile.nativeapp.mediaserver.removedMediaServerEntries
 
 /**
  * The Plex chevron, redrawn as a single-colour glyph for the bottom navigation, so it takes the same
@@ -119,7 +128,7 @@ internal fun PlexSettingsNavRow(state: MediaServerUiState, onClick: () -> Unit) 
       Text(stringResource(R.string.media_server_plex), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
       SettingsSubtitle(mediaServerSummary(state))
     }
-    Icon(androidx.compose.material.icons.Icons.AutoMirrored.Rounded.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f))
+    Icon(StreamDekSettingsIcons.Forward, null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f))
   }
 }
 
@@ -237,21 +246,16 @@ internal fun MediaServerSettingsPage(
     }
 
     if (signedIn && state.linked && code == null) {
-      SettingsSection(stringResource(R.string.plex_servers)) {
-        if (state.servers.isEmpty()) {
-          PlexNote(stringResource(if (state.refreshing) R.string.plex_status_connecting else R.string.plex_no_servers))
-        }
-        state.servers.forEachIndexed { index, server ->
-          if (index > 0) SettingsDivider()
-          PlexServerSwitch(server) { act({ manager.setServerEnabled(server.id, !server.enabled) }) }
-          if (server.enabled) {
-            if (server.libraries.isEmpty()) PlexNote(stringResource(R.string.plex_no_libraries), indent = true)
-            server.libraries.forEach { library ->
-              PlexLibrarySwitch(library) { act({ manager.setLibraryEnabled(server.id, library.key, !library.enabled) }) }
-            }
-          }
-        }
-      }
+      MediaServerGroups(
+        provider = PLEX_PROVIDER_ID,
+        manager = manager,
+        state = state,
+        accent = PlexGold,
+        emptyNote = stringResource(if (state.refreshing) R.string.plex_status_connecting else R.string.plex_no_servers),
+        onToggleServer = { server -> act({ manager.setServerEnabled(server.id, !server.enabled) }) },
+        onToggleLibrary = { server, library -> act({ manager.setLibraryEnabled(server.id, library.key, !library.enabled) }) },
+        onMessage = onMessage,
+      )
 
       SettingsSection(stringResource(R.string.plex_playback)) {
         Row(
@@ -404,13 +408,183 @@ internal fun reachabilityLabel(server: MediaServerView): Pair<String, Color> = w
   }
 }
 
+/**
+ * The servers and their libraries, as groups that fold, with a way to take a single library or a
+ * single server off the list. Shared by the Plex and Jellyfin pages so the two behave alike.
+ *
+ * Removing is not disconnecting: every other server and library stays exactly as it was. What was
+ * removed is kept in a "Removed" section so it can be brought back; see MediaServerListTidy.kt.
+ */
 @Composable
-internal fun PlexSwitchRow(title: String, detail: String, detailColor: Color, checked: Boolean, indent: Boolean, accent: Color = PlexGold, onToggle: () -> Unit) {
+internal fun MediaServerGroups(
+  provider: String,
+  manager: MediaServerManager,
+  state: MediaServerUiState,
+  accent: Color,
+  emptyNote: String?,
+  onToggleServer: (MediaServerView) -> Unit,
+  onToggleLibrary: (MediaServerView, MediaServerLibrary) -> Unit,
+  onMessage: (String) -> Unit,
+) {
+  val removed by manager.removedEntries.collectAsState()
+  val collapsed by manager.collapsedServers.collectAsState()
+  val scope = rememberCoroutineScope()
+  val resources = LocalContext.current.resources
+  var working by remember { mutableStateOf(false) }
+  var removingServer by remember { mutableStateOf<MediaServerView?>(null) }
+  var removingLibrary by remember { mutableStateOf<MediaServerLibrary?>(null) }
+  val listed = remember(provider, state.servers, removed) { listedMediaServers(provider, state.servers, removed) }
+  val gone = remember(provider, state.servers, removed) { removedMediaServerEntries(provider, state.servers, removed) }
+
+  fun perform(name: String, doneRes: Int, work: suspend () -> Boolean) {
+    if (working) return
+    working = true
+    scope.launch {
+      val ok = work()
+      working = false
+      onMessage(if (ok) resources.getString(doneRes, name) else resources.getString(R.string.plex_saving_failed))
+    }
+  }
+
+  SettingsSection(stringResource(R.string.plex_servers)) {
+    if (listed.isEmpty()) emptyNote?.let { PlexNote(it) }
+    listed.forEachIndexed { index, server ->
+      if (index > 0) SettingsDivider()
+      val folded = mediaServerEntryKey(provider, server.id) in collapsed
+      MediaServerGroupHeader(
+        server = server,
+        folded = folded,
+        accent = accent,
+        onFold = { manager.setServerCollapsed(provider, server.id, !folded) },
+        onToggle = { onToggleServer(server) },
+      )
+      AnimatedVisibility(visible = !folded) {
+        Column {
+          if (server.enabled) {
+            if (server.libraries.isEmpty()) PlexNote(stringResource(R.string.plex_no_libraries), indent = true)
+            server.libraries.forEach { library ->
+              PlexLibrarySwitch(library, accent = accent, onRemove = { removingLibrary = library }) { onToggleLibrary(server, library) }
+            }
+          }
+          TextButton(onClick = { removingServer = server }, modifier = Modifier.padding(start = 8.dp)) {
+            Text(stringResource(R.string.media_server_remove_server), color = Color(0xFFEF4444), fontWeight = FontWeight.SemiBold)
+          }
+        }
+      }
+    }
+  }
+
+  if (gone.isNotEmpty()) {
+    SettingsSection(stringResource(R.string.media_server_removed)) {
+      PlexNote(stringResource(R.string.media_server_removed_note))
+      gone.forEach { entry -> RemovedMediaServerRow(entry, accent) {
+        val library = entry.library
+        if (library == null) perform(entry.serverName, R.string.media_server_restored_done) { manager.restoreServer(provider, entry.serverId) }
+        else perform(library.title, R.string.media_server_restored_done) { manager.restoreLibrary(provider, entry.serverId, library.key) }
+      } }
+    }
+  }
+
+  removingLibrary?.let { library ->
+    AlertDialog(
+      onDismissRequest = { removingLibrary = null },
+      title = { Text(stringResource(R.string.media_server_remove_title, library.title)) },
+      text = { Text(stringResource(R.string.media_server_remove_library_body)) },
+      confirmButton = {
+        Button(onClick = {
+          removingLibrary = null
+          perform(library.title, R.string.media_server_removed_done) { manager.removeLibrary(provider, library.serverId, library.key) }
+        }) { Text(stringResource(R.string.media_server_remove)) }
+      },
+      dismissButton = { TextButton(onClick = { removingLibrary = null }) { Text(stringResource(R.string.action_cancel)) } },
+    )
+  }
+  removingServer?.let { server ->
+    AlertDialog(
+      onDismissRequest = { removingServer = null },
+      title = { Text(stringResource(R.string.media_server_remove_title, server.name)) },
+      text = { Text(stringResource(if (provider == JELLYFIN_PROVIDER_ID) R.string.jellyfin_remove_server_body else R.string.media_server_remove_server_body)) },
+      confirmButton = {
+        Button(onClick = {
+          removingServer = null
+          perform(server.name, R.string.media_server_removed_done) { manager.removeServer(provider, server.id) }
+        }) { Text(stringResource(R.string.media_server_remove)) }
+      },
+      dismissButton = { TextButton(onClick = { removingServer = null }) { Text(stringResource(R.string.action_cancel)) } },
+    )
+  }
+}
+
+/** A server's own row: tap it to fold or unfold its libraries; the switch turns the server on or off. */
+@Composable
+private fun MediaServerGroupHeader(server: MediaServerView, folded: Boolean, accent: Color, onFold: () -> Unit, onToggle: () -> Unit) {
+  val (status, color) = reachabilityLabel(server)
+  val owner = server.ownerName?.takeIf { !server.owned }?.let { stringResource(R.string.plex_server_shared_by, it) }
+  // Folded, the row says what is inside it, so nothing has to be opened to find out.
+  val count = if (folded && server.enabled && server.libraries.isNotEmpty()) {
+    stringResource(R.string.media_server_libraries_on_of, server.libraries.count { it.enabled }, server.libraries.size)
+  } else null
+  Row(
+    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(
+      onClickLabel = stringResource(if (folded) R.string.media_server_show_libraries else R.string.media_server_hide_libraries),
+      onClick = onFold,
+    ).padding(vertical = 8.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(10.dp),
+  ) {
+    Icon(
+      StreamDekPlayerIcons.ChevronRight,
+      contentDescription = null,
+      tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+      modifier = Modifier.size(20.dp).rotate(if (folded) 0f else 90f),
+    )
+    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+      Text(server.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+      Text(listOfNotNull(status, owner, count).joinToString(" · "), color = color, style = MaterialTheme.typography.bodySmall)
+    }
+    Switch(
+      checked = server.enabled,
+      onCheckedChange = { onToggle() },
+      colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = accent, checkedThumbColor = Color.White),
+    )
+  }
+}
+
+@Composable
+private fun RemovedMediaServerRow(entry: RemovedMediaServerEntry, accent: Color, onRestore: () -> Unit) {
+  Row(
+    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(12.dp),
+  ) {
+    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+      Text(entry.library?.title ?: entry.serverName, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
+      Text(
+        if (entry.library == null) stringResource(R.string.media_server_whole_server) else entry.serverName,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+        style = MaterialTheme.typography.bodySmall,
+      )
+    }
+    TextButton(onClick = onRestore) { Text(stringResource(R.string.media_server_restore), color = accent, fontWeight = FontWeight.Bold) }
+  }
+}
+
+@Composable
+internal fun PlexSwitchRow(
+  title: String,
+  detail: String,
+  detailColor: Color,
+  checked: Boolean,
+  indent: Boolean,
+  accent: Color = PlexGold,
+  onRemove: (() -> Unit)? = null,
+  onToggle: () -> Unit,
+) {
   Row(
     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(onClick = onToggle)
       .padding(start = if (indent) 20.dp else 0.dp, top = 8.dp, bottom = 8.dp),
     verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(14.dp),
+    horizontalArrangement = Arrangement.spacedBy(if (onRemove == null) 14.dp else 4.dp),
   ) {
     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
       Text(
@@ -420,6 +594,16 @@ internal fun PlexSwitchRow(title: String, detail: String, detailColor: Color, ch
         color = MaterialTheme.colorScheme.onSurface,
       )
       Text(detail, color = detailColor, style = MaterialTheme.typography.bodySmall)
+    }
+    if (onRemove != null) {
+      IconButton(onClick = onRemove) {
+        Icon(
+          StreamDekPlayerIcons.Close,
+          contentDescription = stringResource(R.string.media_server_remove_named, title),
+          tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+          modifier = Modifier.size(18.dp),
+        )
+      }
     }
     // Never disabled while saving: a second tap is ignored instead, so the switch does not flicker.
     Switch(
@@ -438,7 +622,7 @@ internal fun PlexServerSwitch(server: MediaServerView, accent: Color = PlexGold,
 }
 
 @Composable
-internal fun PlexLibrarySwitch(library: MediaServerLibrary, accent: Color = PlexGold, onToggle: () -> Unit) {
+internal fun PlexLibrarySwitch(library: MediaServerLibrary, accent: Color = PlexGold, onRemove: (() -> Unit)? = null, onToggle: () -> Unit) {
   PlexSwitchRow(
     title = library.title,
     detail = stringResource(
@@ -452,6 +636,7 @@ internal fun PlexLibrarySwitch(library: MediaServerLibrary, accent: Color = Plex
     checked = library.enabled,
     indent = true,
     accent = accent,
+    onRemove = onRemove,
     onToggle = onToggle,
   )
 }

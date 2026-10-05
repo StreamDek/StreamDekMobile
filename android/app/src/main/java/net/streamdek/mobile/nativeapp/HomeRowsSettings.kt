@@ -424,11 +424,11 @@ private fun MixedHomeRowsSection(
         singleLine = true,
         shape = StreamDekRadius.controlShape,
         placeholder = { Text(stringResource(R.string.home_rows_filter_placeholder)) },
-        leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+        leadingIcon = { Icon(StreamDekNavIcons.SearchOutline, contentDescription = null) },
         trailingIcon = {
           if (query.isNotEmpty()) {
             IconButton(onClick = { query = "" }) {
-              Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.action_clear))
+              Icon(StreamDekPlayerIcons.Close, contentDescription = stringResource(R.string.action_clear))
             }
           }
         },
@@ -623,7 +623,7 @@ private fun HomeRowGroupHeader(
         contentAlignment = Alignment.Center,
       ) {
         Icon(
-          Icons.Rounded.DragHandle,
+          StreamDekSettingsIcons.DragHandle,
           contentDescription = stringResource(R.string.a11y_drag_source_to_reorder),
           tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (dragging) 0.92f else 0.54f),
           modifier = Modifier.size(20.dp),
@@ -631,7 +631,7 @@ private fun HomeRowGroupHeader(
       }
     }
     Icon(
-      if (expanded) Icons.Rounded.KeyboardArrowDown else Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+      if (expanded) StreamDekSettingsIcons.ChevronDown else StreamDekSettingsIcons.Forward,
       contentDescription = stringResource(if (expanded) R.string.a11y_collapse_named else R.string.a11y_expand_named, title),
       tint = MaterialTheme.colorScheme.onBackground.copy(alpha = contentAlpha * 0.7f),
     )
@@ -715,7 +715,7 @@ private fun HomeCatalogRowItem(
         .background(MaterialTheme.colorScheme.onSurface.copy(alpha = if (dragging) 0.14f else 0.06f)),
       contentAlignment = Alignment.Center,
     ) {
-      Icon(Icons.Rounded.DragHandle, contentDescription = stringResource(R.string.a11y_drag_to_reorder), tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (dragging) 0.92f else 0.54f))
+      Icon(StreamDekSettingsIcons.DragHandle, contentDescription = stringResource(R.string.a11y_drag_to_reorder), tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (dragging) 0.92f else 0.54f))
     }
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
       Text(

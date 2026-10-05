@@ -340,7 +340,7 @@
   <string name="player_subtitle_styling_note">El color, el contorno y el fondo están en Ajustes &gt; Subtítulos.</string>
   <string name="player_reload">Recargar</string>
   <string name="player_no_loaded_sources">Todavía no hay fuentes cargadas.</string>
-  <string name="player_engine_switch_note">Al cambiar se mantiene tu posición de reproducción. Si una emisión suena mal o sale en negro, prueba el otro motor.</string>
+  <string name="player_engine_switch_note">Al cambiar se mantiene tu posición de reproducción. Si una emisión no tiene sonido o sale en negro, prueba otro motor.</string>
   <string name="player_info_source">Fuente</string>
   <string name="player_info_playback">Reproducción</string>
   <string name="player_info_installed_as">Instalado como</string>
@@ -871,7 +871,7 @@
   <string name="settings_m_auto_skip_ending">Saltar el final automáticamente</string>
   <string name="settings_m_auto_skip_intro">Saltar la intro automáticamente</string>
   <string name="settings_m_auto_skip_recap">Saltar el resumen automáticamente</string>
-  <string name="settings_m_automatic_starts_with_media3_and_switches_to">Automático empieza con Media3 y cambia a mpv si una fuente no se puede reproducir.</string>
+  <string name="settings_m_automatic_starts_with_media3_and_switches_to">Automático empieza con Media3 y cambia a mpv si una fuente no se puede reproducir. libVLC solo se usa si lo eliges.</string>
   <string name="settings_m_automatic_subtitles_and_the_sources_they_come">Los subtítulos automáticos y las fuentes de las que proceden.</string>
   <string name="settings_m_automatically_choose_matching_subtitles_when_playback_starts">Elegir automáticamente los subtítulos que coincidan al iniciar la reproducción.</string>
   <string name="settings_m_automatically_use_the_other_provider_when_needed">Usar automáticamente el otro servicio cuando haga falta</string>
@@ -1929,4 +1929,29 @@
   <string name="settings_m_buffer_ahead_description">Cuánto vídeo se carga por delante de lo que estás viendo. Más aguanta mejor una conexión débil y llega más lejos en la barra de progreso, pero usa más memoria y datos. Los vídeos de alta tasa de bits retienen menos. Se aplica al siguiente vídeo que reproduzcas.</string>
   <string name="settings_m_buffer_ahead_one_minute">1 minuto</string>
   <string name="settings_m_buffer_ahead_minutes">%1$d minutos</string>
+  <string name="player_episodes_empty">Aún no hay episodios para esta temporada.</string>
+  <string name="player_speed">Velocidad</string>
+  <string name="player_engine_notice_fallback">libVLC no pudo reproducir esta fuente. Probando otro motor.</string>
+  <string name="player_engine_notice_headers">Esta fuente necesita cabeceras que libVLC no puede enviar. Reproduciendo con ExoPlayer.</string>
+  <string name="player_engine_notice_protected">libVLC no puede reproducir canales protegidos. Reproduciendo con ExoPlayer.</string>
+  <string name="player_engine_notice_dolby_vision">Dolby Vision se reproduce con más precisión en ExoPlayer. Cambiando de motor.</string>
+  <string name="player_info_bitrate_now">Tasa de bits actual</string>
+  <string name="player_info_frames">Fotogramas</string>
+  <string name="player_info_frames_value">%1$s decodificados · %2$s descartados</string>
+  <string name="media_server_remove">Quitar</string>
+  <string name="media_server_remove_named">Quitar %1$s</string>
+  <string name="media_server_remove_title">¿Quitar %1$s?</string>
+  <string name="media_server_remove_library_body">Esta biblioteca se desactiva y se quita de esta lista. Tus otras bibliotecas y servidores siguen conectados. Puedes recuperarla en Quitados.</string>
+  <string name="media_server_remove_server_body">Este servidor y sus bibliotecas se desactivan y se quitan de esta lista. Tus otros servidores siguen conectados. Puedes recuperarlo en Quitados.</string>
+  <string name="jellyfin_remove_server_body">StreamDek cierra sesión solo en este servidor. Tus otros servidores Jellyfin siguen conectados. Para usarlo de nuevo, añádelo e inicia sesión.</string>
+  <string name="media_server_remove_server">Quitar este servidor</string>
+  <string name="media_server_removed">Quitados</string>
+  <string name="media_server_removed_note">Desactivados y ocultos de la lista de arriba en este dispositivo.</string>
+  <string name="media_server_restore">Restaurar</string>
+  <string name="media_server_removed_done">%1$s quitado.</string>
+  <string name="media_server_restored_done">%1$s restaurado.</string>
+  <string name="media_server_libraries_on_of">%1$d de %2$d bibliotecas activas</string>
+  <string name="media_server_show_libraries">Mostrar bibliotecas</string>
+  <string name="media_server_hide_libraries">Ocultar bibliotecas</string>
+  <string name="media_server_whole_server">Servidor y todas sus bibliotecas</string>
 </resources>

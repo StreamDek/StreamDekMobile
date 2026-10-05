@@ -35,18 +35,22 @@ class AppUiStateSizeTest {
   fun `the app state still fits in a dex method invocation`() {
     // Found by name: the class is file-private in Kotlin, which is package-private on the JVM, and
     // this test is in that package.
-    val stateClass = Class.forName("net.streamdek.mobile.nativeapp.AppUiState")
-    val properties = stateClass.declaredFields.filterNot { it.isSynthetic || it.name == "\$stable" }
-    val wide = properties.count { it.type == java.lang.Long.TYPE || it.type == java.lang.Double.TYPE }
-    val masks = (properties.size + 31) / 32
-    // properties (wide ones twice) + one bitmask int per 32 + the instance + the null marker.
-    val registers = properties.size + wide + masks + 2
+    // The settings groups lifted out of the state are data classes with a `copy` of their own, so
+    // the same ceiling applies to each of them.
+    listOf("AppUiState", "PlaybackUiSettings", "AppearanceUiSettings").forEach { name ->
+      val stateClass = Class.forName("net.streamdek.mobile.nativeapp.$name")
+      val properties = stateClass.declaredFields.filterNot { it.isSynthetic || it.name == "\$stable" }
+      val wide = properties.count { it.type == java.lang.Long.TYPE || it.type == java.lang.Double.TYPE }
+      val masks = (properties.size + 31) / 32
+      // properties (wide ones twice) + one bitmask int per 32 + the instance + the null marker.
+      val registers = properties.size + wide + masks + 2
 
-    assertTrue(
-      "AppUiState needs $registers argument registers to copy, over the dex limit of " +
-        "$DEX_ARGUMENT_REGISTER_LIMIT (${properties.size} properties). Group related state into an " +
-        "@Immutable holder rather than adding another top-level property - see this test's docs.",
-      registers <= DEX_ARGUMENT_REGISTER_LIMIT,
-    )
+      assertTrue(
+        "$name needs $registers argument registers to copy, over the dex limit of " +
+          "$DEX_ARGUMENT_REGISTER_LIMIT (${properties.size} properties). Group related state into an " +
+          "@Immutable holder rather than adding another top-level property - see this test's docs.",
+        registers <= DEX_ARGUMENT_REGISTER_LIMIT,
+      )
+    }
   }
 }

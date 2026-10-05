@@ -18,7 +18,14 @@ class AppSettingsLifecycleTest {
   private fun call(target: Any, name: String, vararg args: Any?): Any? = target.javaClass.declaredMethods
     .first { it.name == name && it.parameterCount == args.size }.apply { isAccessible = true }.invoke(target, *args)
   private fun state(store: Any): Any = call(store, "applyTo", stateType.getDeclaredConstructor().apply { isAccessible = true }.newInstance())!!
-  private fun value(state: Any, name: String): Any? = stateType.getDeclaredField(name).apply { isAccessible = true }.get(state)
+  /**
+   * Read through the property's getter rather than its backing field. Most settings now live in a
+   * settings group held by the state (PlaybackUiSettings, AppearanceUiSettings) and are forwarded
+   * under their old names, so they are properties of the state without being fields of it.
+   */
+  private fun value(state: Any, name: String): Any? = stateType.declaredMethods
+    .first { it.name == "get" + name.replaceFirstChar(Char::uppercaseChar) && it.parameterCount == 0 }
+    .apply { isAccessible = true }.invoke(state)
   private fun restart() { files.replaceAll { _, file -> file.restart() } }
 
   @Test fun `reported preferences survive termination and offline relaunch in actual settings store`() {

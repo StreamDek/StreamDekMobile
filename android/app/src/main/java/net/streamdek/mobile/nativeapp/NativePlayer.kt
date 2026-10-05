@@ -65,6 +65,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -74,41 +79,9 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.Forward10
-import androidx.compose.material.icons.rounded.Brightness6
-import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.GridView
-import androidx.compose.material.icons.rounded.HideSource
-import androidx.compose.material.icons.rounded.ClosedCaption
-import androidx.compose.material.icons.rounded.ClosedCaptionDisabled
-import androidx.compose.material.icons.rounded.LiveTv
 import androidx.compose.material.icons.rounded.HighQuality
-import androidx.compose.material.icons.rounded.Info
-import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material.icons.rounded.LockOpen
-import androidx.compose.material.icons.rounded.UnfoldLess
-import androidx.compose.material.icons.rounded.UnfoldMore
-import androidx.compose.material.icons.rounded.ChevronLeft
-import androidx.compose.material.icons.rounded.ChevronRight
-import androidx.compose.material.icons.rounded.DeleteSweep
-import androidx.compose.material.icons.rounded.Download
-import androidx.compose.material.icons.rounded.KeyboardArrowUp
-import androidx.compose.material.icons.rounded.Pause
-import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.Sensors
-import androidx.compose.material.icons.rounded.SettingsOverscan
-import androidx.compose.material.icons.rounded.SlowMotionVideo
-import androidx.compose.material.icons.rounded.Star
-import androidx.compose.material.icons.rounded.StarBorder
-import androidx.compose.material.icons.rounded.Subtitles
-import androidx.compose.material.icons.rounded.Timeline
-import androidx.compose.material.icons.rounded.Tune
-import androidx.compose.material.icons.rounded.Tv
-import androidx.compose.material.icons.rounded.ViewList
 import androidx.compose.material3.Surface
-import androidx.compose.material.icons.rounded.VolumeOff
-import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -142,7 +115,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
@@ -191,12 +167,10 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.PointerEventPass
 import kotlinx.coroutines.withTimeoutOrNull
-import androidx.compose.material.icons.rounded.FastForward
-import androidx.compose.material.icons.rounded.FastRewind
 import kotlin.math.roundToInt
 import android.widget.Toast
 
-private enum class PlayerPanel { None, Sources, Audio, Subtitles, Speed, Engine, Info, Captions }
+private enum class PlayerPanel { None, Sources, Audio, Subtitles, Speed, Engine, Info, Captions, Episodes }
 
 /**
  * Whether the player draws its Live / VOD badge, and the in-player switch for it.
@@ -210,26 +184,6 @@ internal data class PlayerBadgeSetting(val visible: Boolean = true, val onToggle
 internal val LocalPlayerBadgeSetting = androidx.compose.runtime.compositionLocalOf { PlayerBadgeSetting() }
 private enum class PlayerAdjustmentKind { Brightness, Volume }
 
-/** A slightly softened play mark; the stock triangle has visibly sharp corners at player scale. */
-private val RoundedPlayerPlayIcon: ImageVector by lazy {
-  ImageVector.Builder(
-    name = "RoundedPlayerPlay",
-    defaultWidth = 24.dp,
-    defaultHeight = 24.dp,
-    viewportWidth = 24f,
-    viewportHeight = 24f,
-  ).apply {
-    path(fill = SolidColor(Color.Black), pathFillType = PathFillType.NonZero) {
-      moveTo(7.3f, 5.25f)
-      curveTo(7.3f, 4.16f, 8.51f, 3.49f, 9.43f, 4.07f)
-      lineTo(19.17f, 10.33f)
-      curveTo(20.4f, 11.12f, 20.4f, 12.88f, 19.17f, 13.67f)
-      lineTo(9.43f, 19.93f)
-      curveTo(8.51f, 20.51f, 7.3f, 19.84f, 7.3f, 18.75f)
-      close()
-    }
-  }.build()
-}
 
 internal fun adjustedPlayerLevel(initial: Float, totalDragY: Float, playerHeight: Float): Float =
   (initial - (totalDragY / playerHeight.coerceAtLeast(1f)) * 1.5f).coerceIn(0f, 1f)
@@ -246,9 +200,31 @@ internal fun shouldReportPlaybackBuffering(
 ): Boolean = isBuffering &&
   (seekIssuedAtMs <= 0L || nowMs - seekIssuedAtMs >= PLAYBACK_SEEK_BUFFERING_GRACE_MS)
 
-internal enum class ActivePlaybackEngine { Media3, MPV }
-internal fun initialPlaybackEngine(preference: String): ActivePlaybackEngine =
-  if (preference.equals("MPV", ignoreCase = true)) ActivePlaybackEngine.MPV else ActivePlaybackEngine.Media3
+internal enum class ActivePlaybackEngine { Media3, MPV, VLC }
+
+// Engine names are product names, the same in every language, so they are constants rather than
+// string resources.
+internal const val EXOPLAYER_ENGINE_NAME = "ExoPlayer"
+internal const val MPV_ENGINE_NAME = "mpv"
+internal const val LIBVLC_ENGINE_NAME = "libVLC"
+
+/** The engine's name as a viewer sees it, in the engine panel and the Stream Info panel. */
+internal val ActivePlaybackEngine.displayName: String
+  get() = when (this) {
+    ActivePlaybackEngine.Media3 -> EXOPLAYER_ENGINE_NAME
+    ActivePlaybackEngine.MPV -> MPV_ENGINE_NAME
+    ActivePlaybackEngine.VLC -> LIBVLC_ENGINE_NAME
+  }
+
+/**
+ * Which engine a session starts on. "Auto" starts on Media3, as it always has; libVLC is used only
+ * when it has been chosen by name.
+ */
+internal fun initialPlaybackEngine(preference: String): ActivePlaybackEngine = when {
+  preference.equals("MPV", ignoreCase = true) -> ActivePlaybackEngine.MPV
+  preference.equals("VLC", ignoreCase = true) -> ActivePlaybackEngine.VLC
+  else -> ActivePlaybackEngine.Media3
+}
 /** How often playback position is written back while a title is running. */
 private const val PROGRESS_CHECKPOINT_SECONDS = 30.0
 
@@ -263,6 +239,14 @@ internal data class LiveSourceAttempt(val position: Int, val total: Int, val fai
 
 /** How long a live source may take to show a picture before the next source is tried. */
 internal const val LIVE_SOURCE_START_TIMEOUT_MS = 13_000L
+
+/** The notices that announce a change of engine; shown for longer than a skip notice. */
+private val PLAYER_ENGINE_NOTICES = setOf(
+  R.string.player_engine_notice_fallback,
+  R.string.player_engine_notice_headers,
+  R.string.player_engine_notice_protected,
+  R.string.player_engine_notice_dolby_vision,
+)
 
 internal fun shouldAutoFallbackToMpv(preference: String, activeEngine: ActivePlaybackEngine, fallbackUsed: Boolean): Boolean =
   preference.equals("Auto", ignoreCase = true) && activeEngine == ActivePlaybackEngine.Media3 && !fallbackUsed
@@ -393,6 +377,11 @@ fun NativePlayerScreen(
   onToggleSourceFavourite: (String) -> Unit = {},
   /** Normal or Minimal, switched from the player's header and kept as the Settings choice. */
   onPlayerControlLayoutChange: (String) -> Unit = {},
+  /**
+   * The series being played, for the in-player episode browser. Null for a film, a live channel
+   * or anything else with no episodes, which is also what keeps the Episodes control off screen.
+   */
+  episodeBrowser: PlayerEpisodeBrowser? = null,
 ) {
   if ((AdultContentFilter.isBlockedItem(title = session.title) || AdultContentFilter.isBlocked(session.url, session.mediaId, session.sourceLabel)) || session.currentStream?.let(::streamIsAdult) == true) {
     val context = LocalContext.current
@@ -459,8 +448,17 @@ fun NativePlayerScreen(
   var hasLoaded by playback.hasLoaded
   var playerView by remember(liveEngineKey) { mutableStateOf<MPVView?>(null) }
   var exoPlayerView by remember(liveEngineKey) { mutableStateOf<ExoPlaybackView?>(null) }
-  var activeEngine by remember(liveEngineKey, session.playerEngine) { mutableStateOf(initialPlaybackEngine(session.playerEngine)) }
-  var autoFallbackUsed by remember(liveEngineKey, session.playerEngine) { mutableStateOf(false) }
+  var vlcPlayerView by remember(liveEngineKey) { mutableStateOf<VlcPlaybackView?>(null) }
+  // What is known about this source before it is opened that rules libVLC out: request headers it
+  // cannot send, or ClearKey protection. Such a source is not tried on libVLC at all.
+  val vlcBlocker = libVlcBlocker(
+    session.requestHeaders,
+    clearKeyProtected = session.drmLicenseType.equals("clearkey", ignoreCase = true) && session.drmClearKeys.isNotEmpty(),
+  )
+  var activeEngine by remember(liveEngineKey, session.playerEngine, vlcBlocker) { mutableStateOf(routedPlaybackEngine(session.playerEngine, vlcBlocker)) }
+  var autoFallbackUsed by remember(liveEngineKey, session.playerEngine, vlcBlocker) { mutableStateOf(false) }
+  // Which engines this source has been on and which could not play it, so none is tried twice.
+  val engineTrail = remember(session.url, session.playerEngine, vlcBlocker) { PlaybackEngineTrail(activeEngine) }
   var pendingEngineResumeSeconds by source.pendingEngineResumeSeconds
   var reloadedInPlace by source.reloadedInPlace
   // Start every source in the edge-to-edge Full screen scale. The viewer can still cycle to
@@ -471,26 +469,34 @@ fun NativePlayerScreen(
   var customZoom by customZoomState
   val playbackSpeedState = rememberSaveable(session.url) { mutableFloatStateOf(1f) }
   var playbackSpeed by playbackSpeedState
-  fun activeAddSubtitle(path: String, language: String?) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.addSubtitleFile(path, language) else playerView?.addSubtitleFile(path, language) }
-  fun activeReload() { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.reloadSource() else playerView?.reloadSource() }
-  fun activeSetPaused(paused: Boolean) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setPaused(paused) else playerView?.setPaused(paused) }
+  // The one place the screen decides which engine it is talking to; see [PlaybackEngineControls].
+  // Resolved at each call rather than held, because these helpers are captured by callbacks that
+  // outlive the composition they were created in, and the view behind an engine changes.
+  fun activeControls(): PlaybackEngineControls? = when (activeEngine) {
+    ActivePlaybackEngine.Media3 -> exoPlayerView?.asEngineControls()
+    ActivePlaybackEngine.MPV -> playerView?.asEngineControls()
+    ActivePlaybackEngine.VLC -> vlcPlayerView?.asEngineControls()
+  }
+  fun activeAddSubtitle(path: String, language: String?) { activeControls()?.addSubtitleFile(path, language) }
+  fun activeReload() { activeControls()?.reloadSource() }
+  fun activeSetPaused(paused: Boolean) { activeControls()?.setPaused(paused) }
   fun activeSeekTo(seconds: Double) {
     seekIssuedAtMs = android.os.SystemClock.elapsedRealtime()
-    if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.seekTo(seconds) else playerView?.seekTo(seconds)
+    activeControls()?.seekTo(seconds)
   }
-  fun activeSetAudioTrack(id: Int) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setAudioTrack(id) else playerView?.setAudioTrack(id) }
-  fun activeDisableSubtitleTrack() { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.disableSubtitleTrack() else playerView?.disableSubtitleTrack() }
-  fun activeSetSubtitleTrack(id: Int) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleTrack(id) else playerView?.setSubtitleTrack(id) }
-  fun activeSetSubtitleFontSize(size: Int) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleFontSize(size) else playerView?.setSubtitleFontSize(size) }
-  fun activeSetSubtitlePosition(position: Int) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitlePosition(position) else playerView?.setSubtitlePosition(position) }
-  fun activeSetSubtitleBackgroundColor(color: String) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleBackgroundColor(color) else playerView?.setSubtitleBackgroundColor(color) }
-  fun activeSetSubtitleOutline(enabled: Boolean, color: String) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleOutline(enabled, color) else playerView?.setSubtitleOutline(enabled, color) }
-  fun activeSetSubtitleBold(bold: Boolean) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleBold(bold) else playerView?.setSubtitleBold(bold) }
-  fun activeSetSubtitleDelay(seconds: Double) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSubtitleDelay(seconds) else playerView?.setSubtitleDelay(seconds) }
-  fun activeSetAudioDelay(seconds: Double) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setAudioDelay(seconds) else playerView?.setAudioDelay(seconds) }
+  fun activeSetAudioTrack(id: Int) { activeControls()?.setAudioTrack(id) }
+  fun activeDisableSubtitleTrack() { activeControls()?.disableSubtitleTrack() }
+  fun activeSetSubtitleTrack(id: Int) { activeControls()?.setSubtitleTrack(id) }
+  fun activeSetSubtitleFontSize(size: Int) { activeControls()?.setSubtitleFontSize(size) }
+  fun activeSetSubtitlePosition(position: Int) { activeControls()?.setSubtitlePosition(position) }
+  fun activeSetSubtitleBackgroundColor(color: String) { activeControls()?.setSubtitleBackgroundColor(color) }
+  fun activeSetSubtitleOutline(enabled: Boolean, color: String) { activeControls()?.setSubtitleOutline(enabled, color) }
+  fun activeSetSubtitleBold(bold: Boolean) { activeControls()?.setSubtitleBold(bold) }
+  fun activeSetSubtitleDelay(seconds: Double) { activeControls()?.setSubtitleDelay(seconds) }
+  fun activeSetAudioDelay(seconds: Double) { activeControls()?.setAudioDelay(seconds) }
   // mpv moves its audio in every output mode; ExoPlayer cannot while tunneled. See [AudioDelayControl].
-  fun activeAudioDelaySupported(): Boolean = activeEngine != ActivePlaybackEngine.Media3 || exoPlayerView?.audioDelaySupported() != false
-  fun activeSetSpeed(speed: Double) { if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.setSpeed(speed) else playerView?.setSpeed(speed) }
+  fun activeAudioDelaySupported(): Boolean = activeControls()?.audioDelaySupported() != false
+  fun activeSetSpeed(speed: Double) { activeControls()?.setSpeed(speed) }
 
   val audioFocusListener = remember(playbackIdentity) {
     AudioManager.OnAudioFocusChangeListener { change ->
@@ -915,6 +921,8 @@ fun NativePlayerScreen(
       showLiveChannels -> showLiveChannels = false
       channelSwitchLoading -> onCancelChannelSwitch()
       session.isLive && channelSwitchFallbackAvailable && !error.isNullOrBlank() -> onCancelChannelSwitch()
+      // Back out of the episode browser to the picture, not out of the player.
+      activePanel == PlayerPanel.Episodes -> activePanel = PlayerPanel.None
       !controlsLocked -> closePlayer()
     }
   }
@@ -929,6 +937,7 @@ fun NativePlayerScreen(
     activeEngine = activeEngine,
     playerView = playerView,
     exoPlayerView = exoPlayerView,
+    vlcPlayerView = vlcPlayerView,
     isLoading = isLoading,
     activeSkipSegment = activeSkipSegment,
     nextEpisodeActionAvailable = nextEpisodeActionAvailable,
@@ -1102,14 +1111,31 @@ fun NativePlayerScreen(
     externalSubtitleNeedsReapply = selectedExternalSubtitleId != null
     loadedVideoWidth = 0
     loadedVideoHeight = 0
-    if (target == ActivePlaybackEngine.Media3) playerView = null else exoPlayerView = null
-    android.util.Log.w("StreamDekPlayer", "Switching playback engine to $target ($reason) at ${pendingEngineResumeSeconds}s")
+    // Only the engine being switched to keeps a view; the others' are let go with their surfaces.
+    if (target != ActivePlaybackEngine.MPV) playerView = null
+    if (target != ActivePlaybackEngine.Media3) exoPlayerView = null
+    if (target != ActivePlaybackEngine.VLC) vlcPlayerView = null
+    engineTrail.moveTo(target)
+    android.util.Log.w("StreamDekPlayer", "Switching playback engine to $target ($reason) at ${pendingEngineResumeSeconds}s; engines so far: ${engineTrail.describe()}")
     activeEngine = target
   }
   val playerErrorCallback: (String) -> Unit = { message ->
-    if (shouldAutoFallbackToMpv(session.playerEngine, activeEngine, autoFallbackUsed)) {
+    // libVLC failing on a source it never got going is the engine, not the source: hand the source
+    // to the next engine that has not already failed on it, and say so. Once it has played, a
+    // failure is the connection, and is handled below the same way for every engine.
+    val afterLibVlc = if (activeEngine == ActivePlaybackEngine.VLC && !hasLoaded) {
+      engineTrail.nextAfterFailure(ActivePlaybackEngine.VLC, vlcBlocker)
+    } else null
+    if (afterLibVlc != null) {
+      autoSkipNotice = R.string.player_engine_notice_fallback
+      switchEngine(afterLibVlc, "libVLC error: $message")
+    } else if (
+      shouldAutoFallbackToMpv(effectiveEnginePreference(session.playerEngine, activeEngine), activeEngine, autoFallbackUsed) &&
+      !engineTrail.hasFailed(ActivePlaybackEngine.MPV)
+    ) {
       autoFallbackUsed = true
-      switchEngine(ActivePlaybackEngine.MPV, "Media3 error: $message")
+      engineTrail.markFailed(ActivePlaybackEngine.Media3)
+      switchEngine(ActivePlaybackEngine.MPV, (exoPlayerView?.lastFailureReason ?: ExoFallbackReason.PlaybackFatalError.code) + " Media3 error: $message")
     } else if (session.isLive) {
       android.util.Log.w("StreamDekLivePlayer", "player error for ${session.url}: $message")
       error = "Live feed interrupted. Reconnecting..."
@@ -1232,13 +1258,61 @@ fun NativePlayerScreen(
     if (session.isLive) return@LaunchedEffect
     delay(3_500)
     if (avMismatchFallbackTried || !hasLoaded || duration <= 0.0) return@LaunchedEffect
+    // Media3 is asked what is actually wrong with its audio rather than judged by an empty list:
+    // "no track", "a track this device cannot decode", "a track nobody selected" and "a decoder
+    // that fell over" are different faults, and all but the second can be put right in place.
+    // Handing the source to mpv is what is left when that has been tried, or cannot be.
+    val exoView = exoPlayerView.takeIf { activeEngine == ActivePlaybackEngine.Media3 }
+    var exoAudioFinding = exoView?.diagnoseAudio()
+    if (exoView != null && exoAudioFinding != null && exoView.recoverAudio(exoAudioFinding)) {
+      delay(4_000)
+      if (activeEngine != ActivePlaybackEngine.Media3 || exoPlayerView !== exoView || avMismatchFallbackTried) return@LaunchedEffect
+      exoAudioFinding = exoView.diagnoseAudio()
+      if (exoAudioFinding == null) {
+        android.util.Log.i("StreamDekPlayer", "Media3 audio recovered in place; staying on Media3")
+        return@LaunchedEffect
+      }
+    }
     val noVideo = loadedVideoWidth <= 0 && loadedVideoHeight <= 0
-    val noAudio = audioTracks.isEmpty()
+    val noAudio = if (exoView != null) exoAudioFinding != null else audioTracks.isEmpty()
     if (noVideo != noAudio) {
       avMismatchFallbackTried = true
+      // libVLC has its own, firmer check below: it is judged by what it has actually decoded
+      // rather than by a track list and a picture size that it reports late.
+      if (activeEngine == ActivePlaybackEngine.VLC) return@LaunchedEffect
       val target = if (activeEngine == ActivePlaybackEngine.Media3) ActivePlaybackEngine.MPV else ActivePlaybackEngine.Media3
-      switchEngine(target, if (noAudio) "no audio detected" else "no video detected")
+      // An engine that has already failed on this source is not handed it back.
+      if (engineTrail.hasFailed(target)) return@LaunchedEffect
+      engineTrail.markFailed(activeEngine)
+      switchEngine(
+        target,
+        exoAudioFinding?.let { it.reason.code + " cause=" + it.cause.letter + " (" + it.cause.summary + "): " + it.detail }
+          ?: if (noAudio) "no audio detected" else "no video detected",
+      )
     }
+  }
+
+  // libVLC playing only half of a source - a picture with no sound, or sound with no picture -
+  // hands it to the next engine, once. Its own counters decide: a track that exists and is
+  // selected but has produced nothing while the other half runs. Two looks a moment apart, so a
+  // decoder that is merely slow to start is not mistaken for one that never will.
+  LaunchedEffect(session.url, activeEngine, hasLoaded, vlcPlayerView) {
+    if (activeEngine != ActivePlaybackEngine.VLC || !hasLoaded || session.isLive) return@LaunchedEffect
+    delay(6_000)
+    val problem = vlcPlayerView?.compatibilityProblem() ?: return@LaunchedEffect
+    delay(2_000)
+    if (activeEngine != ActivePlaybackEngine.VLC || vlcPlayerView?.compatibilityProblem() != problem) return@LaunchedEffect
+    val target = engineTrail.nextAfterFailure(ActivePlaybackEngine.VLC, vlcBlocker) ?: return@LaunchedEffect
+    autoSkipNotice = R.string.player_engine_notice_fallback
+    switchEngine(target, if (problem == LibVlcCompatibilityProblem.NoAudio) "libVLC decoded no audio" else "libVLC showed no picture")
+  }
+
+  // A source the viewer's choice of libVLC cannot open is played on the Auto path instead, and
+  // they are told why rather than left to wonder which engine they are on.
+  LaunchedEffect(session.url, vlcBlocker, session.playerEngine) {
+    if (vlcBlocker == null || !session.playerEngine.equals("VLC", ignoreCase = true)) return@LaunchedEffect
+    autoSkipNotice = if (vlcBlocker == LibVlcBlocker.ClearKey) R.string.player_engine_notice_protected else R.string.player_engine_notice_headers
+    android.util.Log.i("StreamDekPlayer", "libVLC skipped for this source ($vlcBlocker): ${headersLibVlcCannotSend(session.requestHeaders)}")
   }
 
   if (handoffPickerVisible) {
@@ -1314,6 +1388,20 @@ fun NativePlayerScreen(
         }
       },
       onMpvViewCreated = { playerView = it },
+      onVlcViewCreated = { view ->
+        vlcPlayerView = view
+        // libVLC plays a Dolby Vision-only stream as plain HEVC, without its metadata. Media3 can
+        // use the device's Dolby Vision decoder, and already knows when to pass profile 7 to mpv,
+        // so the source goes there - unless Media3 has already failed on it.
+        view.onDolbyVisionCallback = {
+          if (activeEngine == ActivePlaybackEngine.VLC && !engineTrail.hasFailed(ActivePlaybackEngine.Media3)) {
+            engineTrail.markFailed(ActivePlaybackEngine.VLC)
+            autoSkipNotice = R.string.player_engine_notice_dolby_vision
+            switchEngine(ActivePlaybackEngine.Media3, "Dolby Vision without HDR10 signalling")
+            true
+          } else false
+        }
+      },
     )
 
     PlayerSurfaceOverlays(
@@ -1414,9 +1502,14 @@ fun NativePlayerScreen(
       onHandoff = onHandoff,
       onNextEpisode = onNextEpisode,
       onPreviousEpisode = onPreviousEpisode,
+      showEpisodes = episodeBrowser != null && !session.isLive,
     )
 
     PlayerPanels(
+      episodeBrowser = episodeBrowser,
+      // The position the viewer is leaving, written before the switch so the episode they came
+      // from shows as part watched in the list they are choosing from - and resumes there later.
+      onBeforeEpisodeSwitch = { if (!session.isLive && duration > 0.0 && currentTime > 0.0) onProgressCheckpoint(currentTime, duration) },
       session = session,
       playerContext = playerContext,
       playerScope = playerScope,
@@ -1527,9 +1620,76 @@ private fun PlayerSurface(
   onTracksChanged: (List<MpvTrackInfo>, List<MpvTrackInfo>, Int?, Int?) -> Unit,
   onExoViewCreated: (ExoPlaybackView) -> Unit,
   onMpvViewCreated: (MPVView) -> Unit,
+  onVlcViewCreated: (VlcPlaybackView) -> Unit,
 ) {
   key(engineKey, activeEngine) {
-    if (activeEngine == ActivePlaybackEngine.Media3) {
+    if (activeEngine == ActivePlaybackEngine.VLC) {
+      AndroidView(
+        modifier = Modifier.fillMaxSize(),
+        factory = { context ->
+          VlcPlaybackView(context).apply {
+            onVlcViewCreated(this)
+            // Everything the source is opened with goes in before setSource: libVLC reads the
+            // decoder mode, headers, languages and subtitle appearance when it opens a source.
+            setLoadWaitsForPlayback(session.isLive)
+            onLoadCallback = onLoad
+            onProgressCallback = onProgress
+            onErrorCallback = onError
+            onEndCallback = onEnd
+            onStallChangedCallback = onStallChanged
+            onTracksChangedCallback = onTracksChanged
+            setResizeMode(if (resizeMode == "custom") "contain" else resizeMode)
+            setVideoZoom(customZoom)
+            setDecoderMode(session.decoderMode)
+            setRenderSurface(session.renderSurface)
+            setSpeed(playbackSpeed.toDouble())
+            setSubtitleDelay(subtitleDelay.toDouble())
+            setAudioDelay(audioDelay.toDouble())
+            setSubtitleFontSize(subtitleSize)
+            setSubtitlePosition(subtitlePosition)
+            setSubtitleColor(subtitleColor)
+            setSubtitleBackgroundColor(session.subtitleBackgroundColor)
+            setSubtitleOutline(session.subtitleOutline, session.subtitleOutlineColor)
+            setSubtitleBold(session.subtitleBold)
+            setHeaders(session.requestHeaders)
+            setPreferredAudioLanguage(session.preferredAudioLanguage)
+            setSecondaryAudioLanguage(session.secondaryAudioLanguage)
+            setSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage)
+            setSource(session.url)
+            setPaused(false)
+          }
+        },
+        update = { view ->
+          // See the equivalent comment in the Media3 branch below - same reason.
+          view.setLoadWaitsForPlayback(session.isLive)
+          view.onLoadCallback = onLoad
+          view.onProgressCallback = onProgress
+          view.onErrorCallback = onError
+          view.onEndCallback = onEnd
+          view.onStallChangedCallback = onStallChanged
+          view.onTracksChangedCallback = onTracksChanged
+          view.setHeaders(session.requestHeaders)
+          view.setDecoderMode(session.decoderMode)
+          view.setRenderSurface(session.renderSurface)
+          view.setPreferredAudioLanguage(session.preferredAudioLanguage)
+          view.setSecondaryAudioLanguage(session.secondaryAudioLanguage)
+          view.setSubtitleLanguages(session.subtitleLanguage, session.secondarySubtitleLanguage)
+          view.setSubtitleFontSize(subtitleSize)
+          view.setSubtitlePosition(subtitlePosition)
+          view.setSubtitleColor(subtitleColor)
+          view.setSubtitleBackgroundColor(session.subtitleBackgroundColor)
+          view.setSubtitleOutline(session.subtitleOutline, session.subtitleOutlineColor)
+          view.setSubtitleBold(session.subtitleBold)
+          view.setSource(session.url)
+          view.setPaused(isPaused)
+          view.setResizeMode(if (resizeMode == "custom") "contain" else resizeMode)
+          view.setVideoZoom(customZoom)
+          view.setSpeed(playbackSpeed.toDouble())
+          view.setSubtitleDelay(subtitleDelay.toDouble())
+          view.setAudioDelay(audioDelay.toDouble())
+        },
+      )
+    } else if (activeEngine == ActivePlaybackEngine.Media3) {
       AndroidView(
         modifier = Modifier.fillMaxSize(),
         factory = { context ->
@@ -1685,7 +1845,7 @@ private fun LiveChannelSwipeCue() {
       style = MaterialTheme.typography.bodyMedium.copy(shadow = shadow),
     )
     Icon(
-      Icons.Rounded.KeyboardArrowUp, contentDescription = null, tint = Color.White.copy(alpha = 0.92f),
+      StreamDekPlayerIcons.ChevronUp, contentDescription = null, tint = Color.White.copy(alpha = 0.92f),
       modifier = Modifier.size(22.dp).graphicsLayer { translationY = offset; shadowElevation = 8f },
     )
   }
@@ -1768,7 +1928,7 @@ private fun LiveChannelTray(
               modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(20.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f)),
               contentAlignment = Alignment.Center,
             ) {
-              Icon(Icons.Rounded.Star, contentDescription = stringResource(R.string.a11y_in_favourites), tint = Color(0xFFFACC15), modifier = Modifier.size(13.dp))
+              Icon(StreamDekPlayerIcons.Star, contentDescription = stringResource(R.string.a11y_in_favourites), tint = Color(0xFFFACC15), modifier = Modifier.size(13.dp))
             }
           }
         }
@@ -1791,7 +1951,7 @@ private fun LiveFavouriteDrawer(
   if (showClearConfirm) {
     AlertDialog(
       onDismissRequest = { showClearConfirm = false },
-      icon = { Icon(Icons.Rounded.DeleteSweep, contentDescription = null) },
+      icon = { Icon(StreamDekPlayerIcons.ClearAll, contentDescription = null) },
       title = { Text(stringResource(R.string.live_clear_favourites_title)) },
       text = { Text(pluralStringResource(R.plurals.live_clear_favourites_detail, favourites.size, favourites.size)) },
       confirmButton = { Button(onClick = { showClearConfirm = false; onClearAll() }) { Text(stringResource(R.string.live_clear_all)) } },
@@ -1812,14 +1972,14 @@ private fun LiveFavouriteDrawer(
   ) {
     Column(modifier = Modifier.fillMaxSize().padding(start = 20.dp, end = 14.dp, top = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
       Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        IconButton(onClick = onClose) { Icon(Icons.Rounded.ChevronRight, contentDescription = stringResource(R.string.a11y_close_favourites), tint = Color.White) }
+        IconButton(onClick = onClose) { Icon(StreamDekPlayerIcons.ChevronRight, contentDescription = stringResource(R.string.a11y_close_favourites), tint = Color.White) }
         Column(modifier = Modifier.weight(1f)) {
           Text(stringResource(R.string.live_favourites), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
           Text(pluralStringResource(R.plurals.live_channel_count, favourites.size, favourites.size), color = Color.White.copy(alpha = 0.55f), fontSize = 10.sp)
         }
         IconButton(onClick = { onToggleCardView(!cardView) }, modifier = Modifier.size(32.dp)) {
           Icon(
-            if (cardView) Icons.Rounded.ViewList else Icons.Rounded.GridView,
+            if (cardView) StreamDekPlayerIcons.ListView else StreamDekPlayerIcons.Sources,
             contentDescription = if (cardView) "Switch to text list" else "Switch to card view",
             tint = Color.White.copy(alpha = 0.85f),
             modifier = Modifier.size(18.dp),
@@ -1827,7 +1987,7 @@ private fun LiveFavouriteDrawer(
         }
         IconButton(onClick = { showClearConfirm = true }, enabled = favourites.isNotEmpty(), modifier = Modifier.size(32.dp)) {
           Icon(
-            Icons.Rounded.DeleteSweep, contentDescription = stringResource(R.string.a11y_clear_all_favourites),
+            StreamDekPlayerIcons.ClearAll, contentDescription = stringResource(R.string.a11y_clear_all_favourites),
             tint = Color.White.copy(alpha = if (favourites.isNotEmpty()) 0.85f else 0.3f),
             modifier = Modifier.size(18.dp),
           )
@@ -1919,13 +2079,12 @@ private fun PlayerResolvingScreen(
         .statusBarsPadding()
         .padding(20.dp)
         .align(Alignment.TopStart)
-        .size(if (minimal) 48.dp else 44.dp)
+        .size(48.dp)
         .clip(CircleShape)
-        .then(if (minimal) Modifier else Modifier.background(Color.White.copy(alpha = 0.10f)).border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape))
-        .clickable(onClick = onBack),
+        .clickable(role = Role.Button, onClick = onBack),
       contentAlignment = Alignment.Center,
     ) {
-      Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.action_back), tint = Color.White, modifier = Modifier.size(if (minimal) 30.dp else 24.dp))
+      PlayerGlyph(StreamDekPlayerIcons.Back, stringResource(R.string.action_back), if (minimal) 30.dp else 28.dp)
     }
   }
 }
@@ -2093,41 +2252,71 @@ private fun PlayerCenterControls(isPaused: Boolean, onPauseToggle: () -> Unit, o
       horizontalArrangement = Arrangement.spacedBy(48.dp),
       verticalAlignment = Alignment.CenterVertically,
     ) {
-      val minimal = layout == "Minimal"
-      if (showSeeking) PlayerRoundAction(icon = Icons.Rounded.Replay10, label = pluralStringResource(R.plurals.player_rewind_seconds, 10, 10), minimal = minimal, onClick = { onSeek(-10.0) }) else Spacer(modifier = Modifier.size(74.dp))
+      // Bare icons in every layout: no disc behind play, pause or either seek. The targets keep
+      // the size the discs had - 90dp and 74dp - so nothing is harder to hit than it was.
+      if (showSeeking) PlayerRoundAction(icon = StreamDekPlayerIcons.Replay10, label = pluralStringResource(R.plurals.player_rewind_seconds, 10, 10), onClick = { onSeek(-10.0) }) else Spacer(modifier = Modifier.size(74.dp))
+      val playPauseLabel = stringResource(if (isPaused) R.string.action_play else R.string.action_pause)
       Box(
         modifier = Modifier
           .size(90.dp)
           .clip(CircleShape)
-          .clickable(onClick = onPauseToggle),
+          .clickable(role = Role.Button, onClick = onPauseToggle),
         contentAlignment = Alignment.Center,
       ) {
-        Box(
-          modifier = Modifier.size(if (minimal) 90.dp else 81.dp).clip(CircleShape)
-            .then(if (minimal) Modifier else Modifier.background(Color.White.copy(alpha = 0.14f)).border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape)),
-          contentAlignment = Alignment.Center,
-        ) {
-          Icon(if (isPaused) RoundedPlayerPlayIcon else Icons.Rounded.Pause, contentDescription = if (isPaused) "Play" else "Pause", tint = Color.White, modifier = Modifier.size(if (isPaused) 51.dp else 54.dp))
-        }
+        PlayerGlyph(if (isPaused) StreamDekPlayerIcons.Play else StreamDekPlayerIcons.Pause, playPauseLabel, if (isPaused) 51.dp else 54.dp)
       }
-      if (showSeeking) PlayerRoundAction(icon = Icons.Rounded.Forward10, label = pluralStringResource(R.plurals.player_forward_seconds, 10, 10), minimal = minimal, onClick = { onSeek(10.0) }) else Spacer(modifier = Modifier.size(74.dp))
+      if (showSeeking) PlayerRoundAction(icon = StreamDekPlayerIcons.Forward10, label = pluralStringResource(R.plurals.player_forward_seconds, 10, 10), onClick = { onSeek(10.0) }) else Spacer(modifier = Modifier.size(74.dp))
     }
   }
 }
 
 @Composable
-private fun PlayerRoundAction(icon: ImageVector, label: String, minimal: Boolean, onClick: () -> Unit) {
+private fun PlayerRoundAction(icon: ImageVector, label: String, onClick: () -> Unit) {
   Box(
-    modifier = Modifier.size(74.dp).clip(CircleShape).clickable(onClick = onClick),
+    modifier = Modifier.size(74.dp).clip(CircleShape).clickable(role = Role.Button, onClick = onClick),
     contentAlignment = Alignment.Center,
   ) {
-    Box(
-      modifier = Modifier.size(if (minimal) 74.dp else 67.dp).clip(CircleShape)
-        .then(if (minimal) Modifier else Modifier.background(Color.White.copy(alpha = 0.08f)).border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)),
-      contentAlignment = Alignment.Center,
-    ) {
-      Icon(icon, contentDescription = label, tint = Color.White.copy(alpha = 0.90f), modifier = Modifier.size(34.dp))
-    }
+    PlayerGlyph(icon, label, 36.dp)
+  }
+}
+
+/**
+ * A player icon drawn straight onto the picture, with no disc behind it.
+ *
+ * The disc was doing one real job, which was keeping a white icon readable over a white scene. A
+ * soft shadow of the icon's own shape does that job without drawing a shape of its own: the icon
+ * is laid down twice, once dark and blurred a little below, then in its tint on top. On Android 11
+ * and earlier, where a blur is not available, the same dark copy sits unblurred a pixel below the
+ * icon, which reads as a crisp edge and serves the same purpose.
+ *
+ * The shadow carries no description, so a screen reader announces the control once.
+ */
+@Composable
+private fun PlayerGlyph(icon: ImageVector, contentDescription: String?, size: Dp, tint: Color = Color.White) {
+  Box(contentAlignment = Alignment.Center) {
+    Icon(
+      icon,
+      contentDescription = null,
+      tint = Color.Black.copy(alpha = 0.42f),
+      modifier = Modifier.size(size).offset(y = 1.dp).blur(2.5.dp, edgeTreatment = BlurredEdgeTreatment.Unbounded),
+    )
+    Icon(icon, contentDescription = contentDescription, tint = tint, modifier = Modifier.size(size))
+  }
+}
+
+/**
+ * One control in the player's header: a bare icon in a 48dp round target.
+ *
+ * The target is the whole 48dp, not the icon, and the press ripple fills it - which is also what
+ * shows the control took the tap now that there is no disc to light up.
+ */
+@Composable
+private fun PlayerHeaderAction(icon: ImageVector, label: String, onClick: () -> Unit, iconSize: Dp = 26.dp, tint: Color = Color.White) {
+  Box(
+    modifier = Modifier.size(48.dp).clip(CircleShape).clickable(role = Role.Button, onClick = onClick),
+    contentAlignment = Alignment.Center,
+  ) {
+    PlayerGlyph(icon, label, iconSize, tint)
   }
 }
 
@@ -2164,17 +2353,18 @@ private fun RefinedPlayerSlider(
         val inset = 10.dp.toPx().coerceAtMost(size.width / 2f)
         val trackWidth = (size.width - inset * 2f).coerceAtLeast(0f)
         val thumbX = inset + trackWidth * safeProgress
-        drawLine(trackColor, Offset(inset, centerY), Offset(inset + trackWidth, centerY), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
+        // 4dp, the three lines together: at 2dp the bar was easy to lose against a busy picture.
+        drawLine(trackColor, Offset(inset, centerY), Offset(inset + trackWidth, centerY), strokeWidth = 4.dp.toPx(), cap = StrokeCap.Round)
         // Buffered, between the track and the watched line. Slightly heavier than either so the
         // softer tone still reads on a line this fine; the watched line and thumb are drawn over it.
         buffered.forEach { segment ->
           val from = inset + trackWidth * segment.start
           val to = inset + trackWidth * segment.end
-          if (to > from) drawLine(bufferedColor, Offset(from, centerY), Offset(to, centerY), strokeWidth = 2.5.dp.toPx(), cap = StrokeCap.Butt)
+          if (to > from) drawLine(bufferedColor, Offset(from, centerY), Offset(to, centerY), strokeWidth = 4.5.dp.toPx(), cap = StrokeCap.Butt)
         }
         // No dot at the playhead: it covered the start of the buffered stretch. The end of the
         // watched line is the position.
-        drawLine(activeColor, Offset(inset, centerY), Offset(thumbX, centerY), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
+        drawLine(activeColor, Offset(inset, centerY), Offset(thumbX, centerY), strokeWidth = 4.dp.toPx(), cap = StrokeCap.Round)
       },
   )
 }
@@ -2269,6 +2459,9 @@ private fun PlayerBottomControls(
   onCaptions: () -> Unit = {},
   /** What the engine is holding, drawn on the bar ahead of the playhead. */
   bufferedRanges: List<BufferedRange> = emptyList(),
+  /** Only a series has episodes to browse; for everything else the control is not drawn at all. */
+  showEpisodes: Boolean = false,
+  onEpisodes: () -> Unit = {},
 ) {
   val badge = LocalPlayerBadgeSetting.current
   // Measured against the time the bar is showing, which follows the finger during a drag, so the
@@ -2354,7 +2547,7 @@ private fun PlayerBottomControls(
             // the controls row about depending on whether the source happens to be live.
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.6.dp)) {
               if (isVod) {
-                Icon(RoundedPlayerPlayIcon, contentDescription = null, tint = Color(0xFF60A5FA), modifier = Modifier.size(7.2.dp))
+                Icon(StreamDekPlayerIcons.Play, contentDescription = null, tint = Color(0xFF60A5FA), modifier = Modifier.size(7.2.dp))
               } else {
                 Box(modifier = Modifier.size(3.6.dp).clip(CircleShape).background(Color(0xFFE11D48)))
               }
@@ -2376,21 +2569,26 @@ private fun PlayerBottomControls(
           .then(if (minimal) Modifier else Modifier.border(1.dp, Color.White.copy(alpha = 0.10f), StreamDekRadius.sheetShape))
           .padding(
             horizontal = when (layout) { "Compact" -> 12.dp; "Minimal" -> 7.dp; else -> 18.dp },
-            // Normal drops from 66dp to roughly 58dp overall (about 12%) while the controls keep
-            // their full 48dp touch targets. Minimal retains its own low-profile treatment.
-            vertical = when (layout) { "Compact" -> 5.dp; "Minimal" -> 2.dp; else -> 5.dp },
+            // Normal is 48dp touch targets inside 4dp of padding top and bottom, 56dp overall.
+            // Minimal retains its own low-profile treatment.
+            vertical = when (layout) { "Compact" -> 5.dp; "Minimal" -> 2.dp; else -> 4.dp },
           ),
         horizontalArrangement = Arrangement.spacedBy(when (layout) { "Compact" -> 32.dp; "Minimal" -> 6.dp; else -> 15.5.dp }),
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        PlayerDockButton(stringResource(R.string.player_zoom), Icons.Rounded.SettingsOverscan, onZoom, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+        // Episodes leads the dock: it is the one control here that changes what is playing rather
+        // than how, and the first place is where it is found without reading the row.
+        if (showEpisodes) {
+          PlayerDockButton(stringResource(R.string.detail_episodes), StreamDekNavIcons.LibraryOutline, onEpisodes, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+        }
+        PlayerDockButton(stringResource(R.string.player_zoom), StreamDekPlayerIcons.Zoom, onZoom, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
         if (isLive) {
           // A channel's own captions, first after zoom as a film's subtitles are; only once the
           // stream has actually carried some, so the button never offers nothing.
           if (captionsAvailable) {
             PlayerDockButton(
               stringResource(R.string.player_captions),
-              if (captionsOn) Icons.Rounded.ClosedCaption else Icons.Rounded.ClosedCaptionDisabled,
+              if (captionsOn) StreamDekPlayerIcons.Captions else StreamDekPlayerIcons.CaptionsOff,
               onCaptions,
               active = captionsOn,
               showLabel = showLabels && !minimal,
@@ -2400,7 +2598,7 @@ private fun PlayerBottomControls(
           }
           PlayerDockButton(
             stringResource(R.string.player_progress),
-            if (showLiveProgress) Icons.Rounded.Timeline else Icons.Rounded.HideSource,
+            if (showLiveProgress) StreamDekPlayerIcons.Progress else StreamDekPlayerIcons.ProgressOff,
             onToggleLiveProgress,
             active = showLiveProgress,
             showLabel = showLabels && !minimal,
@@ -2409,7 +2607,7 @@ private fun PlayerBottomControls(
           )
           PlayerDockButton(
             stringResource(R.string.player_live_badge),
-            Icons.Rounded.LiveTv,
+            StreamDekPlayerIcons.LiveBadge,
             badge.onToggle,
             active = badge.visible,
             showLabel = showLabels && !minimal,
@@ -2417,13 +2615,13 @@ private fun PlayerBottomControls(
             minimal = minimal,
           )
         } else {
-          PlayerDockButton(stringResource(R.string.player_playback_speed), Icons.Rounded.SlowMotionVideo, onSpeed, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
-          PlayerDockButton(stringResource(R.string.player_subs), Icons.Rounded.Subtitles, onSubtitles, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
-          PlayerDockButton(stringResource(R.string.player_audio), Icons.Rounded.VolumeUp, onAudio, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+          PlayerDockButton(stringResource(R.string.player_speed), StreamDekPlayerIcons.Speed, onSpeed, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+          PlayerDockButton(stringResource(R.string.player_subs), StreamDekPlayerIcons.Subtitles, onSubtitles, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+          PlayerDockButton(stringResource(R.string.player_audio), StreamDekPlayerIcons.Audio, onAudio, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
         }
-        PlayerDockButton(stringResource(R.string.player_sources), Icons.Rounded.GridView, onSources, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
-        PlayerDockButton(stringResource(R.string.player_engine), Icons.Rounded.Tune, onEngine, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
-        PlayerDockButton(stringResource(R.string.player_info), Icons.Rounded.Info, onInfo, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+        PlayerDockButton(stringResource(R.string.player_sources), StreamDekPlayerIcons.Sources, onSources, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+        PlayerDockButton(stringResource(R.string.player_engine), StreamDekPlayerIcons.Engine, onEngine, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
+        PlayerDockButton(stringResource(R.string.player_info), StreamDekPlayerIcons.Info, onInfo, showLabel = showLabels && !minimal, compact = layout == "Compact", minimal = minimal)
       }
     }
   }
@@ -2483,19 +2681,21 @@ private fun androidx.compose.foundation.layout.BoxScope.PlayerTopHeader(
     modifier = modifier
       .fillMaxWidth()
       .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.78f), Color.Black.copy(alpha = 0.38f), Color.Transparent)))
-      .padding(horizontal = 18.dp, vertical = 16.dp),
-    horizontalArrangement = Arrangement.spacedBy(14.dp),
+      // The bottom controls sit inside the navigation bar's inset; so does this, or the two rows
+      // would stop lining up whenever the bar is on a side edge.
+      .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal))
+      // The trailing edge lines the last icon up with the duration pill below it, which ends 24dp
+      // from the edge. The icon is 26dp, centred in a 48dp target, so the target ends 11dp past the
+      // icon and the padding is 24 - 11.
+      .padding(start = 18.dp, top = 16.dp, end = 13.dp, bottom = 16.dp),
+    // 10dp between 48dp targets puts the icons where 14dp between 44dp discs had them.
+    horizontalArrangement = Arrangement.spacedBy(10.dp),
     verticalAlignment = Alignment.Top,
   ) {
     val minimal = layout == "Minimal"
-    Box(
-      modifier = Modifier.size(if (minimal) 48.dp else 44.dp).clip(CircleShape)
-        .then(if (minimal) Modifier else Modifier.background(Color.White.copy(alpha = 0.10f)).border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape))
-        .clickable(onClick = onBack),
-      contentAlignment = Alignment.Center,
-    ) {
-      Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.action_back), tint = Color.White, modifier = Modifier.size(if (minimal) 30.dp else 24.dp))
-    }
+    // No disc behind any of the header's controls, in either layout: each is a bare icon over the
+    // header's own gradient, in a 48dp target - the same area the discs gave, or a little more.
+    PlayerHeaderAction(StreamDekPlayerIcons.Back, stringResource(R.string.action_back), onBack, iconSize = if (minimal) 30.dp else 28.dp)
     Column(modifier = Modifier.weight(1f).padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
       val yearLabel = session.year?.toString().orEmpty()
       val titleLine = listOfNotNull(session.title, episodeContext(session), yearLabel.takeIf { it.isNotBlank() }).joinToString(" | ")
@@ -2534,64 +2734,26 @@ private fun androidx.compose.foundation.layout.BoxScope.PlayerTopHeader(
     // The layout switch lives in this header because the header is the one part of the controls
     // that both layouts share: in the dock it would sit inside the thing it changes, and someone in
     // Minimal could lose the way back. The icon says which way a tap goes — fewer controls or more.
-    Box(
-      modifier = Modifier
-        .size(44.dp)
-        .clip(CircleShape)
-        .background(Color.White.copy(alpha = 0.10f))
-        .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
-        .clickable(onClick = onToggleLayout),
-      contentAlignment = Alignment.Center,
-    ) {
-      Icon(
-        if (minimal) Icons.Rounded.UnfoldMore else Icons.Rounded.UnfoldLess,
-        contentDescription = stringResource(if (minimal) R.string.player_switch_to_normal_controls else R.string.player_switch_to_minimal_controls),
-        tint = Color.White,
-      )
-    }
+    PlayerHeaderAction(
+      if (minimal) StreamDekPlayerIcons.MoreControls else StreamDekPlayerIcons.FewerControls,
+      stringResource(if (minimal) R.string.player_switch_to_normal_controls else R.string.player_switch_to_minimal_controls),
+      onToggleLayout,
+    )
     // Lock sits beside handoff rather than in the bottom dock, which is where the info control
     // now is. Both are one-tap actions on the session rather than settings, so they belong to the
     // same group.
-    Box(
-      modifier = Modifier
-        .size(44.dp)
-        .clip(CircleShape)
-        .background(Color.White.copy(alpha = 0.10f))
-        .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
-        .clickable(onClick = onLock),
-      contentAlignment = Alignment.Center,
-    ) {
-      Icon(Icons.Rounded.LockOpen, contentDescription = stringResource(R.string.a11y_lock_controls), tint = Color.White)
-    }
+    PlayerHeaderAction(StreamDekPlayerIcons.LockOpen, stringResource(R.string.a11y_lock_controls), onLock)
     // Live streams get the same handoff control as VOD, and it sits to the left of the
     // favourites star because it is declared first in this Row.
-    Box(
-      modifier = Modifier
-        .size(44.dp)
-        .clip(CircleShape)
-        .background(Color.White.copy(alpha = 0.10f))
-        .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
-        .clickable(onClick = onHandoff),
-      contentAlignment = Alignment.Center,
-    ) {
-      Icon(Icons.Rounded.Tv, contentDescription = stringResource(R.string.player_hand_off_to_tv), tint = Color.White)
-    }
+    PlayerHeaderAction(StreamDekPlayerIcons.HandOff, stringResource(R.string.player_hand_off_to_tv), onHandoff)
     if (session.isLive) {
-      Box(
-        modifier = Modifier
-          .size(44.dp)
-          .clip(CircleShape)
-          .background(Color.White.copy(alpha = 0.10f))
-          .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
-          .clickable(onClick = onToggleFavourite),
-        contentAlignment = Alignment.Center,
-      ) {
-        Icon(
-          if (isFavourite) Icons.Rounded.Star else Icons.Rounded.StarBorder,
-          contentDescription = if (isFavourite) "Remove from favourites" else "Add to favourites",
-          tint = if (isFavourite) Color(0xFFFACC15) else Color.White,
-        )
-      }
+      val favouriteLabel = if (isFavourite) "Remove from favourites" else "Add to favourites"
+      PlayerHeaderAction(
+        if (isFavourite) StreamDekPlayerIcons.Star else StreamDekPlayerIcons.StarOutline,
+        favouriteLabel,
+        onToggleFavourite,
+        tint = if (isFavourite) Color(0xFFFACC15) else Color.White,
+      )
     }
   }
 }
@@ -2661,7 +2823,7 @@ private fun PlayerSourceCard(
         }
         if (active) {
           StreamInfoPill(
-            icon = Icons.Rounded.Tune,
+            icon = StreamDekPlayerIcons.Engine,
             label = stringResource(R.string.player_now_playing),
             containerColor = Color(0xFF22C55E).copy(alpha = 0.20f),
             contentColor = Color(0xFF22C55E),
@@ -2671,7 +2833,7 @@ private fun PlayerSourceCard(
     }
     if (showDownload) {
       IconButton(onClick = onDownload, modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp).size(36.dp)) {
-        Icon(Icons.Rounded.Download, contentDescription = stringResource(R.string.a11y_download_offline), tint = Color.White.copy(alpha = 0.78f), modifier = Modifier.size(18.dp))
+        Icon(StreamDekPlayerIcons.Download, contentDescription = stringResource(R.string.a11y_download_offline), tint = Color.White.copy(alpha = 0.78f), modifier = Modifier.size(18.dp))
       }
     }
   }
@@ -2708,7 +2870,6 @@ private fun PlayerModalPanel(title: String, onClose: () -> Unit, trailing: @Comp
       modifier = panelSizeModifier
         .clip(StreamDekRadius.sheetShape)
         .background(Color(0xEE111722))
-        .border(1.dp, Color.White.copy(alpha = 0.08f), StreamDekRadius.sheetShape)
         .clickable(onClick = {})
         .padding(22.dp),
       verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -2785,6 +2946,8 @@ private fun PlayerStreamInfo(
     formatResolution(stats?.width ?: 0, stats?.height ?: 0)?.let { add(stringResource(R.string.player_info_resolution) to it) }
     val videoLine = listOfNotNull(
       prettyCodecName(stats?.videoCodec),
+      stats?.videoProfile,
+      stats?.videoBitDepth?.let { String.format(Locale.US, "%d-bit", it) },
       formatBitrate(stats?.videoBitrateBps),
       stats?.frameRate?.let { String.format(Locale.US, "%.0f fps", it) },
     ).joinToString(" · ")
@@ -2794,11 +2957,18 @@ private fun PlayerStreamInfo(
       stats?.audioChannels?.let { channels ->
         if (channels > 2) "${channels}ch" else stringResource(if (channels == 2) R.string.player_audio_stereo else R.string.player_audio_mono)
       },
+      stats?.audioSampleRateHz?.let { String.format(Locale.US, "%.1f kHz", it / 1000.0) },
+      formatBitrate(stats?.audioBitrateBps),
+      stats?.audioLanguage?.let { Languages.label(it) },
     ).joinToString(" · ")
     if (audioLine.isNotBlank()) add(stringResource(R.string.player_audio) to audioLine)
+    formatBitrate(stats?.contentBitrateBps)?.let { add(stringResource(R.string.player_info_bitrate_now) to it) }
+    stats?.decodedFrames?.let { decoded ->
+      add(stringResource(R.string.player_info_frames) to stringResource(R.string.player_info_frames_value, decoded.toString(), (stats?.droppedFrames ?: 0L).toString()))
+    }
     stats?.bufferedSeconds?.let { add(stringResource(R.string.player_info_buffered) to String.format(Locale.US, "%.0f s ahead", it)) }
     stats?.hardwareDecoder?.let { add(stringResource(R.string.player_info_decoder) to it) }
-    add(stringResource(R.string.player_engine) to if (engine == ActivePlaybackEngine.Media3) "ExoPlayer" else "mpv")
+    add(stringResource(R.string.player_engine) to engine.displayName)
     if (duration > 0.0) add(stringResource(R.string.player_info_runtime) to formatClock(duration))
   }
   Column(verticalArrangement = Arrangement.spacedBy(18.dp), modifier = Modifier.fillMaxWidth()) {
@@ -2863,7 +3033,7 @@ private fun PlayerOptionRow(label: String, selected: Boolean, supportingText: St
         Text(it, color = if (selected) Color.Black.copy(alpha = 0.68f) else Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall)
       }
     }
-    if (selected) Icon(Icons.Rounded.Check, contentDescription = stringResource(R.string.a11y_selected), tint = Color.Black, modifier = Modifier.size(22.dp))
+    if (selected) Icon(StreamDekPlayerIcons.Check, contentDescription = stringResource(R.string.a11y_selected), tint = Color.Black, modifier = Modifier.size(22.dp))
   }
 }
 
@@ -3515,6 +3685,8 @@ private fun PlayerPanels(
   onReloadStreams: () -> Unit,
   onDownloadStream: (AddonStream) -> Unit,
   onToggleSourceFavourite: (String) -> Unit,
+  episodeBrowser: PlayerEpisodeBrowser? = null,
+  onBeforeEpisodeSwitch: () -> Unit = {},
 ) {
   // Re-bound so the panel bodies below read and write exactly as they did in the screen.
   var activePanel by activePanelState
@@ -3809,6 +3981,10 @@ private fun PlayerPanels(
           switchEngine(ActivePlaybackEngine.MPV, "manual switch")
           activePanel = PlayerPanel.None
         }
+        PlayerOptionRow(ActivePlaybackEngine.VLC.displayName, selected = activeEngine == ActivePlaybackEngine.VLC) {
+          switchEngine(ActivePlaybackEngine.VLC, "manual switch")
+          activePanel = PlayerPanel.None
+        }
         Text(
           stringResource(R.string.player_engine_switch_note),
           color = Color.White.copy(alpha = 0.58f),
@@ -3874,6 +4050,21 @@ private fun PlayerPanels(
         duration = duration,
       )
     }
+    PlayerPanel.Episodes -> if (episodeBrowser != null) {
+      PlayerEpisodePanel(
+        browser = episodeBrowser,
+        currentFraction = (currentProgressPercent / 100.0).toFloat().takeIf { duration > 0.0 },
+        onClose = { activePanel = PlayerPanel.None },
+        onSelectEpisode = { episode ->
+          // Closed first, so the player's own loading state is what the viewer sees next.
+          activePanel = PlayerPanel.None
+          onBeforeEpisodeSwitch()
+          episodeBrowser.onSelectEpisode(episode)
+        },
+      )
+    } else {
+      LaunchedEffect(Unit) { activePanel = PlayerPanel.None }
+    }
     PlayerPanel.None -> Unit
   }
 }
@@ -3918,6 +4109,7 @@ private fun BoxScope.PlayerOverlays(
   onPreviousEpisode: () -> Unit,
   controlLayoutState: MutableState<String>,
   onControlLayoutChange: (String) -> Unit,
+  showEpisodes: Boolean = false,
 ) {
   // Re-bound so the overlay bodies below read and write exactly as they did in the screen.
   var controlLayout by controlLayoutState
@@ -3960,7 +4152,7 @@ private fun BoxScope.PlayerOverlays(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        Icon(Icons.Rounded.FastForward, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+        Icon(StreamDekPlayerIcons.FastForward, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
         Text(
           stringResource(R.string.player_speed_multiplier, formatPlaybackSpeed(playbackSpeed * session.holdToSpeedMultiplier)),
           color = Color.White,
@@ -3990,7 +4182,7 @@ private fun BoxScope.PlayerOverlays(
         verticalArrangement = Arrangement.spacedBy(7.dp),
       ) {
         Icon(
-          if (delta < 0) Icons.Rounded.FastRewind else Icons.Rounded.FastForward,
+          if (delta < 0) StreamDekPlayerIcons.FastRewind else StreamDekPlayerIcons.FastForward,
           contentDescription = null,
           tint = Color.White,
           modifier = Modifier.size(28.dp),
@@ -4022,9 +4214,9 @@ private fun BoxScope.PlayerOverlays(
       ) {
         Icon(
           when (adjustmentKind) {
-            PlayerAdjustmentKind.Brightness -> Icons.Rounded.Brightness6
-            PlayerAdjustmentKind.Volume -> if (adjustmentLevel <= 0f) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp
-            null -> Icons.Rounded.VolumeUp
+            PlayerAdjustmentKind.Brightness -> StreamDekPlayerIcons.Brightness
+            PlayerAdjustmentKind.Volume -> if (adjustmentLevel <= 0f) StreamDekPlayerIcons.AudioOff else StreamDekPlayerIcons.Audio
+            null -> StreamDekPlayerIcons.Audio
           },
           contentDescription = null,
           tint = Color.White,
@@ -4069,7 +4261,7 @@ private fun BoxScope.PlayerOverlays(
         horizontalArrangement = Arrangement.spacedBy(7.dp),
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        Icon(Icons.Rounded.Lock, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+        Icon(StreamDekPlayerIcons.Lock, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
         Text(stringResource(R.string.player_hold_to_unlock), color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
       }
     }
@@ -4176,6 +4368,8 @@ private fun BoxScope.PlayerOverlays(
       onSources = { keepControlsVisible(); activePanel = PlayerPanel.Sources },
       onEngine = { keepControlsVisible(); activePanel = PlayerPanel.Engine },
       onInfo = { keepControlsVisible(); activePanel = PlayerPanel.Info },
+      showEpisodes = showEpisodes,
+      onEpisodes = { keepControlsVisible(); activePanel = PlayerPanel.Episodes },
       showLabels = session.showPlayerControlLabels,
       layout = controlLayout,
       captionsAvailable = session.isLive && source.subtitleTracks.any { !it.speculative },
@@ -4208,6 +4402,7 @@ private fun PlayerBehaviourEffects(
   activeEngine: ActivePlaybackEngine,
   playerView: MPVView?,
   exoPlayerView: ExoPlaybackView?,
+  vlcPlayerView: VlcPlaybackView?,
   isLoading: Boolean,
   activeSkipSegment: SkipSegment?,
   nextEpisodeActionAvailable: Boolean,
@@ -4347,13 +4542,17 @@ LaunchedEffect(isLoading) {
 // The engines are polled rather than made to push, and only while the panel that reads them is
 // open — a transfer rate is a moving number that nothing else on screen depends on, so paying
 // for it every second of a two-hour film to answer a question nobody asked is waste.
-LaunchedEffect(activePanel, activeEngine, exoPlayerView, playerView) {
+LaunchedEffect(activePanel, activeEngine, exoPlayerView, playerView, vlcPlayerView) {
   if (activePanel != PlayerPanel.Info) {
     playbackStats = null
     return@LaunchedEffect
   }
   while (true) {
-    playbackStats = if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.playbackStats() else playerView?.playbackStats()
+    playbackStats = when (activeEngine) {
+      ActivePlaybackEngine.Media3 -> exoPlayerView?.playbackStats()
+      ActivePlaybackEngine.MPV -> playerView?.playbackStats()
+      ActivePlaybackEngine.VLC -> vlcPlayerView?.playbackStats()
+    }
     delay(1_000)
   }
 }
@@ -4362,13 +4561,17 @@ LaunchedEffect(activePanel, activeEngine, exoPlayerView, playerView) {
 // that draws it is on screen. The holder it is written to belongs to one source, so a new stream
 // starts from nothing; the engine is a key so a switch of engine does too. The state is only
 // written when the answer changed, so a paused, fully buffered film costs no recomposition.
-LaunchedEffect(showControls, isLoading, controlsLocked, activePanel, activeEngine, exoPlayerView, playerView) {
+LaunchedEffect(showControls, isLoading, controlsLocked, activePanel, activeEngine, exoPlayerView, playerView, vlcPlayerView) {
   val barOnScreen = showControls && !isLoading && !controlsLocked && activePanel == PlayerPanel.None
   if (source.bufferedRanges.value.isNotEmpty()) source.bufferedRanges.value = emptyList()
   if (!barOnScreen) return@LaunchedEffect
   while (true) {
     val sampled = runCatching {
-      if (activeEngine == ActivePlaybackEngine.Media3) exoPlayerView?.bufferedRanges() else playerView?.bufferedRanges()
+      when (activeEngine) {
+        ActivePlaybackEngine.Media3 -> exoPlayerView?.bufferedRanges()
+        ActivePlaybackEngine.MPV -> playerView?.bufferedRanges()
+        ActivePlaybackEngine.VLC -> vlcPlayerView?.bufferedRanges()
+      }
     }.getOrNull().orEmpty()
     if (sampled != source.bufferedRanges.value) source.bufferedRanges.value = sampled
     delay(500)
@@ -4420,8 +4623,9 @@ LaunchedEffect(activeSkipSegment, isLoading, nextEpisodeActionAvailable) {
 }
 
 LaunchedEffect(autoSkipNotice) {
-  if (autoSkipNotice == null) return@LaunchedEffect
-  delay(2_200)
+  val notice = autoSkipNotice ?: return@LaunchedEffect
+  // A change of engine is a sentence to read, not a word to glance at.
+  delay(if (notice in PLAYER_ENGINE_NOTICES) 5_000 else 2_200)
   autoSkipNotice = null
 }
 
@@ -4433,9 +4637,9 @@ LaunchedEffect(autoSkipNotice) {
 // the viewer has switched subtitles off is not a reason to have no list either: the panel is
 // where they go to switch them back on, and it has to have something in it when they get there.
 // The list is fetched once per source, and what is done with it is decided below.
-LaunchedEffect(playbackIdentity, session.autoLoadSubtitles, playerView, exoPlayerView, session.isLive, userSubtitleSources) {
+LaunchedEffect(playbackIdentity, session.autoLoadSubtitles, playerView, exoPlayerView, vlcPlayerView, session.isLive, userSubtitleSources) {
   if (session.isLive) return@LaunchedEffect
-  if (playerView == null && exoPlayerView == null) return@LaunchedEffect
+  if (playerView == null && exoPlayerView == null && vlcPlayerView == null) return@LaunchedEffect
   delay(1_200)
   subtitlesLoading = true
   val results = fetchExternalSubtitles(session, userSubtitleSources)
@@ -4455,13 +4659,22 @@ LaunchedEffect(playbackIdentity, session.autoLoadSubtitles, playerView, exoPlaye
   }
   subtitlesLoading = false
 }
-LaunchedEffect(activeEngine, playerView, externalSubtitleNeedsReapply, selectedExternalSubtitleId, externalSubtitles) {
-  if (activeEngine != ActivePlaybackEngine.MPV || playerView == null || !externalSubtitleNeedsReapply) return@LaunchedEffect
+LaunchedEffect(activeEngine, playerView, vlcPlayerView, externalSubtitleNeedsReapply, selectedExternalSubtitleId, externalSubtitles) {
+  // mpv and libVLC both take an external subtitle as a file added beside the stream, so an
+  // engine switch into either has to hand the chosen one over again.
+  val reapplyEngine = activeEngine
+  val engineReady = when (reapplyEngine) {
+    ActivePlaybackEngine.MPV -> playerView != null
+    ActivePlaybackEngine.VLC -> vlcPlayerView != null
+    ActivePlaybackEngine.Media3 -> false
+  }
+  if (!engineReady || !externalSubtitleNeedsReapply) return@LaunchedEffect
   val subtitle = externalSubtitles.firstOrNull { it.id == selectedExternalSubtitleId } ?: return@LaunchedEffect
   delay(700)
   val localPath = downloadSubtitleToCache(playerContext, subtitle.url)
-  if (localPath != null && activeEngine == ActivePlaybackEngine.MPV && selectedExternalSubtitleId == subtitle.id) {
-    playerView?.addSubtitleFile(localPath, subtitle.language)
+  if (localPath != null && activeEngine == reapplyEngine && selectedExternalSubtitleId == subtitle.id) {
+    if (reapplyEngine == ActivePlaybackEngine.VLC) vlcPlayerView?.addSubtitleFile(localPath, subtitle.language)
+    else playerView?.addSubtitleFile(localPath, subtitle.language)
     externalSubtitleNeedsReapply = false
   }
 }
@@ -4569,7 +4782,7 @@ private fun RecommendationChoice(
       if (!artwork.isNullOrBlank()) {
         AsyncImage(model = artwork, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
       } else {
-        Icon(Icons.Rounded.Tv, contentDescription = null, tint = Color.White.copy(alpha = 0.30f))
+        Icon(StreamDekPlayerIcons.HandOff, contentDescription = null, tint = Color.White.copy(alpha = 0.30f))
       }
     }
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -4707,7 +4920,7 @@ private fun BoxScope.PlayerSurfaceOverlays(
   ) {
     Surface(color = Color.Black.copy(alpha = 0.48f), shape = CircleShape) {
       Column(Modifier.padding(horizontal = 18.dp, vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Icon(if (displayedSeekFeedbackAmount < 0) Icons.Rounded.FastRewind else Icons.Rounded.FastForward, contentDescription = null, tint = Color.White)
+        Icon(if (displayedSeekFeedbackAmount < 0) StreamDekPlayerIcons.FastRewind else StreamDekPlayerIcons.FastForward, contentDescription = null, tint = Color.White)
         Text(
           stringResource(
             if (displayedSeekFeedbackAmount > 0) R.string.player_seek_feedback_forward else R.string.player_seek_feedback_back,
@@ -4726,7 +4939,7 @@ private fun BoxScope.PlayerSurfaceOverlays(
     exit = fadeOut(tween(180)),
   ) {
     Surface(color = Color.Black.copy(alpha = 0.42f), shape = CircleShape) {
-      Icon(if (playPauseFeedback == true) Icons.Rounded.Pause else RoundedPlayerPlayIcon, contentDescription = null, tint = Color.White, modifier = Modifier.padding(16.dp).size(30.dp))
+      Icon(if (playPauseFeedback == true) StreamDekPlayerIcons.Pause else StreamDekPlayerIcons.Play, contentDescription = null, tint = Color.White, modifier = Modifier.padding(16.dp).size(30.dp))
     }
   }
   AnimatedVisibility(
@@ -5116,7 +5329,7 @@ private fun BoxScope.PlayerLiveOverlays(
       modifier = Modifier.width(36.dp).height(92.dp).clickable { showLiveChannels = false; showFavouriteDrawer = true },
       color = Color(0xB3151820),
       shape = RoundedCornerShape(topStart = 22.dp, bottomStart = 22.dp),
-    ) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Rounded.ChevronLeft, contentDescription = stringResource(R.string.a11y_open_favourites), tint = Color.White, modifier = Modifier.size(28.dp)) } }
+    ) { Box(contentAlignment = Alignment.Center) { Icon(StreamDekPlayerIcons.ChevronLeft, contentDescription = stringResource(R.string.a11y_open_favourites), tint = Color.White, modifier = Modifier.size(28.dp)) } }
   }
 
   AnimatedVisibility(
@@ -5200,7 +5413,7 @@ private fun BoxScope.PlayerLiveOverlays(
       // picture rather than a control competing with it.
       Row(modifier = Modifier.padding(horizontal = 8.1.dp, vertical = 3.8.dp), horizontalArrangement = Arrangement.spacedBy(3.6.dp), verticalAlignment = Alignment.CenterVertically) {
         if (session.isVod) {
-          Icon(RoundedPlayerPlayIcon, contentDescription = null, tint = Color.White, modifier = Modifier.size(7.2.dp))
+          Icon(StreamDekPlayerIcons.Play, contentDescription = null, tint = Color.White, modifier = Modifier.size(7.2.dp))
         } else {
           Box(modifier = Modifier.size(3.8.dp).clip(CircleShape).background(Color.White))
         }

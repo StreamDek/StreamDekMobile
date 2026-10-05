@@ -86,7 +86,7 @@ internal fun JellyfinSettingsNavRow(state: MediaServerUiState, onClick: () -> Un
         },
       )
     }
-    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f))
+    Icon(StreamDekSettingsIcons.Forward, null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f))
   }
 }
 
@@ -280,7 +280,7 @@ internal fun JellyfinSettingsPage(
                 Text(candidate.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
                 SettingsSubtitle(listOfNotNull(candidate.url.removePrefix("http://").removePrefix("https://"), candidate.version?.let { "Jellyfin $it" }).joinToString(" · "))
               }
-              Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f))
+              Icon(StreamDekSettingsIcons.Forward, null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f))
             }
           }
           if (!searching && found.isEmpty()) PlexNote(stringResource(R.string.jellyfin_none_found))
@@ -375,18 +375,16 @@ internal fun JellyfinSettingsPage(
     }
 
     if (signedIn && state.linked && !adding) {
-      SettingsSection(stringResource(R.string.plex_servers)) {
-        state.servers.forEachIndexed { index, server ->
-          if (index > 0) SettingsDivider()
-          PlexServerSwitch(server, accent = JellyfinPurple) { manager.setJellyfinServerEnabled(server.id, !server.enabled) }
-          if (server.enabled) {
-            if (server.libraries.isEmpty()) PlexNote(stringResource(R.string.plex_no_libraries), indent = true)
-            server.libraries.forEach { library ->
-              PlexLibrarySwitch(library, accent = JellyfinPurple) { manager.setJellyfinLibraryEnabled(server.id, library.key, !library.enabled) }
-            }
-          }
-        }
-      }
+      MediaServerGroups(
+        provider = net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID,
+        manager = manager,
+        state = state,
+        accent = JellyfinPurple,
+        emptyNote = null,
+        onToggleServer = { server -> manager.setJellyfinServerEnabled(server.id, !server.enabled) },
+        onToggleLibrary = { server, library -> manager.setJellyfinLibraryEnabled(server.id, library.key, !library.enabled) },
+        onMessage = onMessage,
+      )
       SettingsSection(stringResource(R.string.jellyfin_page_section)) {
         PlexSwitchRow(
           title = stringResource(R.string.plex_ambient),

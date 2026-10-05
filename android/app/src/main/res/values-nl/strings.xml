@@ -340,7 +340,7 @@
   <string name="player_subtitle_styling_note">Kleur, omlijning en achtergrond vind je in Instellingen &gt; Ondertiteling.</string>
   <string name="player_reload">Opnieuw laden</string>
   <string name="player_no_loaded_sources">Nog geen geladen bronnen.</string>
-  <string name="player_engine_switch_note">Bij wisselen blijft je afspeelpositie behouden. Speelt een stream zonder geluid of met een zwart scherm, probeer dan de andere engine.</string>
+  <string name="player_engine_switch_note">Bij wisselen blijft je afspeelpositie behouden. Speelt een stream zonder geluid of met een zwart scherm, probeer dan een andere engine.</string>
   <string name="player_info_source">Bron</string>
   <string name="player_info_playback">Afspelen</string>
   <string name="player_info_installed_as">Geïnstalleerd als</string>
@@ -871,7 +871,7 @@
   <string name="settings_m_auto_skip_ending">Einde automatisch overslaan</string>
   <string name="settings_m_auto_skip_intro">Intro automatisch overslaan</string>
   <string name="settings_m_auto_skip_recap">Samenvatting automatisch overslaan</string>
-  <string name="settings_m_automatic_starts_with_media3_and_switches_to">Automatisch begint met Media3 en schakelt over naar mpv als een bron niet afspeelt.</string>
+  <string name="settings_m_automatic_starts_with_media3_and_switches_to">Automatisch begint met Media3 en schakelt over naar mpv als een bron niet afspeelt. libVLC wordt alleen gebruikt als je het kiest.</string>
   <string name="settings_m_automatic_subtitles_and_the_sources_they_come">Automatische ondertiteling en de bronnen waar die vandaan komt.</string>
   <string name="settings_m_automatically_choose_matching_subtitles_when_playback_starts">Bij het starten van afspelen automatisch passende ondertiteling kiezen.</string>
   <string name="settings_m_automatically_use_the_other_provider_when_needed">Zo nodig automatisch de andere dienst gebruiken</string>
@@ -1915,4 +1915,29 @@
   <string name="settings_m_buffer_ahead_description">Hoeveel van een video vooruit wordt geladen. Meer vangt een zwakke verbinding beter op en reikt verder op de zoekbalk, maar gebruikt meer geheugen en data. Video’s met een hoge bitrate houden minder vast. Geldt vanaf de volgende video.</string>
   <string name="settings_m_buffer_ahead_one_minute">1 minuut</string>
   <string name="settings_m_buffer_ahead_minutes">%1$d minuten</string>
+  <string name="player_episodes_empty">Er zijn nog geen afleveringen voor dit seizoen.</string>
+  <string name="player_speed">Snelheid</string>
+  <string name="player_engine_notice_fallback">libVLC kon deze bron niet afspelen. Een andere engine wordt geprobeerd.</string>
+  <string name="player_engine_notice_headers">Deze bron heeft headers nodig die libVLC niet kan versturen. Afspelen met ExoPlayer.</string>
+  <string name="player_engine_notice_protected">libVLC kan geen beveiligde zenders afspelen. Afspelen met ExoPlayer.</string>
+  <string name="player_engine_notice_dolby_vision">Dolby Vision wordt nauwkeuriger weergegeven in ExoPlayer. Engine wordt gewisseld.</string>
+  <string name="player_info_bitrate_now">Huidige bitrate</string>
+  <string name="player_info_frames">Frames</string>
+  <string name="player_info_frames_value">%1$s gedecodeerd · %2$s overgeslagen</string>
+  <string name="media_server_remove">Verwijderen</string>
+  <string name="media_server_remove_named">%1$s verwijderen</string>
+  <string name="media_server_remove_title">%1$s verwijderen?</string>
+  <string name="media_server_remove_library_body">Deze bibliotheek wordt uitgeschakeld en uit deze lijst gehaald. Je andere bibliotheken en servers blijven verbonden. Onder Verwijderd kun je hem terugzetten.</string>
+  <string name="media_server_remove_server_body">Deze server en zijn bibliotheken worden uitgeschakeld en uit deze lijst gehaald. Je andere servers blijven verbonden. Onder Verwijderd kun je hem terugzetten.</string>
+  <string name="jellyfin_remove_server_body">StreamDek meldt zich alleen bij deze server af. Je andere Jellyfin-servers blijven verbonden. Voeg hem opnieuw toe en meld je aan om hem weer te gebruiken.</string>
+  <string name="media_server_remove_server">Deze server verwijderen</string>
+  <string name="media_server_removed">Verwijderd</string>
+  <string name="media_server_removed_note">Uitgeschakeld en op dit apparaat verborgen uit de lijst hierboven.</string>
+  <string name="media_server_restore">Terugzetten</string>
+  <string name="media_server_removed_done">%1$s verwijderd.</string>
+  <string name="media_server_restored_done">%1$s teruggezet.</string>
+  <string name="media_server_libraries_on_of">%1$d van %2$d bibliotheken aan</string>
+  <string name="media_server_show_libraries">Bibliotheken tonen</string>
+  <string name="media_server_hide_libraries">Bibliotheken verbergen</string>
+  <string name="media_server_whole_server">Server met al zijn bibliotheken</string>
 </resources>

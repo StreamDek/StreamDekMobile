@@ -27,6 +27,19 @@ data class PlaybackStats(
   val bufferedSeconds: Double? = null,
   /** The hardware decoder in use, when the engine names one. */
   val hardwareDecoder: String? = null,
+  /** The codec profile and level as usually written, e.g. "Main 10@L5.1". */
+  val videoProfile: String? = null,
+  /** Bits per sample, when the engine or the profile settles it. */
+  val videoBitDepth: Int? = null,
+  val audioSampleRateHz: Int? = null,
+  /** Nominal bitrate of the selected audio track, bits per second. */
+  val audioBitrateBps: Double? = null,
+  val audioLanguage: String? = null,
+  /** The bitrate of what is being played at this moment, measured at the demuxer, bits per second. */
+  val contentBitrateBps: Double? = null,
+  /** Video frames decoded since this source opened, and how many of them were not shown in time. */
+  val decodedFrames: Long? = null,
+  val droppedFrames: Long? = null,
 )
 
 /**

@@ -351,7 +351,7 @@
   <string name="player_subtitle_styling_note">Colour, outline and background are in Settings &gt; Subtitles.</string>
   <string name="player_reload">Reload</string>
   <string name="player_no_loaded_sources">No loaded sources yet.</string>
-  <string name="player_engine_switch_note">Switching keeps your playback position. If a stream plays with no sound or a black screen, try the other engine.</string>
+  <string name="player_engine_switch_note">Switching keeps your playback position. If a stream plays with no sound or a black screen, try another engine.</string>
   <string name="player_info_source">Source</string>
   <string name="player_info_playback">Playback</string>
   <string name="player_info_installed_as">Installed as</string>
@@ -882,7 +882,7 @@
   <string name="settings_m_auto_skip_ending">Auto Skip Ending</string>
   <string name="settings_m_auto_skip_intro">Auto Skip Intro</string>
   <string name="settings_m_auto_skip_recap">Auto Skip Recap</string>
-  <string name="settings_m_automatic_starts_with_media3_and_switches_to">Automatic starts with Media3 and switches to mpv if a source cannot play.</string>
+  <string name="settings_m_automatic_starts_with_media3_and_switches_to">Automatic starts with Media3 and switches to mpv if a source cannot play. libVLC is used only when you choose it.</string>
   <string name="settings_m_automatic_subtitles_and_the_sources_they_come">Automatic subtitles and the sources they come from.</string>
   <string name="settings_m_automatically_choose_matching_subtitles_when_playback_starts">Automatically choose matching subtitles when playback starts.</string>
   <string name="settings_m_automatically_use_the_other_provider_when_needed">Automatically use the other provider when needed</string>
@@ -2082,4 +2082,29 @@
   <string name="settings_m_buffer_ahead_description">How much of a video to load ahead of where you are watching. More rides out a weak connection and shows further along the seek bar, and uses more memory and data. High-bitrate videos hold less than this. Applies to the next video you play.</string>
   <string name="settings_m_buffer_ahead_one_minute">1 minute</string>
   <string name="settings_m_buffer_ahead_minutes">%1$d minutes</string>
+  <string name="player_episodes_empty">No episodes are listed for this season yet.</string>
+  <string name="player_speed">Speed</string>
+  <string name="player_engine_notice_fallback">libVLC couldn\'t play this source. Trying another engine.</string>
+  <string name="player_engine_notice_headers">This source needs request headers libVLC can\'t send. Playing with ExoPlayer.</string>
+  <string name="player_engine_notice_protected">libVLC can\'t play protected channels. Playing with ExoPlayer.</string>
+  <string name="player_engine_notice_dolby_vision">Dolby Vision plays more accurately in ExoPlayer. Switching engine.</string>
+  <string name="player_info_bitrate_now">Current bitrate</string>
+  <string name="player_info_frames">Frames</string>
+  <string name="player_info_frames_value">%1$s decoded · %2$s dropped</string>
+  <string name="media_server_remove">Remove</string>
+  <string name="media_server_remove_named">Remove %1$s</string>
+  <string name="media_server_remove_title">Remove %1$s?</string>
+  <string name="media_server_remove_library_body">This library is switched off and taken off this list. Your other libraries and servers stay connected. You can bring it back under Removed.</string>
+  <string name="media_server_remove_server_body">This server and its libraries are switched off and taken off this list. Your other servers stay connected. You can bring it back under Removed.</string>
+  <string name="jellyfin_remove_server_body">StreamDek signs out of this server only. Your other Jellyfin servers stay connected. To use it again, add it and sign in.</string>
+  <string name="media_server_remove_server">Remove this server</string>
+  <string name="media_server_removed">Removed</string>
+  <string name="media_server_removed_note">Switched off and hidden from the list above on this device.</string>
+  <string name="media_server_restore">Restore</string>
+  <string name="media_server_removed_done">%1$s removed.</string>
+  <string name="media_server_restored_done">%1$s restored.</string>
+  <string name="media_server_libraries_on_of">%1$d of %2$d libraries on</string>
+  <string name="media_server_show_libraries">Show libraries</string>
+  <string name="media_server_hide_libraries">Hide libraries</string>
+  <string name="media_server_whole_server">Server and all its libraries</string>
 </resources>

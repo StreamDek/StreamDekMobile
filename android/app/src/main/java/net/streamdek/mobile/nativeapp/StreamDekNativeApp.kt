@@ -980,6 +980,232 @@ private inline fun AppUiState.withMediaServer(change: (MediaServerAppState) -> M
   return this
 }
 
+/**
+ * What the player's episode browser has read, for the series in [detailId].
+ *
+ * Kept apart from [AppUiState.selectedSeasonEpisodes] on purpose: that list is the season of the
+ * episode that is playing, and previous / next / autoplay all work from it. Looking through another
+ * season from inside the player must not move it until an episode there is actually chosen.
+ *
+ * And kept out of [AppUiState] altogether: it is the browser's working state, not the app's, and
+ * AppUiState is large enough that it should not be the default home for anything new. See
+ * [PlaybackUiSettings] for what happens when it grows past what one `copy` call can carry.
+ */
+private data class PlayerBrowserState(
+  val detailId: String? = null,
+  val episodes: Map<Int, List<EpisodeItem>> = emptyMap(),
+  val loadingSeason: Int? = null,
+  val failedSeason: Int? = null,
+)
+
+/**
+ * How playback behaves: the engine, languages and subtitles, the player's gestures and controls,
+ * skipping, and what happens at the end of an episode.
+ *
+ * A part of [AppUiState] in a class of its own. AppUiState had grown to the point where its
+ * generated `copy` passed exactly 255 argument words - the most one call can carry on Android - and
+ * one more field compiled cleanly and then failed bytecode verification on the device at launch.
+ * Settings are the natural part to lift out: they change one at a time, from one setter each.
+ *
+ * Reads are unchanged. AppUiState forwards every field here under its old name, so
+ * `uiState.decoderMode` still works; only a write names the group:
+ * `uiState.copy(playbackSettings = uiState.playbackSettings.copy(decoderMode = value))`.
+ */
+@Immutable
+private data class PlaybackUiSettings(
+  val dv7HevcFallback: Boolean = true,
+  val tunneledPlayback: Boolean = false,
+  val pictureInPictureEnabled: Boolean = true,
+  val decoderMode: String = "HW+",
+  val renderSurface: String = "Standard",
+  val playerEngine: String = "Auto",
+  val preferredAudioLanguage: String = "en",
+  /** Fallback spoken language, for a release that carries nothing in the preferred one. */
+  val secondaryAudioLanguage: String = Languages.NONE,
+  val preferredSubtitleLanguage: String = "en",
+  val secondarySubtitleLanguage: String = Languages.NONE,
+  /**
+   * Prefer a forced track when the audio is already in the subtitle language — the signs-and-songs
+   * subtitles rather than a full transcript of dialogue the viewer can already hear.
+   */
+  val useForcedSubtitles: Boolean = false,
+  /** Hide subtitle tracks that are in neither preferred language. */
+  val showOnlyPreferredSubtitleLanguages: Boolean = false,
+  /** How much add-ons are asked for: "preferred", "all" or "off". */
+  val addonSubtitleLoading: String = ADDON_SUBTITLE_LOADING_ALL,
+  val rememberLastSource: Boolean = true,
+  /** Player touch gestures. Device-local: they describe this screen, not the account. */
+  val holdToSpeedEnabled: Boolean = true,
+  val holdToSpeedMultiplier: Float = 2f,
+  val swipeToSeekEnabled: Boolean = true,
+  val doubleTapSeekEnabled: Boolean = true,
+  val doubleTapSeekSeconds: Int = 10,
+  val doubleTapPlayPauseEnabled: Boolean = true,
+  val showPlayerControlLabels: Boolean = true,
+  val playerControlLayout: String = "Normal",
+  val fullscreenStatusBar: String = "Hide in fullscreen",
+  val playerTitleDisplay: String = "Scrolling",
+  /** Swipe the left of the video for brightness, the right for volume. */
+  val playerLevelGesturesEnabled: Boolean = true,
+  val skipIntroEnabled: Boolean = true,
+  val skipRecapEnabled: Boolean = true,
+  val skipEndingEnabled: Boolean = true,
+  val autoSkipIntroEnabled: Boolean = false,
+  val autoSkipRecapEnabled: Boolean = false,
+  val autoSkipEndingEnabled: Boolean = false,
+  /** The viewer's own IntroDB key. Blank uses the key StreamDek ships with. */
+  val introdbApiKey: String = "",
+  val autoPlayNextEpisode: Boolean = true,
+  val preferBingeGroup: Boolean = true,
+  val autoLoadSubtitles: Boolean = true,
+  /**
+   * How subtitles are drawn, and where the picker opens.
+   *
+   * These were player-local state keyed on the stream's URL, so every one of them reverted the
+   * moment a different video started: a viewer who had set their size and picked an add-on as their
+   * subtitle source had to set both again on the next episode. They live here so a choice made once
+   * is the choice from then on, and so the same values can be set from Settings.
+   */
+  val subtitleTextSize: Int = 55,
+  val subtitleVerticalOffset: Int = 92,
+  val subtitleBold: Boolean = false,
+  val subtitleTextColor: String = "#FFFFFFFF",
+  val subtitleBackgroundColor: String = "#00000000",
+  val subtitleOutline: Boolean = true,
+  val subtitleOutlineColor: String = "#FF000000",
+  /** Which tab the in-player subtitle picker opens on: the viewer's usual source of subtitles. */
+  /**
+   * Which tab the subtitle picker opens on. Add-ons, because that is where the choice actually is:
+   * a release carries one or two embedded tracks and the add-ons between them carry a hundred, so
+   * opening on Built-in showed the shorter list first and made the longer one look absent.
+   */
+  val subtitleDefaultSource: String = "All",
+  val nextEpisodeThresholdMode: String = "minutes",
+  val nextEpisodeThresholdPercent: Int = 95,
+  val nextEpisodeThresholdMinutes: Int = 2,
+  val endOfPlaybackRecommendationsEnabled: Boolean = false,
+  val recommendationTiming: String = "standard",
+  val recommendationItemCount: Int = 1,
+  val timingProvider: String = "introdb",
+  val timingProviderFallbackEnabled: Boolean = true,
+)
+
+/**
+ * How the app looks and is laid out: theme and language, navigation, the home and detail pages,
+ * cards, badges and ratings.
+ *
+ * The second part lifted out of [AppUiState], for the reason given on [PlaybackUiSettings], and
+ * read and written the same way through `appearanceSettings`.
+ */
+@Immutable
+private data class AppearanceUiSettings(
+  val appAppearance: AppAppearance = AppAppearance.Dark,
+  /**
+   * How fast the app animates, for this installation.
+   *
+   * Device-local by design and deliberately absent from the cloud-preference payload: see
+   * [AnimationSpeed]. A phone and a television are watched from very different distances and
+   * can reasonably want different answers, so this one setting does not follow the account.
+   */
+  val animationSpeed: AnimationSpeed = AnimationSpeed.Default,
+  /** Either [AppLanguage.SystemSelection] or a supported language tag. */
+  val appLanguage: String = AppLanguage.DefaultSelection,
+  val themePreset: AppThemePreset = AppThemePreset.Default,
+  val headerStyle: HeaderStyle = HeaderStyle.Classic,
+  val detailPageStyle: DetailPageStyle = DetailPageStyle.Classic,
+  val seasonTabStyle: SeasonTabStyle = SeasonTabStyle.Regular,
+  val episodeLayout: EpisodeLayout = EpisodeLayout.Strip,
+  val showNavLabels: Boolean = true,
+  val collapsibleNavigationEnabled: Boolean = false,
+  /** Device-local: what triggers the collapse. See [NavigationBehaviour] for why it is a second key. */
+  val navigationCollapsesOnScroll: Boolean = false,
+  /** Device-local: whether an expanded navigation keeps scroll-aware headers. See [NavigationBehaviour]. */
+  val expandedHeadersScrollAware: Boolean = false,
+  val navigationAutoCollapseSeconds: Int = 5,
+  /** Device-local, like [animationSpeed]: see `VisualEffects.kt`. */
+  val visualEffectsMode: VisualEffectsMode = VisualEffectsMode.Default,
+  val showStreamsList: Boolean = true,
+  val heroTrailerAutoplay: Boolean = false,
+  // 2160p by default: the resolver gates format selection on this value, so a lower default
+  // silently discards the 4K renditions YouTube publishes for some trailers. The adaptive picker
+  // takes the tallest rendition at or under it, so this is a ceiling rather than a demand.
+  val heroTrailerResolution: Int = 1080,
+  /**
+   * How long a title page is left alone before its trailer starts, in seconds.
+   *
+   * Synced, and the same value the television and the web portal read: a household that has decided
+   * how soon trailers should begin has decided it for the account, not for one device. Held to
+   * 0-5 seconds on the way in and on the way out, so a value written from anywhere cannot leave a
+   * page sitting still waiting for something minutes away.
+   */
+  val heroTrailerDelaySeconds: Int = DEFAULT_TRAILER_DELAY_SECONDS,
+  /**
+   * Whether hero trailers start muted. Trailers open silent, but unmuting one is a statement about
+   * how the viewer wants trailers to sound from then on — it used to be forgotten the moment the
+   * page closed, so every title had to be unmuted again by hand.
+   */
+  val heroTrailerMuted: Boolean = true,
+  /** Off by default, matching the TV app: the spotlight reads better as artwork and title alone. */
+  val showHeroSynopsis: Boolean = false,
+  val continueWatchingStyle: ContinueWatchingStyle = ContinueWatchingStyle.Mini,
+  val homeCardTextMode: HomeCardTextMode = HomeCardTextMode.Default,
+  val networkCardStyle: NetworkCardStyle = NetworkCardStyle.Classic,
+  val liveLandscapeCards: Boolean = true,
+  /** Home visibility only; episode notifications have independent settings. */
+  val showNewEpisodesRow: Boolean = true,
+  /**
+   * Wide cards showing the episode's own still, rather than posters of the series.
+   *
+   * On by default: the row exists to say a particular episode has landed, and a still from that
+   * episode says it where a series poster -- identical for every episode ever made -- does not.
+   */
+  val newEpisodesLandscape: Boolean = true,
+  val liveCategoriesEnabled: Boolean = true,
+  val liveProgressBarEnabled: Boolean = false,
+  /** Whether the player draws its Live / VOD badge. On unless switched off; visual only. */
+  val liveBadgeEnabled: Boolean = true,
+  val blurUnwatchedEpisodes: Boolean = true,
+  val ratingsEnabled: Boolean = false,
+  val externalRatingsEnabled: Boolean = true,
+  val enabledRatingProviders: Set<String> = DEFAULT_RATING_PROVIDER_IDS,
+  val vividAmbient: Boolean = true,
+  /**
+   * Seeded from [vividAmbient] on first run and kept in its own right afterwards — the old boolean
+   * could only say blurred-or-not, and there are three answers now.
+   */
+  val detailBackgroundMode: BackgroundMode = BackgroundMode.Cinematic,
+  /** The home screen's own choice, never Dominant — see [homeBackgroundModes]. */
+  val homeBackgroundMode: BackgroundMode = BackgroundMode.Cinematic,
+  /**
+   * How tightly Home is packed. The one canonical source for it — every measurement on the screen
+   * comes from [HomeLayoutMetrics.forDensity], so no two rows can disagree about which mode it is.
+   */
+  val mediaHubEnabled: Boolean = false,
+  val homeDensity: HomeDensity = HomeDensity.Default,
+  /**
+   * The home screen's ambient tint, and the title page's.
+   *
+   * Two values rather than one. The home screen and a title page each choose their own background
+   * mode, and a tint that belonged to both meant setting either page's strength moved the other —
+   * and, worse, the home slider was enabled by the *title* page's mode, so turning Cinematic on for
+   * title pages unlocked a slider on a home screen that was not blurred at all.
+   */
+  val ambientTintPercent: Int = 50,
+  val detailAmbientTintPercent: Int = 50,
+  val fusionBadgesEnabled: Boolean = true,
+  /**
+   * Whether stream rows are rebuilt into StreamDek's own two-line layout instead of showing what
+   * the add-on actually sent. Off by default: an add-on's `name`/`title` already carry its own
+   * deliberate formatting — line breaks, emoji, seeder and size columns — and reshaping them lost
+   * information that only the add-on knows how to present.
+   */
+  val streamDekFormattingEnabled: Boolean = false,
+  val showSizeBadges: Boolean = true,
+  val preferredQuality: String = "Auto",
+  val maxFileSizeGb: Int = 0,
+  val badgePosition: String = "Bottom",
+)
+
 private data class AppUiState(
   val booting: Boolean = true,
   /**
@@ -1112,8 +1338,6 @@ private data class AppUiState(
   val upcomingEpisodeRemindersEnabled: Boolean = false,
   val upcomingEpisodeReminderDays: Int = 1,
   val episodeRemindersPermitted: Boolean = true,
-  val dv7HevcFallback: Boolean = true,
-  val tunneledPlayback: Boolean = false,
   val downloads: List<DownloadEntry> = emptyList(),
   val debridLoading: Boolean = false,
   val debridAccounts: List<DebridAccount> = emptyList(),
@@ -1167,89 +1391,6 @@ private data class AppUiState(
   val showProfilePicker: Boolean = false,
   /** Device-local startup preference; profile identity itself remains account/profile scoped. */
   val rememberLastProfileAtStartup: Boolean = false,
-  val appAppearance: AppAppearance = AppAppearance.Dark,
-  /**
-   * How fast the app animates, for this installation.
-   *
-   * Device-local by design and deliberately absent from the cloud-preference payload: see
-   * [AnimationSpeed]. A phone and a television are watched from very different distances and
-   * can reasonably want different answers, so this one setting does not follow the account.
-   */
-  val animationSpeed: AnimationSpeed = AnimationSpeed.Default,
-  /** Either [AppLanguage.SystemSelection] or a supported language tag. */
-  val appLanguage: String = AppLanguage.DefaultSelection,
-  val themePreset: AppThemePreset = AppThemePreset.Default,
-  val headerStyle: HeaderStyle = HeaderStyle.Classic,
-  val pictureInPictureEnabled: Boolean = true,
-  val decoderMode: String = "HW+",
-  val renderSurface: String = "Standard",
-  val playerEngine: String = "Auto",
-  val preferredAudioLanguage: String = "en",
-  /** Fallback spoken language, for a release that carries nothing in the preferred one. */
-  val secondaryAudioLanguage: String = Languages.NONE,
-  val preferredSubtitleLanguage: String = "en",
-  val secondarySubtitleLanguage: String = Languages.NONE,
-  /**
-   * Prefer a forced track when the audio is already in the subtitle language — the signs-and-songs
-   * subtitles rather than a full transcript of dialogue the viewer can already hear.
-   */
-  val useForcedSubtitles: Boolean = false,
-  /** Hide subtitle tracks that are in neither preferred language. */
-  val showOnlyPreferredSubtitleLanguages: Boolean = false,
-  /** How much add-ons are asked for: "preferred", "all" or "off". */
-  val addonSubtitleLoading: String = ADDON_SUBTITLE_LOADING_ALL,
-  val detailPageStyle: DetailPageStyle = DetailPageStyle.Classic,
-  val seasonTabStyle: SeasonTabStyle = SeasonTabStyle.Regular,
-  val episodeLayout: EpisodeLayout = EpisodeLayout.Strip,
-  val showNavLabels: Boolean = true,
-  val collapsibleNavigationEnabled: Boolean = false,
-  /** Device-local: what triggers the collapse. See [NavigationBehaviour] for why it is a second key. */
-  val navigationCollapsesOnScroll: Boolean = false,
-  /** Device-local: whether an expanded navigation keeps scroll-aware headers. See [NavigationBehaviour]. */
-  val expandedHeadersScrollAware: Boolean = false,
-  val navigationAutoCollapseSeconds: Int = 5,
-  /** Device-local, like [animationSpeed]: see `VisualEffects.kt`. */
-  val visualEffectsMode: VisualEffectsMode = VisualEffectsMode.Default,
-  val showStreamsList: Boolean = true,
-  val heroTrailerAutoplay: Boolean = false,
-  // 2160p by default: the resolver gates format selection on this value, so a lower default
-  // silently discards the 4K renditions YouTube publishes for some trailers. The adaptive picker
-  // takes the tallest rendition at or under it, so this is a ceiling rather than a demand.
-  val heroTrailerResolution: Int = 1080,
-  /**
-   * How long a title page is left alone before its trailer starts, in seconds.
-   *
-   * Synced, and the same value the television and the web portal read: a household that has decided
-   * how soon trailers should begin has decided it for the account, not for one device. Held to
-   * 0-5 seconds on the way in and on the way out, so a value written from anywhere cannot leave a
-   * page sitting still waiting for something minutes away.
-   */
-  val heroTrailerDelaySeconds: Int = DEFAULT_TRAILER_DELAY_SECONDS,
-  /**
-   * Whether hero trailers start muted. Trailers open silent, but unmuting one is a statement about
-   * how the viewer wants trailers to sound from then on — it used to be forgotten the moment the
-   * page closed, so every title had to be unmuted again by hand.
-   */
-  val heroTrailerMuted: Boolean = true,
-  /** Off by default, matching the TV app: the spotlight reads better as artwork and title alone. */
-  val showHeroSynopsis: Boolean = false,
-  val continueWatchingStyle: ContinueWatchingStyle = ContinueWatchingStyle.Mini,
-  val homeCardTextMode: HomeCardTextMode = HomeCardTextMode.Default,
-  val networkCardStyle: NetworkCardStyle = NetworkCardStyle.Classic,
-  val liveLandscapeCards: Boolean = true,
-  /** Home visibility only; episode notifications have independent settings. */
-  val showNewEpisodesRow: Boolean = true,
-  /**
-   * Wide cards showing the episode's own still, rather than posters of the series.
-   *
-   * On by default: the row exists to say a particular episode has landed, and a still from that
-   * episode says it where a series poster -- identical for every episode ever made -- does not.
-   */
-  val newEpisodesLandscape: Boolean = true,
-  val liveCategoriesEnabled: Boolean = true,
-  val liveProgressBarEnabled: Boolean = false,
-  /** Whether the player draws its Live / VOD badge. On unless switched off; visual only. */
-  val liveBadgeEnabled: Boolean = true,
   /** When false (the default) the device queries add-ons itself rather than asking StreamDek's
    * servers to do it, so an add-on sees this user's IP and never the shared server one. */
   val serverSideStreamsEnabled: Boolean = false,
@@ -1282,68 +1423,12 @@ private data class AppUiState(
   val primarySyncService: String = SyncService.Trakt.id,
   val liveFavouriteDrawerCards: Boolean = false,
   val favoriteSourceKeys: Set<String> = emptySet(),
-  val rememberLastSource: Boolean = true,
   val syncOnCellular: Boolean = false,
   val syncRefreshing: Boolean = false,
   /** True while "Sync now" on the Sync Services page is working. */
   val syncSourcesRefreshing: Boolean = false,
   /** When the connections were last read back, so the page can say rather than imply. */
   val syncSourcesCheckedAt: Long? = null,
-  /** Player touch gestures. Device-local: they describe this screen, not the account. */
-  val holdToSpeedEnabled: Boolean = true,
-  val holdToSpeedMultiplier: Float = 2f,
-  val swipeToSeekEnabled: Boolean = true,
-  val doubleTapSeekEnabled: Boolean = true,
-  val doubleTapSeekSeconds: Int = 10,
-  val doubleTapPlayPauseEnabled: Boolean = true,
-  val showPlayerControlLabels: Boolean = true,
-  val playerControlLayout: String = "Normal",
-  val fullscreenStatusBar: String = "Hide in fullscreen",
-  val playerTitleDisplay: String = "Scrolling",
-  /** Swipe the left of the video for brightness, the right for volume. */
-  val playerLevelGesturesEnabled: Boolean = true,
-  val skipIntroEnabled: Boolean = true,
-  val skipRecapEnabled: Boolean = true,
-  val skipEndingEnabled: Boolean = true,
-  val autoSkipIntroEnabled: Boolean = false,
-  val autoSkipRecapEnabled: Boolean = false,
-  val autoSkipEndingEnabled: Boolean = false,
-  /** The viewer's own IntroDB key. Blank uses the key StreamDek ships with. */
-  val introdbApiKey: String = "",
-  val autoPlayNextEpisode: Boolean = true,
-  val preferBingeGroup: Boolean = true,
-  val autoLoadSubtitles: Boolean = true,
-  /**
-   * How subtitles are drawn, and where the picker opens.
-   *
-   * These were player-local state keyed on the stream's URL, so every one of them reverted the
-   * moment a different video started: a viewer who had set their size and picked an add-on as their
-   * subtitle source had to set both again on the next episode. They live here so a choice made once
-   * is the choice from then on, and so the same values can be set from Settings.
-   */
-  val subtitleTextSize: Int = 55,
-  val subtitleVerticalOffset: Int = 92,
-  val subtitleBold: Boolean = false,
-  val subtitleTextColor: String = "#FFFFFFFF",
-  val subtitleBackgroundColor: String = "#00000000",
-  val subtitleOutline: Boolean = true,
-  val subtitleOutlineColor: String = "#FF000000",
-  /** Which tab the in-player subtitle picker opens on: the viewer's usual source of subtitles. */
-  /**
-   * Which tab the subtitle picker opens on. Add-ons, because that is where the choice actually is:
-   * a release carries one or two embedded tracks and the add-ons between them carry a hundred, so
-   * opening on Built-in showed the shorter list first and made the longer one look absent.
-   */
-  val subtitleDefaultSource: String = "All",
-  val blurUnwatchedEpisodes: Boolean = true,
-  val nextEpisodeThresholdMode: String = "minutes",
-  val nextEpisodeThresholdPercent: Int = 95,
-  val nextEpisodeThresholdMinutes: Int = 2,
-  val endOfPlaybackRecommendationsEnabled: Boolean = false,
-  val recommendationTiming: String = "standard",
-  val recommendationItemCount: Int = 1,
-  val timingProvider: String = "introdb",
-  val timingProviderFallbackEnabled: Boolean = true,
   val peerStreamSettings: PeerStreamSettings = PeerStreamSettings(),
   val peerStreamStatus: PeerStreamStatus = PeerStreamStatus(),
   /**
@@ -1353,9 +1438,6 @@ private data class AppUiState(
    * disabled state, nothing until the notice arrived seconds later.
    */
   val peerStorageClearing: Boolean = false,
-  val ratingsEnabled: Boolean = false,
-  val externalRatingsEnabled: Boolean = true,
-  val enabledRatingProviders: Set<String> = DEFAULT_RATING_PROVIDER_IDS,
   /**
    * The viewer's own TMDB and MDBList keys, and where each one is kept.
    *
@@ -1369,34 +1451,10 @@ private data class AppUiState(
   val contentServicesPromptVisible: Boolean = false,
   /** The service a contextual nudge is currently offering to set up, if any. */
   val contentServiceHint: ContentService? = null,
-  val vividAmbient: Boolean = true,
-  /**
-   * Seeded from [vividAmbient] on first run and kept in its own right afterwards — the old boolean
-   * could only say blurred-or-not, and there are three answers now.
-   */
-  val detailBackgroundMode: BackgroundMode = BackgroundMode.Cinematic,
-  /** The home screen's own choice, never Dominant — see [homeBackgroundModes]. */
-  val homeBackgroundMode: BackgroundMode = BackgroundMode.Cinematic,
-  /**
-   * How tightly Home is packed. The one canonical source for it — every measurement on the screen
-   * comes from [HomeLayoutMetrics.forDensity], so no two rows can disagree about which mode it is.
-   */
-  val mediaHubEnabled: Boolean = false,
-  val homeDensity: HomeDensity = HomeDensity.Default,
   /** How often the trailer cache clears itself, in hours. Zero switches it off. */
   val trailerCacheClearHours: Int = DEFAULT_TRAILER_CACHE_CLEAR_HOURS,
   val trailerCacheSizeBytes: Long = 0L,
   val trailerCacheLastClearedAt: Long = 0L,
-  /**
-   * The home screen's ambient tint, and the title page's.
-   *
-   * Two values rather than one. The home screen and a title page each choose their own background
-   * mode, and a tint that belonged to both meant setting either page's strength moved the other —
-   * and, worse, the home slider was enabled by the *title* page's mode, so turning Cinematic on for
-   * title pages unlocked a slider on a home screen that was not blurred at all.
-   */
-  val ambientTintPercent: Int = 50,
-  val detailAmbientTintPercent: Int = 50,
   val defaultAppCatalogsEnabled: Boolean = true,
   val homeCatalogRows: List<HomeCatalogRow> = emptyList(),
   /**
@@ -1410,18 +1468,6 @@ private data class AppUiState(
   val catalogDefinitions: List<CatalogDefinition> = fallbackCatalogDefinitions,
   /** Where each default row's "View All" carries on from, by row id. */
   val catalogNextPages: Map<String, Int> = emptyMap(),
-  val fusionBadgesEnabled: Boolean = true,
-  /**
-   * Whether stream rows are rebuilt into StreamDek's own two-line layout instead of showing what
-   * the add-on actually sent. Off by default: an add-on's `name`/`title` already carry its own
-   * deliberate formatting — line breaks, emoji, seeder and size columns — and reshaping them lost
-   * information that only the add-on knows how to present.
-   */
-  val streamDekFormattingEnabled: Boolean = false,
-  val showSizeBadges: Boolean = true,
-  val preferredQuality: String = "Auto",
-  val maxFileSizeGb: Int = 0,
-  val badgePosition: String = "Bottom",
   val fusionBadgeUrls: List<String> = listOf(DEFAULT_FUSION_BADGE_URL),
   val activeFusionBadgeUrl: String? = null,
   val autoUpdateChecksEnabled: Boolean = true,
@@ -1435,7 +1481,108 @@ private data class AppUiState(
   val fusionBadgeSources: Map<String, FusionBadgeSourceState> = emptyMap(),
   val errorMessage: String? = null,
   val infoMessage: String? = null,
+  val playbackSettings: PlaybackUiSettings = PlaybackUiSettings(),
+  val appearanceSettings: AppearanceUiSettings = AppearanceUiSettings(),
 ) {
+  // Settings that live in a group of their own, readable here under the names they always had.
+  val dv7HevcFallback: Boolean get() = playbackSettings.dv7HevcFallback
+  val tunneledPlayback: Boolean get() = playbackSettings.tunneledPlayback
+  val pictureInPictureEnabled: Boolean get() = playbackSettings.pictureInPictureEnabled
+  val decoderMode: String get() = playbackSettings.decoderMode
+  val renderSurface: String get() = playbackSettings.renderSurface
+  val playerEngine: String get() = playbackSettings.playerEngine
+  val preferredAudioLanguage: String get() = playbackSettings.preferredAudioLanguage
+  val secondaryAudioLanguage: String get() = playbackSettings.secondaryAudioLanguage
+  val preferredSubtitleLanguage: String get() = playbackSettings.preferredSubtitleLanguage
+  val secondarySubtitleLanguage: String get() = playbackSettings.secondarySubtitleLanguage
+  val useForcedSubtitles: Boolean get() = playbackSettings.useForcedSubtitles
+  val showOnlyPreferredSubtitleLanguages: Boolean get() = playbackSettings.showOnlyPreferredSubtitleLanguages
+  val addonSubtitleLoading: String get() = playbackSettings.addonSubtitleLoading
+  val rememberLastSource: Boolean get() = playbackSettings.rememberLastSource
+  val holdToSpeedEnabled: Boolean get() = playbackSettings.holdToSpeedEnabled
+  val holdToSpeedMultiplier: Float get() = playbackSettings.holdToSpeedMultiplier
+  val swipeToSeekEnabled: Boolean get() = playbackSettings.swipeToSeekEnabled
+  val doubleTapSeekEnabled: Boolean get() = playbackSettings.doubleTapSeekEnabled
+  val doubleTapSeekSeconds: Int get() = playbackSettings.doubleTapSeekSeconds
+  val doubleTapPlayPauseEnabled: Boolean get() = playbackSettings.doubleTapPlayPauseEnabled
+  val showPlayerControlLabels: Boolean get() = playbackSettings.showPlayerControlLabels
+  val playerControlLayout: String get() = playbackSettings.playerControlLayout
+  val fullscreenStatusBar: String get() = playbackSettings.fullscreenStatusBar
+  val playerTitleDisplay: String get() = playbackSettings.playerTitleDisplay
+  val playerLevelGesturesEnabled: Boolean get() = playbackSettings.playerLevelGesturesEnabled
+  val skipIntroEnabled: Boolean get() = playbackSettings.skipIntroEnabled
+  val skipRecapEnabled: Boolean get() = playbackSettings.skipRecapEnabled
+  val skipEndingEnabled: Boolean get() = playbackSettings.skipEndingEnabled
+  val autoSkipIntroEnabled: Boolean get() = playbackSettings.autoSkipIntroEnabled
+  val autoSkipRecapEnabled: Boolean get() = playbackSettings.autoSkipRecapEnabled
+  val autoSkipEndingEnabled: Boolean get() = playbackSettings.autoSkipEndingEnabled
+  val introdbApiKey: String get() = playbackSettings.introdbApiKey
+  val autoPlayNextEpisode: Boolean get() = playbackSettings.autoPlayNextEpisode
+  val preferBingeGroup: Boolean get() = playbackSettings.preferBingeGroup
+  val autoLoadSubtitles: Boolean get() = playbackSettings.autoLoadSubtitles
+  val subtitleTextSize: Int get() = playbackSettings.subtitleTextSize
+  val subtitleVerticalOffset: Int get() = playbackSettings.subtitleVerticalOffset
+  val subtitleBold: Boolean get() = playbackSettings.subtitleBold
+  val subtitleTextColor: String get() = playbackSettings.subtitleTextColor
+  val subtitleBackgroundColor: String get() = playbackSettings.subtitleBackgroundColor
+  val subtitleOutline: Boolean get() = playbackSettings.subtitleOutline
+  val subtitleOutlineColor: String get() = playbackSettings.subtitleOutlineColor
+  val subtitleDefaultSource: String get() = playbackSettings.subtitleDefaultSource
+  val nextEpisodeThresholdMode: String get() = playbackSettings.nextEpisodeThresholdMode
+  val nextEpisodeThresholdPercent: Int get() = playbackSettings.nextEpisodeThresholdPercent
+  val nextEpisodeThresholdMinutes: Int get() = playbackSettings.nextEpisodeThresholdMinutes
+  val endOfPlaybackRecommendationsEnabled: Boolean get() = playbackSettings.endOfPlaybackRecommendationsEnabled
+  val recommendationTiming: String get() = playbackSettings.recommendationTiming
+  val recommendationItemCount: Int get() = playbackSettings.recommendationItemCount
+  val timingProvider: String get() = playbackSettings.timingProvider
+  val timingProviderFallbackEnabled: Boolean get() = playbackSettings.timingProviderFallbackEnabled
+  val appAppearance: AppAppearance get() = appearanceSettings.appAppearance
+  val animationSpeed: AnimationSpeed get() = appearanceSettings.animationSpeed
+  val appLanguage: String get() = appearanceSettings.appLanguage
+  val themePreset: AppThemePreset get() = appearanceSettings.themePreset
+  val headerStyle: HeaderStyle get() = appearanceSettings.headerStyle
+  val detailPageStyle: DetailPageStyle get() = appearanceSettings.detailPageStyle
+  val seasonTabStyle: SeasonTabStyle get() = appearanceSettings.seasonTabStyle
+  val episodeLayout: EpisodeLayout get() = appearanceSettings.episodeLayout
+  val showNavLabels: Boolean get() = appearanceSettings.showNavLabels
+  val collapsibleNavigationEnabled: Boolean get() = appearanceSettings.collapsibleNavigationEnabled
+  val navigationCollapsesOnScroll: Boolean get() = appearanceSettings.navigationCollapsesOnScroll
+  val expandedHeadersScrollAware: Boolean get() = appearanceSettings.expandedHeadersScrollAware
+  val navigationAutoCollapseSeconds: Int get() = appearanceSettings.navigationAutoCollapseSeconds
+  val visualEffectsMode: VisualEffectsMode get() = appearanceSettings.visualEffectsMode
+  val showStreamsList: Boolean get() = appearanceSettings.showStreamsList
+  val heroTrailerAutoplay: Boolean get() = appearanceSettings.heroTrailerAutoplay
+  val heroTrailerResolution: Int get() = appearanceSettings.heroTrailerResolution
+  val heroTrailerDelaySeconds: Int get() = appearanceSettings.heroTrailerDelaySeconds
+  val heroTrailerMuted: Boolean get() = appearanceSettings.heroTrailerMuted
+  val showHeroSynopsis: Boolean get() = appearanceSettings.showHeroSynopsis
+  val continueWatchingStyle: ContinueWatchingStyle get() = appearanceSettings.continueWatchingStyle
+  val homeCardTextMode: HomeCardTextMode get() = appearanceSettings.homeCardTextMode
+  val networkCardStyle: NetworkCardStyle get() = appearanceSettings.networkCardStyle
+  val liveLandscapeCards: Boolean get() = appearanceSettings.liveLandscapeCards
+  val showNewEpisodesRow: Boolean get() = appearanceSettings.showNewEpisodesRow
+  val newEpisodesLandscape: Boolean get() = appearanceSettings.newEpisodesLandscape
+  val liveCategoriesEnabled: Boolean get() = appearanceSettings.liveCategoriesEnabled
+  val liveProgressBarEnabled: Boolean get() = appearanceSettings.liveProgressBarEnabled
+  val liveBadgeEnabled: Boolean get() = appearanceSettings.liveBadgeEnabled
+  val blurUnwatchedEpisodes: Boolean get() = appearanceSettings.blurUnwatchedEpisodes
+  val ratingsEnabled: Boolean get() = appearanceSettings.ratingsEnabled
+  val externalRatingsEnabled: Boolean get() = appearanceSettings.externalRatingsEnabled
+  val enabledRatingProviders: Set<String> get() = appearanceSettings.enabledRatingProviders
+  val vividAmbient: Boolean get() = appearanceSettings.vividAmbient
+  val detailBackgroundMode: BackgroundMode get() = appearanceSettings.detailBackgroundMode
+  val homeBackgroundMode: BackgroundMode get() = appearanceSettings.homeBackgroundMode
+  val mediaHubEnabled: Boolean get() = appearanceSettings.mediaHubEnabled
+  val homeDensity: HomeDensity get() = appearanceSettings.homeDensity
+  val ambientTintPercent: Int get() = appearanceSettings.ambientTintPercent
+  val detailAmbientTintPercent: Int get() = appearanceSettings.detailAmbientTintPercent
+  val fusionBadgesEnabled: Boolean get() = appearanceSettings.fusionBadgesEnabled
+  val streamDekFormattingEnabled: Boolean get() = appearanceSettings.streamDekFormattingEnabled
+  val showSizeBadges: Boolean get() = appearanceSettings.showSizeBadges
+  val preferredQuality: String get() = appearanceSettings.preferredQuality
+  val maxFileSizeGb: Int get() = appearanceSettings.maxFileSizeGb
+  val badgePosition: String get() = appearanceSettings.badgePosition
+
   val navigationBehaviour: NavigationBehaviour
     get() = NavigationBehaviour.from(collapsibleNavigationEnabled, navigationCollapsesOnScroll, expandedHeadersScrollAware)
 }
@@ -2052,99 +2199,12 @@ private class AppSettingsStore(
   fun applyTo(state: AppUiState): AppUiState = state.copy(
     rememberLastProfileAtStartup = prefs.getBoolean("remember_last_profile_at_startup", false),
     showProfilePicker = state.showProfilePicker && !prefs.getBoolean("remember_last_profile_at_startup", false),
-    appAppearance = runCatching { AppAppearance.valueOf(prefs.getString("app_appearance", AppAppearance.Dark.name) ?: AppAppearance.Dark.name) }.getOrDefault(AppAppearance.Dark),
-    animationSpeed = AnimationSpeed.fromKey(prefs.getString(ANIMATION_SPEED_PREFERENCE, null)),
-    appLanguage = normalizeAppLanguageSelection(prefs.getString(APP_LANGUAGE_PREFERENCE, null)),
-    themePreset = AppThemePreset.fromName(prefs.getString("theme_preset", null)) ?: AppThemePreset.Default,
-    headerStyle = runCatching { HeaderStyle.valueOf(prefs.getString("header_style", HeaderStyle.Classic.name) ?: HeaderStyle.Classic.name) }.getOrDefault(HeaderStyle.Classic),
-    pictureInPictureEnabled = prefs.getBoolean("pip_enabled", true),
-    decoderMode = normalizeDecoderModeSetting(prefs.getString("decoder_mode", "HW+") ?: "HW+"),
-    renderSurface = normalizeRenderSurfaceSetting(prefs.getString("render_surface", "Standard") ?: "Standard"),
-    playerEngine = normalizePlayerEngineSetting(prefs.getString("player_engine", "Auto") ?: "Auto"),
-    preferredAudioLanguage = normalizePreferredAudioLanguage(profilePrefs.getString("preferred_audio_language", "en")),
-    secondaryAudioLanguage = Languages.normalize(profilePrefs.getString("secondary_audio_language", Languages.NONE)),
-    preferredSubtitleLanguage = Languages.normalize(profilePrefs.getString("preferred_subtitle_language", "en")),
-    secondarySubtitleLanguage = Languages.normalize(profilePrefs.getString("secondary_subtitle_language", Languages.NONE)),
-    useForcedSubtitles = profilePrefs.getBoolean("use_forced_subtitles", false),
-    showOnlyPreferredSubtitleLanguages = profilePrefs.getBoolean("show_only_preferred_subtitle_languages", false),
-    addonSubtitleLoading = profilePrefs.getString("addon_subtitle_loading", ADDON_SUBTITLE_LOADING_ALL) ?: ADDON_SUBTITLE_LOADING_ALL,
-    detailPageStyle = runCatching { DetailPageStyle.valueOf(profilePrefs.getString("detail_page_style", DetailPageStyle.Classic.name) ?: DetailPageStyle.Classic.name) }.getOrDefault(DetailPageStyle.Classic),
-    seasonTabStyle = runCatching { SeasonTabStyle.valueOf(profilePrefs.getString("season_tab_style", SeasonTabStyle.Regular.name) ?: SeasonTabStyle.Regular.name) }.getOrDefault(SeasonTabStyle.Regular),
-    episodeLayout = runCatching { EpisodeLayout.valueOf(profilePrefs.getString("episode_layout", EpisodeLayout.Strip.name) ?: EpisodeLayout.Strip.name) }.getOrDefault(EpisodeLayout.Strip),
-    showNavLabels = prefs.getBoolean("show_nav_labels", true),
-    collapsibleNavigationEnabled = prefs.getBoolean("collapsible_navigation_enabled", false),
-    navigationCollapsesOnScroll = prefs.getString(NavigationBehaviour.TRIGGER_PREFERENCE, null) == NavigationBehaviour.TRIGGER_SCROLL,
-    // Absent means scroll-aware: a header that makes room while scrolling is what the rest of the
-    // app does, and only a viewer who has deliberately asked for fixed headers gets them.
-    expandedHeadersScrollAware = prefs.getString(NavigationBehaviour.EXPANDED_HEADERS_PREFERENCE, null) != NavigationBehaviour.EXPANDED_HEADERS_FIXED,
-    visualEffectsMode = VisualEffectsMode.fromKey(prefs.getString(VISUAL_EFFECTS_PREFERENCE, null)),
     downloadsEnabled = prefs.getBoolean("downloads_enabled", false),
-    dv7HevcFallback = prefs.getBoolean("dv7_hevc_fallback", true),
-    tunneledPlayback = prefs.getBoolean("tunneled_playback", false),
-    navigationAutoCollapseSeconds = prefs.getInt("navigation_auto_collapse_seconds", 5).coerceIn(2, 15),
-    showStreamsList = profilePrefs.getBoolean("show_streams_list", true),
-    heroTrailerAutoplay = profilePrefs.getBoolean("hero_trailer_autoplay", false),
-    heroTrailerResolution = profilePrefs.getInt("hero_trailer_resolution", 1080).coerceIn(360, 2160),
-    heroTrailerDelaySeconds = profilePrefs.getInt("hero_trailer_delay_seconds", DEFAULT_TRAILER_DELAY_SECONDS)
-      .coerceIn(0, MAX_TRAILER_DELAY_SECONDS),
-    heroTrailerMuted = profilePrefs.getBoolean("hero_trailer_muted", true),
     debridCloudSync = prefs.getBoolean("debrid_cloud_sync", true),
-    showHeroSynopsis = profilePrefs.getBoolean("show_hero_synopsis", false),
-    continueWatchingStyle = runCatching { ContinueWatchingStyle.valueOf(profilePrefs.getString("continue_watching_style", ContinueWatchingStyle.Mini.name) ?: ContinueWatchingStyle.Mini.name) }.getOrDefault(ContinueWatchingStyle.Mini),
-    homeCardTextMode = HomeCardTextMode.fromKey(profilePrefs.getString("home_card_text_mode", null)),
-    networkCardStyle = runCatching { NetworkCardStyle.valueOf(profilePrefs.getString("network_card_style", NetworkCardStyle.Branded.name) ?: NetworkCardStyle.Branded.name) }.getOrDefault(NetworkCardStyle.Branded),
-    liveLandscapeCards = profilePrefs.getBoolean("live_landscape_cards", true),
-    showNewEpisodesRow = profilePrefs.getBoolean("show_new_episodes_row", false),
-    newEpisodesLandscape = profilePrefs.getBoolean("new_episodes_landscape", true),
-    liveCategoriesEnabled = profilePrefs.getBoolean("live_categories_enabled", true),
-    liveProgressBarEnabled = profilePrefs.getBoolean("live_progress_bar", false),
-    liveBadgeEnabled = profilePrefs.getBoolean("live_badge", true),
     primarySyncService = normalizedPrimarySyncService(profilePrefs.getString("primary_sync_service", null)),
     liveFavouriteDrawerCards = profilePrefs.getBoolean("live_favourite_drawer_cards", false),
     favoriteSourceKeys = profilePrefs.getStringSet("favorite_source_keys", emptySet()).orEmpty(),
-    rememberLastSource = profilePrefs.getBoolean("remember_last_source", true),
     syncOnCellular = prefs.getBoolean("sync_on_cellular", false),
-    holdToSpeedEnabled = prefs.getBoolean("hold_to_speed_enabled", true),
-    holdToSpeedMultiplier = prefs.getFloat("hold_to_speed_multiplier", 2f),
-    swipeToSeekEnabled = prefs.getBoolean("swipe_to_seek_enabled", true),
-    doubleTapSeekEnabled = prefs.getBoolean("double_tap_seek_enabled", true),
-    doubleTapSeekSeconds = prefs.getInt("double_tap_seek_seconds", 10).takeIf { it in setOf(5, 10, 15) } ?: 10,
-    doubleTapPlayPauseEnabled = prefs.getBoolean("double_tap_play_pause_enabled", true),
-    showPlayerControlLabels = prefs.getBoolean("show_player_control_labels", true),
-    // Compact was retired; profiles carrying the old value transparently return to Normal.
-    playerControlLayout = prefs.getString("player_control_layout", "Normal").takeIf { it in setOf("Normal", "Minimal") } ?: "Normal",
-    fullscreenStatusBar = prefs.getString("fullscreen_status_bar", "Hide in fullscreen").takeIf { it in setOf("Always show", "Hide in fullscreen", "Automatic") } ?: "Hide in fullscreen",
-    playerTitleDisplay = prefs.getString("player_title_display", "Scrolling").takeIf { it in setOf("Single line", "Scrolling", "Hidden") } ?: "Scrolling",
-    // Defaults on, which is what the player has always done, so nobody's gestures change because
-    // the switch arrived.
-    playerLevelGesturesEnabled = prefs.getBoolean("player_level_gestures_enabled", true),
-    skipIntroEnabled = profilePrefs.getBoolean("skip_intro_enabled", profilePrefs.getBoolean("skip_segments_enabled", true)),
-    skipRecapEnabled = profilePrefs.getBoolean("skip_recap_enabled", true),
-    skipEndingEnabled = profilePrefs.getBoolean("skip_ending_enabled", true),
-    autoSkipIntroEnabled = profilePrefs.getBoolean("auto_skip_intro_enabled", false),
-    autoSkipRecapEnabled = profilePrefs.getBoolean("auto_skip_recap_enabled", false),
-    autoSkipEndingEnabled = profilePrefs.getBoolean("auto_skip_ending_enabled", false),
-    introdbApiKey = profilePrefs.getString("introdb_api_key", "") ?: "",
-    autoPlayNextEpisode = profilePrefs.getBoolean("auto_play_next_episode", true),
-    preferBingeGroup = profilePrefs.getBoolean("prefer_binge_group", true),
-    autoLoadSubtitles = profilePrefs.getBoolean("auto_load_subtitles", true),
-    subtitleTextSize = profilePrefs.getInt("subtitle_text_size", 55).coerceIn(SUBTITLE_TEXT_SIZE_RANGE),
-    subtitleVerticalOffset = profilePrefs.getInt("subtitle_vertical_offset", 92).coerceIn(SUBTITLE_OFFSET_RANGE),
-    subtitleBold = profilePrefs.getBoolean("subtitle_bold", false),
-    subtitleTextColor = profilePrefs.getString("subtitle_text_color", null) ?: "#FFFFFFFF",
-    subtitleBackgroundColor = profilePrefs.getString("subtitle_background_color", null) ?: "#00000000",
-    subtitleOutline = profilePrefs.getBoolean("subtitle_outline", true),
-    subtitleOutlineColor = profilePrefs.getString("subtitle_outline_color", null) ?: "#FF000000",
-    subtitleDefaultSource = normalizeSubtitleDefaultSource(profilePrefs.getString("subtitle_default_source", null)),
-    blurUnwatchedEpisodes = profilePrefs.getBoolean("blur_unwatched_episodes", true),
-    nextEpisodeThresholdMode = profilePrefs.getString("next_episode_threshold_mode", "minutes") ?: "minutes",
-    nextEpisodeThresholdPercent = profilePrefs.getInt("next_episode_threshold_percent", 95).coerceIn(50, 99),
-    nextEpisodeThresholdMinutes = profilePrefs.getInt("next_episode_threshold_minutes", 2).coerceIn(1, 15),
-    endOfPlaybackRecommendationsEnabled = profilePrefs.getBoolean("end_of_playback_recommendations_enabled", false),
-    recommendationTiming = profilePrefs.getString("recommendation_timing", "standard").takeIf { it in setOf("early", "standard", "late") } ?: "standard",
-    recommendationItemCount = profilePrefs.getInt("recommendation_item_count", 1).coerceIn(1, 2),
-    timingProvider = profilePrefs.getString("timing_provider", "introdb").takeIf { it in setOf("introdb", "theintrodb") } ?: "introdb",
-    timingProviderFallbackEnabled = profilePrefs.getBoolean("timing_provider_fallback_enabled", true),
     peerStreamSettings = PeerStreamSettings(
       enabled = prefs.getBoolean("torrent_enabled", true),
       streamingMode = prefs.getString("torrent_streaming_mode", "server") ?: "server",
@@ -2153,11 +2213,111 @@ private class AppSettingsStore(
       port = prefs.getInt("torrent_port", 11100),
       runAsForegroundService = prefs.getBoolean("torrent_run_foreground", false),
     ),
-    ratingsEnabled = profilePrefs.getBoolean("ratings_enabled", false),
-    externalRatingsEnabled = profilePrefs.getBoolean("external_ratings_enabled", true),
-    enabledRatingProviders = parseRatingProviderIds(profilePrefs.getString("enabled_rating_providers", null)),
-    vividAmbient = profilePrefs.getBoolean("vivid_ambient", true),
-    detailBackgroundMode = runCatching {
+    trailerCacheClearHours = profilePrefs.getInt("trailer_cache_clear_hours", DEFAULT_TRAILER_CACHE_CLEAR_HOURS),
+    defaultAppCatalogsEnabled = profilePrefs.getBoolean("default_app_catalogs_enabled", true),
+    homeCatalogRows = parseHomeCatalogRows(profilePrefs.getString("home_catalog_rows", null)),
+    homeRows = HomeRowArrangement(
+      mode = HomeRowMode.fromKey(profilePrefs.getString(HOME_ROW_MODE_PREFERENCE, null)),
+      sourceOrder = parseHomeRowSourceOrder(profilePrefs.getString(HOME_ROW_SOURCE_ORDER_PREFERENCE, null)),
+    ),
+    fusionBadgeUrls = parseFusionBadgeUrls(profilePrefs.getString("fusion_badge_urls", null)),
+    activeFusionBadgeUrl = profilePrefs.getString("active_fusion_badge_url", null),
+    autoUpdateChecksEnabled = prefs.getBoolean("auto_update_checks", true),
+    playbackSettings = state.playbackSettings.copy(
+      pictureInPictureEnabled = prefs.getBoolean("pip_enabled", true),
+      decoderMode = normalizeDecoderModeSetting(prefs.getString("decoder_mode", "HW+") ?: "HW+"),
+      renderSurface = normalizeRenderSurfaceSetting(prefs.getString("render_surface", "Standard") ?: "Standard"),
+      playerEngine = normalizePlayerEngineSetting(prefs.getString("player_engine", "Auto") ?: "Auto"),
+      preferredAudioLanguage = normalizePreferredAudioLanguage(profilePrefs.getString("preferred_audio_language", "en")),
+      secondaryAudioLanguage = Languages.normalize(profilePrefs.getString("secondary_audio_language", Languages.NONE)),
+      preferredSubtitleLanguage = Languages.normalize(profilePrefs.getString("preferred_subtitle_language", "en")),
+      secondarySubtitleLanguage = Languages.normalize(profilePrefs.getString("secondary_subtitle_language", Languages.NONE)),
+      useForcedSubtitles = profilePrefs.getBoolean("use_forced_subtitles", false),
+      showOnlyPreferredSubtitleLanguages = profilePrefs.getBoolean("show_only_preferred_subtitle_languages", false),
+      addonSubtitleLoading = profilePrefs.getString("addon_subtitle_loading", ADDON_SUBTITLE_LOADING_ALL) ?: ADDON_SUBTITLE_LOADING_ALL,
+      dv7HevcFallback = prefs.getBoolean("dv7_hevc_fallback", true),
+      tunneledPlayback = prefs.getBoolean("tunneled_playback", false),
+      rememberLastSource = profilePrefs.getBoolean("remember_last_source", true),
+      holdToSpeedEnabled = prefs.getBoolean("hold_to_speed_enabled", true),
+      holdToSpeedMultiplier = prefs.getFloat("hold_to_speed_multiplier", 2f),
+      swipeToSeekEnabled = prefs.getBoolean("swipe_to_seek_enabled", true),
+      doubleTapSeekEnabled = prefs.getBoolean("double_tap_seek_enabled", true),
+      doubleTapSeekSeconds = prefs.getInt("double_tap_seek_seconds", 10).takeIf { it in setOf(5, 10, 15) } ?: 10,
+      doubleTapPlayPauseEnabled = prefs.getBoolean("double_tap_play_pause_enabled", true),
+      showPlayerControlLabels = prefs.getBoolean("show_player_control_labels", true),
+      // Compact was retired; profiles carrying the old value transparently return to Normal.
+    playerControlLayout = prefs.getString("player_control_layout", "Normal").takeIf { it in setOf("Normal", "Minimal") } ?: "Normal",
+      fullscreenStatusBar = prefs.getString("fullscreen_status_bar", "Hide in fullscreen").takeIf { it in setOf("Always show", "Hide in fullscreen", "Automatic") } ?: "Hide in fullscreen",
+      playerTitleDisplay = prefs.getString("player_title_display", "Scrolling").takeIf { it in setOf("Single line", "Scrolling", "Hidden") } ?: "Scrolling",
+      // Defaults on, which is what the player has always done, so nobody's gestures change because
+    // the switch arrived.
+    playerLevelGesturesEnabled = prefs.getBoolean("player_level_gestures_enabled", true),
+      skipIntroEnabled = profilePrefs.getBoolean("skip_intro_enabled", profilePrefs.getBoolean("skip_segments_enabled", true)),
+      skipRecapEnabled = profilePrefs.getBoolean("skip_recap_enabled", true),
+      skipEndingEnabled = profilePrefs.getBoolean("skip_ending_enabled", true),
+      autoSkipIntroEnabled = profilePrefs.getBoolean("auto_skip_intro_enabled", false),
+      autoSkipRecapEnabled = profilePrefs.getBoolean("auto_skip_recap_enabled", false),
+      autoSkipEndingEnabled = profilePrefs.getBoolean("auto_skip_ending_enabled", false),
+      introdbApiKey = profilePrefs.getString("introdb_api_key", "") ?: "",
+      autoPlayNextEpisode = profilePrefs.getBoolean("auto_play_next_episode", true),
+      preferBingeGroup = profilePrefs.getBoolean("prefer_binge_group", true),
+      autoLoadSubtitles = profilePrefs.getBoolean("auto_load_subtitles", true),
+      subtitleTextSize = profilePrefs.getInt("subtitle_text_size", 55).coerceIn(SUBTITLE_TEXT_SIZE_RANGE),
+      subtitleVerticalOffset = profilePrefs.getInt("subtitle_vertical_offset", 92).coerceIn(SUBTITLE_OFFSET_RANGE),
+      subtitleBold = profilePrefs.getBoolean("subtitle_bold", false),
+      subtitleTextColor = profilePrefs.getString("subtitle_text_color", null) ?: "#FFFFFFFF",
+      subtitleBackgroundColor = profilePrefs.getString("subtitle_background_color", null) ?: "#00000000",
+      subtitleOutline = profilePrefs.getBoolean("subtitle_outline", true),
+      subtitleOutlineColor = profilePrefs.getString("subtitle_outline_color", null) ?: "#FF000000",
+      subtitleDefaultSource = normalizeSubtitleDefaultSource(profilePrefs.getString("subtitle_default_source", null)),
+      nextEpisodeThresholdMode = profilePrefs.getString("next_episode_threshold_mode", "minutes") ?: "minutes",
+      nextEpisodeThresholdPercent = profilePrefs.getInt("next_episode_threshold_percent", 95).coerceIn(50, 99),
+      nextEpisodeThresholdMinutes = profilePrefs.getInt("next_episode_threshold_minutes", 2).coerceIn(1, 15),
+      endOfPlaybackRecommendationsEnabled = profilePrefs.getBoolean("end_of_playback_recommendations_enabled", false),
+      recommendationTiming = profilePrefs.getString("recommendation_timing", "standard").takeIf { it in setOf("early", "standard", "late") } ?: "standard",
+      recommendationItemCount = profilePrefs.getInt("recommendation_item_count", 1).coerceIn(1, 2),
+      timingProvider = profilePrefs.getString("timing_provider", "introdb").takeIf { it in setOf("introdb", "theintrodb") } ?: "introdb",
+      timingProviderFallbackEnabled = profilePrefs.getBoolean("timing_provider_fallback_enabled", true),
+    ),
+    appearanceSettings = state.appearanceSettings.copy(
+      appAppearance = runCatching { AppAppearance.valueOf(prefs.getString("app_appearance", AppAppearance.Dark.name) ?: AppAppearance.Dark.name) }.getOrDefault(AppAppearance.Dark),
+      animationSpeed = AnimationSpeed.fromKey(prefs.getString(ANIMATION_SPEED_PREFERENCE, null)),
+      appLanguage = normalizeAppLanguageSelection(prefs.getString(APP_LANGUAGE_PREFERENCE, null)),
+      themePreset = AppThemePreset.fromName(prefs.getString("theme_preset", null)) ?: AppThemePreset.Default,
+      headerStyle = runCatching { HeaderStyle.valueOf(prefs.getString("header_style", HeaderStyle.Classic.name) ?: HeaderStyle.Classic.name) }.getOrDefault(HeaderStyle.Classic),
+      detailPageStyle = runCatching { DetailPageStyle.valueOf(profilePrefs.getString("detail_page_style", DetailPageStyle.Classic.name) ?: DetailPageStyle.Classic.name) }.getOrDefault(DetailPageStyle.Classic),
+      seasonTabStyle = runCatching { SeasonTabStyle.valueOf(profilePrefs.getString("season_tab_style", SeasonTabStyle.Regular.name) ?: SeasonTabStyle.Regular.name) }.getOrDefault(SeasonTabStyle.Regular),
+      episodeLayout = runCatching { EpisodeLayout.valueOf(profilePrefs.getString("episode_layout", EpisodeLayout.Strip.name) ?: EpisodeLayout.Strip.name) }.getOrDefault(EpisodeLayout.Strip),
+      showNavLabels = prefs.getBoolean("show_nav_labels", true),
+      collapsibleNavigationEnabled = prefs.getBoolean("collapsible_navigation_enabled", false),
+      navigationCollapsesOnScroll = prefs.getString(NavigationBehaviour.TRIGGER_PREFERENCE, null) == NavigationBehaviour.TRIGGER_SCROLL,
+      // Absent means scroll-aware: a header that makes room while scrolling is what the rest of the
+    // app does, and only a viewer who has deliberately asked for fixed headers gets them.
+    expandedHeadersScrollAware = prefs.getString(NavigationBehaviour.EXPANDED_HEADERS_PREFERENCE, null) != NavigationBehaviour.EXPANDED_HEADERS_FIXED,
+      visualEffectsMode = VisualEffectsMode.fromKey(prefs.getString(VISUAL_EFFECTS_PREFERENCE, null)),
+      navigationAutoCollapseSeconds = prefs.getInt("navigation_auto_collapse_seconds", 5).coerceIn(2, 15),
+      showStreamsList = profilePrefs.getBoolean("show_streams_list", true),
+      heroTrailerAutoplay = profilePrefs.getBoolean("hero_trailer_autoplay", false),
+      heroTrailerResolution = profilePrefs.getInt("hero_trailer_resolution", 1080).coerceIn(360, 2160),
+      heroTrailerDelaySeconds = profilePrefs.getInt("hero_trailer_delay_seconds", DEFAULT_TRAILER_DELAY_SECONDS)
+      .coerceIn(0, MAX_TRAILER_DELAY_SECONDS),
+      heroTrailerMuted = profilePrefs.getBoolean("hero_trailer_muted", true),
+      showHeroSynopsis = profilePrefs.getBoolean("show_hero_synopsis", false),
+      continueWatchingStyle = runCatching { ContinueWatchingStyle.valueOf(profilePrefs.getString("continue_watching_style", ContinueWatchingStyle.Mini.name) ?: ContinueWatchingStyle.Mini.name) }.getOrDefault(ContinueWatchingStyle.Mini),
+      homeCardTextMode = HomeCardTextMode.fromKey(profilePrefs.getString("home_card_text_mode", null)),
+      networkCardStyle = runCatching { NetworkCardStyle.valueOf(profilePrefs.getString("network_card_style", NetworkCardStyle.Branded.name) ?: NetworkCardStyle.Branded.name) }.getOrDefault(NetworkCardStyle.Branded),
+      liveLandscapeCards = profilePrefs.getBoolean("live_landscape_cards", true),
+      showNewEpisodesRow = profilePrefs.getBoolean("show_new_episodes_row", false),
+      newEpisodesLandscape = profilePrefs.getBoolean("new_episodes_landscape", true),
+      liveCategoriesEnabled = profilePrefs.getBoolean("live_categories_enabled", true),
+      liveProgressBarEnabled = profilePrefs.getBoolean("live_progress_bar", false),
+      liveBadgeEnabled = profilePrefs.getBoolean("live_badge", true),
+      blurUnwatchedEpisodes = profilePrefs.getBoolean("blur_unwatched_episodes", true),
+      ratingsEnabled = profilePrefs.getBoolean("ratings_enabled", false),
+      externalRatingsEnabled = profilePrefs.getBoolean("external_ratings_enabled", true),
+      enabledRatingProviders = parseRatingProviderIds(profilePrefs.getString("enabled_rating_providers", null)),
+      vividAmbient = profilePrefs.getBoolean("vivid_ambient", true),
+      detailBackgroundMode = runCatching {
       BackgroundMode.valueOf(
         profilePrefs.getString("detail_background_mode", null)
         // No stored mode means an account from before this setting existed: whatever its blurred
@@ -2165,39 +2325,30 @@ private class AppSettingsStore(
           ?: if (profilePrefs.getBoolean("vivid_ambient", true)) BackgroundMode.Cinematic.name else BackgroundMode.Normal.name,
       )
     }.getOrDefault(BackgroundMode.Cinematic),
-    homeBackgroundMode = runCatching {
+      homeBackgroundMode = runCatching {
       BackgroundMode.valueOf(
         profilePrefs.getString("home_background_mode", null)
           ?: if (profilePrefs.getBoolean("vivid_ambient", true)) BackgroundMode.Cinematic.name else BackgroundMode.Normal.name,
       )
     }.getOrDefault(BackgroundMode.Cinematic).takeIf { it in homeBackgroundModes } ?: BackgroundMode.Cinematic,
-    // Device-local, like the animation speed and the player gestures: it describes how close this
+      // Device-local, like the animation speed and the player gestures: it describes how close this
     // particular screen is held, which is not something the account can answer for the television.
     mediaHubEnabled = prefs.getBoolean(MEDIA_HUB_PREFERENCE, false),
-    homeDensity = HomeDensity.fromKey(prefs.getString(HOME_DENSITY_PREFERENCE, null)),
-    trailerCacheClearHours = profilePrefs.getInt("trailer_cache_clear_hours", DEFAULT_TRAILER_CACHE_CLEAR_HOURS),
-    ambientTintPercent = profilePrefs.getInt("ambient_tint_percent", DEFAULT_AMBIENT_TINT_PERCENT).coerceIn(20, 100),
-    // Seeded from the single value the two pages used to share, so an account that had already
+      homeDensity = HomeDensity.fromKey(prefs.getString(HOME_DENSITY_PREFERENCE, null)),
+      ambientTintPercent = profilePrefs.getInt("ambient_tint_percent", DEFAULT_AMBIENT_TINT_PERCENT).coerceIn(20, 100),
+      // Seeded from the single value the two pages used to share, so an account that had already
     // chosen a strength keeps it on both pages rather than snapping back to full on one of them.
     detailAmbientTintPercent = profilePrefs.getInt(
       "detail_ambient_tint_percent",
       profilePrefs.getInt("ambient_tint_percent", DEFAULT_AMBIENT_TINT_PERCENT),
     ).coerceIn(20, 100),
-    defaultAppCatalogsEnabled = profilePrefs.getBoolean("default_app_catalogs_enabled", true),
-    homeCatalogRows = parseHomeCatalogRows(profilePrefs.getString("home_catalog_rows", null)),
-    homeRows = HomeRowArrangement(
-      mode = HomeRowMode.fromKey(profilePrefs.getString(HOME_ROW_MODE_PREFERENCE, null)),
-      sourceOrder = parseHomeRowSourceOrder(profilePrefs.getString(HOME_ROW_SOURCE_ORDER_PREFERENCE, null)),
+      fusionBadgesEnabled = profilePrefs.getBoolean("fusion_badges", true),
+      streamDekFormattingEnabled = profilePrefs.getBoolean("streamdek_stream_formatting", false),
+      showSizeBadges = profilePrefs.getBoolean("show_size_badges", true),
+      preferredQuality = profilePrefs.getString("preferred_quality", "Auto") ?: "Auto",
+      maxFileSizeGb = profilePrefs.getInt("max_file_size_gb", 0),
+      badgePosition = profilePrefs.getString("badge_position", "Bottom") ?: "Bottom",
     ),
-    fusionBadgesEnabled = profilePrefs.getBoolean("fusion_badges", true),
-    streamDekFormattingEnabled = profilePrefs.getBoolean("streamdek_stream_formatting", false),
-    showSizeBadges = profilePrefs.getBoolean("show_size_badges", true),
-    preferredQuality = profilePrefs.getString("preferred_quality", "Auto") ?: "Auto",
-    maxFileSizeGb = profilePrefs.getInt("max_file_size_gb", 0),
-    badgePosition = profilePrefs.getString("badge_position", "Bottom") ?: "Bottom",
-    fusionBadgeUrls = parseFusionBadgeUrls(profilePrefs.getString("fusion_badge_urls", null)),
-    activeFusionBadgeUrl = profilePrefs.getString("active_fusion_badge_url", null),
-    autoUpdateChecksEnabled = prefs.getBoolean("auto_update_checks", true),
   )
 
   fun saveAutoUpdateChecks(value: Boolean) { prefs.edit().putBoolean("auto_update_checks", value).apply() }
@@ -2448,6 +2599,7 @@ private fun normalizeRenderSurfaceSetting(raw: String): String = when (raw.trim(
 internal fun normalizePlayerEngineSetting(raw: String): String = when (raw.trim().lowercase(Locale.US)) {
   "media3", "exo", "exoplayer" -> "Media3"
   "mpv" -> "MPV"
+  "vlc", "libvlc" -> "VLC"
   else -> "Auto"
 }
 
@@ -3109,7 +3261,7 @@ internal fun List<MediaItem>.containsMedia(item: MediaItem): Boolean =
   any { it.id == item.id && normalizedMediaType(it.type) == normalizedMediaType(item.type) }
 
 private fun watchedTitleKey(type: String, id: String): String = "${normalizedMediaType(type)}:$id"
-private fun watchedEpisodeKey(showId: String, seasonNumber: Int, episodeNumber: Int): String =
+internal fun watchedEpisodeKey(showId: String, seasonNumber: Int, episodeNumber: Int): String =
   "episode:$showId:$seasonNumber:$episodeNumber"
 
 internal fun completedEpisodeWatchedIds(existing: List<String>, watchedKey: String): List<String> =
@@ -4867,6 +5019,115 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       onFailure = { message -> dismissPlayer(100.0); uiState = uiState.copy(streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null, errorMessage = message) },
     )
   }
+  /** The episode browser's own state; see [PlayerBrowserState] for why it is not in [uiState]. */
+  var playerBrowser by mutableStateOf(PlayerBrowserState())
+    private set
+
+  /**
+   * Reads one season for the player's episode browser.
+   *
+   * From the same three places [loadSeason] reads a season - the media server, the add-on's own
+   * episode list, or TMDB - but without selecting anything or looking any streams up, which is what
+   * [loadSeason] goes on to do and exactly what browsing must not.
+   */
+  fun loadPlayerBrowserSeason(seasonNumber: Int) {
+    val detail = uiState.detail ?: return
+    if (normalizedMediaType(detail.type) != "tv") return
+    val sameSeries = playerBrowser.detailId == detail.id
+    val known = if (sameSeries) playerBrowser.episodes else emptyMap()
+    if (known.containsKey(seasonNumber) || (sameSeries && playerBrowser.loadingSeason == seasonNumber)) return
+    val mediaServerRef = detailMediaServerRef?.takeIf { it.encode() == detail.id }
+    val localEpisodes = detailLocalEpisodes
+    launchWork<List<EpisodeItem>>(
+      onStart = {
+        playerBrowser = PlayerBrowserState(detailId = detail.id, episodes = known, loadingSeason = seasonNumber)
+      },
+      block = {
+        when {
+          mediaServerRef != null -> {
+            val episodes = mediaServers.providerFor(mediaServerRef)?.let { withTimeoutOrNull(20_000) { it.season(mediaServerRef, seasonNumber) } }
+            if (episodes == null) Result.failure(IllegalStateException(strings.getString(R.string.error_episode_list_failed))) else Result.success(episodes)
+          }
+          localEpisodes.isNotEmpty() -> Result.success(localEpisodes.filter { it.seasonNumber == seasonNumber })
+          else -> apiClient.fetchSeason(detail.id, seasonNumber)
+        }
+      },
+      onSuccess = { episodes ->
+        if (uiState.detail?.id == detail.id && playerBrowser.detailId == detail.id) {
+          playerBrowser = playerBrowser.copy(
+            episodes = playerBrowser.episodes + (seasonNumber to episodes.sortedBy(EpisodeItem::episodeNumber)),
+            loadingSeason = playerBrowser.loadingSeason.takeIf { it != seasonNumber },
+          )
+        }
+      },
+      onFailure = { _ ->
+        if (playerBrowser.detailId == detail.id) {
+          playerBrowser = playerBrowser.copy(
+            loadingSeason = playerBrowser.loadingSeason.takeIf { it != seasonNumber },
+            failedSeason = seasonNumber,
+          )
+        }
+      },
+    )
+  }
+
+  /**
+   * Switches the player to an episode chosen in its episode browser.
+   *
+   * [playAdjacentEpisode] with the target named rather than worked out: the same stream lookup,
+   * the same preference for the source and quality already playing, and the same hand-off to
+   * [playStream], which resumes a part-watched episode from where it was left. The season list the
+   * next-episode logic reads moves with it, so "next" after a jump means next from the new episode.
+   */
+  fun playEpisodeFromPlayer(target: EpisodeItem) {
+    val detail = uiState.detail ?: return
+    if (normalizedMediaType(detail.type) != "tv") return
+    // The episode on screen, from the session rather than the detail page's selection, which a
+    // Continue Watching start may never have made.
+    val playingSeason = uiState.playerSession?.takeIf { it.mediaId == detail.id }?.seasonNumber ?: uiState.selectedEpisode?.seasonNumber
+    val playingEpisode = uiState.playerSession?.takeIf { it.mediaId == detail.id }?.episodeNumber ?: uiState.selectedEpisode?.episodeNumber
+    if (playingSeason == target.seasonNumber && playingEpisode == target.episodeNumber) return
+    clearPreparedNextEpisode()
+    val currentStream = uiState.playerSession?.currentStream
+    val mediaServerRef = detailMediaServerRef?.takeIf { it.encode() == detail.id }
+    val targetSeason = playerBrowser.episodes[target.seasonNumber]?.takeIf { playerBrowser.detailId == detail.id }
+    launchWork<List<AddonStream>>(
+      onStart = {
+        uiState = uiState.copy(streamLoading = true, nextEpisodeLoading = true, nextEpisodeLoadingLabel = "S${target.seasonNumber} • E${target.episodeNumber}", errorMessage = null)
+      },
+      block = {
+        // A media server series plays from its own server, not from TMDB and the add-ons.
+        if (mediaServerRef != null) {
+          val provider = mediaServers.providerFor(mediaServerRef)
+            ?: return@launchWork Result.failure(IllegalStateException(strings.getString(R.string.plex_title_unavailable)))
+          return@launchWork Result.success(provider.streams(mediaServerRef, target.asMediaServerEpisode(), mediaServerPlaybackContext()))
+        }
+        val ids = streamLookupIds(detail).distinct()
+          .map { "$it:${target.seasonNumber}:${target.episodeNumber}" }
+        fetchStreamsForPlayback("series", ids, episode = target)
+      },
+      onSuccess = { streams ->
+        val ranked = rankedProfileStreams(mediaStreamsOnly(streams, detail))
+        val bingeMatch = currentStream?.bingeGroup?.takeIf { it.isNotBlank() }?.let { group -> ranked.firstOrNull { it.bingeGroup == group } }
+        val addonMatch = currentStream?.let { source -> ranked.firstOrNull { it.addonId == source.addonId && it.quality == source.quality } }
+        val selected = if (uiState.preferBingeGroup) bingeMatch ?: addonMatch ?: ranked.firstOrNull() else ranked.firstOrNull()
+        if (selected == null) {
+          // The episode on screen keeps playing; nothing about the selection has changed.
+          uiState = uiState.copy(streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null, errorMessage = strings.getString(R.string.error_no_source_for_episode, target.seasonNumber, target.episodeNumber))
+        } else {
+          uiState = uiState.copy(
+            selectedEpisode = target,
+            availableStreams = ranked,
+            selectedSeasonEpisodes = if (playingSeason != target.seasonNumber && targetSeason != null) targetSeason else uiState.selectedSeasonEpisodes,
+            selectedSeasonNumber = if (playingSeason != target.seasonNumber && targetSeason != null) target.seasonNumber else uiState.selectedSeasonNumber,
+          )
+          playStream(selected, target)
+        }
+      },
+      onFailure = { message -> uiState = uiState.copy(streamLoading = false, nextEpisodeLoading = false, nextEpisodeLoadingLabel = null, errorMessage = message) },
+    )
+  }
+
   fun playAdjacentEpisode(direction: Int) {
     val detail = uiState.detail ?: return
     val current = uiState.selectedEpisode ?: return
@@ -5812,6 +6073,11 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       return true
     }
     if (stream != null && (!stream.url.isNullOrBlank() || !stream.infoHash.isNullOrBlank())) {
+      // Record which episode this is, as every other way of starting one does. This path plays a
+      // remembered source without looking any streams up, and the lookup is where the selection
+      // was otherwise made - so the player started with no episode selected, and everything that
+      // works from the selection (previous, next, the end-of-episode card) had nothing to go on.
+      if (episode != null) uiState = uiState.copy(selectedEpisode = episode)
       playStream(stream, episode, entry.progressPercent)
     } else {
       // Cross-device SyncDek rows intentionally have no stream URL. Resolve through the same
@@ -8399,12 +8665,12 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
   fun setDv7HevcFallback(value: Boolean) {
     PlaybackCodecOptions.setDv7HevcFallback(getApplication(), value)
-    uiState = uiState.copy(dv7HevcFallback = value)
+    uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(dv7HevcFallback = value))
   }
 
   fun setTunneledPlayback(value: Boolean) {
     PlaybackCodecOptions.setTunneledPlayback(getApplication(), value)
-    uiState = uiState.copy(tunneledPlayback = value)
+    uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(tunneledPlayback = value))
   }
 
   fun setDownloadsEnabled(value: Boolean) {
@@ -9135,7 +9401,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       manager.saveDeviceKey(ContentService.IntroDb, legacy)
     }
     appSettingsStore.saveIntrodbApiKey("")
-    uiState = uiState.copy(introdbApiKey = "")
+    uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(introdbApiKey = ""))
   }
 
   /**
@@ -9742,88 +10008,92 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     preferences.autoUpdateChecksEnabled?.let(appSettingsStore::saveAutoUpdateChecks)
 
     uiState = uiState.copy(
-      appAppearance = appAppearance ?: uiState.appAppearance,
-      themePreset = themePreset ?: uiState.themePreset,
-      headerStyle = headerStyle ?: uiState.headerStyle,
-      showNavLabels = preferences.showNavLabels ?: uiState.showNavLabels,
-      collapsibleNavigationEnabled = preferences.collapsibleNavigationEnabled ?: uiState.collapsibleNavigationEnabled,
-      navigationAutoCollapseSeconds = preferences.navigationAutoCollapseSeconds?.coerceIn(2, 15) ?: uiState.navigationAutoCollapseSeconds,
       syncOnCellular = preferences.syncOnCellular ?: uiState.syncOnCellular,
-      detailPageStyle = detailPageStyle ?: uiState.detailPageStyle,
-      continueWatchingStyle = continueWatchingStyle ?: uiState.continueWatchingStyle,
-      homeCardTextMode = homeCardTextMode ?: uiState.homeCardTextMode,
-      networkCardStyle = networkCardStyle ?: uiState.networkCardStyle,
-      liveLandscapeCards = preferences.liveLandscapeCards ?: uiState.liveLandscapeCards,
-      liveCategoriesEnabled = preferences.liveCategoriesEnabled ?: uiState.liveCategoriesEnabled,
       primarySyncService = preferences.primarySyncService?.let(::normalizedPrimarySyncService) ?: uiState.primarySyncService,
       liveFavouriteDrawerCards = preferences.liveFavouriteDrawerCards ?: uiState.liveFavouriteDrawerCards,
-      showHeroSynopsis = preferences.showHeroSynopsis ?: uiState.showHeroSynopsis,
-      vividAmbient = preferences.vividAmbient ?: uiState.vividAmbient,
-      ambientTintPercent = (preferences.ambientTintPercent ?: uiState.ambientTintPercent).coerceIn(20, 100),
-      detailAmbientTintPercent = (preferences.detailAmbientTintPercent ?: preferences.ambientTintPercent ?: uiState.detailAmbientTintPercent).coerceIn(20, 100),
       defaultAppCatalogsEnabled = preferences.defaultAppCatalogsEnabled ?: uiState.defaultAppCatalogsEnabled,
       homeCatalogRows = homeCatalogRows ?: uiState.homeCatalogRows,
       homeRows = HomeRowArrangement(
         mode = homeRowMode ?: uiState.homeRows.mode,
         sourceOrder = homeRowSourceOrder ?: uiState.homeRows.sourceOrder,
       ),
-      seasonTabStyle = seasonTabStyle ?: uiState.seasonTabStyle,
-      episodeLayout = episodeLayout ?: uiState.episodeLayout,
-      heroTrailerAutoplay = preferences.heroTrailerAutoplay ?: uiState.heroTrailerAutoplay,
-      heroTrailerResolution = preferences.heroTrailerResolution?.coerceIn(360, 2160) ?: uiState.heroTrailerResolution,
       trailerCacheClearHours = preferences.trailerCacheClearHours ?: uiState.trailerCacheClearHours,
-      detailBackgroundMode = preferences.detailBackgroundMode?.let { mode -> runCatching { BackgroundMode.valueOf(mode) }.getOrNull() } ?: uiState.detailBackgroundMode,
-      homeBackgroundMode = preferences.homeBackgroundMode?.let { mode -> runCatching { BackgroundMode.valueOf(mode) }.getOrNull() }?.takeIf { it in homeBackgroundModes } ?: uiState.homeBackgroundMode,
-      secondaryAudioLanguage = preferences.secondaryAudioLanguage?.let(Languages::normalize) ?: uiState.secondaryAudioLanguage,
-      preferredSubtitleLanguage = preferences.preferredSubtitleLanguage?.let(Languages::normalize) ?: uiState.preferredSubtitleLanguage,
-      secondarySubtitleLanguage = preferences.secondarySubtitleLanguage?.let(Languages::normalize) ?: uiState.secondarySubtitleLanguage,
-      useForcedSubtitles = preferences.useForcedSubtitles ?: uiState.useForcedSubtitles,
-      showOnlyPreferredSubtitleLanguages = preferences.showOnlyPreferredSubtitleLanguages ?: uiState.showOnlyPreferredSubtitleLanguages,
-      addonSubtitleLoading = preferences.addonSubtitleLoading ?: uiState.addonSubtitleLoading,
-      subtitleDefaultSource = preferences.subtitleDefaultSource?.let(::normalizeSubtitleDefaultSource) ?: uiState.subtitleDefaultSource,
-      liveProgressBarEnabled = preferences.liveProgressBarEnabled ?: uiState.liveProgressBarEnabled,
-      liveBadgeEnabled = preferences.liveBadgeEnabled ?: uiState.liveBadgeEnabled,
-      heroTrailerDelaySeconds = preferences.heroTrailerDelaySeconds?.coerceIn(0, MAX_TRAILER_DELAY_SECONDS)
-        ?: uiState.heroTrailerDelaySeconds,
-      ratingsEnabled = preferences.ratingsEnabled ?: uiState.ratingsEnabled,
-      externalRatingsEnabled = preferences.externalRatingsEnabled ?: uiState.externalRatingsEnabled,
-      enabledRatingProviders = ratingProviders ?: uiState.enabledRatingProviders,
-      pictureInPictureEnabled = preferences.pictureInPictureEnabled ?: uiState.pictureInPictureEnabled,
-      decoderMode = decoderMode ?: uiState.decoderMode,
-      renderSurface = renderSurface ?: uiState.renderSurface,
-      playerEngine = playerEngine ?: uiState.playerEngine,
-      preferredAudioLanguage = preferredAudioLanguage ?: uiState.preferredAudioLanguage,
-      skipIntroEnabled = preferences.skipIntroEnabled ?: uiState.skipIntroEnabled,
-      skipRecapEnabled = preferences.skipRecapEnabled ?: uiState.skipRecapEnabled,
-      skipEndingEnabled = preferences.skipEndingEnabled ?: uiState.skipEndingEnabled,
-      autoSkipIntroEnabled = preferences.autoSkipIntroEnabled ?: uiState.autoSkipIntroEnabled,
-      autoSkipRecapEnabled = preferences.autoSkipRecapEnabled ?: uiState.autoSkipRecapEnabled,
-      autoSkipEndingEnabled = preferences.autoSkipEndingEnabled ?: uiState.autoSkipEndingEnabled,
-      introdbApiKey = uiState.introdbApiKey.ifBlank { preferences.introdbApiKey?.trim().orEmpty() },
-      autoPlayNextEpisode = preferences.autoPlayNextEpisode ?: uiState.autoPlayNextEpisode,
-      preferBingeGroup = preferences.preferBingeGroup ?: uiState.preferBingeGroup,
-      autoLoadSubtitles = preferences.autoLoadSubtitles ?: uiState.autoLoadSubtitles,
-      nextEpisodeThresholdMode = preferences.nextEpisodeThresholdMode ?: uiState.nextEpisodeThresholdMode,
-      nextEpisodeThresholdPercent = preferences.nextEpisodeThresholdPercent?.coerceIn(50, 99) ?: uiState.nextEpisodeThresholdPercent,
-      nextEpisodeThresholdMinutes = preferences.nextEpisodeThresholdMinutes?.coerceIn(1, 15) ?: uiState.nextEpisodeThresholdMinutes,
-      endOfPlaybackRecommendationsEnabled = preferences.endOfPlaybackRecommendationsEnabled ?: uiState.endOfPlaybackRecommendationsEnabled,
-      recommendationTiming = preferences.recommendationTiming?.let { RecommendationTiming.fromKey(it).key } ?: uiState.recommendationTiming,
-      recommendationItemCount = preferences.recommendationItemCount?.coerceIn(1, 2) ?: uiState.recommendationItemCount,
-      timingProvider = preferences.timingProvider?.takeIf { it in setOf("introdb", "theintrodb") } ?: uiState.timingProvider,
-      timingProviderFallbackEnabled = preferences.timingProviderFallbackEnabled ?: uiState.timingProviderFallbackEnabled,
-      showStreamsList = preferences.showStreamsList ?: uiState.showStreamsList,
-      rememberLastSource = preferences.rememberLastSource ?: uiState.rememberLastSource,
       favoriteSourceKeys = preferences.favoriteSourceKeys?.map(String::trim)?.filter(String::isNotBlank)?.take(250)?.toSet() ?: uiState.favoriteSourceKeys,
-      blurUnwatchedEpisodes = preferences.blurUnwatchedEpisodes ?: uiState.blurUnwatchedEpisodes,
-      fusionBadgesEnabled = preferences.fusionBadgesEnabled ?: uiState.fusionBadgesEnabled,
-      streamDekFormattingEnabled = preferences.streamDekFormattingEnabled ?: uiState.streamDekFormattingEnabled,
-      showSizeBadges = preferences.showSizeBadges ?: uiState.showSizeBadges,
-      preferredQuality = preferences.preferredQuality ?: uiState.preferredQuality,
-      maxFileSizeGb = preferences.maxFileSizeGb ?: uiState.maxFileSizeGb,
-      badgePosition = preferences.badgePosition ?: uiState.badgePosition,
       fusionBadgeUrls = fusionBadgeUrls ?: uiState.fusionBadgeUrls,
       activeFusionBadgeUrl = if (fusionBadgeUrls != null) activeFusionBadgeUrl else uiState.activeFusionBadgeUrl,
       autoUpdateChecksEnabled = preferences.autoUpdateChecksEnabled ?: uiState.autoUpdateChecksEnabled,
+      playbackSettings = uiState.playbackSettings.copy(
+        secondaryAudioLanguage = preferences.secondaryAudioLanguage?.let(Languages::normalize) ?: uiState.secondaryAudioLanguage,
+        preferredSubtitleLanguage = preferences.preferredSubtitleLanguage?.let(Languages::normalize) ?: uiState.preferredSubtitleLanguage,
+        secondarySubtitleLanguage = preferences.secondarySubtitleLanguage?.let(Languages::normalize) ?: uiState.secondarySubtitleLanguage,
+        useForcedSubtitles = preferences.useForcedSubtitles ?: uiState.useForcedSubtitles,
+        showOnlyPreferredSubtitleLanguages = preferences.showOnlyPreferredSubtitleLanguages ?: uiState.showOnlyPreferredSubtitleLanguages,
+        addonSubtitleLoading = preferences.addonSubtitleLoading ?: uiState.addonSubtitleLoading,
+        subtitleDefaultSource = preferences.subtitleDefaultSource?.let(::normalizeSubtitleDefaultSource) ?: uiState.subtitleDefaultSource,
+        pictureInPictureEnabled = preferences.pictureInPictureEnabled ?: uiState.pictureInPictureEnabled,
+        decoderMode = decoderMode ?: uiState.decoderMode,
+        renderSurface = renderSurface ?: uiState.renderSurface,
+        playerEngine = playerEngine ?: uiState.playerEngine,
+        preferredAudioLanguage = preferredAudioLanguage ?: uiState.preferredAudioLanguage,
+        skipIntroEnabled = preferences.skipIntroEnabled ?: uiState.skipIntroEnabled,
+        skipRecapEnabled = preferences.skipRecapEnabled ?: uiState.skipRecapEnabled,
+        skipEndingEnabled = preferences.skipEndingEnabled ?: uiState.skipEndingEnabled,
+        autoSkipIntroEnabled = preferences.autoSkipIntroEnabled ?: uiState.autoSkipIntroEnabled,
+        autoSkipRecapEnabled = preferences.autoSkipRecapEnabled ?: uiState.autoSkipRecapEnabled,
+        autoSkipEndingEnabled = preferences.autoSkipEndingEnabled ?: uiState.autoSkipEndingEnabled,
+        introdbApiKey = uiState.introdbApiKey.ifBlank { preferences.introdbApiKey?.trim().orEmpty() },
+        autoPlayNextEpisode = preferences.autoPlayNextEpisode ?: uiState.autoPlayNextEpisode,
+        preferBingeGroup = preferences.preferBingeGroup ?: uiState.preferBingeGroup,
+        autoLoadSubtitles = preferences.autoLoadSubtitles ?: uiState.autoLoadSubtitles,
+        nextEpisodeThresholdMode = preferences.nextEpisodeThresholdMode ?: uiState.nextEpisodeThresholdMode,
+        nextEpisodeThresholdPercent = preferences.nextEpisodeThresholdPercent?.coerceIn(50, 99) ?: uiState.nextEpisodeThresholdPercent,
+        nextEpisodeThresholdMinutes = preferences.nextEpisodeThresholdMinutes?.coerceIn(1, 15) ?: uiState.nextEpisodeThresholdMinutes,
+        endOfPlaybackRecommendationsEnabled = preferences.endOfPlaybackRecommendationsEnabled ?: uiState.endOfPlaybackRecommendationsEnabled,
+        recommendationTiming = preferences.recommendationTiming?.let { RecommendationTiming.fromKey(it).key } ?: uiState.recommendationTiming,
+        recommendationItemCount = preferences.recommendationItemCount?.coerceIn(1, 2) ?: uiState.recommendationItemCount,
+        timingProvider = preferences.timingProvider?.takeIf { it in setOf("introdb", "theintrodb") } ?: uiState.timingProvider,
+        timingProviderFallbackEnabled = preferences.timingProviderFallbackEnabled ?: uiState.timingProviderFallbackEnabled,
+        rememberLastSource = preferences.rememberLastSource ?: uiState.rememberLastSource,
+      ),
+      appearanceSettings = uiState.appearanceSettings.copy(
+        appAppearance = appAppearance ?: uiState.appAppearance,
+        themePreset = themePreset ?: uiState.themePreset,
+        headerStyle = headerStyle ?: uiState.headerStyle,
+        showNavLabels = preferences.showNavLabels ?: uiState.showNavLabels,
+        collapsibleNavigationEnabled = preferences.collapsibleNavigationEnabled ?: uiState.collapsibleNavigationEnabled,
+        navigationAutoCollapseSeconds = preferences.navigationAutoCollapseSeconds?.coerceIn(2, 15) ?: uiState.navigationAutoCollapseSeconds,
+        detailPageStyle = detailPageStyle ?: uiState.detailPageStyle,
+        continueWatchingStyle = continueWatchingStyle ?: uiState.continueWatchingStyle,
+        homeCardTextMode = homeCardTextMode ?: uiState.homeCardTextMode,
+        networkCardStyle = networkCardStyle ?: uiState.networkCardStyle,
+        liveLandscapeCards = preferences.liveLandscapeCards ?: uiState.liveLandscapeCards,
+        liveCategoriesEnabled = preferences.liveCategoriesEnabled ?: uiState.liveCategoriesEnabled,
+        showHeroSynopsis = preferences.showHeroSynopsis ?: uiState.showHeroSynopsis,
+        vividAmbient = preferences.vividAmbient ?: uiState.vividAmbient,
+        ambientTintPercent = (preferences.ambientTintPercent ?: uiState.ambientTintPercent).coerceIn(20, 100),
+        detailAmbientTintPercent = (preferences.detailAmbientTintPercent ?: preferences.ambientTintPercent ?: uiState.detailAmbientTintPercent).coerceIn(20, 100),
+        seasonTabStyle = seasonTabStyle ?: uiState.seasonTabStyle,
+        episodeLayout = episodeLayout ?: uiState.episodeLayout,
+        heroTrailerAutoplay = preferences.heroTrailerAutoplay ?: uiState.heroTrailerAutoplay,
+        heroTrailerResolution = preferences.heroTrailerResolution?.coerceIn(360, 2160) ?: uiState.heroTrailerResolution,
+        detailBackgroundMode = preferences.detailBackgroundMode?.let { mode -> runCatching { BackgroundMode.valueOf(mode) }.getOrNull() } ?: uiState.detailBackgroundMode,
+        homeBackgroundMode = preferences.homeBackgroundMode?.let { mode -> runCatching { BackgroundMode.valueOf(mode) }.getOrNull() }?.takeIf { it in homeBackgroundModes } ?: uiState.homeBackgroundMode,
+        liveProgressBarEnabled = preferences.liveProgressBarEnabled ?: uiState.liveProgressBarEnabled,
+        liveBadgeEnabled = preferences.liveBadgeEnabled ?: uiState.liveBadgeEnabled,
+        heroTrailerDelaySeconds = preferences.heroTrailerDelaySeconds?.coerceIn(0, MAX_TRAILER_DELAY_SECONDS)
+        ?: uiState.heroTrailerDelaySeconds,
+        ratingsEnabled = preferences.ratingsEnabled ?: uiState.ratingsEnabled,
+        externalRatingsEnabled = preferences.externalRatingsEnabled ?: uiState.externalRatingsEnabled,
+        enabledRatingProviders = ratingProviders ?: uiState.enabledRatingProviders,
+        showStreamsList = preferences.showStreamsList ?: uiState.showStreamsList,
+        blurUnwatchedEpisodes = preferences.blurUnwatchedEpisodes ?: uiState.blurUnwatchedEpisodes,
+        fusionBadgesEnabled = preferences.fusionBadgesEnabled ?: uiState.fusionBadgesEnabled,
+        streamDekFormattingEnabled = preferences.streamDekFormattingEnabled ?: uiState.streamDekFormattingEnabled,
+        showSizeBadges = preferences.showSizeBadges ?: uiState.showSizeBadges,
+        preferredQuality = preferences.preferredQuality ?: uiState.preferredQuality,
+        maxFileSizeGb = preferences.maxFileSizeGb ?: uiState.maxFileSizeGb,
+        badgePosition = preferences.badgePosition ?: uiState.badgePosition,
+      ),
     )
     applyCloudSyncedLocalSettings(preferences)
     uiState = appSettingsStore.applyTo(uiState)
@@ -9903,40 +10173,44 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
 
     val mediaHubEnabled = preferences.mediaHubEnabled ?: uiState.mediaHubEnabled
     uiState = uiState.copy(
-      animationSpeed = animationSpeed ?: uiState.animationSpeed,
-      appLanguage = appLanguage ?: uiState.appLanguage,
-      visualEffectsMode = visualEffects ?: uiState.visualEffectsMode,
-      // The account's Navigation Behaviour wins over the older collapse switch applied above: it is
+      mediaHubOpen = mediaHubEnabled && uiState.mediaHubOpen,
+      playbackSettings = uiState.playbackSettings.copy(
+        playerControlLayout = controlLayout ?: uiState.playerControlLayout,
+        showPlayerControlLabels = preferences.showPlayerControlLabels ?: uiState.showPlayerControlLabels,
+        playerTitleDisplay = titleDisplay ?: uiState.playerTitleDisplay,
+        fullscreenStatusBar = statusBar ?: uiState.fullscreenStatusBar,
+        holdToSpeedEnabled = preferences.holdToSpeedEnabled ?: uiState.holdToSpeedEnabled,
+        holdToSpeedMultiplier = holdMultiplier ?: uiState.holdToSpeedMultiplier,
+        swipeToSeekEnabled = preferences.swipeToSeekEnabled ?: uiState.swipeToSeekEnabled,
+        doubleTapSeekEnabled = preferences.doubleTapSeekEnabled ?: uiState.doubleTapSeekEnabled,
+        doubleTapSeekSeconds = doubleTapSeconds ?: uiState.doubleTapSeekSeconds,
+        doubleTapPlayPauseEnabled = preferences.doubleTapPlayPauseEnabled ?: uiState.doubleTapPlayPauseEnabled,
+        playerLevelGesturesEnabled = preferences.playerLevelGesturesEnabled ?: uiState.playerLevelGesturesEnabled,
+        subtitleTextSize = subtitleTextSize ?: uiState.subtitleTextSize,
+        subtitleVerticalOffset = subtitleOffset ?: uiState.subtitleVerticalOffset,
+        subtitleBold = preferences.subtitleBold ?: uiState.subtitleBold,
+        subtitleTextColor = preferences.subtitleTextColor ?: uiState.subtitleTextColor,
+        subtitleBackgroundColor = preferences.subtitleBackgroundColor ?: uiState.subtitleBackgroundColor,
+        subtitleOutline = preferences.subtitleOutline ?: uiState.subtitleOutline,
+        subtitleOutlineColor = preferences.subtitleOutlineColor ?: uiState.subtitleOutlineColor,
+      ),
+      appearanceSettings = uiState.appearanceSettings.copy(
+        animationSpeed = animationSpeed ?: uiState.animationSpeed,
+        appLanguage = appLanguage ?: uiState.appLanguage,
+        visualEffectsMode = visualEffects ?: uiState.visualEffectsMode,
+        // The account's Navigation Behaviour wins over the older collapse switch applied above: it is
       // the same choice with the trigger and headers included.
       collapsibleNavigationEnabled = navigationBehaviour?.collapses ?: uiState.collapsibleNavigationEnabled,
-      navigationCollapsesOnScroll = navigationBehaviour?.takeIf { it.collapses }
+        navigationCollapsesOnScroll = navigationBehaviour?.takeIf { it.collapses }
         ?.let { it == NavigationBehaviour.CollapseWhileScrolling } ?: uiState.navigationCollapsesOnScroll,
-      expandedHeadersScrollAware = navigationBehaviour?.takeIf { !it.collapses }
+        expandedHeadersScrollAware = navigationBehaviour?.takeIf { !it.collapses }
         ?.let { it == NavigationBehaviour.ExpandedScrollAwareHeaders } ?: uiState.expandedHeadersScrollAware,
-      homeDensity = homeDensity ?: uiState.homeDensity,
-      mediaHubEnabled = mediaHubEnabled,
-      mediaHubOpen = mediaHubEnabled && uiState.mediaHubOpen,
-      heroTrailerMuted = preferences.heroTrailerMuted ?: uiState.heroTrailerMuted,
-      playerControlLayout = controlLayout ?: uiState.playerControlLayout,
-      showPlayerControlLabels = preferences.showPlayerControlLabels ?: uiState.showPlayerControlLabels,
-      playerTitleDisplay = titleDisplay ?: uiState.playerTitleDisplay,
-      fullscreenStatusBar = statusBar ?: uiState.fullscreenStatusBar,
-      holdToSpeedEnabled = preferences.holdToSpeedEnabled ?: uiState.holdToSpeedEnabled,
-      holdToSpeedMultiplier = holdMultiplier ?: uiState.holdToSpeedMultiplier,
-      swipeToSeekEnabled = preferences.swipeToSeekEnabled ?: uiState.swipeToSeekEnabled,
-      doubleTapSeekEnabled = preferences.doubleTapSeekEnabled ?: uiState.doubleTapSeekEnabled,
-      doubleTapSeekSeconds = doubleTapSeconds ?: uiState.doubleTapSeekSeconds,
-      doubleTapPlayPauseEnabled = preferences.doubleTapPlayPauseEnabled ?: uiState.doubleTapPlayPauseEnabled,
-      playerLevelGesturesEnabled = preferences.playerLevelGesturesEnabled ?: uiState.playerLevelGesturesEnabled,
-      subtitleTextSize = subtitleTextSize ?: uiState.subtitleTextSize,
-      subtitleVerticalOffset = subtitleOffset ?: uiState.subtitleVerticalOffset,
-      subtitleBold = preferences.subtitleBold ?: uiState.subtitleBold,
-      subtitleTextColor = preferences.subtitleTextColor ?: uiState.subtitleTextColor,
-      subtitleBackgroundColor = preferences.subtitleBackgroundColor ?: uiState.subtitleBackgroundColor,
-      subtitleOutline = preferences.subtitleOutline ?: uiState.subtitleOutline,
-      subtitleOutlineColor = preferences.subtitleOutlineColor ?: uiState.subtitleOutlineColor,
-      showNewEpisodesRow = preferences.showNewEpisodesRow ?: uiState.showNewEpisodesRow,
-      newEpisodesLandscape = preferences.newEpisodesLandscape ?: uiState.newEpisodesLandscape,
+        homeDensity = homeDensity ?: uiState.homeDensity,
+        mediaHubEnabled = mediaHubEnabled,
+        heroTrailerMuted = preferences.heroTrailerMuted ?: uiState.heroTrailerMuted,
+        showNewEpisodesRow = preferences.showNewEpisodesRow ?: uiState.showNewEpisodesRow,
+        newEpisodesLandscape = preferences.newEpisodesLandscape ?: uiState.newEpisodesLandscape,
+      ),
     )
 
 
@@ -11183,7 +11457,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   }
   fun setAppAppearance(value: AppAppearance) {
     appSettingsStore.saveAppAppearance(value)
-    uiState = uiState.copy(appAppearance = value)
+    uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(appAppearance = value))
     // Told to the platform as well as saved, so the splash on the next launch is the one this
     // choice describes rather than the one the phone happens to be in.
     applyAppNightMode(getApplication())
@@ -11198,7 +11472,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
    */
   fun setAnimationSpeed(value: AnimationSpeed) {
     appSettingsStore.saveAnimationSpeed(value)
-    uiState = uiState.copy(animationSpeed = value)
+    uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(animationSpeed = value))
     syncCloudPreferences()
   }
   fun setRememberLastProfileAtStartup(value: Boolean) {
@@ -11215,15 +11489,15 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setAppLanguage(value: String) {
     val normalized = normalizeAppLanguageSelection(value)
     appSettingsStore.saveAppLanguage(normalized)
-    uiState = uiState.copy(appLanguage = normalized)
+    uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(appLanguage = normalized))
     syncCloudPreferences()
   }
-  fun setThemePreset(value: AppThemePreset) { appSettingsStore.saveThemePreset(value); uiState = uiState.copy(themePreset = value); syncCloudPreferences() }
-  fun setHeaderStyle(value: HeaderStyle) { appSettingsStore.saveHeaderStyle(value); uiState = uiState.copy(headerStyle = value); syncCloudPreferences() }
-  fun setPictureInPictureEnabled(value: Boolean) { appSettingsStore.savePictureInPictureEnabled(value); uiState = uiState.copy(pictureInPictureEnabled = value); syncCloudPreferences() }
-  fun setDecoderMode(value: String) { appSettingsStore.saveDecoderMode(value); uiState = uiState.copy(decoderMode = value); syncCloudPreferences() }
-  fun setRenderSurface(value: String) { appSettingsStore.saveRenderSurface(value); uiState = uiState.copy(renderSurface = value); syncCloudPreferences() }
-  fun setPlayerEngine(value: String) { val normalized = normalizePlayerEngineSetting(value); appSettingsStore.savePlayerEngine(normalized); uiState = uiState.copy(playerEngine = normalized); syncCloudPreferences() }
+  fun setThemePreset(value: AppThemePreset) { appSettingsStore.saveThemePreset(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(themePreset = value)); syncCloudPreferences() }
+  fun setHeaderStyle(value: HeaderStyle) { appSettingsStore.saveHeaderStyle(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(headerStyle = value)); syncCloudPreferences() }
+  fun setPictureInPictureEnabled(value: Boolean) { appSettingsStore.savePictureInPictureEnabled(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(pictureInPictureEnabled = value)); syncCloudPreferences() }
+  fun setDecoderMode(value: String) { appSettingsStore.saveDecoderMode(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(decoderMode = value)); syncCloudPreferences() }
+  fun setRenderSurface(value: String) { appSettingsStore.saveRenderSurface(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(renderSurface = value)); syncCloudPreferences() }
+  fun setPlayerEngine(value: String) { val normalized = normalizePlayerEngineSetting(value); appSettingsStore.savePlayerEngine(normalized); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(playerEngine = normalized)); syncCloudPreferences() }
   fun setPreferredAudioLanguage(value: String) {
     val normalized = normalizePreferredAudioLanguage(value)
     appSettingsStore.savePreferredAudioLanguage(normalized)
@@ -11231,15 +11505,15 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     val updatedProfiles = uiState.profiles.map { profile ->
       if (profile.id == profileId) profile.copy(audioLanguage = normalized) else profile
     }
-    uiState = uiState.copy(preferredAudioLanguage = normalized, profiles = updatedProfiles)
+    uiState = uiState.copy(profiles = updatedProfiles, playbackSettings = uiState.playbackSettings.copy(preferredAudioLanguage = normalized))
     if (uiState.session == null && profileId != null) guestProfileStore.save(updatedProfiles)
     syncCloudPreferences()
   }
-  fun setDetailPageStyle(style: DetailPageStyle) { appSettingsStore.saveDetailPageStyle(style); uiState = uiState.copy(detailPageStyle = style); syncCloudPreferences() }
-  fun setSeasonTabStyle(style: SeasonTabStyle) { appSettingsStore.saveSeasonTabStyle(style); uiState = uiState.copy(seasonTabStyle = style); syncCloudPreferences() }
-  fun setEpisodeLayout(layout: EpisodeLayout) { appSettingsStore.saveEpisodeLayout(layout); uiState = uiState.copy(episodeLayout = layout); syncCloudPreferences() }
-  fun setShowNavLabels(value: Boolean) { appSettingsStore.saveShowNavLabels(value); uiState = uiState.copy(showNavLabels = value); syncCloudPreferences() }
-  fun setCollapsibleNavigationEnabled(value: Boolean) { appSettingsStore.saveCollapsibleNavigationEnabled(value); uiState = uiState.copy(collapsibleNavigationEnabled = value); syncCloudPreferences() }
+  fun setDetailPageStyle(style: DetailPageStyle) { appSettingsStore.saveDetailPageStyle(style); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(detailPageStyle = style)); syncCloudPreferences() }
+  fun setSeasonTabStyle(style: SeasonTabStyle) { appSettingsStore.saveSeasonTabStyle(style); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(seasonTabStyle = style)); syncCloudPreferences() }
+  fun setEpisodeLayout(layout: EpisodeLayout) { appSettingsStore.saveEpisodeLayout(layout); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(episodeLayout = layout)); syncCloudPreferences() }
+  fun setShowNavLabels(value: Boolean) { appSettingsStore.saveShowNavLabels(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(showNavLabels = value)); syncCloudPreferences() }
+  fun setCollapsibleNavigationEnabled(value: Boolean) { appSettingsStore.saveCollapsibleNavigationEnabled(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(collapsibleNavigationEnabled = value)); syncCloudPreferences() }
   /**
    * The whole choice travels under `platforms.mobile`; the older "collapses at all" switch is still
    * written beside it for builds that only know that.
@@ -11252,11 +11526,11 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     if (value.collapses) {
       val onScroll = value == NavigationBehaviour.CollapseWhileScrolling
       appSettingsStore.saveNavigationCollapsesOnScroll(onScroll)
-      uiState = uiState.copy(navigationCollapsesOnScroll = onScroll)
+      uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(navigationCollapsesOnScroll = onScroll))
     } else {
       val scrollAware = value == NavigationBehaviour.ExpandedScrollAwareHeaders
       appSettingsStore.saveExpandedHeadersScrollAware(scrollAware)
-      uiState = uiState.copy(expandedHeadersScrollAware = scrollAware)
+      uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(expandedHeadersScrollAware = scrollAware))
     }
     if (uiState.collapsibleNavigationEnabled != value.collapses) {
       setCollapsibleNavigationEnabled(value.collapses)
@@ -11267,42 +11541,44 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   /** Synced under `platforms.mobile`, like [setAnimationSpeed]. */
   fun setVisualEffectsMode(value: VisualEffectsMode) {
     appSettingsStore.saveVisualEffectsMode(value)
-    uiState = uiState.copy(visualEffectsMode = value)
+    uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(visualEffectsMode = value))
     syncCloudPreferences()
   }
   fun setNavigationAutoCollapseSeconds(value: Int) {
     val seconds = value.coerceIn(2, 15)
     appSettingsStore.saveNavigationAutoCollapseSeconds(seconds)
-    uiState = uiState.copy(navigationAutoCollapseSeconds = seconds)
+    uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(navigationAutoCollapseSeconds = seconds))
     syncCloudPreferences()
   }
-  fun setShowStreamsList(value: Boolean) { appSettingsStore.saveShowStreamsList(value); uiState = uiState.copy(showStreamsList = value); syncCloudPreferences() }
-  fun setHeroTrailerAutoplay(value: Boolean) { appSettingsStore.saveHeroTrailerAutoplay(value); uiState = uiState.copy(heroTrailerAutoplay = value); syncCloudPreferences() }
-  fun setHeroTrailerResolution(value: Int) { appSettingsStore.saveHeroTrailerResolution(value); uiState = uiState.copy(heroTrailerResolution = value); syncCloudPreferences() }
+  fun setShowStreamsList(value: Boolean) { appSettingsStore.saveShowStreamsList(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(showStreamsList = value)); syncCloudPreferences() }
+  fun setHeroTrailerAutoplay(value: Boolean) { appSettingsStore.saveHeroTrailerAutoplay(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(heroTrailerAutoplay = value)); syncCloudPreferences() }
+  fun setHeroTrailerResolution(value: Int) { appSettingsStore.saveHeroTrailerResolution(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(heroTrailerResolution = value)); syncCloudPreferences() }
   fun setHeroTrailerDelaySeconds(value: Int) {
     val clamped = value.coerceIn(0, MAX_TRAILER_DELAY_SECONDS)
     appSettingsStore.saveHeroTrailerDelaySeconds(clamped)
-    uiState = uiState.copy(heroTrailerDelaySeconds = clamped)
+    uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(heroTrailerDelaySeconds = clamped))
     syncCloudPreferences()
   }
   /** How loud trailers should be is a property of the device in your hand, so it syncs under `platforms.mobile`. */
-  fun setHeroTrailerMuted(value: Boolean) { appSettingsStore.saveHeroTrailerMuted(value); uiState = uiState.copy(heroTrailerMuted = value); syncCloudPreferences() }
-  fun setShowHeroSynopsis(value: Boolean) { appSettingsStore.saveShowHeroSynopsis(value); uiState = uiState.copy(showHeroSynopsis = value); syncCloudPreferences() }
-  fun setContinueWatchingStyle(style: ContinueWatchingStyle) { appSettingsStore.saveContinueWatchingStyle(style); uiState = uiState.copy(continueWatchingStyle = style); syncCloudPreferences() }
-  fun setHomeCardTextMode(mode: HomeCardTextMode) { appSettingsStore.saveHomeCardTextMode(mode); uiState = uiState.copy(homeCardTextMode = mode); syncCloudPreferences() }
-  fun setNetworkCardStyle(style: NetworkCardStyle) { appSettingsStore.saveNetworkCardStyle(style); uiState = uiState.copy(networkCardStyle = style); syncCloudPreferences() }
-  fun setLiveLandscapeCards(value: Boolean) { appSettingsStore.saveLiveLandscapeCards(value); uiState = uiState.copy(liveLandscapeCards = value); syncCloudPreferences() }
-  fun setShowNewEpisodesRow(value: Boolean) { appSettingsStore.saveShowNewEpisodesRow(value); uiState = uiState.copy(showNewEpisodesRow = value); syncCloudPreferences() }
-  fun setNewEpisodesLandscape(value: Boolean) { appSettingsStore.saveNewEpisodesLandscape(value); uiState = uiState.copy(newEpisodesLandscape = value); syncCloudPreferences() }
-  fun setLiveCategoriesEnabled(value: Boolean) { appSettingsStore.saveLiveCategoriesEnabled(value); uiState = uiState.copy(liveCategoriesEnabled = value); syncCloudPreferences() }
+  fun setHeroTrailerMuted(value: Boolean) { appSettingsStore.saveHeroTrailerMuted(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(heroTrailerMuted = value)); syncCloudPreferences() }
+  fun setShowHeroSynopsis(value: Boolean) { appSettingsStore.saveShowHeroSynopsis(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(showHeroSynopsis = value)); syncCloudPreferences() }
+  fun setContinueWatchingStyle(style: ContinueWatchingStyle) { appSettingsStore.saveContinueWatchingStyle(style); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(continueWatchingStyle = style)); syncCloudPreferences() }
+  fun setHomeCardTextMode(mode: HomeCardTextMode) { appSettingsStore.saveHomeCardTextMode(mode); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(homeCardTextMode = mode)); syncCloudPreferences() }
+  fun setNetworkCardStyle(style: NetworkCardStyle) { appSettingsStore.saveNetworkCardStyle(style); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(networkCardStyle = style)); syncCloudPreferences() }
+  fun setLiveLandscapeCards(value: Boolean) { appSettingsStore.saveLiveLandscapeCards(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(liveLandscapeCards = value)); syncCloudPreferences() }
+  fun setShowNewEpisodesRow(value: Boolean) { appSettingsStore.saveShowNewEpisodesRow(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(showNewEpisodesRow = value)); syncCloudPreferences() }
+  fun setNewEpisodesLandscape(value: Boolean) { appSettingsStore.saveNewEpisodesLandscape(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(newEpisodesLandscape = value)); syncCloudPreferences() }
+  fun setLiveCategoriesEnabled(value: Boolean) { appSettingsStore.saveLiveCategoriesEnabled(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(liveCategoriesEnabled = value)); syncCloudPreferences() }
 
   /** Also applied to a session already playing, so switching it on from Settings does not require
    * leaving and re-entering the channel to take effect. */
   fun setLiveProgressBarEnabled(value: Boolean) {
     appSettingsStore.saveLiveProgressBarEnabled(value)
     uiState = uiState.copy(
-      liveProgressBarEnabled = value,
       playerSession = uiState.playerSession?.copy(showLiveProgressBar = value),
+      appearanceSettings = uiState.appearanceSettings.copy(
+        liveProgressBarEnabled = value,
+      ),
     )
     syncCloudPreferences()
   }
@@ -11312,11 +11588,11 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
    */
   fun setLiveBadgeEnabled(value: Boolean) {
     appSettingsStore.saveLiveBadgeEnabled(value)
-    uiState = uiState.copy(liveBadgeEnabled = value)
+    uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(liveBadgeEnabled = value))
     syncCloudPreferences()
   }
   fun setLiveFavouriteDrawerCards(value: Boolean) { appSettingsStore.saveLiveFavouriteDrawerCards(value); uiState = uiState.copy(liveFavouriteDrawerCards = value); syncCloudPreferences() }
-  fun setRememberLastSource(value: Boolean) { appSettingsStore.saveRememberLastSource(value); uiState = uiState.copy(rememberLastSource = value); syncCloudPreferences() }
+  fun setRememberLastSource(value: Boolean) { appSettingsStore.saveRememberLastSource(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(rememberLastSource = value)); syncCloudPreferences() }
   fun toggleFavoriteSource(key: String) {
     if (key.isBlank()) return
     val next = uiState.favoriteSourceKeys.toMutableSet().apply { if (!add(key)) remove(key) }.take(250).toSet()
@@ -11325,16 +11601,16 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     syncCloudPreferences()
   }
   fun setSyncOnCellular(value: Boolean) { appSettingsStore.saveSyncOnCellular(value); uiState = uiState.copy(syncOnCellular = value); syncCloudPreferences(force = true) }
-  fun setHoldToSpeedEnabled(value: Boolean) { appSettingsStore.saveHoldToSpeedEnabled(value); uiState = uiState.copy(holdToSpeedEnabled = value); syncCloudPreferences() }
-  fun setHoldToSpeedMultiplier(value: Float) { appSettingsStore.saveHoldToSpeedMultiplier(value); uiState = uiState.copy(holdToSpeedMultiplier = value); syncCloudPreferences() }
-  fun setSwipeToSeekEnabled(value: Boolean) { appSettingsStore.saveSwipeToSeekEnabled(value); uiState = uiState.copy(swipeToSeekEnabled = value); syncCloudPreferences() }
-  fun setDoubleTapSeekEnabled(value: Boolean) { appSettingsStore.saveDoubleTapSeekEnabled(value); uiState = uiState.copy(doubleTapSeekEnabled = value); syncCloudPreferences() }
-  fun setDoubleTapSeekSeconds(value: Int) { val safe = value.takeIf { it in setOf(5, 10, 15) } ?: 10; appSettingsStore.saveDoubleTapSeekSeconds(safe); uiState = uiState.copy(doubleTapSeekSeconds = safe); syncCloudPreferences() }
-  fun setDoubleTapPlayPauseEnabled(value: Boolean) { appSettingsStore.saveDoubleTapPlayPauseEnabled(value); uiState = uiState.copy(doubleTapPlayPauseEnabled = value); syncCloudPreferences() }
-  fun setShowPlayerControlLabels(value: Boolean) { appSettingsStore.saveShowPlayerControlLabels(value); uiState = uiState.copy(showPlayerControlLabels = value); syncCloudPreferences() }
-  fun setPlayerControlLayout(value: String) { val safe = value.takeIf { it in setOf("Normal", "Minimal") } ?: "Normal"; appSettingsStore.savePlayerControlLayout(safe); uiState = uiState.copy(playerControlLayout = safe); syncCloudPreferences() }
-  fun setFullscreenStatusBar(value: String) { val safe = value.takeIf { it in setOf("Always show", "Hide in fullscreen", "Automatic") } ?: "Automatic"; appSettingsStore.saveFullscreenStatusBar(safe); uiState = uiState.copy(fullscreenStatusBar = safe); syncCloudPreferences() }
-  fun setPlayerTitleDisplay(value: String) { val safe = value.takeIf { it in setOf("Single line", "Scrolling", "Hidden") } ?: "Single line"; appSettingsStore.savePlayerTitleDisplay(safe); uiState = uiState.copy(playerTitleDisplay = safe); syncCloudPreferences() }
+  fun setHoldToSpeedEnabled(value: Boolean) { appSettingsStore.saveHoldToSpeedEnabled(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(holdToSpeedEnabled = value)); syncCloudPreferences() }
+  fun setHoldToSpeedMultiplier(value: Float) { appSettingsStore.saveHoldToSpeedMultiplier(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(holdToSpeedMultiplier = value)); syncCloudPreferences() }
+  fun setSwipeToSeekEnabled(value: Boolean) { appSettingsStore.saveSwipeToSeekEnabled(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(swipeToSeekEnabled = value)); syncCloudPreferences() }
+  fun setDoubleTapSeekEnabled(value: Boolean) { appSettingsStore.saveDoubleTapSeekEnabled(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(doubleTapSeekEnabled = value)); syncCloudPreferences() }
+  fun setDoubleTapSeekSeconds(value: Int) { val safe = value.takeIf { it in setOf(5, 10, 15) } ?: 10; appSettingsStore.saveDoubleTapSeekSeconds(safe); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(doubleTapSeekSeconds = safe)); syncCloudPreferences() }
+  fun setDoubleTapPlayPauseEnabled(value: Boolean) { appSettingsStore.saveDoubleTapPlayPauseEnabled(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(doubleTapPlayPauseEnabled = value)); syncCloudPreferences() }
+  fun setShowPlayerControlLabels(value: Boolean) { appSettingsStore.saveShowPlayerControlLabels(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(showPlayerControlLabels = value)); syncCloudPreferences() }
+  fun setPlayerControlLayout(value: String) { val safe = value.takeIf { it in setOf("Normal", "Minimal") } ?: "Normal"; appSettingsStore.savePlayerControlLayout(safe); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(playerControlLayout = safe)); syncCloudPreferences() }
+  fun setFullscreenStatusBar(value: String) { val safe = value.takeIf { it in setOf("Always show", "Hide in fullscreen", "Automatic") } ?: "Automatic"; appSettingsStore.saveFullscreenStatusBar(safe); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(fullscreenStatusBar = safe)); syncCloudPreferences() }
+  fun setPlayerTitleDisplay(value: String) { val safe = value.takeIf { it in setOf("Single line", "Scrolling", "Hidden") } ?: "Single line"; appSettingsStore.savePlayerTitleDisplay(safe); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(playerTitleDisplay = safe)); syncCloudPreferences() }
   /**
    * Synced under `platforms.mobile`, like its neighbours: a gesture setting describes the screen in
    * this hand, and a television has neither a brightness swipe nor a volume one to turn off.
@@ -11342,11 +11618,11 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
    * The player reads it through [PlayerSession], so a session already on screen keeps the answer it
    * started with; the next one takes the new value.
    */
-  fun setPlayerLevelGesturesEnabled(value: Boolean) { appSettingsStore.savePlayerLevelGesturesEnabled(value); uiState = uiState.copy(playerLevelGesturesEnabled = value); syncCloudPreferences() }
+  fun setPlayerLevelGesturesEnabled(value: Boolean) { appSettingsStore.savePlayerLevelGesturesEnabled(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(playerLevelGesturesEnabled = value)); syncCloudPreferences() }
   /** Off by default. Synced under `platforms.mobile`, so it never changes the television. */
   fun setMediaHubEnabled(value: Boolean) {
     appSettingsStore.saveMediaHubEnabled(value)
-    uiState = uiState.copy(mediaHubEnabled = value, mediaHubOpen = value && uiState.mediaHubOpen)
+    uiState = uiState.copy(mediaHubOpen = value && uiState.mediaHubOpen, appearanceSettings = uiState.appearanceSettings.copy(mediaHubEnabled = value))
     syncCloudPreferences()
   }
   fun setMediaHubOpen(value: Boolean) { uiState = uiState.copy(mediaHubOpen = value) }
@@ -11410,86 +11686,86 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     repairFavouriteChannelIds(result)
   }
 
-  fun setHomeDensity(value: HomeDensity) { appSettingsStore.saveHomeDensity(value); uiState = uiState.copy(homeDensity = value); syncCloudPreferences() }
-  fun setSkipIntroEnabled(value: Boolean) { appSettingsStore.saveSkipIntroEnabled(value); uiState = uiState.copy(skipIntroEnabled = value); syncCloudPreferences() }
-  fun setSkipRecapEnabled(value: Boolean) { appSettingsStore.saveSkipRecapEnabled(value); uiState = uiState.copy(skipRecapEnabled = value); syncCloudPreferences() }
-  fun setSkipEndingEnabled(value: Boolean) { appSettingsStore.saveSkipEndingEnabled(value); uiState = uiState.copy(skipEndingEnabled = value); syncCloudPreferences() }
-  fun setAutoSkipIntroEnabled(value: Boolean) { appSettingsStore.saveAutoSkipIntroEnabled(value); uiState = uiState.copy(autoSkipIntroEnabled = value); syncCloudPreferences() }
-  fun setAutoSkipRecapEnabled(value: Boolean) { appSettingsStore.saveAutoSkipRecapEnabled(value); uiState = uiState.copy(autoSkipRecapEnabled = value); syncCloudPreferences() }
-  fun setAutoSkipEndingEnabled(value: Boolean) { appSettingsStore.saveAutoSkipEndingEnabled(value); uiState = uiState.copy(autoSkipEndingEnabled = value); syncCloudPreferences() }
+  fun setHomeDensity(value: HomeDensity) { appSettingsStore.saveHomeDensity(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(homeDensity = value)); syncCloudPreferences() }
+  fun setSkipIntroEnabled(value: Boolean) { appSettingsStore.saveSkipIntroEnabled(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(skipIntroEnabled = value)); syncCloudPreferences() }
+  fun setSkipRecapEnabled(value: Boolean) { appSettingsStore.saveSkipRecapEnabled(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(skipRecapEnabled = value)); syncCloudPreferences() }
+  fun setSkipEndingEnabled(value: Boolean) { appSettingsStore.saveSkipEndingEnabled(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(skipEndingEnabled = value)); syncCloudPreferences() }
+  fun setAutoSkipIntroEnabled(value: Boolean) { appSettingsStore.saveAutoSkipIntroEnabled(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(autoSkipIntroEnabled = value)); syncCloudPreferences() }
+  fun setAutoSkipRecapEnabled(value: Boolean) { appSettingsStore.saveAutoSkipRecapEnabled(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(autoSkipRecapEnabled = value)); syncCloudPreferences() }
+  fun setAutoSkipEndingEnabled(value: Boolean) { appSettingsStore.saveAutoSkipEndingEnabled(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(autoSkipEndingEnabled = value)); syncCloudPreferences() }
   fun setIntrodbApiKey(value: String) {
     val trimmed = value.trim()
     appSettingsStore.saveIntrodbApiKey(trimmed)
     // A session already playing keeps its own copy, so update it too — the player refetches its
     // skip segments when the key changes.
-    uiState = uiState.copy(introdbApiKey = trimmed, playerSession = uiState.playerSession?.copy(introdbApiKey = trimmed))
+    uiState = uiState.copy(playerSession = uiState.playerSession?.copy(introdbApiKey = trimmed), playbackSettings = uiState.playbackSettings.copy(introdbApiKey = trimmed))
     syncCloudPreferences()
   }
-  fun setAutoPlayNextEpisode(value: Boolean) { appSettingsStore.saveAutoPlayNextEpisode(value); uiState = uiState.copy(autoPlayNextEpisode = value); syncCloudPreferences() }
-  fun setPreferBingeGroup(value: Boolean) { appSettingsStore.savePreferBingeGroup(value); uiState = uiState.copy(preferBingeGroup = value); syncCloudPreferences() }
-  fun setNextEpisodeThresholdMode(value: String) { appSettingsStore.saveNextEpisodeThresholdMode(value); uiState = uiState.copy(nextEpisodeThresholdMode = value); syncCloudPreferences() }
-  fun setNextEpisodeThresholdPercent(value: Int) { appSettingsStore.saveNextEpisodeThresholdPercent(value); uiState = uiState.copy(nextEpisodeThresholdPercent = value.coerceIn(50, 99)); syncCloudPreferences() }
-  fun setNextEpisodeThresholdMinutes(value: Int) { appSettingsStore.saveNextEpisodeThresholdMinutes(value); uiState = uiState.copy(nextEpisodeThresholdMinutes = value.coerceIn(1, 15)); syncCloudPreferences() }
-  fun setEndOfPlaybackRecommendationsEnabled(value: Boolean) { appSettingsStore.saveEndOfPlaybackRecommendationsEnabled(value); uiState = uiState.copy(endOfPlaybackRecommendationsEnabled = value); syncCloudPreferences() }
-  fun setRecommendationTiming(value: String) { val safe = RecommendationTiming.fromKey(value).key; appSettingsStore.saveRecommendationTiming(safe); uiState = uiState.copy(recommendationTiming = safe); syncCloudPreferences() }
-  fun setRecommendationItemCount(value: Int) { val safe = value.coerceIn(1, 2); appSettingsStore.saveRecommendationItemCount(safe); uiState = uiState.copy(recommendationItemCount = safe); syncCloudPreferences() }
-  fun setTimingProvider(value: String) { val safe = value.takeIf { it in setOf("introdb", "theintrodb") } ?: "introdb"; appSettingsStore.saveTimingProvider(safe); uiState = uiState.copy(timingProvider = safe); syncCloudPreferences() }
-  fun setTimingProviderFallbackEnabled(value: Boolean) { appSettingsStore.saveTimingProviderFallbackEnabled(value); uiState = uiState.copy(timingProviderFallbackEnabled = value); syncCloudPreferences() }
-  fun setAutoLoadSubtitles(value: Boolean) { appSettingsStore.saveAutoLoadSubtitles(value); uiState = uiState.copy(autoLoadSubtitles = value); syncCloudPreferences() }
+  fun setAutoPlayNextEpisode(value: Boolean) { appSettingsStore.saveAutoPlayNextEpisode(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(autoPlayNextEpisode = value)); syncCloudPreferences() }
+  fun setPreferBingeGroup(value: Boolean) { appSettingsStore.savePreferBingeGroup(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(preferBingeGroup = value)); syncCloudPreferences() }
+  fun setNextEpisodeThresholdMode(value: String) { appSettingsStore.saveNextEpisodeThresholdMode(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(nextEpisodeThresholdMode = value)); syncCloudPreferences() }
+  fun setNextEpisodeThresholdPercent(value: Int) { appSettingsStore.saveNextEpisodeThresholdPercent(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(nextEpisodeThresholdPercent = value.coerceIn(50, 99))); syncCloudPreferences() }
+  fun setNextEpisodeThresholdMinutes(value: Int) { appSettingsStore.saveNextEpisodeThresholdMinutes(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(nextEpisodeThresholdMinutes = value.coerceIn(1, 15))); syncCloudPreferences() }
+  fun setEndOfPlaybackRecommendationsEnabled(value: Boolean) { appSettingsStore.saveEndOfPlaybackRecommendationsEnabled(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(endOfPlaybackRecommendationsEnabled = value)); syncCloudPreferences() }
+  fun setRecommendationTiming(value: String) { val safe = RecommendationTiming.fromKey(value).key; appSettingsStore.saveRecommendationTiming(safe); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(recommendationTiming = safe)); syncCloudPreferences() }
+  fun setRecommendationItemCount(value: Int) { val safe = value.coerceIn(1, 2); appSettingsStore.saveRecommendationItemCount(safe); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(recommendationItemCount = safe)); syncCloudPreferences() }
+  fun setTimingProvider(value: String) { val safe = value.takeIf { it in setOf("introdb", "theintrodb") } ?: "introdb"; appSettingsStore.saveTimingProvider(safe); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(timingProvider = safe)); syncCloudPreferences() }
+  fun setTimingProviderFallbackEnabled(value: Boolean) { appSettingsStore.saveTimingProviderFallbackEnabled(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(timingProviderFallbackEnabled = value)); syncCloudPreferences() }
+  fun setAutoLoadSubtitles(value: Boolean) { appSettingsStore.saveAutoLoadSubtitles(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(autoLoadSubtitles = value)); syncCloudPreferences() }
   // Subtitle appearance stays on the device: it is tuned to the screen being watched, and a phone
   // and a television want different answers.
-  fun setSubtitleTextSize(value: Int) { appSettingsStore.saveSubtitleTextSize(value); uiState = uiState.copy(subtitleTextSize = value.coerceIn(SUBTITLE_TEXT_SIZE_RANGE)); syncCloudPreferencesWhenSettled() }
-  fun setSubtitleVerticalOffset(value: Int) { appSettingsStore.saveSubtitleVerticalOffset(value); uiState = uiState.copy(subtitleVerticalOffset = value.coerceIn(SUBTITLE_OFFSET_RANGE)); syncCloudPreferencesWhenSettled() }
-  fun setSubtitleBold(value: Boolean) { appSettingsStore.saveSubtitleBold(value); uiState = uiState.copy(subtitleBold = value); syncCloudPreferences() }
-  fun setSubtitleTextColor(value: String) { appSettingsStore.saveSubtitleTextColor(value); uiState = uiState.copy(subtitleTextColor = value); syncCloudPreferences() }
-  fun setSubtitleBackgroundColor(value: String) { appSettingsStore.saveSubtitleBackgroundColor(value); uiState = uiState.copy(subtitleBackgroundColor = value); syncCloudPreferences() }
-  fun setSubtitleOutline(value: Boolean) { appSettingsStore.saveSubtitleOutline(value); uiState = uiState.copy(subtitleOutline = value); syncCloudPreferences() }
-  fun setSubtitleOutlineColor(value: String) { appSettingsStore.saveSubtitleOutlineColor(value); uiState = uiState.copy(subtitleOutlineColor = value); syncCloudPreferences() }
+  fun setSubtitleTextSize(value: Int) { appSettingsStore.saveSubtitleTextSize(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(subtitleTextSize = value.coerceIn(SUBTITLE_TEXT_SIZE_RANGE))); syncCloudPreferencesWhenSettled() }
+  fun setSubtitleVerticalOffset(value: Int) { appSettingsStore.saveSubtitleVerticalOffset(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(subtitleVerticalOffset = value.coerceIn(SUBTITLE_OFFSET_RANGE))); syncCloudPreferencesWhenSettled() }
+  fun setSubtitleBold(value: Boolean) { appSettingsStore.saveSubtitleBold(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(subtitleBold = value)); syncCloudPreferences() }
+  fun setSubtitleTextColor(value: String) { appSettingsStore.saveSubtitleTextColor(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(subtitleTextColor = value)); syncCloudPreferences() }
+  fun setSubtitleBackgroundColor(value: String) { appSettingsStore.saveSubtitleBackgroundColor(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(subtitleBackgroundColor = value)); syncCloudPreferences() }
+  fun setSubtitleOutline(value: Boolean) { appSettingsStore.saveSubtitleOutline(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(subtitleOutline = value)); syncCloudPreferences() }
+  fun setSubtitleOutlineColor(value: String) { appSettingsStore.saveSubtitleOutlineColor(value); uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(subtitleOutlineColor = value)); syncCloudPreferences() }
   fun setSubtitleDefaultSource(value: String) {
     val normalized = normalizeSubtitleDefaultSource(value)
     appSettingsStore.saveSubtitleDefaultSource(normalized)
-    uiState = uiState.copy(subtitleDefaultSource = normalized)
+    uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(subtitleDefaultSource = normalized))
     syncCloudPreferences()
   }
   fun setSecondaryAudioLanguage(value: String) {
     val normalized = Languages.normalize(value)
     appSettingsStore.saveSecondaryAudioLanguage(normalized)
-    uiState = uiState.copy(secondaryAudioLanguage = normalized)
+    uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(secondaryAudioLanguage = normalized))
     syncCloudPreferences()
   }
   fun setPreferredSubtitleLanguage(value: String) {
     val normalized = Languages.normalize(value)
     appSettingsStore.savePreferredSubtitleLanguage(normalized)
-    uiState = uiState.copy(preferredSubtitleLanguage = normalized)
+    uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(preferredSubtitleLanguage = normalized))
     syncCloudPreferences()
   }
   fun setSecondarySubtitleLanguage(value: String) {
     val normalized = Languages.normalize(value)
     appSettingsStore.saveSecondarySubtitleLanguage(normalized)
-    uiState = uiState.copy(secondarySubtitleLanguage = normalized)
+    uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(secondarySubtitleLanguage = normalized))
     syncCloudPreferences()
   }
   fun setUseForcedSubtitles(value: Boolean) {
     appSettingsStore.saveUseForcedSubtitles(value)
-    uiState = uiState.copy(useForcedSubtitles = value)
+    uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(useForcedSubtitles = value))
     syncCloudPreferences()
   }
   fun setShowOnlyPreferredSubtitleLanguages(value: Boolean) {
     appSettingsStore.saveShowOnlyPreferredSubtitleLanguages(value)
-    uiState = uiState.copy(showOnlyPreferredSubtitleLanguages = value)
+    uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(showOnlyPreferredSubtitleLanguages = value))
     syncCloudPreferences()
   }
   fun setAddonSubtitleLoading(value: String) {
     appSettingsStore.saveAddonSubtitleLoading(value)
-    uiState = uiState.copy(addonSubtitleLoading = value)
+    uiState = uiState.copy(playbackSettings = uiState.playbackSettings.copy(addonSubtitleLoading = value))
     syncCloudPreferences()
   }
-  fun setBlurUnwatchedEpisodes(value: Boolean) { appSettingsStore.saveBlurUnwatchedEpisodes(value); uiState = uiState.copy(blurUnwatchedEpisodes = value); syncCloudPreferences() }
+  fun setBlurUnwatchedEpisodes(value: Boolean) { appSettingsStore.saveBlurUnwatchedEpisodes(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(blurUnwatchedEpisodes = value)); syncCloudPreferences() }
   fun setDetailSelectedTab(tab: String) { uiState = uiState.copy(detailSelectedTab = tab) }
-  fun setRatingsEnabled(value: Boolean) { appSettingsStore.saveRatingsEnabled(value); uiState = uiState.copy(ratingsEnabled = value); syncCloudPreferences() }
+  fun setRatingsEnabled(value: Boolean) { appSettingsStore.saveRatingsEnabled(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(ratingsEnabled = value)); syncCloudPreferences() }
   fun setExternalRatingsEnabled(value: Boolean) {
     appSettingsStore.saveExternalRatingsEnabled(value)
-    uiState = uiState.copy(externalRatingsEnabled = value)
+    uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(externalRatingsEnabled = value))
     syncCloudPreferences()
     uiState.detail?.let(::refreshExternalRatings)
   }
@@ -11497,25 +11773,25 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     val normalized = providerId.trim().lowercase()
     val providers = if (enabled) uiState.enabledRatingProviders + normalized else uiState.enabledRatingProviders - normalized
     appSettingsStore.saveEnabledRatingProviders(providers)
-    uiState = uiState.copy(enabledRatingProviders = providers)
+    uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(enabledRatingProviders = providers))
     syncCloudPreferences()
     uiState.detail?.let(::refreshExternalRatings)
   }
-  fun setVividAmbient(value: Boolean) { appSettingsStore.saveVividAmbient(value); uiState = uiState.copy(vividAmbient = value); syncCloudPreferences() }
+  fun setVividAmbient(value: Boolean) { appSettingsStore.saveVividAmbient(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(vividAmbient = value)); syncCloudPreferences() }
   fun setHomeBackgroundMode(value: BackgroundMode) {
     appSettingsStore.saveHomeBackgroundMode(value)
-    uiState = uiState.copy(homeBackgroundMode = value)
+    uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(homeBackgroundMode = value))
     syncCloudPreferences()
   }
   fun setDetailBackgroundMode(value: BackgroundMode) {
     appSettingsStore.saveDetailBackgroundMode(value)
     // The old boolean is kept in step, so a client that only understands it still behaves sensibly.
     appSettingsStore.saveVividAmbient(value == BackgroundMode.Cinematic)
-    uiState = uiState.copy(detailBackgroundMode = value, vividAmbient = value == BackgroundMode.Cinematic)
+    uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(detailBackgroundMode = value, vividAmbient = value == BackgroundMode.Cinematic))
     syncCloudPreferences()
   }
-  fun setAmbientTintPercent(value: Int) { val clamped = value.coerceIn(20, 100); appSettingsStore.saveAmbientTintPercent(clamped); uiState = uiState.copy(ambientTintPercent = clamped); syncCloudPreferences() }
-  fun setDetailAmbientTintPercent(value: Int) { val clamped = value.coerceIn(20, 100); appSettingsStore.saveDetailAmbientTintPercent(clamped); uiState = uiState.copy(detailAmbientTintPercent = clamped); syncCloudPreferences() }
+  fun setAmbientTintPercent(value: Int) { val clamped = value.coerceIn(20, 100); appSettingsStore.saveAmbientTintPercent(clamped); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(ambientTintPercent = clamped)); syncCloudPreferences() }
+  fun setDetailAmbientTintPercent(value: Int) { val clamped = value.coerceIn(20, 100); appSettingsStore.saveDetailAmbientTintPercent(clamped); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(detailAmbientTintPercent = clamped)); syncCloudPreferences() }
   /**
    * The catalog ids the last home request asked the backend for.
    *
@@ -11689,12 +11965,12 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     syncCloudPreferences()
   }
 
-  fun setFusionBadgesEnabled(value: Boolean) { appSettingsStore.saveFusionBadges(value); uiState = uiState.copy(fusionBadgesEnabled = value); syncCloudPreferences() }
-  fun setStreamDekFormattingEnabled(value: Boolean) { appSettingsStore.saveStreamDekFormatting(value); uiState = uiState.copy(streamDekFormattingEnabled = value); syncCloudPreferences() }
-  fun setShowSizeBadges(value: Boolean) { appSettingsStore.saveShowSizeBadges(value); uiState = uiState.copy(showSizeBadges = value); syncCloudPreferences() }
-  fun setPreferredQuality(value: String) { appSettingsStore.savePreferredQuality(value); uiState = uiState.copy(preferredQuality = value); syncCloudPreferences() }
-  fun setMaxFileSizeGb(value: Int) { appSettingsStore.saveMaxFileSizeGb(value); uiState = uiState.copy(maxFileSizeGb = value); syncCloudPreferences() }
-  fun setBadgePosition(value: String) { appSettingsStore.saveBadgePosition(value); uiState = uiState.copy(badgePosition = value); syncCloudPreferences() }
+  fun setFusionBadgesEnabled(value: Boolean) { appSettingsStore.saveFusionBadges(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(fusionBadgesEnabled = value)); syncCloudPreferences() }
+  fun setStreamDekFormattingEnabled(value: Boolean) { appSettingsStore.saveStreamDekFormatting(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(streamDekFormattingEnabled = value)); syncCloudPreferences() }
+  fun setShowSizeBadges(value: Boolean) { appSettingsStore.saveShowSizeBadges(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(showSizeBadges = value)); syncCloudPreferences() }
+  fun setPreferredQuality(value: String) { appSettingsStore.savePreferredQuality(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(preferredQuality = value)); syncCloudPreferences() }
+  fun setMaxFileSizeGb(value: Int) { appSettingsStore.saveMaxFileSizeGb(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(maxFileSizeGb = value)); syncCloudPreferences() }
+  fun setBadgePosition(value: String) { appSettingsStore.saveBadgePosition(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(badgePosition = value)); syncCloudPreferences() }
   fun updatePeerStreamSettings(transform: (PeerStreamSettings) -> PeerStreamSettings) {
     val updated = transform(uiState.peerStreamSettings)
     appSettingsStore.savePeerStreamSettings(updated)
@@ -12341,7 +12617,9 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       favouriteChannels = loadLocalFavouriteChannels(),
       localContinueWatching = loadLocalContinueWatching(),
       localResumeEntries = loadResumeEntries(),
-      preferredAudioLanguage = normalizePreferredAudioLanguage(activeProfile?.audioLanguage?.takeIf { it.isNotBlank() } ?: "en"),
+      playbackSettings = uiState.playbackSettings.copy(
+        preferredAudioLanguage = normalizePreferredAudioLanguage(activeProfile?.audioLanguage?.takeIf { it.isNotBlank() } ?: "en"),
+      ),
     ))
     refreshAddons()
     val session = uiState.session
@@ -13940,11 +14218,19 @@ private fun StreamDekNativeAppContent(
                   exists = nextEpisodeAvailable,
                   airDate = nextEpisodePreview?.airDate ?: nextSeasonPreview?.airDate,
                 )
+                val playerEpisodeBrowser = rememberPlayerEpisodeBrowser(
+                  uiState = uiState,
+                  browserState = viewModel.playerBrowser,
+                  session = rootPlayerSession,
+                  onLoadSeason = { seasonNumber -> viewModel.loadPlayerBrowserSeason(seasonNumber) },
+                  onSelectEpisode = { episode -> viewModel.playEpisodeFromPlayer(episode) },
+                )
                 CompositionLocalProvider(
                   LocalPlayerBadgeSetting provides PlayerBadgeSetting(uiState.liveBadgeEnabled) { viewModel.setLiveBadgeEnabled(!uiState.liveBadgeEnabled) },
                 ) {
                 NativePlayerScreen(
                 session = rootPlayerSession,
+                episodeBrowser = playerEpisodeBrowser,
                 resolving = uiState.playerSession == null,
                 resolvingSourceLabel = uiState.playerLaunchingLabel,
                 resolvingPeerHash = uiState.playerLaunchingPeerHash,
@@ -14629,6 +14915,48 @@ private fun AuthScene(
     }
   }
 }
+/**
+ * The bottom navigation's highlight: one rounded shape, the size of a tab, that slides from the tab
+ * that was chosen to the one that is.
+ *
+ * It sits behind the row of tabs and knows only how many there are and which is chosen; the tabs are
+ * equal widths, so its place is that share of the bar. On a page that is not one of the tabs it
+ * fades out where it stands, and fades back in at the tab next chosen without travelling there from
+ * nowhere. The first time the bar is drawn it is simply in place.
+ *
+ * Its travel follows the app's animation speed, and with motion turned off it moves at once.
+ */
+@Composable
+private fun NavSelectionHighlight(selectedIndex: Int, count: Int, color: Color) {
+  val motion = LocalMotionSettings.current
+  val shownIndex = remember { mutableStateOf(selectedIndex.coerceAtLeast(0)) }
+  if (selectedIndex >= 0 && shownIndex.value != selectedIndex) shownIndex.value = selectedIndex
+  val position by animateFloatAsState(
+    targetValue = shownIndex.value.toFloat(),
+    animationSpec = tween(durationMillis = motion.scaled(MotionDuration.standard), easing = FastOutSlowInEasing),
+    label = "nav_highlight_position",
+  )
+  val visibility by animateFloatAsState(
+    targetValue = if (selectedIndex >= 0) 1f else 0f,
+    animationSpec = tween(durationMillis = motion.scaled(MotionDuration.short)),
+    label = "nav_highlight_visibility",
+  )
+  BoxWithConstraints(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.CenterStart) {
+    val slots = count.coerceAtLeast(1)
+    val slotPx = constraints.maxWidth.toFloat() / slots
+    Box(
+      modifier = Modifier
+        // Read in the layout phase, so the slide moves the shape without recomposing the bar.
+        .offset { IntOffset((position * slotPx).roundToInt(), 0) }
+        .width(maxWidth / slots)
+        .height(60.dp)
+        .graphicsLayer { alpha = visibility }
+        .clip(StreamDekRadius.panelShape)
+        .background(color),
+    )
+  }
+}
+
 @Composable
 private fun NavigationCaretCue() {
   var tintVisible by remember { mutableStateOf(false) }
@@ -15325,6 +15653,19 @@ private fun MainScene(
                     )
                   }
                 } else if (showExpandedContent) {
+                  // The highlight is one shape behind the row that travels to the chosen tab,
+                  // rather than a background each tab switches on and off for itself.
+                  val navOrder = if (plexNavigationVisible) {
+                    listOf(MainTab.Home, MainTab.Search, MainTab.Plex, MainTab.Library, MainTab.Settings)
+                  } else {
+                    listOf(MainTab.Home, MainTab.Search, MainTab.Continue, MainTab.Watchlist, MainTab.Settings)
+                  }
+                  Box(modifier = Modifier.fillMaxSize()) {
+                  NavSelectionHighlight(
+                    selectedIndex = navOrder.indexOf(selectedTab),
+                    count = navOrder.size,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (lightNavigation) 0.11f else 0.15f),
+                  )
                   Row(
                     modifier = Modifier.fillMaxSize(),
                     horizontalArrangement = Arrangement.SpaceEvenly,
@@ -15333,29 +15674,40 @@ private fun MainScene(
                     // Five places either way, so connecting Plex never reflows the bar: Continue and
                     // Watchlist become one Library, and Plex takes the freed place.
                     (if (plexNavigationVisible) listOf(
-                      MainTab.Home to Icons.Rounded.Home,
-                      MainTab.Search to Icons.Rounded.Search,
+                      MainTab.Home to StreamDekNavIcons.HomeOutline,
+                      MainTab.Search to StreamDekNavIcons.SearchOutline,
                       MainTab.Plex to when {
                         mediaTabProviders.size > 1 -> JellyfinIcons.Stack
                         mediaTabProviders.firstOrNull() == net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID -> JellyfinIcons.Mark
                         else -> PlexIcons.Chevron
                       },
-                      MainTab.Library to Icons.Rounded.VideoLibrary,
-                      MainTab.Settings to Icons.Rounded.ManageAccounts,
+                      MainTab.Library to StreamDekNavIcons.LibraryOutline,
+                      MainTab.Settings to StreamDekNavIcons.SettingsOutline,
                     ) else listOf(
-                      MainTab.Home to Icons.Rounded.Home,
-                      MainTab.Search to Icons.Rounded.Search,
-                      MainTab.Continue to Icons.Rounded.PlayCircleOutline,
-                      MainTab.Watchlist to Icons.Rounded.Bookmark,
-                      MainTab.Settings to Icons.Rounded.ManageAccounts,
-                    )).forEach { (tab, icon) ->
+                      MainTab.Home to StreamDekNavIcons.HomeOutline,
+                      MainTab.Search to StreamDekNavIcons.SearchOutline,
+                      MainTab.Continue to StreamDekNavIcons.ContinueOutline,
+                      MainTab.Watchlist to StreamDekNavIcons.WatchlistOutline,
+                      MainTab.Settings to StreamDekNavIcons.SettingsOutline,
+                    )).forEach { (tab, restingIcon) ->
                       val selected = selectedTab == tab
+                      // StreamDek's own marks have a filled drawing for the chosen tab. The media
+                      // server's mark is that service's own: one drawing, changing only in tint.
+                      val icon = when {
+                        !selected -> restingIcon
+                        tab == MainTab.Home -> StreamDekNavIcons.HomeFilled
+                        tab == MainTab.Search -> StreamDekNavIcons.SearchFilled
+                        tab == MainTab.Settings -> StreamDekNavIcons.SettingsFilled
+                        tab == MainTab.Continue -> StreamDekNavIcons.ContinueFilled
+                        tab == MainTab.Watchlist -> StreamDekNavIcons.WatchlistFilled
+                        tab == MainTab.Library -> StreamDekNavIcons.LibraryFilled
+                        else -> restingIcon
+                      }
                       Column(
                         modifier = Modifier
                           .weight(1f)
                           .height(60.dp)
                           .clip(StreamDekRadius.panelShape)
-                          .background(if (selected) MaterialTheme.colorScheme.onSurface.copy(alpha = if (lightNavigation) 0.11f else 0.15f) else Color.Transparent)
                           .clickable {
                             viewModel.clearPlayerReturnTarget()
                             if (tab == MainTab.Settings && openDetail != null) {
@@ -15394,6 +15746,7 @@ private fun MainScene(
                       }
                     }
                   }
+                  }
                 } else {
                   Box(
                     modifier = Modifier
@@ -15423,7 +15776,7 @@ private fun MainScene(
                         ProfileAvatarImage(avatarIndex = activeProfile.avatarIndex, modifier = Modifier.fillMaxSize())
                       }
                     } else {
-                      Icon(Icons.Rounded.ManageAccounts, contentDescription = stringResource(R.string.a11y_expand_navigation), tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(30.dp))
+                      Icon(StreamDekNavIcons.SettingsOutline, contentDescription = stringResource(R.string.a11y_expand_navigation), tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(30.dp))
                     }
                     AnimatedVisibility(
                       visible = showNavigationCaret,
@@ -22431,7 +22784,7 @@ private fun SettingsTab(
         SettingsRoute.Player -> {
           item {
             SettingsSection(stringResource(R.string.settings_m_player)) {
-              SettingsChoiceRow("PLY", Color(0xFF22C55E), stringResource(R.string.settings_row_default_player), stringResource(R.string.settings_m_automatic_starts_with_media3_and_switches_to), listOf("Auto", "Media3", "MPV"), uiState.playerEngine, onSelected = onPlayerEngineChange,
+              SettingsChoiceRow("PLY", Color(0xFF22C55E), stringResource(R.string.settings_row_default_player), stringResource(R.string.settings_m_automatic_starts_with_media3_and_switches_to), listOf("Auto", "Media3", "MPV", "VLC"), uiState.playerEngine, onSelected = onPlayerEngineChange,
               choice = SettingsChoice.DefaultPlayer)
               SettingsDivider()
               SettingsSwitchRow("PIP", Color(0xFF6366F1), stringResource(R.string.settings_m_floating_player), stringResource(R.string.settings_m_keep_the_video_in_a_small_window), uiState.pictureInPictureEnabled, onPictureInPictureEnabledChange)
@@ -22755,7 +23108,7 @@ private fun ProfilesSettingsSummary(
     val profile = uiState.profiles.firstOrNull { it.id == profileId }
     AlertDialog(
       onDismissRequest = { deleteProfileId = null },
-      icon = { Icon(Icons.Rounded.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+      icon = { Icon(StreamDekSettingsIcons.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
       title = { Text(stringResource(R.string.profiles_delete_title, profile?.name ?: stringResource(R.string.profiles_generic_profile))) },
       text = { Text(stringResource(R.string.profiles_delete_detail)) },
       confirmButton = {
@@ -22807,7 +23160,7 @@ private fun ProfilesSettingsSummary(
           }
           if (uiState.session != null) {
             OutlinedButton(onClick = onOpenSwitcher, modifier = Modifier.fillMaxWidth(), shape = StreamDekRadius.thumbShape) {
-              Icon(Icons.Rounded.ManageAccounts, contentDescription = null, modifier = Modifier.size(19.dp))
+              Icon(StreamDekSettingsIcons.Account, contentDescription = null, modifier = Modifier.size(19.dp))
               Spacer(Modifier.width(8.dp))
               Text(stringResource(R.string.profiles_open_switcher), fontWeight = FontWeight.SemiBold)
             }
@@ -22827,7 +23180,7 @@ private fun ProfilesSettingsSummary(
         shape = StreamDekRadius.thumbShape,
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
       ) {
-        Icon(if (createExpanded) Icons.Rounded.Close else Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+        Icon(if (createExpanded) StreamDekPlayerIcons.Close else StreamDekSettingsIcons.Add, contentDescription = null, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(6.dp))
         Text(if (createExpanded) stringResource(R.string.action_close) else stringResource(R.string.action_add))
       }
@@ -22900,7 +23253,7 @@ private fun ProfilesSettingsSummary(
               Text(profileStatusLabel(profile, uiState.activeProfileId), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Icon(
-              if (expanded) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown,
+              if (expanded) StreamDekPlayerIcons.ChevronUp else StreamDekSettingsIcons.ChevronDown,
               contentDescription = if (expanded) "Collapse profile" else "Manage profile",
               tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f),
             )
@@ -22996,7 +23349,7 @@ private fun ProfilesSettingsSummary(
                       modifier = Modifier.weight(1f),
                       shape = StreamDekRadius.thumbShape,
                     ) {
-                      Icon(Icons.Rounded.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                      Icon(StreamDekPlayerIcons.Watched, contentDescription = null, modifier = Modifier.size(18.dp))
                       Spacer(Modifier.width(6.dp))
                       Text(if (active) stringResource(R.string.profile_in_use) else stringResource(R.string.profile_use))
                     }
@@ -23006,7 +23359,7 @@ private fun ProfilesSettingsSummary(
                       modifier = Modifier.weight(1f),
                       shape = StreamDekRadius.thumbShape,
                     ) {
-                      Icon(Icons.Rounded.Star, contentDescription = null, modifier = Modifier.size(18.dp))
+                      Icon(StreamDekPlayerIcons.Star, contentDescription = null, modifier = Modifier.size(18.dp))
                       Spacer(Modifier.width(6.dp))
                       Text(if (profile.isDefault) stringResource(R.string.profile_default) else stringResource(R.string.profile_make_default))
                     }
@@ -23027,7 +23380,7 @@ private fun ProfilesSettingsSummary(
                       modifier = Modifier.weight(1f),
                       shape = StreamDekRadius.thumbShape,
                     ) {
-                      Icon(Icons.Rounded.Lock, contentDescription = null, modifier = Modifier.size(17.dp))
+                      Icon(StreamDekPlayerIcons.Lock, contentDescription = null, modifier = Modifier.size(17.dp))
                       Spacer(Modifier.width(6.dp))
                       Text(if (profile.hasPinSet) stringResource(R.string.profile_manage_pin) else stringResource(R.string.profile_add_pin))
                     }
@@ -23037,7 +23390,7 @@ private fun ProfilesSettingsSummary(
                     enabled = !profile.isDefault && uiState.profiles.size > 1,
                     modifier = Modifier.align(Alignment.End),
                   ) {
-                    Icon(Icons.Rounded.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(17.dp))
+                    Icon(StreamDekSettingsIcons.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(17.dp))
                     Spacer(Modifier.width(6.dp))
                     Text(stringResource(R.string.profiles_delete_confirm), color = MaterialTheme.colorScheme.error)
                   }
@@ -23199,7 +23552,7 @@ private fun ConnectToTvSettings(uiState: AppUiState, onDeviceRenamed: () -> Unit
         },
         modifier = Modifier.fillMaxWidth(),
       ) {
-        Icon(Icons.Rounded.QrCodeScanner, contentDescription = null)
+        Icon(StreamDekSettingsIcons.Scan, contentDescription = null)
         Spacer(modifier = Modifier.width(8.dp))
         Text(stringResource(R.string.pairing_open_scanner), fontWeight = FontWeight.Bold)
       }
@@ -23233,7 +23586,7 @@ private fun ConnectToTvSettings(uiState: AppUiState, onDeviceRenamed: () -> Unit
           val renamed = remember(device.id, displayNameVersion) { DisplayNameOverrides.get(tvDisplayNameKey(device.id)) != null }
           Column(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-              Icon(Icons.Rounded.Tv, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp))
+              Icon(StreamDekSettingsIcons.Tv, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp))
               Column(modifier = Modifier.weight(1f)) {
                 Text(displayName, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
                 Text(
@@ -23248,7 +23601,7 @@ private fun ConnectToTvSettings(uiState: AppUiState, onDeviceRenamed: () -> Unit
                 )
               }
               IconButton(onClick = { renameDevice = device }) {
-                Icon(Icons.Rounded.Edit, contentDescription = stringResource(R.string.a11y_rename_device, displayName), tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f))
+                Icon(StreamDekSettingsIcons.Edit, contentDescription = stringResource(R.string.a11y_rename_device, displayName), tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f))
               }
             }
             OutlinedButton(enabled = !busy, onClick = {
@@ -23285,7 +23638,7 @@ private fun TvDeviceRenameDialog(device: LinkedTvDevice, onRenamed: () -> Unit, 
   var nameField by remember(device.id) { mutableStateOf(tvDisplayName(device)) }
   AlertDialog(
     onDismissRequest = onDismiss,
-    icon = { Icon(Icons.Rounded.Tv, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+    icon = { Icon(StreamDekSettingsIcons.Tv, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
     title = { Text(stringResource(R.string.pairing_rename_tv)) },
     text = {
       Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -23567,48 +23920,54 @@ private fun CustomDoHEndpointDialog(initialValue: String, onSave: (String) -> Un
   )
 }
 
+/**
+ * The drawing for a settings row's short code.
+ *
+ * Every row names its icon with a code rather than a vector, so this is the one place that decides
+ * what Settings looks like. All of it is the app's own icon family - the same hand as the bottom
+ * navigation and the player - and a row about something the app already draws elsewhere (subtitles,
+ * audio, downloads, Home) borrows that drawing, so one idea keeps one picture across the app.
+ */
 private fun settingsGlyph(icon: String): ImageVector = when (icon) {
-  "@" -> Icons.Rounded.AccountCircle
-  "+", "JS" -> Icons.Rounded.Extension
-  "DB" -> Icons.Rounded.Cloud
-  "T" -> Icons.Rounded.Link
-  "GE" -> Icons.Rounded.Tune
-  "NET" -> Icons.Rounded.Wifi
-  "HW" -> Icons.Rounded.Memory
-  "SF" -> Icons.Rounded.AspectRatio
-  "PIP" -> Icons.Rounded.PictureInPicture
-  "IN" -> Icons.Rounded.FastForward
-  "RE" -> Icons.Rounded.Replay
-  "LINK" -> Icons.Rounded.Link
-  "END" -> Icons.Rounded.SkipNext
-  "NXT", "SKP" -> Icons.Rounded.SkipNext
-  "PLY" -> Icons.Rounded.PlayArrow
-  "P2P" -> Icons.Rounded.Share
-  "BG" -> Icons.Rounded.GridView
-  "SUB", "Aa" -> Icons.Rounded.Subtitles
-  "LBL", "DOC", "AMB" -> Icons.Rounded.Visibility
-  "HM", "GRID", "LAY" -> Icons.Rounded.GridView
-  "DT", "TRL", "PLAY" -> Icons.Rounded.Movie
-  "S", "FSN", "POS" -> Icons.Rounded.Tune
-  "SIZ", "GB", "APP" -> Icons.Rounded.Storage
-  "Q" -> Icons.Rounded.HighQuality
-  "URL" -> Icons.Rounded.Link
-  "UP" -> Icons.Rounded.Update
-  "REF" -> Icons.Rounded.Refresh
-  "XA", "HI" -> Icons.Rounded.Language
-  "MO", "TH" -> Icons.Rounded.Palette
-  "FOL" -> Icons.Rounded.Folder
-  "SEA", "TV", "M3U" -> Icons.Rounded.Tv
-  "LIVE" -> Icons.Rounded.Tv
-  "DL" -> Icons.Rounded.Download
-  "MDB", "RAT" -> Icons.Rounded.Star
-  "PRO" -> Icons.Rounded.AccountCircle
-  "VFX" -> Icons.Rounded.BlurOn
-  "NVB" -> Icons.Rounded.SwipeVertical
+  "@", "PRO" -> StreamDekSettingsIcons.Account
+  "+", "JS" -> StreamDekSettingsIcons.Addon
+  "DB", "BAK" -> StreamDekSettingsIcons.Cloud
+  "T", "URL", "LINK" -> StreamDekSettingsIcons.Link
+  "KEY", "API" -> StreamDekSettingsIcons.Key
+  "MO", "TH", "CLR" -> StreamDekSettingsIcons.Appearance
+  "NET", "HI", "XA" -> StreamDekSettingsIcons.Network
+  "S", "Q", "HD", "SF", "POS", "NVB" -> StreamDekSettingsIcons.Sliders
+  "DEC", "HW" -> StreamDekPlayerIcons.Engine
+  "PIP" -> StreamDekSettingsIcons.Pip
+  "IN", "AIN" -> StreamDekPlayerIcons.FastForward
+  "RE", "ARE" -> StreamDekPlayerIcons.Replay10
+  "END", "AEND", "NXT", "SKP" -> StreamDekSettingsIcons.Next
+  "PLY", "TRL", "PLAY" -> StreamDekPlayerIcons.Play
   // The mark StreamDek Fuse carries on the television, so one feature looks like itself on both.
-  "HUB" -> Icons.Outlined.Hub
-  "ORD" -> Icons.Rounded.Reorder
-  else -> Icons.Rounded.Security
+  "HUB", "P2P", "TOR" -> StreamDekSettingsIcons.Hub
+  "BG" -> StreamDekPlayerIcons.Lock
+  "SUB", "Aa" -> StreamDekPlayerIcons.Subtitles
+  "BOLD", "EDGE", "FMT", "TTL", "SIZE" -> StreamDekSettingsIcons.Text
+  "LBL", "DOC", "AMB" -> StreamDekSettingsIcons.Eye
+  "BLR" -> StreamDekSettingsIcons.EyeOff
+  "HM" -> StreamDekNavIcons.HomeOutline
+  "GRID", "LAY", "EPL", "HDR", "SEA", "CAT", "NEW", "DEN" -> StreamDekSettingsIcons.Grid
+  "FAV", "MDB", "RAT" -> StreamDekPlayerIcons.Star
+  "DT", "FOL" -> StreamDekNavIcons.LibraryOutline
+  "FSN", "TAG", "SIZ" -> StreamDekSettingsIcons.Tag
+  "GB", "CCH" -> StreamDekSettingsIcons.Storage
+  "UP", "REF", "SYN", "ALT" -> StreamDekSettingsIcons.Sync
+  "APP" -> StreamDekPlayerIcons.Info
+  "TV", "LIVE" -> StreamDekSettingsIcons.Tv
+  "M3U", "LST", "ORD" -> StreamDekPlayerIcons.ListView
+  "DL" -> StreamDekPlayerIcons.Download
+  "VFX" -> StreamDekPlayerIcons.Brightness
+  "AN", "DLY", "PRF" -> StreamDekPlayerIcons.Speed
+  "BAR" -> StreamDekPlayerIcons.Progress
+  "SEC" -> StreamDekPlayerIcons.Forward10
+  "AUD" -> StreamDekPlayerIcons.Audio
+  "SRC", "SRV" -> StreamDekPlayerIcons.Sources
+  else -> StreamDekNavIcons.SettingsOutline
 }
 
 @Composable
@@ -23634,14 +23993,14 @@ private fun SettingsProfileRow(uiState: AppUiState, onClick: () -> Unit) {
       if (profile != null) {
         ProfileAvatarImage(avatarIndex = profile.avatarIndex, modifier = Modifier.fillMaxSize())
       } else {
-        Icon(Icons.Rounded.AccountCircle, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f))
+        Icon(StreamDekSettingsIcons.Account, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f))
       }
     }
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
       Text(stringResource(R.string.profiles_switch), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
       Text(profile?.let { stringResource(R.string.profile_current_named, it.name) } ?: stringResource(R.string.profile_create_or_select), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
-    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f))
+    Icon(StreamDekSettingsIcons.Forward, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f))
   }
 }
 /**
@@ -23724,7 +24083,7 @@ internal fun SettingsNavRow(icon: String, iconColor: Color, title: String, subti
     value?.let {
       Text(it, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodyMedium, maxLines = 1)
     }
-    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f))
+    Icon(StreamDekSettingsIcons.Forward, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f))
   }
 }
 
@@ -24675,6 +25034,7 @@ private fun settingsOptionLabel(choice: SettingsChoice?, option: String): String
     "Auto" -> "Auto"
     "Media3" -> "ExoPlayer"
     "MPV" -> "libmpv"
+    "VLC" -> LIBVLC_ENGINE_NAME
     else -> option
   }
   SettingsChoice.EpisodeLayout ->
@@ -25430,7 +25790,7 @@ private fun SubtitleColorRow(
     }
     SubtitleColorSwatch(selected)
     Text(subtitleColorLabel(selected), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodyMedium, maxLines = 1)
-    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f))
+    Icon(StreamDekSettingsIcons.Forward, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f))
   }
   if (showSheet) {
     SettingsChoiceSheet(
@@ -27743,7 +28103,7 @@ private fun SyncServicesSettingsSummary(
         if (index > 0) SettingsDivider()
         Box(modifier = Modifier.fillMaxWidth().clickable { onRouteChange(syncServiceRoute(service)) }) {
           SyncServiceIdentityRow(service, syncServiceStatus(uiState, service)) {
-            Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f))
+            Icon(StreamDekSettingsIcons.Forward, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f))
           }
         }
       }
@@ -32192,7 +32552,82 @@ private fun SeasonSelectorSkeleton(style: SeasonTabStyle) {
     }
   }
 }
-private fun isEpisodeUnreleased(episode: EpisodeItem): Boolean {
+/**
+ * What the player's episode browser shows for the series that is playing, or null when there is no
+ * series - a film, a live channel, or a session whose title page is not the one loaded.
+ *
+ * Which episode is playing is read off the session itself - its media id, season and episode -
+ * and from nowhere else. It used to be read from the detail page's selected episode, which is
+ * navigation state: a tap on a Continue Watching card with a remembered source starts playback
+ * without ever selecting an episode on that page, so the browser decided there was no series and
+ * the Episodes control never appeared. The session is what is on screen whichever way it started.
+ *
+ * Assembled here rather than in the player because all of it is the app's state: the title's
+ * seasons, the season already loaded for the detail page, the watched store that page reads, and
+ * the progress records Continue Watching is built from. The browser is handed a view of those; it
+ * keeps nothing of its own.
+ */
+@Composable
+private fun rememberPlayerEpisodeBrowser(
+  uiState: AppUiState,
+  browserState: PlayerBrowserState,
+  session: PlayerSession,
+  onLoadSeason: (Int) -> Unit,
+  onSelectEpisode: (EpisodeItem) -> Unit,
+): PlayerEpisodeBrowser? {
+  val detail = uiState.detail
+  val currentSeason = session.seasonNumber
+  val currentEpisode = session.episodeNumber
+  if (detail == null || currentSeason == null || currentEpisode == null || session.isLive || uiState.detailIsLive) return null
+  // The seasons, the stream lookup and the watched store are all the loaded title's, so the
+  // session has to be an episode of that title. Every route into the player loads it first.
+  if (session.mediaId != detail.id || normalizedMediaType(detail.type) != "tv") return null
+  val context = LocalContext.current
+  val watchedStore = remember(context) { WatchedEpisodeStore(context.applicationContext) }
+  val ownerKey = watchedOwnerKey(uiState.session, uiState.activeProfileId)
+  val watchedIds = remember(detail.id, ownerKey, uiState.watchedEpisodeRevision) { watchedStore.load(ownerKey, detail.id).toSet() }
+  val standing = remember(detail.id, uiState.playbackProgressRecords, uiState.localResumeEntries) {
+    playerEpisodeStanding(detail.id, uiState.playbackProgressRecords, uiState.localResumeEntries)
+  }
+  val browsed = if (browserState.detailId == detail.id) browserState.episodes else emptyMap()
+  // The season the detail page already holds is the playing episode's, so the browser opens on a
+  // full list without asking for anything.
+  val episodesBySeason = remember(browsed, uiState.selectedSeasonEpisodes) {
+    browsed + uiState.selectedSeasonEpisodes.groupBy(EpisodeItem::seasonNumber).mapValues { (_, episodes) -> episodes.sortedBy(EpisodeItem::episodeNumber) }
+  }
+  val seasons = remember(detail.seasons, currentSeason) {
+    val listed = detail.seasons.sortedBy { it.seasonNumber }
+    if (listed.any { it.seasonNumber == currentSeason }) listed
+    else (listed + SeasonSummary(seasonNumber = currentSeason, name = "", episodeCount = 0)).sortedBy { it.seasonNumber }
+  }
+  val watched = remember(watchedIds, standing, episodesBySeason, detail.id) {
+    buildSet {
+      addAll(standing.completed)
+      episodesBySeason.values.forEach { episodes ->
+        episodes.forEach { episode ->
+          if (watchedEpisodeKey(detail.id, episode.seasonNumber, episode.episodeNumber) in watchedIds) add(playerEpisodeSlot(episode.seasonNumber, episode.episodeNumber))
+        }
+      }
+    }
+  }
+  return PlayerEpisodeBrowser(
+    detailId = detail.id,
+    seriesTitle = detail.title,
+    seasons = seasons,
+    episodesBySeason = episodesBySeason,
+    loadingSeason = browserState.loadingSeason,
+    failedSeason = browserState.failedSeason,
+    currentSeason = currentSeason,
+    currentEpisode = currentEpisode,
+    watched = watched,
+    progress = standing.progress,
+    hideUnwatchedArtwork = uiState.blurUnwatchedEpisodes,
+    onLoadSeason = onLoadSeason,
+    onSelectEpisode = onSelectEpisode,
+  )
+}
+
+internal fun isEpisodeUnreleased(episode: EpisodeItem): Boolean {
   val date = episode.airDate?.take(10) ?: return false
   if (!Regex("\\d{4}-\\d{2}-\\d{2}").matches(date)) return false
   val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(java.util.Date())
@@ -32209,7 +32644,7 @@ private fun isEpisodeUnreleased(episode: EpisodeItem): Boolean {
  * [AppFormats], which asks the platform for that language's own ordering and month names.
  */
 @Composable
-private fun formatEpisodeAirDateLabel(date: String): String {
+internal fun formatEpisodeAirDateLabel(date: String): String {
   val normalized = date.take(10)
   val language = LocalAppLanguage.current
   val parser = remember { SimpleDateFormat("yyyy-MM-dd", Locale.US) }

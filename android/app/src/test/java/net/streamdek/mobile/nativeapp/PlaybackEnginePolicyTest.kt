@@ -14,6 +14,18 @@ class PlaybackEnginePolicyTest {
   }
 
   @Test
+  fun `libvlc plays only when it is chosen by name`() {
+    assertEquals(ActivePlaybackEngine.VLC, initialPlaybackEngine("VLC"))
+    assertEquals(ActivePlaybackEngine.VLC, initialPlaybackEngine("vlc"))
+    // Auto never starts on it and never falls back to it: an error under Auto still goes to mpv,
+    // and an error under libVLC moves to the next source rather than to another engine.
+    assertEquals(ActivePlaybackEngine.Media3, initialPlaybackEngine("Auto"))
+    assertFalse(shouldAutoFallbackToMpv("VLC", ActivePlaybackEngine.VLC, fallbackUsed = false))
+    assertFalse(shouldAutoFallbackToMpv("Auto", ActivePlaybackEngine.VLC, fallbackUsed = false))
+    assertEquals("libVLC", ActivePlaybackEngine.VLC.displayName)
+  }
+
+  @Test
   fun `auto falls back only once and only from media3`() {
     assertTrue(shouldAutoFallbackToMpv("Auto", ActivePlaybackEngine.Media3, fallbackUsed = false))
     assertFalse(shouldAutoFallbackToMpv("Auto", ActivePlaybackEngine.Media3, fallbackUsed = true))
@@ -29,6 +41,8 @@ class PlaybackEnginePolicyTest {
     assertEquals("Media3", normalizePlayerEngineSetting("ExoPlayer"))
     assertEquals("Media3", normalizePlayerEngineSetting("media3"))
     assertEquals("MPV", normalizePlayerEngineSetting("mpv"))
+    assertEquals("VLC", normalizePlayerEngineSetting("VLC"))
+    assertEquals("VLC", normalizePlayerEngineSetting("libvlc"))
   }
 
   @Test

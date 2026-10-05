@@ -206,6 +206,10 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.8.0")
     implementation files("libs/lib-decoder-ffmpeg-release.aar")
     implementation files("libs/libmpv-release.aar")
+    // libVLC, the third playback engine (see VlcPlaybackView). The "all" artifact carries every
+    // ABI; abiFilters above keeps only the two this app ships. It shares libc++_shared.so with
+    // libmpv, which the pickFirsts rule in packagingOptions already settles.
+    implementation("org.videolan.android:libvlc-all:3.7.7")
     // libtorrent4j, not FrostWire's jlibtorrent, which this replaced.
     //
     // jlibtorrent's last release is from September 2018 and wraps libtorrent 1.2.0, which finds

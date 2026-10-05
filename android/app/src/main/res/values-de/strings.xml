@@ -340,7 +340,7 @@
   <string name="player_subtitle_styling_note">Farbe, Kontur und Hintergrund findest du unter Einstellungen &gt; Untertitel.</string>
   <string name="player_reload">Neu laden</string>
   <string name="player_no_loaded_sources">Noch keine geladenen Quellen.</string>
-  <string name="player_engine_switch_note">Beim Wechsel bleibt deine Wiedergabeposition erhalten. Läuft ein Stream ohne Ton oder mit schwarzem Bild, probiere die andere Engine.</string>
+  <string name="player_engine_switch_note">Beim Wechsel bleibt deine Wiedergabeposition erhalten. Läuft ein Stream ohne Ton oder mit schwarzem Bild, probiere eine andere Engine.</string>
   <string name="player_info_source">Quelle</string>
   <string name="player_info_playback">Wiedergabe</string>
   <string name="player_info_installed_as">Installiert als</string>
@@ -871,7 +871,7 @@
   <string name="settings_m_auto_skip_ending">Ende automatisch überspringen</string>
   <string name="settings_m_auto_skip_intro">Intro automatisch überspringen</string>
   <string name="settings_m_auto_skip_recap">Rückblick automatisch überspringen</string>
-  <string name="settings_m_automatic_starts_with_media3_and_switches_to">Automatisch beginnt mit Media3 und wechselt zu mpv, wenn eine Quelle nicht abspielbar ist.</string>
+  <string name="settings_m_automatic_starts_with_media3_and_switches_to">Automatisch beginnt mit Media3 und wechselt zu mpv, wenn eine Quelle nicht abspielbar ist. libVLC wird nur verwendet, wenn du es auswählst.</string>
   <string name="settings_m_automatic_subtitles_and_the_sources_they_come">Automatische Untertitel und ihre Quellen.</string>
   <string name="settings_m_automatically_choose_matching_subtitles_when_playback_starts">Beim Start der Wiedergabe automatisch passende Untertitel wählen.</string>
   <string name="settings_m_automatically_use_the_other_provider_when_needed">Bei Bedarf automatisch den anderen Dienst nutzen</string>
@@ -1915,4 +1915,29 @@
   <string name="settings_m_buffer_ahead_description">Wie viel eines Videos im Voraus geladen wird. Mehr überbrückt eine schwache Verbindung und reicht auf der Suchleiste weiter, braucht aber mehr Speicher und Daten. Videos mit hoher Bitrate halten weniger. Gilt ab dem nächsten Video.</string>
   <string name="settings_m_buffer_ahead_one_minute">1 Minute</string>
   <string name="settings_m_buffer_ahead_minutes">%1$d Minuten</string>
+  <string name="player_episodes_empty">Für diese Staffel sind noch keine Folgen aufgeführt.</string>
+  <string name="player_speed">Tempo</string>
+  <string name="player_engine_notice_fallback">libVLC konnte diese Quelle nicht abspielen. Eine andere Engine wird versucht.</string>
+  <string name="player_engine_notice_headers">Diese Quelle benötigt Anfrage-Header, die libVLC nicht senden kann. Wiedergabe mit ExoPlayer.</string>
+  <string name="player_engine_notice_protected">libVLC kann geschützte Sender nicht abspielen. Wiedergabe mit ExoPlayer.</string>
+  <string name="player_engine_notice_dolby_vision">Dolby Vision wird in ExoPlayer genauer wiedergegeben. Engine wird gewechselt.</string>
+  <string name="player_info_bitrate_now">Aktuelle Bitrate</string>
+  <string name="player_info_frames">Bilder</string>
+  <string name="player_info_frames_value">%1$s dekodiert · %2$s verworfen</string>
+  <string name="media_server_remove">Entfernen</string>
+  <string name="media_server_remove_named">%1$s entfernen</string>
+  <string name="media_server_remove_title">%1$s entfernen?</string>
+  <string name="media_server_remove_library_body">Diese Mediathek wird ausgeschaltet und aus dieser Liste genommen. Deine anderen Mediatheken und Server bleiben verbunden. Unter „Entfernt“ kannst du sie zurückholen.</string>
+  <string name="media_server_remove_server_body">Dieser Server und seine Mediatheken werden ausgeschaltet und aus dieser Liste genommen. Deine anderen Server bleiben verbunden. Unter „Entfernt“ kannst du ihn zurückholen.</string>
+  <string name="jellyfin_remove_server_body">StreamDek meldet sich nur von diesem Server ab. Deine anderen Jellyfin-Server bleiben verbunden. Um ihn wieder zu nutzen, füge ihn hinzu und melde dich an.</string>
+  <string name="media_server_remove_server">Diesen Server entfernen</string>
+  <string name="media_server_removed">Entfernt</string>
+  <string name="media_server_removed_note">Ausgeschaltet und auf diesem Gerät aus der Liste oben ausgeblendet.</string>
+  <string name="media_server_restore">Wiederherstellen</string>
+  <string name="media_server_removed_done">%1$s entfernt.</string>
+  <string name="media_server_restored_done">%1$s wiederhergestellt.</string>
+  <string name="media_server_libraries_on_of">%1$d von %2$d Mediatheken an</string>
+  <string name="media_server_show_libraries">Mediatheken anzeigen</string>
+  <string name="media_server_hide_libraries">Mediatheken ausblenden</string>
+  <string name="media_server_whole_server">Server mit allen Mediatheken</string>
 </resources>

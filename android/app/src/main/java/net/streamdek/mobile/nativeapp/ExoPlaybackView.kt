@@ -108,6 +108,8 @@ class ExoPlaybackView @JvmOverloads constructor(
   // this is what avoids the black "shutter" flash `player = null` would otherwise cause.
   private var pendingPlayer: ExoPlayer? = null
   private var pendingListener: Player.Listener? = null
+  var onProviderEvidence: ((Boolean, String) -> Unit)? = null
+  private val providerProbe = ProviderPlaybackProbe { ok, attempt -> onProviderEvidence?.invoke(ok, attempt) }
   private var source: String? = null
   private var activeSource: String? = null
   private var retiringPlayer: ExoPlayer? = null
@@ -203,6 +205,7 @@ class ExoPlaybackView @JvmOverloads constructor(
     override fun run() {
       exoPlayer?.let { active ->
         val durationMs = active.duration.takeIf { it > 0 && it != C.TIME_UNSET } ?: 0L
+        providerProbe.tick(active.currentPosition, active.isPlaying)
         onProgressCallback?.invoke(active.currentPosition / 1000.0, durationMs / 1000.0)
       }
       postDelayed(this, if (exoPlayer?.isPlaying == true) 500L else 1_500L)
@@ -278,6 +281,7 @@ class ExoPlaybackView @JvmOverloads constructor(
     val next = url?.trim().orEmpty()
     if (next.isBlank() || next == source) return
     val hadActivePlayer = exoPlayer != null
+    providerProbe.reset()
     source = next
     // A new source starts with every recovery available and nothing held against it.
     audioRecoveriesTried.clear()
@@ -312,6 +316,7 @@ class ExoPlaybackView @JvmOverloads constructor(
   }
 
   fun seekTo(positionSeconds: Double) {
+    providerProbe.seek((positionSeconds * 1000.0).toLong())
     exoPlayer?.seekTo((positionSeconds * 1000.0).toLong().coerceAtLeast(0L))
   }
 
@@ -743,6 +748,14 @@ class ExoPlaybackView @JvmOverloads constructor(
       .build()
     val rendererLog = RendererLog()
     rendererLogs[active] = rendererLog
+    active.addAnalyticsListener(object : androidx.media3.exoplayer.analytics.AnalyticsListener {
+      override fun onAudioPositionAdvancing(eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime, playoutStartSystemTimeMs: Long) {
+        if (exoPlayer === active) providerProbe.audio()
+      }
+      override fun onAudioSinkError(eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime, audioSinkError: Exception) {
+        if (exoPlayer === active) providerProbe.fail()
+      }
+    })
     active.addAnalyticsListener(rendererLog)
     reportSoftwareDecoders()
     // Media3 picks the media source implementation for this URL's content type reflectively,
@@ -823,6 +836,7 @@ class ExoPlaybackView @JvmOverloads constructor(
         if (state == Player.STATE_READY && pendingPlayer === candidate) promotePendingPlayer(candidate, url)
       }
       override fun onPlayerError(error: PlaybackException) {
+      providerProbe.fail()
         if (pendingPlayer !== candidate) return
         Log.w(TAG, "Background source prepare failed; keeping the current source visible", error)
         pendingPlayer = null
@@ -882,6 +896,7 @@ class ExoPlaybackView @JvmOverloads constructor(
     }
 
     override fun onRenderedFirstFrame() {
+      providerProbe.frame()
       if (!awaitingFirstFrameAfterPromotion) return
       val active = exoPlayer ?: return
       awaitingFirstFrameAfterPromotion = false
@@ -1212,6 +1227,7 @@ class ExoPlaybackView @JvmOverloads constructor(
   }
 
   private fun clearCallbacks() {
+    onProviderEvidence = null
     onLoadCallback = null
     onProgressCallback = null
     onEndCallback = null

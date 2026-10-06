@@ -202,6 +202,17 @@ object Telemetry {
     }
   }
 
+  fun providerPlaybackEvidence(mediaId: String?, mediaType: String?, addon: String?, provider: String?, success: Boolean, attempt: String) {
+    val key = provider?.lowercase()
+    if (!addon.equals("StreamDek Ultra", ignoreCase = true) || key !in setOf("cno", "dexter")) return
+    track("provider_playback_evidence") {
+      putOpt("mediaId", mediaId); putOpt("mediaType", normaliseMediaType(mediaType))
+      put("addonKey", "com.streamdek.ultra.direct"); putOpt("provider", key)
+      put("correlationId", attempt); put("outcome", if (success) "success" else "failure")
+      put("metadata", JSONObject().put("engine", "media3").put("videoRendered", success).put("audioAdvanced", success).put("seekResumed", success))
+    }
+  }
+
   fun sessionStarted() {
     track(SESSION_STARTED) {}
   }

@@ -1695,6 +1695,7 @@ private fun PlayerSurface(
         factory = { context ->
           ExoPlaybackView(context).apply {
             onExoViewCreated(this)
+            onProviderEvidence = { ok, attempt -> Telemetry.providerPlaybackEvidence(session.mediaId, session.mediaType, session.currentStream?.addonName, session.currentStream?.source, ok, attempt) }
             onLoadCallback = onLoad
             onProgressCallback = onProgress
             onErrorCallback = onError
@@ -1730,6 +1731,7 @@ private fun PlayerSurface(
           // session's hasLoaded/error/etc. state or the new channel's own load/error
           // signal is silently swallowed by stale callbacks still bound to the state
           // objects from the channel that was just switched away from.
+          view.onProviderEvidence = { ok, attempt -> Telemetry.providerPlaybackEvidence(session.mediaId, session.mediaType, session.currentStream?.addonName, session.currentStream?.source, ok, attempt) }
           view.onLoadCallback = onLoad
           view.onProgressCallback = onProgress
           view.onErrorCallback = onError

@@ -31747,6 +31747,14 @@ private fun StreamResultCard(
   // and an overlay on top of it would hide the very text somebody chose the row by.
   val resolving = uiState.playerLaunching && uiState.launchingStreamKey == addonStreamPlaybackIdentity(stream)
   val resolvingRing = MaterialTheme.colorScheme.primary
+  // The size badge and the "ready" pill share the card's top right corner. How wide they are is
+  // not known ahead of time -- a size is a few characters, a ready label depends on the service,
+  // and either may be absent -- so the corner is measured and the header lines beside it give up
+  // exactly that much room. This replaces a fixed 174dp reserve that only fitted the ready pill.
+  val sizeText = remember(stream, uiState.showSizeBadges) { if (uiState.showSizeBadges) streamSizeLabel(stream) else null }
+  val hasCornerBadges = sizeText != null || readyProvider != null
+  var cornerWidthPx by remember { mutableIntStateOf(0) }
+  val cornerReserve = if (hasCornerBadges) with(LocalDensity.current) { cornerWidthPx.toDp() } + 10.dp else 0.dp
   Card(
     modifier = Modifier
       .padding(horizontal = horizontalPadding)
@@ -31773,7 +31781,7 @@ private fun StreamResultCard(
         FusionBadgeRow(
           stream = stream,
           uiState = uiState,
-          modifier = Modifier.padding(end = if (readyProvider != null) 174.dp else 0.dp),
+          modifier = Modifier.padding(end = cornerReserve),
         )
       }
       Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -31786,7 +31794,7 @@ private fun StreamResultCard(
           // does not touch a word of what was sent.
           if (attributionText.isNotEmpty() || originText != null) {
             Row(
-              modifier = Modifier.fillMaxWidth().padding(end = if (readyProvider != null) 174.dp else 0.dp),
+              modifier = Modifier.fillMaxWidth().padding(end = cornerReserve),
               horizontalArrangement = Arrangement.spacedBy(7.dp),
               verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -31819,6 +31827,10 @@ private fun StreamResultCard(
                 }
               }
             }
+          } else if (hasCornerBadges) {
+            // No attribution line to sit beside the corner badges, so leave the line empty
+            // rather than let the result's own text run underneath them.
+            Spacer(modifier = Modifier.height(20.dp))
           }
           if (uiState.streamDekFormattingEnabled) {
             Text(primaryText, color = streamForeground, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -31851,35 +31863,6 @@ private fun StreamResultCard(
             }
             rawDetail?.let {
               Text(it, color = streamForeground.copy(alpha = 0.82f), style = MaterialTheme.typography.bodyMedium)
-            }
-          }
-        }
-        // Single size badge for the card — the duplicate that used to render
-        // inside the badge row below has been removed.
-        //
-        // In both modes now, and gated only on the viewer's own Size Badges switch. The badge is
-        // read out of what the add-on already sent -- the same field the player's loading screen
-        // prints beside the release name -- so a result that showed no size here and "5.01 GB" a
-        // second later on the loading screen was hiding one it had all along. Verbatim mode's
-        // promise is that the add-on's own text is never rewritten, and a badge beside that text
-        // does not touch a word of it.
-        //
-        // It is still only as good as what can be scraped: add-ons that put something other than a
-        // size in that field render whole phrases as a pill, which is why it stays a narrow
-        // right-hand badge rather than anything the row's layout depends on.
-        if (uiState.showSizeBadges) {
-          streamSizeLabel(stream)?.let { size ->
-            Box(
-              modifier = Modifier.clip(StreamDekRadius.badgeShape).background(oxbloodRed).padding(horizontal = 9.dp, vertical = 4.dp),
-              contentAlignment = Alignment.Center,
-            ) {
-              Text(
-                size,
-                color = Color.White,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Black,
-                maxLines = 1,
-              )
             }
           }
         }
@@ -31917,24 +31900,58 @@ private fun StreamResultCard(
         FusionBadgeRow(stream = stream, uiState = uiState)
       }
     }
-      // Availability is card-level state, so pin it to the card rather than to the title column.
-      // The size/download rail no longer pushes this badge toward the middle of wide cards.
-      readyProvider?.let { provider ->
-        Box(
+      // Availability and size are card-level facts, so both are pinned to the card's top right
+      // corner rather than to the title column: the ready pill first, the size at the very edge.
+      //
+      // The size is read out of what the add-on already sent -- the same field the player's
+      // loading screen prints beside the release name -- and is shown in both formatted and
+      // verbatim mode, gated only on the viewer's own Size Badges switch. It is only as good as
+      // what can be scraped: add-ons that put something other than a size in that field would
+      // render a whole phrase as a pill, which is why its width is capped.
+      if (hasCornerBadges) {
+        Row(
           modifier = Modifier
             .align(Alignment.TopEnd)
-            .padding(top = 13.dp, end = 14.dp)
-            .clip(StreamDekRadius.pill)
-            .background(streamForeground)
-            .padding(horizontal = 9.dp, vertical = 4.dp),
+            .padding(top = 8.dp, end = 14.dp)
+            .onSizeChanged { cornerWidthPx = it.width },
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          verticalAlignment = Alignment.CenterVertically,
         ) {
-          Text(
-            stringResource(R.string.streams_ready_provider, debridProviderLabel(provider)),
-            color = MaterialTheme.colorScheme.surface,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Black,
-            maxLines = 1,
-          )
+          readyProvider?.let { provider ->
+            Box(
+              modifier = Modifier
+                .clip(StreamDekRadius.pill)
+                .background(streamForeground)
+                .padding(horizontal = 9.dp, vertical = 4.dp),
+            ) {
+              Text(
+                stringResource(R.string.streams_ready_provider, debridProviderLabel(provider)),
+                color = MaterialTheme.colorScheme.surface,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Black,
+                maxLines = 1,
+              )
+            }
+          }
+          sizeText?.let { size ->
+            Box(
+              modifier = Modifier
+                .widthIn(max = 132.dp)
+                .clip(StreamDekRadius.badgeShape)
+                .background(oxbloodRed)
+                .padding(horizontal = 9.dp, vertical = 4.dp),
+              contentAlignment = Alignment.Center,
+            ) {
+              Text(
+                size,
+                color = Color.White,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Black,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+              )
+            }
+          }
         }
       }
     }

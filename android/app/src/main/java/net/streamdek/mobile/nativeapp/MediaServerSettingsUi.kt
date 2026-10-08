@@ -41,6 +41,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.platform.LocalContext
@@ -66,6 +68,8 @@ import net.streamdek.mobile.nativeapp.mediaserver.OfflineReason
 import net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID
 import net.streamdek.mobile.nativeapp.mediaserver.PLEX_PROVIDER_ID
 import net.streamdek.mobile.nativeapp.mediaserver.RemovedMediaServerEntry
+import net.streamdek.mobile.nativeapp.mediaserver.inServerOrder
+import net.streamdek.mobile.nativeapp.mediaserver.withLibrariesInOrder
 import net.streamdek.mobile.nativeapp.mediaserver.listedMediaServers
 import net.streamdek.mobile.nativeapp.mediaserver.mediaServerEntryKey
 import net.streamdek.mobile.nativeapp.mediaserver.removedMediaServerEntries
@@ -428,12 +432,18 @@ internal fun MediaServerGroups(
 ) {
   val removed by manager.removedEntries.collectAsState()
   val collapsed by manager.collapsedServers.collectAsState()
+  val order by manager.serverOrder.collectAsState()
+  val libraryOrder by manager.libraryOrder.collectAsState()
   val scope = rememberCoroutineScope()
   val resources = LocalContext.current.resources
   var working by remember { mutableStateOf(false) }
   var removingServer by remember { mutableStateOf<MediaServerView?>(null) }
   var removingLibrary by remember { mutableStateOf<MediaServerLibrary?>(null) }
-  val listed = remember(provider, state.servers, removed) { listedMediaServers(provider, state.servers, removed) }
+  // In the viewer's own order: the server at the top here is the one at the top of the page.
+  // Each server's libraries in the order set for that server, which is the order its rows take on the page.
+  val listed = remember(provider, state.servers, removed, order, libraryOrder) {
+    listedMediaServers(provider, state.servers, removed).inServerOrder(provider, order).map { it.withLibrariesInOrder(libraryOrder) }
+  }
   val gone = remember(provider, state.servers, removed) { removedMediaServerEntries(provider, state.servers, removed) }
 
   fun perform(name: String, doneRes: Int, work: suspend () -> Boolean) {
@@ -451,19 +461,31 @@ internal fun MediaServerGroups(
     listed.forEachIndexed { index, server ->
       if (index > 0) SettingsDivider()
       val folded = mediaServerEntryKey(provider, server.id) in collapsed
+      // Arrows rather than dragging: a settings page that scrolls, with switches and folding rows
+      // in it, is a poor place to start a drag, and a tap is as quick for a list this short and
+      // can be reached by every way of using the phone.
+      val shownIds = listed.map { it.id }
       MediaServerGroupHeader(
         server = server,
         folded = folded,
         accent = accent,
         onFold = { manager.setServerCollapsed(provider, server.id, !folded) },
         onToggle = { onToggleServer(server) },
+        onMoveUp = if (listed.size > 1 && index > 0) ({ manager.moveServer(provider, shownIds, server.id, -1) }) else null,
+        onMoveDown = if (listed.size > 1 && index < listed.lastIndex) ({ manager.moveServer(provider, shownIds, server.id, 1) }) else null,
+        reorderable = listed.size > 1,
       )
       AnimatedVisibility(visible = !folded) {
         Column {
           if (server.enabled) {
             if (server.libraries.isEmpty()) PlexNote(stringResource(R.string.plex_no_libraries), indent = true)
-            server.libraries.forEach { library ->
-              PlexLibrarySwitch(library, accent = accent, onRemove = { removingLibrary = library }) { onToggleLibrary(server, library) }
+            // Visibility and order in one list: each library can be switched on and off, and dragged
+            // by its handle to where its rows should sit on the page.
+            ReorderableLibraries(
+              libraries = server.libraries,
+              onMove = { libraryKey, to -> manager.moveLibrary(server.id, server.libraries.map { it.key }, libraryKey, to) },
+            ) { library, handle ->
+              PlexLibrarySwitch(library, accent = accent, onRemove = { removingLibrary = library }, dragHandle = handle) { onToggleLibrary(server, library) }
             }
           }
           TextButton(onClick = { removingServer = server }, modifier = Modifier.padding(start = 8.dp)) {
@@ -517,7 +539,16 @@ internal fun MediaServerGroups(
 
 /** A server's own row: tap it to fold or unfold its libraries; the switch turns the server on or off. */
 @Composable
-private fun MediaServerGroupHeader(server: MediaServerView, folded: Boolean, accent: Color, onFold: () -> Unit, onToggle: () -> Unit) {
+private fun MediaServerGroupHeader(
+  server: MediaServerView,
+  folded: Boolean,
+  accent: Color,
+  onFold: () -> Unit,
+  onToggle: () -> Unit,
+  onMoveUp: (() -> Unit)? = null,
+  onMoveDown: (() -> Unit)? = null,
+  reorderable: Boolean = false,
+) {
   val (status, color) = reachabilityLabel(server)
   val owner = server.ownerName?.takeIf { !server.owned }?.let { stringResource(R.string.plex_server_shared_by, it) }
   // Folded, the row says what is inside it, so nothing has to be opened to find out.
@@ -542,10 +573,83 @@ private fun MediaServerGroupHeader(server: MediaServerView, folded: Boolean, acc
       Text(server.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
       Text(listOfNotNull(status, owner, count).joinToString(" · "), color = color, style = MaterialTheme.typography.bodySmall)
     }
+    if (reorderable) {
+      // Both always drawn, the unavailable one dimmed, so the switch never shifts sideways
+      // between the first server, the middle ones and the last.
+      ServerMoveButton(StreamDekPlayerIcons.ChevronUp, stringResource(R.string.media_server_move_up, server.name), onMoveUp)
+      ServerMoveButton(StreamDekSettingsIcons.ChevronDown, stringResource(R.string.media_server_move_down, server.name), onMoveDown)
+    }
     Switch(
       checked = server.enabled,
       onCheckedChange = { onToggle() },
       colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = accent, checkedThumbColor = Color.White),
+    )
+  }
+}
+
+/**
+ * A server's libraries, each draggable by its handle to a new place - the same drag, lift and
+ * accessibility actions as the Home Rows list, through its [ReorderableRow].
+ *
+ * Every step is saved as it happens, so the page behind Settings is already in the new order when
+ * the finger lifts. Only the handle starts a drag; the rest of the row still switches the library,
+ * and the page still scrolls. A server with a single library has nothing to order and shows no
+ * handle.
+ */
+@Composable
+private fun ReorderableLibraries(
+  libraries: List<MediaServerLibrary>,
+  onMove: (libraryKey: String, to: Int) -> Unit,
+  row: @Composable (library: MediaServerLibrary, handle: (@Composable () -> Unit)?) -> Unit,
+) {
+  if (libraries.size < 2) {
+    libraries.forEach { row(it, null) }
+    return
+  }
+  val density = LocalDensity.current
+  // About one library row: the distance the finger travels for each place the library moves.
+  val stepPx = with(density) { 60.dp.toPx() }
+  val currentLibraries by rememberUpdatedState(libraries)
+  libraries.forEach { library ->
+    androidx.compose.runtime.key(library.key) {
+      ReorderableRow(
+        itemKey = library.key,
+        reorderThresholdPx = stepPx,
+        // A server's libraries fit on a screen; the page is not scrolled under the finger.
+        dragScrollBy = { 0f },
+        onMove = { step ->
+          val list = currentLibraries
+          val from = list.indexOfFirst { it.key == library.key }
+          val to = from + step
+          if (from >= 0 && to in list.indices) onMove(library.key, to)
+        },
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)),
+      ) { handleModifier, dragging ->
+        Box(Modifier.weight(1f)) {
+          row(library) {
+            Box(modifier = handleModifier.size(width = 32.dp, height = 40.dp), contentAlignment = Alignment.Center) {
+              Icon(
+                StreamDekSettingsIcons.DragHandle,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (dragging) 0.85f else 0.38f),
+                modifier = Modifier.size(18.dp),
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun ServerMoveButton(icon: androidx.compose.ui.graphics.vector.ImageVector, description: String, onClick: (() -> Unit)?) {
+  IconButton(onClick = { onClick?.invoke() }, enabled = onClick != null, modifier = Modifier.size(36.dp)) {
+    Icon(
+      icon,
+      contentDescription = description,
+      tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (onClick != null) 0.8f else 0.22f),
+      modifier = Modifier.size(20.dp),
     )
   }
 }
@@ -578,14 +682,17 @@ internal fun PlexSwitchRow(
   indent: Boolean,
   accent: Color = PlexGold,
   onRemove: (() -> Unit)? = null,
+  /** Drawn before the title: a library's drag handle. It takes the indent's place. */
+  leading: (@Composable () -> Unit)? = null,
   onToggle: () -> Unit,
 ) {
   Row(
     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(onClick = onToggle)
-      .padding(start = if (indent) 20.dp else 0.dp, top = 8.dp, bottom = 8.dp),
+      .padding(start = if (leading != null) 4.dp else if (indent) 20.dp else 0.dp, top = 8.dp, bottom = 8.dp),
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(if (onRemove == null) 14.dp else 4.dp),
   ) {
+    leading?.invoke()
     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
       Text(
         title,
@@ -622,8 +729,15 @@ internal fun PlexServerSwitch(server: MediaServerView, accent: Color = PlexGold,
 }
 
 @Composable
-internal fun PlexLibrarySwitch(library: MediaServerLibrary, accent: Color = PlexGold, onRemove: (() -> Unit)? = null, onToggle: () -> Unit) {
+internal fun PlexLibrarySwitch(
+  library: MediaServerLibrary,
+  accent: Color = PlexGold,
+  onRemove: (() -> Unit)? = null,
+  dragHandle: (@Composable () -> Unit)? = null,
+  onToggle: () -> Unit,
+) {
   PlexSwitchRow(
+    leading = dragHandle,
     title = library.title,
     detail = stringResource(
       when (library.kind) {

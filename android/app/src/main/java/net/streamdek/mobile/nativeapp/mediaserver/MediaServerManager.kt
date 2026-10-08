@@ -149,9 +149,47 @@ class MediaServerManager internal constructor(
     /** The servers whose libraries are folded away in Settings. */
     val collapsedServers: StateFlow<Set<String>> = _collapsedServers.asStateFlow()
 
+    private val _serverOrder = MutableStateFlow<List<String>>(emptyList())
+    /**
+     * The viewer's order for their servers, most preferred first, as entry keys - see
+     * [mediaServerEntryKey] and [inServerOrder]. Settings lists the servers in it, and the Plex and
+     * Jellyfin pages show each server's rows in it. Kept on this device, like folding and removing.
+     */
+    val serverOrder: StateFlow<List<String>> = _serverOrder.asStateFlow()
+
+    private val _libraryOrder = MutableStateFlow<List<String>>(emptyList())
+    /**
+     * The viewer's order for each server's libraries, as [mediaServerLibraryOrderKey]s. A library is
+     * a set of rows on the page - its Recently Added, the library itself, Recently Watched and
+     * Collections - so ordering the libraries in Settings is ordering the page. Each key names its
+     * server, so one server's order never touches another's; a library switched off keeps its
+     * place for when it comes back. Kept on this device with the server order.
+     */
+    val libraryOrder: StateFlow<List<String>> = _libraryOrder.asStateFlow()
+
+    /** Moves [libraryKey] on [serverId] from where it is among [shownLibraryKeys] to [to]. */
+    fun moveLibrary(serverId: String, shownLibraryKeys: List<String>, libraryKey: String, to: Int) {
+        val shown = shownLibraryKeys.map { mediaServerLibraryOrderKey(serverId, it) }
+        val key = mediaServerLibraryOrderKey(serverId, libraryKey)
+        val moved = movedServerOrder(_libraryOrder.value, shown, key, to - shown.indexOf(key))
+        if (moved == _libraryOrder.value) return
+        _libraryOrder.value = moved
+        saveListTidy()
+    }
+
     private fun loadListTidy(key: String?) {
         _removedEntries.value = key?.let { displayPrefs?.getStringSet("$KEY_REMOVED_ENTRIES:$it", null) }.orEmpty().toSet()
         _collapsedServers.value = key?.let { displayPrefs?.getStringSet("$KEY_COLLAPSED_SERVERS:$it", null) }.orEmpty().toSet()
+        // A list, so not a string set: the order is the point. Entry keys are URL-encoded and
+        // never contain a line break.
+        _serverOrder.value = key?.let { displayPrefs?.getString("$KEY_SERVER_ORDER:$it", null) }
+            ?.split('\n')?.filter { it.isNotBlank() }.orEmpty()
+        _libraryOrder.value = key?.let { scope ->
+            displayPrefs?.getString("$KEY_LIBRARY_ORDER:$scope", null)?.split('\n')?.filter { it.isNotBlank() }
+                // A row order saved by the first version of this, which ordered page rows: the
+                // libraries those rows belonged to, in the order their rows came.
+                ?: displayPrefs?.getString("$KEY_ROW_ORDER:$scope", null)?.split('\n')?.let(::libraryOrderFromRowOrder)
+        }.orEmpty()
     }
 
     private fun saveListTidy() {
@@ -159,7 +197,28 @@ class MediaServerManager internal constructor(
         displayPrefs?.edit()
             ?.putStringSet("$KEY_REMOVED_ENTRIES:$key", _removedEntries.value)
             ?.putStringSet("$KEY_COLLAPSED_SERVERS:$key", _collapsedServers.value)
+            ?.putString("$KEY_SERVER_ORDER:$key", _serverOrder.value.joinToString("\n"))
+            ?.putString("$KEY_LIBRARY_ORDER:$key", _libraryOrder.value.joinToString("\n"))
+            ?.remove("$KEY_ROW_ORDER:$key")
             ?.apply()
+    }
+
+    /**
+     * Moves one server up ([offset] -1) or down (+1) among [shownServerIds], the servers of
+     * [provider] as Settings lists them right now.
+     */
+    fun moveServer(provider: String, shownServerIds: List<String>, serverId: String, offset: Int) {
+        val moved = movedServerOrder(
+            order = _serverOrder.value,
+            shown = shownServerIds.map { mediaServerEntryKey(provider, it) },
+            key = mediaServerEntryKey(provider, serverId),
+            offset = offset,
+        )
+        if (moved == _serverOrder.value) return
+        _serverOrder.value = moved
+        saveListTidy()
+        // The server at the top names the Jellyfin account; see leadingJellyfinUser.
+        if (provider == JELLYFIN_PROVIDER_ID) publishJellyfin()
     }
 
     fun setServerCollapsed(provider: String, serverId: String, collapsed: Boolean) {
@@ -616,7 +675,7 @@ class MediaServerManager internal constructor(
                 MediaServerLibrary(id, libraryKey, library.title ?: libraryKey, kind, stored.libraryChoices?.get(libraryKey) ?: (kind != MediaServerLibraryKind.Other), library.itemCount)
             })
         }
-        _jellyfinState.value = MediaServerUiState(provider = JELLYFIN_PROVIDER_ID, available = true, linked = true, accountName = accounts.firstOrNull()?.userName)
+        _jellyfinState.value = MediaServerUiState(provider = JELLYFIN_PROVIDER_ID, available = true, linked = true, accountName = leadingJellyfinUser(accounts))
         publishJellyfin()
         bump()
     }
@@ -650,6 +709,19 @@ class MediaServerManager internal constructor(
         }
     }
 
+    /**
+     * The name shown as "Connected as" for Jellyfin: the account on the server at the top of the
+     * viewer's list. With several servers each has its own sign-in, and the one the viewer put
+     * first is the one they think of as theirs. Without a chosen order, the list is alphabetical,
+     * so this is the first server there - the same one Settings shows at the top.
+     */
+    private fun leadingJellyfinUser(accounts: List<JellyfinAccount>): String? {
+        val rank = _serverOrder.value.withIndex().associate { it.value to it.index }
+        return accounts.minWithOrNull(
+            compareBy<JellyfinAccount>({ rank[mediaServerEntryKey(JELLYFIN_PROVIDER_ID, it.serverId)] ?: Int.MAX_VALUE }, { it.name.lowercase() }),
+        )?.userName
+    }
+
     private fun publishJellyfin() {
         reportRefusedJellyfin()
         val accounts = jellyfin.accounts()
@@ -670,7 +742,7 @@ class MediaServerManager internal constructor(
                 available = scopeKey() != null,
                 linked = accounts.isNotEmpty(),
                 needsAttention = views.isNotEmpty() && views.all { view -> (view.reachability as? MediaServerReachability.Offline)?.reason == OfflineReason.Unauthorized },
-                accountName = accounts.firstOrNull()?.userName,
+                accountName = leadingJellyfinUser(accounts),
                 servers = views,
             )
         }
@@ -1299,10 +1371,11 @@ class MediaServerManager internal constructor(
             enabled = enabled != false,
             presence = presence == true,
             accessToken = token,
-            connections = connections.orEmpty().mapNotNull { connection ->
+            // A plain local address after each plex.direct one, for routers that will not resolve it.
+            connections = withPlexLanFallbacks(connections.orEmpty().mapNotNull { connection ->
                 val uri = connection.uri ?: return@mapNotNull null
                 MediaServerEndpoint(serverId, uri, connection.local == true, connection.relay == true, token)
-            },
+            }),
             libraryChoices = libraries.orEmpty(),
         ).remember()
     }
@@ -1317,10 +1390,11 @@ class MediaServerManager internal constructor(
             enabled = enabled != false,
             presence = presence == true,
             accessToken = accessToken,
-            connections = connections.orEmpty().mapNotNull { connection ->
+            // A plain local address after each plex.direct one, for routers that will not resolve it.
+            connections = withPlexLanFallbacks(connections.orEmpty().mapNotNull { connection ->
                 val uri = connection.uri ?: return@mapNotNull null
                 MediaServerEndpoint(serverId, uri, connection.local == true, connection.relay == true, accessToken)
-            },
+            }),
             libraryChoices = libraryChoices.orEmpty(),
         ).remember()
     }
@@ -1482,4 +1556,8 @@ private const val DISPLAY_PREFS = "streamdek_media_servers"
 private const val KEY_JELLYFIN_AMBIENT = "jellyfinAmbient"
 private const val KEY_REMOVED_ENTRIES = "removedEntries"
 private const val KEY_COLLAPSED_SERVERS = "collapsedServers"
+private const val KEY_SERVER_ORDER = "serverOrder"
+/** Only read, to carry over an order saved by the first version of row ordering. */
+private const val KEY_ROW_ORDER = "rowOrder"
+private const val KEY_LIBRARY_ORDER = "libraryOrder"
 private const val KEY_LAST_PAGE_PROVIDER = "lastPageProvider"

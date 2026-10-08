@@ -2050,4 +2050,32 @@
   <string name="media_server_show_libraries">Pokaż biblioteki</string>
   <string name="media_server_hide_libraries">Ukryj biblioteki</string>
   <string name="media_server_whole_server">Serwer i wszystkie jego biblioteki</string>
+  <string name="action_mark_season_watched_short">Oznacz S%1$d jako obejrzany</string>
+  <string name="action_mark_season_unwatched_short">Oznacz S%1$d jako nieobejrzany</string>
+  <string name="action_mark_season_watched_numbered">Oznacz sezon %1$d jako obejrzany</string>
+  <string name="action_mark_season_unwatched_numbered">Oznacz sezon %1$d jako nieobejrzany</string>
+  <string name="search_section_catalogue">StreamDek</string>
+  <string name="search_section_catalogue_caption">Filmy i seriale</string>
+  <string name="search_section_your_library">Twoja biblioteka</string>
+  <string name="search_section_plugin">Wtyczka</string>
+  <string name="search_show_all">Pokaż wszystko</string>
+  <string name="search_show_less">Pokaż mniej</string>
+  <string name="search_section_caption">%1$s · %2$s</string>
+  <plurals name="search_section_results">
+    <item quantity="one">%d wynik</item>
+    <item quantity="few">%d wyniki</item>
+    <item quantity="many">%d wyników</item>
+    <item quantity="other">%d wyniku</item>
+  </plurals>
+  <string name="media_server_section_plex">Serwer Plex</string>
+  <string name="media_server_section_jellyfin">Serwer Jellyfin</string>
+  <plurals name="media_server_section_rows">
+    <item quantity="one">%d rząd</item>
+    <item quantity="few">%d rzędy</item>
+    <item quantity="many">%d rzędów</item>
+    <item quantity="other">%d rzędu</item>
+  </plurals>
+  <string name="settings_community_kofi">Wesprzyj na Ko-fi</string>
+  <string name="media_server_move_up">Przesuń %1$s w górę</string>
+  <string name="media_server_move_down">Przesuń %1$s w dół</string>
 </resources>

@@ -1990,4 +1990,30 @@
   <string name="media_server_show_libraries">Afficher les bibliothèques</string>
   <string name="media_server_hide_libraries">Masquer les bibliothèques</string>
   <string name="media_server_whole_server">Serveur et toutes ses bibliothèques</string>
+  <string name="action_mark_season_watched_short">Marquer S%1$d comme vue</string>
+  <string name="action_mark_season_unwatched_short">Marquer S%1$d comme non vue</string>
+  <string name="action_mark_season_watched_numbered">Marquer la saison %1$d comme vue</string>
+  <string name="action_mark_season_unwatched_numbered">Marquer la saison %1$d comme non vue</string>
+  <string name="search_section_catalogue">StreamDek</string>
+  <string name="search_section_catalogue_caption">Films et séries</string>
+  <string name="search_section_your_library">Ta bibliothèque</string>
+  <string name="search_section_plugin">Plugin</string>
+  <string name="search_show_all">Tout afficher</string>
+  <string name="search_show_less">Afficher moins</string>
+  <string name="search_section_caption">%1$s · %2$s</string>
+  <plurals name="search_section_results">
+    <item quantity="one">%d résultat</item>
+    <item quantity="many">%d résultats</item>
+    <item quantity="other">%d résultats</item>
+  </plurals>
+  <string name="media_server_section_plex">Serveur Plex</string>
+  <string name="media_server_section_jellyfin">Serveur Jellyfin</string>
+  <plurals name="media_server_section_rows">
+    <item quantity="one">%d rangée</item>
+    <item quantity="many">%d rangées</item>
+    <item quantity="other">%d rangées</item>
+  </plurals>
+  <string name="settings_community_kofi">Faire un don sur Ko-fi</string>
+  <string name="media_server_move_up">Monter %1$s</string>
+  <string name="media_server_move_down">Descendre %1$s</string>
 </resources>

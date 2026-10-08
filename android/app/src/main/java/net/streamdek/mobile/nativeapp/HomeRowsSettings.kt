@@ -783,7 +783,7 @@ private fun HomeCatalogRowItem(
  * makes it possible to drag a row from the bottom of seventy to the top.
  */
 @Composable
-private fun ReorderableRow(
+internal fun ReorderableRow(
   itemKey: String,
   reorderThresholdPx: Float,
   dragScrollBy: suspend (Float) -> Float,

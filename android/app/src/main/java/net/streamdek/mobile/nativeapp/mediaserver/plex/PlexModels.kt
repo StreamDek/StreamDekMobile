@@ -101,6 +101,12 @@ internal data class PlexMetadata(
     @SerializedName("Image") val images: List<PlexImage>? = null,
     /** Only present when asked for with includeReviews=1. */
     @SerializedName("Review") val reviews: List<PlexReview>? = null,
+    /**
+     * Why a search returned this item when it was not a title match: "actor", "director", "genre"
+     * and the like, with [reasonTitle] naming the person or tag. Only search results carry it.
+     */
+    val reason: String? = null,
+    val reasonTitle: String? = null,
 )
 
 /** One critic's review, as Plex's metadata carries it. */

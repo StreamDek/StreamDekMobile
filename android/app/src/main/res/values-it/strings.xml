@@ -1954,4 +1954,30 @@
   <string name="media_server_show_libraries">Mostra librerie</string>
   <string name="media_server_hide_libraries">Nascondi librerie</string>
   <string name="media_server_whole_server">Server e tutte le sue librerie</string>
+  <string name="action_mark_season_watched_short">Segna S%1$d come vista</string>
+  <string name="action_mark_season_unwatched_short">Segna S%1$d come non vista</string>
+  <string name="action_mark_season_watched_numbered">Segna la stagione %1$d come vista</string>
+  <string name="action_mark_season_unwatched_numbered">Segna la stagione %1$d come non vista</string>
+  <string name="search_section_catalogue">StreamDek</string>
+  <string name="search_section_catalogue_caption">Film e serie</string>
+  <string name="search_section_your_library">La tua libreria</string>
+  <string name="search_section_plugin">Plugin</string>
+  <string name="search_show_all">Mostra tutto</string>
+  <string name="search_show_less">Mostra meno</string>
+  <string name="search_section_caption">%1$s · %2$s</string>
+  <plurals name="search_section_results">
+    <item quantity="one">%d risultato</item>
+    <item quantity="many">%d risultati</item>
+    <item quantity="other">%d risultati</item>
+  </plurals>
+  <string name="media_server_section_plex">Server Plex</string>
+  <string name="media_server_section_jellyfin">Server Jellyfin</string>
+  <plurals name="media_server_section_rows">
+    <item quantity="one">%d riga</item>
+    <item quantity="many">%d righe</item>
+    <item quantity="other">%d righe</item>
+  </plurals>
+  <string name="settings_community_kofi">Dona su Ko-fi</string>
+  <string name="media_server_move_up">Sposta %1$s in su</string>
+  <string name="media_server_move_down">Sposta %1$s in giù</string>
 </resources>

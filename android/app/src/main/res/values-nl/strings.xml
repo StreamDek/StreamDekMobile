@@ -1940,4 +1940,28 @@
   <string name="media_server_show_libraries">Bibliotheken tonen</string>
   <string name="media_server_hide_libraries">Bibliotheken verbergen</string>
   <string name="media_server_whole_server">Server met al zijn bibliotheken</string>
+  <string name="action_mark_season_watched_short">S%1$d markeren als bekeken</string>
+  <string name="action_mark_season_unwatched_short">S%1$d markeren als niet bekeken</string>
+  <string name="action_mark_season_watched_numbered">Seizoen %1$d markeren als bekeken</string>
+  <string name="action_mark_season_unwatched_numbered">Seizoen %1$d markeren als niet bekeken</string>
+  <string name="search_section_catalogue">StreamDek</string>
+  <string name="search_section_catalogue_caption">Films en series</string>
+  <string name="search_section_your_library">Je bibliotheek</string>
+  <string name="search_section_plugin">Plug-in</string>
+  <string name="search_show_all">Alles tonen</string>
+  <string name="search_show_less">Minder tonen</string>
+  <string name="search_section_caption">%1$s · %2$s</string>
+  <plurals name="search_section_results">
+    <item quantity="one">%d resultaat</item>
+    <item quantity="other">%d resultaten</item>
+  </plurals>
+  <string name="media_server_section_plex">Plex-server</string>
+  <string name="media_server_section_jellyfin">Jellyfin-server</string>
+  <plurals name="media_server_section_rows">
+    <item quantity="one">%d rij</item>
+    <item quantity="other">%d rijen</item>
+  </plurals>
+  <string name="settings_community_kofi">Doneren via Ko-fi</string>
+  <string name="media_server_move_up">%1$s omhoog verplaatsen</string>
+  <string name="media_server_move_down">%1$s omlaag verplaatsen</string>
 </resources>

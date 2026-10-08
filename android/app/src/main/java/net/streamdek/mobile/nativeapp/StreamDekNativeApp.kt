@@ -391,6 +391,7 @@ import net.streamdek.mobile.nativeapp.mediaserver.MediaServerBackend
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerEpisode
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerIdentities
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerManager
+import net.streamdek.mobile.nativeapp.mediaserver.inServerOrder
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerPlaybackContext
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerPlaybackState
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerReference
@@ -4164,7 +4165,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         .collect { mediaServers.onSessionChanged() }
     }
     viewModelScope.launch {
-      mediaServers.jellyfinState.collect { state ->
+      // In the viewer's chosen order (Settings > Jellyfin), which is the order the page shows them in.
+      kotlinx.coroutines.flow.combine(mediaServers.jellyfinState, mediaServers.serverOrder, mediaServers.libraryOrder) { state, order, libraries -> state.inServerOrder(order, libraries) }.collect { state ->
         val wasLinked = uiState.anyMediaServerLinked
         uiState = uiState.withMediaServer { it.copy(jellyfin = state) }
         if (!uiState.anyMediaServerLinked && wasLinked) {
@@ -4174,7 +4176,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       }
     }
     viewModelScope.launch {
-      mediaServers.state.collect { state ->
+      kotlinx.coroutines.flow.combine(mediaServers.state, mediaServers.serverOrder, mediaServers.libraryOrder) { state, order, libraries -> state.inServerOrder(order, libraries) }.collect { state ->
         val wasLinked = uiState.anyMediaServerLinked
         uiState = uiState.withMediaServer { it.copy(state = state) }
         if (!uiState.anyMediaServerLinked && wasLinked) {
@@ -20092,6 +20094,16 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
   val pluginMatches = remember(uiState.pluginSearch.results) {
     uiState.pluginSearch.results.groupBy { it.cardSubtitle.orEmpty() }.toList()
   }
+  val searchSections = remember(mediaServerMatches, searchResults, addonMatches, uiState.pluginSearch.results) {
+    searchResultSections(
+      library = mediaServerMatches,
+      catalogue = searchResults,
+      addons = addonMatches,
+      plugins = uiState.pluginSearch.results,
+    )
+  }
+  // The sections opened with "Show all", forgotten with each new query.
+  var expandedSearchSections by remember(query) { mutableStateOf(emptySet<String>()) }
 
   // Read outside the remember: a calculation block is not a composable, and keying on the label
   // is what makes the sheet re-read it when the interface language changes.
@@ -20278,21 +20290,16 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
     } else {
       // Reserve the original section's space; animation never changes grid geometry.
       item(key = "search-results-header") { Spacer(Modifier.height(sectionSlotHeight)) }
-      // The viewer's own library first, labelled with where it is: a match there plays from home.
-      if (mediaServerMatches.isNotEmpty()) {
-        item(key = "media-server-results") {
-          PlaylistResultsHeader(mediaServerMatches.first().sourceAddonName ?: stringResource(R.string.media_server_plex), mediaServerMatches.size)
-        }
-        item(key = "media-server-grid") {
-          MediaGrid(mediaServerMatches.take(60), onOpen, columns = columns, showMeta = true, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched)
-        }
-      }
+      // One section per place a result came from, in a fixed order: the viewer's own Plex and
+      // Jellyfin servers (a match there plays from home), StreamDek's catalogue, each add-on (the
+      // only place an add-on's own titles - live channels above all - can appear), each plugin.
+      // See SearchSections.kt. Playlists keep their own sections below.
+      val nothingFound = searchSections.isEmpty() && !hasPlaylistMatches
       when {
-        uiState.searchLoading && searchResults.isEmpty() && !hasPlaylistMatches && addonMatches.isEmpty() && pluginMatches.isEmpty() && mediaServerMatches.isEmpty() -> {
+        uiState.searchLoading && nothingFound -> {
           item { SearchGridSkeleton(columns = columns) }
         }
-        searchResults.isEmpty() && !hasPlaylistMatches && addonMatches.isEmpty() && pluginMatches.isEmpty() && mediaServerMatches.isEmpty() &&
-          !uiState.addonSearchLoading && !uiState.pluginSearch.loading -> {
+        nothingFound && !uiState.addonSearchLoading && !uiState.pluginSearch.loading -> {
           item {
             LibraryEmptyState(
               icon = { Icon(Icons.Rounded.Search, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.70f), modifier = Modifier.size(54.dp)) },
@@ -20301,29 +20308,23 @@ private fun SearchTab(uiState: AppUiState, ownerKey: String, onSearch: (String) 
             )
           }
         }
-        else -> {
-          if (searchResults.isNotEmpty()) {
-            item { MediaGrid(searchResults.take(60), onOpen, columns = columns, showMeta = true, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched) }
-          }
-        }
       }
-
-      // Add-on results sit between the catalogue and the playlists: they are the only place an
-      // add-on's own titles - live channels above all - can appear, since TMDB does not carry
-      // them and the app never holds a whole catalog to filter.
-      if (addonMatches.isNotEmpty()) {
-        item { PlaylistResultsHeader("From your add-ons", addonMatches.size) }
-        item {
-          MediaGrid(addonMatches.take(60), onOpen, columns = columns, showMeta = true, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched)
+      val onlySection = searchSections.size == 1 && !hasPlaylistMatches
+      searchSections.forEach { section ->
+        val expanded = section.key in expandedSearchSections
+        val shown = searchSectionVisibleCount(section.items.size, columns, expanded, onlySection)
+        item(key = "search-section-${section.key}") {
+          SearchResultsSectionHeader(
+            section = section,
+            folds = searchSectionFolds(section.items.size, columns, onlySection),
+            expanded = expanded,
+            onToggle = {
+              expandedSearchSections = if (expanded) expandedSearchSections - section.key else expandedSearchSections + section.key
+            },
+          )
         }
-      }
-
-      pluginMatches.forEach { (provider, items) ->
-        item(key = "plugin-results-$provider") {
-          PlaylistResultsHeader(provider.ifBlank { stringResource(R.string.search_from_your_plugins) }, items.size)
-        }
-        item(key = "plugin-grid-$provider") {
-          MediaGrid(items.take(60), onOpen, columns = columns, showMeta = true, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched)
+        item(key = "search-grid-${section.key}") {
+          MediaGrid(section.items.take(shown), onOpen, columns = columns, showMeta = true, onToggleWatchlist = onToggleWatchlist, watchlistItems = uiState.mergedWatchlist, onMarkWatched = onMarkWatched)
         }
       }
       if (uiState.pluginSearch.loading && pluginMatches.isEmpty() && (searchResults.isNotEmpty() || addonMatches.isNotEmpty())) {
@@ -20977,6 +20978,65 @@ private fun SearchRecentSection(recentSearches: List<String>, onSearchPress: (St
     )
     recentSearches.forEach { recentQuery ->
       SearchRecentRow(query = recentQuery, onSearchPress = { onSearchPress(recentQuery) }, onRemovePress = { onRemoveSearch(recentQuery) })
+    }
+  }
+}
+
+/**
+ * A search section's heading: whose results these are, what kind of source that is, how many it
+ * found, and - when the section is folded to two rows - the way to see the rest.
+ */
+@Composable
+private fun SearchResultsSectionHeader(section: SearchResultSection, folds: Boolean, expanded: Boolean, onToggle: () -> Unit) {
+  val title = when (section.kind) {
+    SearchSourceKind.Plex -> section.name ?: stringResource(R.string.media_server_plex)
+    SearchSourceKind.Jellyfin -> section.name ?: stringResource(R.string.media_server_jellyfin)
+    SearchSourceKind.Catalogue -> stringResource(R.string.search_section_catalogue)
+    SearchSourceKind.Addon -> section.name ?: stringResource(R.string.stream_origin_addon)
+    SearchSourceKind.Plugin -> section.name ?: stringResource(R.string.search_from_your_plugins)
+  }
+  val caption = when (section.kind) {
+    SearchSourceKind.Plex, SearchSourceKind.Jellyfin -> stringResource(R.string.search_section_your_library)
+    SearchSourceKind.Catalogue -> stringResource(R.string.search_section_catalogue_caption)
+    SearchSourceKind.Addon -> stringResource(R.string.stream_origin_addon)
+    SearchSourceKind.Plugin -> stringResource(R.string.search_section_plugin)
+  }
+  val mark = when (section.kind) {
+    SearchSourceKind.Plex -> PlexIcons.Chevron
+    SearchSourceKind.Jellyfin -> JellyfinIcons.Mark
+    SearchSourceKind.Catalogue -> StreamDekNavIcons.SearchOutline
+    SearchSourceKind.Addon -> StreamDekSettingsIcons.Addon
+    SearchSourceKind.Plugin -> StreamDekSettingsIcons.Hub
+  }
+  val count = pluralStringResource(R.plurals.search_section_results, section.items.size, section.items.size)
+  Row(
+    modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 6.dp),
+    horizontalArrangement = Arrangement.spacedBy(12.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Box(
+      modifier = Modifier
+        .size(36.dp)
+        .clip(StreamDekRadius.controlShape)
+        .background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.08f)),
+      contentAlignment = Alignment.Center,
+    ) {
+      Icon(mark, contentDescription = null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.86f), modifier = Modifier.size(20.dp))
+    }
+    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+      Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground, maxLines = 1, overflow = TextOverflow.Ellipsis)
+      Text(
+        stringResource(R.string.search_section_caption, caption, count),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.58f),
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+      )
+    }
+    if (folds) {
+      TextButton(onClick = onToggle) {
+        Text(stringResource(if (expanded) R.string.search_show_less else R.string.search_show_all), fontWeight = FontWeight.SemiBold)
+      }
     }
   }
 }
@@ -24046,29 +24106,43 @@ internal fun SettingsSubtitle(text: String, collapsedMaxLines: Int = 3) {
   }
 }
 
+private const val KOFI_URL = "https://ko-fi.com/streamdek/goal?g=0"
+
+/**
+ * The links at the foot of Settings: the community on one line, centred, and the donation link
+ * centred on a line of its own beneath it, so asking for support stays apart from the places to
+ * talk.
+ */
 @Composable
 private fun SettingsCommunityFooter() {
   val context = LocalContext.current
-  Row(
-    modifier = Modifier.fillMaxWidth(),
-    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
-    verticalAlignment = Alignment.CenterVertically,
-  ) {
-    listOf(
-      R.string.settings_community_discord to "https://discord.gg/Sk4Jf8sba",
-      R.string.settings_community_telegram to "https://t.me/StreamDekApp",
-    ).forEach { (labelRes, url) ->
-      TextButton(
-        onClick = { openExternalUrl(context, url) },
-        modifier = Modifier.heightIn(min = 48.dp),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
-        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurfaceVariant),
-      ) {
-        Text(stringResource(labelRes), fontSize = 13.sp, fontWeight = FontWeight.Medium)
+  @Composable
+  fun FooterLink(labelRes: Int, url: String, logo: Int? = null) {
+    TextButton(
+      onClick = { openExternalUrl(context, url) },
+      modifier = Modifier.heightIn(min = 48.dp),
+      contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+      colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurfaceVariant),
+    ) {
+      if (logo != null) {
+        androidx.compose.foundation.Image(painter = painterResource(logo), contentDescription = null, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(6.dp))
-        Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
       }
+      Text(stringResource(labelRes), fontSize = 13.sp, fontWeight = FontWeight.Medium)
+      Spacer(Modifier.width(6.dp))
+      Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
     }
+  }
+  Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+    Row(
+      horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      FooterLink(R.string.settings_community_discord, "https://discord.gg/Sk4Jf8sba")
+      FooterLink(R.string.settings_community_telegram, "https://t.me/StreamDekApp")
+    }
+    // Ko-fi's own cup, so the one link that asks for something says plainly whose page it opens.
+    FooterLink(R.string.settings_community_kofi, KOFI_URL, logo = R.drawable.kofi_logo)
   }
 }
 
@@ -28862,10 +28936,26 @@ private fun DetailScreen(
                   Text(stringResource(R.string.detail_episodes), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.weight(1f))
                   val selectedSeasonIds = uiState.selectedSeasonEpisodes.map { watchedEpisodeKey(detail.id, it.seasonNumber, it.episodeNumber) }
                   val fullSeasonWatched = selectedSeasonIds.isNotEmpty() && selectedSeasonIds.all { it in watchedEpisodeIds }
+                  // "Mark S2 as Watched" rather than "Mark Season as Watched": shorter beside the
+                  // Episodes heading, and it names the season the button acts on. A screen reader
+                  // is given the season written out in full.
+                  val seasonShown = uiState.selectedSeasonEpisodes.firstOrNull()?.seasonNumber ?: uiState.selectedSeasonNumber
+                  val seasonActionLabel = when {
+                    seasonShown == null && fullSeasonWatched -> stringResource(R.string.action_mark_season_unwatched)
+                    seasonShown == null -> stringResource(R.string.action_mark_season_watched)
+                    fullSeasonWatched -> stringResource(R.string.action_mark_season_unwatched_short, seasonShown)
+                    else -> stringResource(R.string.action_mark_season_watched_short, seasonShown)
+                  }
+                  val seasonActionDescription = when {
+                    seasonShown == null -> seasonActionLabel
+                    fullSeasonWatched -> stringResource(R.string.action_mark_season_unwatched_numbered, seasonShown)
+                    else -> stringResource(R.string.action_mark_season_watched_numbered, seasonShown)
+                  }
                   OutlinedButton(
                     onClick = {
                       onSetSeasonWatched(detail, uiState.selectedSeasonEpisodes, !fullSeasonWatched)
                     },
+                    modifier = Modifier.semantics { contentDescription = seasonActionDescription },
                     enabled = selectedSeasonIds.isNotEmpty(),
                     shape = StreamDekRadius.pill,
                     border = null,
@@ -28877,7 +28967,7 @@ private fun DetailScreen(
                   ) {
                     Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = if (fullSeasonWatched) Color(0xFF22C55E) else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.76f), modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(if (fullSeasonWatched) stringResource(R.string.action_mark_season_unwatched) else stringResource(R.string.action_mark_season_watched), fontWeight = FontWeight.Bold)
+                    Text(seasonActionLabel, fontWeight = FontWeight.Bold, maxLines = 1)
                   }
                 }
                 // The same choice as Settings > Season Tabs, put where the seasons actually are.

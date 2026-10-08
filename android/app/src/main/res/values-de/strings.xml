@@ -1940,4 +1940,28 @@
   <string name="media_server_show_libraries">Mediatheken anzeigen</string>
   <string name="media_server_hide_libraries">Mediatheken ausblenden</string>
   <string name="media_server_whole_server">Server mit allen Mediatheken</string>
+  <string name="action_mark_season_watched_short">St. %1$d als gesehen markieren</string>
+  <string name="action_mark_season_unwatched_short">St. %1$d als ungesehen markieren</string>
+  <string name="action_mark_season_watched_numbered">Staffel %1$d als gesehen markieren</string>
+  <string name="action_mark_season_unwatched_numbered">Staffel %1$d als ungesehen markieren</string>
+  <string name="search_section_catalogue">StreamDek</string>
+  <string name="search_section_catalogue_caption">Filme und Serien</string>
+  <string name="search_section_your_library">Deine Mediathek</string>
+  <string name="search_section_plugin">Plugin</string>
+  <string name="search_show_all">Alle anzeigen</string>
+  <string name="search_show_less">Weniger anzeigen</string>
+  <string name="search_section_caption">%1$s · %2$s</string>
+  <plurals name="search_section_results">
+    <item quantity="one">%d Treffer</item>
+    <item quantity="other">%d Treffer</item>
+  </plurals>
+  <string name="media_server_section_plex">Plex-Server</string>
+  <string name="media_server_section_jellyfin">Jellyfin-Server</string>
+  <plurals name="media_server_section_rows">
+    <item quantity="one">%d Reihe</item>
+    <item quantity="other">%d Reihen</item>
+  </plurals>
+  <string name="settings_community_kofi">Auf Ko-fi spenden</string>
+  <string name="media_server_move_up">%1$s nach oben verschieben</string>
+  <string name="media_server_move_down">%1$s nach unten verschieben</string>
 </resources>

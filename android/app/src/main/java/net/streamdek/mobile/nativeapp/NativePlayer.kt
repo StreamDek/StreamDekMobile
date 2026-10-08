@@ -2568,7 +2568,6 @@ private fun PlayerBottomControls(
           .then(if (minimal) Modifier.widthIn(max = 620.dp).horizontalScroll(rememberScrollState()) else Modifier)
           .clip(if (minimal) RoundedCornerShape(14.dp) else StreamDekRadius.sheetShape)
           .background(if (minimal) Color.Black.copy(alpha = 0.30f) else Color(0xD9161A23))
-          .then(if (minimal) Modifier else Modifier.border(1.dp, Color.White.copy(alpha = 0.10f), StreamDekRadius.sheetShape))
           .padding(
             horizontal = when (layout) { "Compact" -> 12.dp; "Minimal" -> 7.dp; else -> 18.dp },
             // Normal is 48dp touch targets inside 4dp of padding top and bottom, 56dp overall.

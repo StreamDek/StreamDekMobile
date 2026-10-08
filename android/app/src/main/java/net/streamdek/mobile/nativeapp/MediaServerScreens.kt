@@ -9,6 +9,12 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,6 +47,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -67,6 +74,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -83,6 +91,7 @@ import net.streamdek.mobile.nativeapp.mediaserver.MediaServerResume
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerRow
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerUiState
 import net.streamdek.mobile.nativeapp.mediaserver.OfflineReason
+import net.streamdek.mobile.nativeapp.mediaserver.inPageOrder
 
 /*
  * The Plex page, the combined Library page and the Plex mark on Plex lists.
@@ -411,11 +420,34 @@ private fun MediaServerProviderPage(
       .filter { MediaServerReference.providerOfSource(it.item.sourceAddonId) == provider }
       .sortedByDescending { it.lastViewedAtMs }.map { it.item }
   }
-  val rows = remember(pageRows, provider) { pageRows.filter { it.items.isNotEmpty() && mediaServerProviderOfRowId(it.id) == provider } }
   val enabledServers = state.servers.filter { it.enabled }
+  // In the order Settings shows: servers in the viewer's order, each server's libraries in the order
+  // set for that server, each library's own rows together. state.servers already arrives in both
+  // orders, so a move in Settings rearranges this at once without reading anything again.
+  val rows = remember(pageRows, provider, state.servers) {
+    pageRows.filter { it.items.isNotEmpty() && mediaServerProviderOfRowId(it.id) == provider }.inPageOrder(state.servers)
+  }
   val multipleServers = enabledServers.size > 1
   val offline = enabledServers.filter { it.reachability is MediaServerReachability.Offline }
   val problem = enabledServers.firstNotNullOfOrNull { it.problem }
+  // With more than one server, the server whose rows are at the top of the list stays named just
+  // under the header once its own heading has scrolled away, so the viewer always knows whose
+  // library they are in. Read from the list's layout, so scrolling costs no recomposition until
+  // the server actually changes.
+  val pinnedServer by remember(rows, multipleServers) {
+    derivedStateOf {
+      if (!multipleServers) return@derivedStateOf null
+      val visible = listState.layoutInfo.visibleItemsInfo
+      val topRow = visible.firstNotNullOfOrNull { info ->
+        rows.withIndex().firstOrNull { (index, row) -> serverRowKey(row, index) == info.key }
+      } ?: return@derivedStateOf null
+      val (rowIndex, row) = topRow
+      val headingIndex = (rowIndex downTo 0).first { it == 0 || rows[it - 1].serverId != row.serverId }
+      val heading = visible.firstOrNull { it.key == serverHeadingKey(rows[headingIndex], headingIndex) }
+      // Its own heading is still in view: no need to repeat it.
+      if (heading != null && heading.offset + heading.size / 2 > listState.layoutInfo.viewportStartOffset) null else row
+    }
+  }
   Box(modifier = Modifier.fillMaxSize()) {
     // The pages sit side by side and nothing clips them, so each page's light is kept on its own page.
     if (ambient) Box(Modifier.fillMaxSize().clipToBounds().then(if (jellyfin) Modifier.jellyfinAmbientGlow() else Modifier.plexAmbientGlow()))
@@ -478,11 +510,16 @@ private fun MediaServerProviderPage(
       }
       rows.forEachIndexed { index, row ->
         if (multipleServers && (index == 0 || rows[index - 1].serverId != row.serverId)) {
-          item(key = "media-server-${row.serverId}-$index") {
-            Text(row.serverName, modifier = Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = accentOf(provider))
+          item(key = serverHeadingKey(row, index)) {
+            MediaServerSectionHeading(
+              name = row.serverName,
+              provider = provider,
+              rowCount = rows.count { it.serverId == row.serverId },
+              modifier = Modifier.padding(top = if (index == 0) 0.dp else 10.dp),
+            )
           }
         }
-        item(key = "media-row-$index-${row.id}") {
+        item(key = serverRowKey(row, index)) {
           HomeStrip(
             rowId = row.id.ifEmpty { "media-collections-$index" }, title = row.title, items = row.items,
             continueWatchingStyle = continueWatchingStyle, homeCardTextMode = homeCardTextMode, liveLandscapeCards = false,
@@ -512,6 +549,116 @@ private fun MediaServerProviderPage(
         }
       }
     }
+    // The pinned server name: slides in under the header as a server's own heading leaves the top
+    // of the list, and changes as the next server's rows take over. The last name is held while it
+    // slides out, so it never empties before it has gone.
+    var lastPinned by remember { mutableStateOf<MediaServerRow?>(null) }
+    SideEffect { if (pinnedServer != null) lastPinned = pinnedServer }
+    AnimatedVisibility(
+      visible = pinnedServer != null,
+      modifier = Modifier.align(Alignment.TopStart).padding(top = headerBottom).zIndex(2f),
+      enter = fadeIn() + slideInVertically { -it / 2 },
+      exit = fadeOut() + slideOutVertically { -it / 2 },
+    ) {
+      (pinnedServer ?: lastPinned)?.let { row -> PinnedServerBar(name = row.serverName, provider = provider) }
+    }
+  }
+}
+
+private fun serverHeadingKey(row: MediaServerRow, index: Int): String = "media-server-${row.serverId}-$index"
+
+private fun serverRowKey(row: MediaServerRow, index: Int): String = "media-row-$index-${row.id}"
+
+/**
+ * Where one server's rows begin on a page holding several: a band in the service's colour with its
+ * mark, what kind of server it is, the server's name large, and how many rows follow. Made to be
+ * seen while scrolling past at speed, not only read once stopped on it.
+ */
+@Composable
+private fun MediaServerSectionHeading(name: String, provider: String, rowCount: Int, modifier: Modifier = Modifier) {
+  val accent = accentOf(provider)
+  val jellyfin = provider == JELLYFIN_PROVIDER_ID
+  val shape = RoundedCornerShape(18.dp)
+  Row(
+    modifier = modifier
+      .fillMaxWidth()
+      .padding(horizontal = 16.dp)
+      .clip(shape)
+      .background(Brush.horizontalGradient(listOf(accent.copy(alpha = 0.24f), accent.copy(alpha = 0.05f))))
+      .border(1.dp, accent.copy(alpha = 0.32f), shape)
+      .padding(horizontal = 14.dp, vertical = 12.dp),
+    horizontalArrangement = Arrangement.spacedBy(12.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Box(
+      modifier = Modifier.size(42.dp).clip(CircleShape).background(accent.copy(alpha = 0.24f)),
+      contentAlignment = Alignment.Center,
+    ) {
+      Icon(if (jellyfin) JellyfinIcons.Mark else PlexIcons.Chevron, contentDescription = null, tint = accent, modifier = Modifier.size(22.dp))
+    }
+    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+      Text(
+        stringResource(if (jellyfin) R.string.media_server_section_jellyfin else R.string.media_server_section_plex).uppercase(),
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 1.2.sp,
+        color = accent,
+        maxLines = 1,
+      )
+      Text(
+        name,
+        style = MaterialTheme.typography.titleLarge,
+        fontWeight = FontWeight.Black,
+        color = MaterialTheme.colorScheme.onBackground,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+      )
+    }
+    Text(
+      pluralStringResource(R.plurals.media_server_section_rows, rowCount, rowCount),
+      style = MaterialTheme.typography.labelMedium,
+      color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+      maxLines = 1,
+    )
+  }
+}
+
+/**
+ * The server being browsed, held under the header once its heading has scrolled away. Opaque
+ * enough to read over the posters passing beneath it, and in the service's colour so it reads as
+ * the same thing as the heading it stands in for.
+ */
+@Composable
+private fun PinnedServerBar(name: String, provider: String) {
+  val accent = accentOf(provider)
+  val jellyfin = provider == JELLYFIN_PROVIDER_ID
+  val shape = RoundedCornerShape(50)
+  Row(
+    modifier = Modifier
+      .padding(start = 16.dp, end = 16.dp, top = 2.dp)
+      .clip(shape)
+      .background(MaterialTheme.colorScheme.background.copy(alpha = 0.94f))
+      .background(accent.copy(alpha = 0.18f))
+      .border(1.dp, accent.copy(alpha = 0.38f), shape)
+      .padding(start = 10.dp, end = 14.dp, top = 7.dp, bottom = 7.dp),
+    horizontalArrangement = Arrangement.spacedBy(8.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Icon(if (jellyfin) JellyfinIcons.Mark else PlexIcons.Chevron, contentDescription = null, tint = accent, modifier = Modifier.size(16.dp))
+    Text(
+      stringResource(if (jellyfin) R.string.media_server_section_jellyfin else R.string.media_server_section_plex),
+      style = MaterialTheme.typography.labelMedium,
+      color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.65f),
+      maxLines = 1,
+    )
+    Text(
+      name,
+      style = MaterialTheme.typography.labelLarge,
+      fontWeight = FontWeight.Bold,
+      color = MaterialTheme.colorScheme.onBackground,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis,
+    )
   }
 }
 

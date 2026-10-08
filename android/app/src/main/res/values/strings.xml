@@ -2107,4 +2107,28 @@
   <string name="media_server_show_libraries">Show libraries</string>
   <string name="media_server_hide_libraries">Hide libraries</string>
   <string name="media_server_whole_server">Server and all its libraries</string>
+  <string name="action_mark_season_watched_short">Mark S%1$d as Watched</string>
+  <string name="action_mark_season_unwatched_short">Mark S%1$d as Unwatched</string>
+  <string name="action_mark_season_watched_numbered">Mark Season %1$d as Watched</string>
+  <string name="action_mark_season_unwatched_numbered">Mark Season %1$d as Unwatched</string>
+  <string name="search_section_catalogue">StreamDek</string>
+  <string name="search_section_catalogue_caption">Films and series</string>
+  <string name="search_section_your_library">Your library</string>
+  <string name="search_section_plugin">Plugin</string>
+  <string name="search_show_all">Show all</string>
+  <string name="search_show_less">Show less</string>
+  <string name="search_section_caption">%1$s · %2$s</string>
+  <plurals name="search_section_results">
+    <item quantity="one">%d result</item>
+    <item quantity="other">%d results</item>
+  </plurals>
+  <string name="media_server_section_plex">Plex server</string>
+  <string name="media_server_section_jellyfin">Jellyfin server</string>
+  <plurals name="media_server_section_rows">
+    <item quantity="one">%d row</item>
+    <item quantity="other">%d rows</item>
+  </plurals>
+  <string name="settings_community_kofi">Donate on Ko-fi</string>
+  <string name="media_server_move_up">Move %1$s up</string>
+  <string name="media_server_move_down">Move %1$s down</string>
 </resources>

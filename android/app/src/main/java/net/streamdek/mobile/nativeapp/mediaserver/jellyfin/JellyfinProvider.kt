@@ -1,6 +1,7 @@
 package net.streamdek.mobile.nativeapp.mediaserver.jellyfin
 
 import android.util.Log
+import net.streamdek.mobile.nativeapp.mediaserver.titleMatchesSearch
 import net.streamdek.mobile.nativeapp.AddonStream
 import net.streamdek.mobile.nativeapp.EpisodeItem
 import net.streamdek.mobile.nativeapp.MediaDetail
@@ -630,6 +631,9 @@ internal class JellyfinProvider(
                         query(serverId, mapOf("searchTerm" to normalized, "recursive" to "true", "includeItemTypes" to "Movie,Series,Video", "limit" to limit.toString()))
                             ?.items.orEmpty()
                             .mapNotNull { JellyfinMapping.item(it, context) }
+                            // Jellyfin matches names, but can also answer with titles that only
+                            // share a person or a tag with the query; see MediaServerSearchMatch.kt.
+                            .filter { titleMatchesSearch(normalized, it.title) }
                     }.orEmpty()
                 }
             }.awaitAll().flatten().distinctBy { it.id }

@@ -37,6 +37,8 @@ internal fun cloudPreferencesPayload(preferences: CloudPlaybackPreferences): JSO
     // rows, the order of the sources they came from, and which of the two the viewer reads.
     .put("homeRowMode", preferences.homeRowMode)
     .put("homeRowSourceOrder", preferences.homeRowSourceOrder?.let(::JSONArray))
+    .put("mediaServerOrder", preferences.mediaServerOrder?.let(::JSONArray))
+    .put("mediaServerLibraryOrder", preferences.mediaServerLibraryOrder?.let(::JSONArray))
   val detail = JSONObject()
     .put("seasonTabStyle", preferences.seasonTabStyle)
     .put("episodeLayout", preferences.episodeLayout)
@@ -296,6 +298,8 @@ internal fun parseCloudSettings(accountPreferences: JSONObject, profilePreferenc
     homeCatalogRowsJson = home.optJSONArray("homeCatalogRows")?.toString(),
     homeRowMode = optionalString(home, "homeRowMode"),
     homeRowSourceOrder = optionalStringList(home, "homeRowSourceOrder"),
+    mediaServerOrder = optionalStringList(home, "mediaServerOrder"),
+    mediaServerLibraryOrder = optionalStringList(home, "mediaServerLibraryOrder"),
     seasonTabStyle = optionalString(detail, "seasonTabStyle"),
     episodeLayout = optionalString(detail, "episodeLayout"),
     heroTrailerAutoplay = optionalBoolean(platform, "heroTrailerAutoplay") ?: optionalBoolean(detail, "heroTrailerAutoplay"),

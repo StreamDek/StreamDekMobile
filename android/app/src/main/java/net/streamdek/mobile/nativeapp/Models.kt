@@ -334,6 +334,9 @@ data class CloudPlaybackPreferences(
   val homeRowMode: String? = null,
   /** The source keys in the viewer's order, for the grouped mode. */
   val homeRowSourceOrder: List<String>? = null,
+  /** The viewer's media server order and each server's library order, kept with the profile so the TV follows it. */
+  val mediaServerOrder: List<String>? = null,
+  val mediaServerLibraryOrder: List<String>? = null,
   val seasonTabStyle: String? = null,
   val episodeLayout: String? = null,
   val heroTrailerAutoplay: Boolean? = null,

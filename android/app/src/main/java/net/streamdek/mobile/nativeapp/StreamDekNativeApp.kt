@@ -2528,6 +2528,23 @@ private class AppSettingsStore(
     profilePrefs.edit().putString(HOME_ROW_SOURCE_ORDER_PREFERENCE, serializeHomeRowSourceOrder(order)).apply()
   }
 
+  /** The media server and library order, as entry keys, one per line; see MediaServerManager.serverOrder. */
+  fun saveMediaServerOrder(servers: List<String>, libraries: List<String>) {
+    profilePrefs.edit()
+      .putString("media_server_order", servers.joinToString("\n"))
+      .putString("media_server_library_order", libraries.joinToString("\n"))
+      .apply()
+  }
+
+  fun hasMediaServerOrder(): Boolean = profilePrefs.contains("media_server_order")
+
+  /** The order kept with the profile, or null if none has been kept yet. */
+  fun mediaServerOrder(): Pair<List<String>, List<String>>? {
+    if (!hasMediaServerOrder()) return null
+    fun list(key: String) = profilePrefs.getString(key, null).orEmpty().split('\n').filter { it.isNotBlank() }
+    return list("media_server_order") to list("media_server_library_order")
+  }
+
   /**
    * Fills a profile's settings in from another owner's, for the guest migration.
    *
@@ -4195,7 +4212,25 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     viewModelScope.launch {
       snapshotFlow { uiState.session?.user?.uid to uiState.activeProfileId }
         .distinctUntilChanged()
-        .collect { mediaServers.onSessionChanged(); MediaServerSourceFinder.clear() }
+        .collect {
+          mediaServers.onSessionChanged()
+          MediaServerSourceFinder.clear()
+          // An order set on this phone before it was kept with the profile goes up once, so the TV
+          // and other phones on the profile follow it from now on.
+          val kept = appSettingsStore.mediaServerOrder()
+          if (kept != null) {
+            // The profile's order wins over what this phone last saved for the session.
+            mediaServers.applySyncedOrder(kept.first, kept.second)
+          } else if (mediaServers.serverOrder.value.isNotEmpty() || mediaServers.libraryOrder.value.isNotEmpty()) {
+            appSettingsStore.saveMediaServerOrder(mediaServers.serverOrder.value, mediaServers.libraryOrder.value)
+            syncCloudPreferences()
+          }
+        }
+    }
+    // Moving a server or a library in Settings is a setting like any other: kept with the profile.
+    mediaServers.onOrderChanged = { servers, libraries ->
+      appSettingsStore.saveMediaServerOrder(servers, libraries)
+      syncCloudPreferences()
     }
     viewModelScope.launch {
       // In the viewer's chosen order (Settings > Jellyfin), which is the order the page shows them in.
@@ -10139,6 +10174,11 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     homeCatalogRows?.let(appSettingsStore::saveHomeCatalogRows)
     homeRowMode?.let(appSettingsStore::saveHomeRowMode)
     homeRowSourceOrder?.let(appSettingsStore::saveHomeRowSourceOrder)
+    if (preferences.mediaServerOrder != null || preferences.mediaServerLibraryOrder != null) {
+      // Moved on another device: this phone's Settings and media page follow, and nothing is sent back.
+      mediaServers.applySyncedOrder(preferences.mediaServerOrder, preferences.mediaServerLibraryOrder)
+      appSettingsStore.saveMediaServerOrder(mediaServers.serverOrder.value, mediaServers.libraryOrder.value)
+    }
     seasonTabStyle?.let(appSettingsStore::saveSeasonTabStyle)
     episodeLayout?.let(appSettingsStore::saveEpisodeLayout)
     preferences.heroTrailerAutoplay?.let(appSettingsStore::saveHeroTrailerAutoplay)
@@ -11576,6 +11616,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       homeCatalogRowsJson = serializeHomeCatalogRows(uiState.homeCatalogRows),
       homeRowMode = uiState.homeRows.mode.key,
       homeRowSourceOrder = uiState.homeRows.sourceOrder,
+      mediaServerOrder = mediaServers.serverOrder.value,
+      mediaServerLibraryOrder = mediaServers.libraryOrder.value,
       seasonTabStyle = uiState.seasonTabStyle.name,
       episodeLayout = uiState.episodeLayout.name,
       heroTrailerAutoplay = uiState.heroTrailerAutoplay,

@@ -189,6 +189,23 @@ class MediaServerManager internal constructor(
      */
     val libraryOrder: StateFlow<List<String>> = _libraryOrder.asStateFlow()
 
+    /** Told when the viewer moves a server or a library here, so the order is kept with the profile. */
+    var onOrderChanged: ((serverOrder: List<String>, libraryOrder: List<String>) -> Unit)? = null
+
+    /**
+     * An order kept with the profile, moved on another device. Either part may be absent, which
+     * leaves that part as it is here. Not reported back through [onOrderChanged].
+     */
+    fun applySyncedOrder(serverOrder: List<String>?, libraryOrder: List<String>?) {
+        var changed = false
+        serverOrder?.filter { it.isNotBlank() }?.takeIf { it != _serverOrder.value }?.let { _serverOrder.value = it; changed = true }
+        libraryOrder?.filter { it.isNotBlank() }?.takeIf { it != _libraryOrder.value }?.let { _libraryOrder.value = it; changed = true }
+        if (!changed) return
+        saveListTidy()
+        // The server at the top names the Jellyfin or Emby account; see MediaBrowserAccounts.leadingUser.
+        mediaBrowserAccounts.forEach { it.publish() }
+    }
+
     /** Moves [libraryKey] on [serverId] from where it is among [shownLibraryKeys] to [to]. */
     fun moveLibrary(serverId: String, shownLibraryKeys: List<String>, libraryKey: String, to: Int) {
         val shown = shownLibraryKeys.map { mediaServerLibraryOrderKey(serverId, it) }
@@ -197,6 +214,7 @@ class MediaServerManager internal constructor(
         if (moved == _libraryOrder.value) return
         _libraryOrder.value = moved
         saveListTidy()
+        onOrderChanged?.invoke(_serverOrder.value, _libraryOrder.value)
     }
 
     private fun loadListTidy(key: String?) {
@@ -239,6 +257,7 @@ class MediaServerManager internal constructor(
         if (moved == _serverOrder.value) return
         _serverOrder.value = moved
         saveListTidy()
+        onOrderChanged?.invoke(_serverOrder.value, _libraryOrder.value)
         // The server at the top names the Jellyfin or Emby account; see MediaBrowserAccounts.leadingUser.
         accountsFor(provider)?.publish()
     }

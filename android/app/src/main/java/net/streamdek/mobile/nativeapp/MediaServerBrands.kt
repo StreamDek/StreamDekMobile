@@ -56,7 +56,7 @@ internal data class MediaServerBrand(
 /** Jellyfin's purple, from its logo. */
 internal val JellyfinBrandPurple = Color(0xFFAA5CC3)
 
-/** Emby's green. Used as a colour only: StreamDek draws its own generic mark for Emby, not Emby's logo. */
+/** Emby's green, from its logo. */
 internal val EmbyBrandGreen = Color(0xFF52B54B)
 
 internal fun mediaServerBrand(provider: String?): MediaServerBrand = when (provider) {
@@ -79,7 +79,7 @@ internal fun mediaServerBrand(provider: String?): MediaServerBrand = when (provi
         sectionLabel = R.string.media_server_section_emby,
         accent = EmbyBrandGreen,
         mark = EmbyIcons.Mark,
-        logo = null,
+        logo = R.drawable.emby_logo,
         searchBadge = R.string.emby_search_badge,
         pageOfflineTitle = R.string.emby_page_offline_title,
         pageEmptyNote = R.string.emby_page_empty_note,
@@ -167,19 +167,16 @@ private val EmbyAmbientLime = Color(0xFF84CC16)
 private val EmbyAmbientForest = Color(0xFF15803D)
 
 /**
- * StreamDek's mark for Emby: a generic media-library glyph - a framed play symbol - drawn by
- * StreamDek, single-colour like the other destination marks so it takes the same tint and focus
- * treatment. Emby's own logo is not reproduced here.
+ * Emby's logo as a single-colour mark, the play symbol cut out of it, so it takes the same tint and
+ * focus treatment as the other destination marks. The full-colour logo is R.drawable.emby_logo.
  */
 internal object EmbyIcons {
-    private const val FRAME = "M6,3h12a3,3 0 0 1 3,3v12a3,3 0 0 1 -3,3h-12a3,3 0 0 1 -3,-3v-12a3,3 0 0 1 3,-3z" +
-        "M6,5.2a0.8,0.8 0 0 0 -0.8,0.8v12a0.8,0.8 0 0 0 0.8,0.8h12a0.8,0.8 0 0 0 0.8,-0.8v-12a0.8,0.8 0 0 0 -0.8,-0.8z"
-    private const val PLAY = "M10,8.4v7.2l6.2,-3.6z"
+    private const val SHAPE = "M97.1,132.4l26.5,26.5L0,282.5l132.4,132.4l26.5,-26.5L282.5,512l141.2,-141.2l-26.5,-26.5L512,229.5L379.6,97.1l-26.5,26.5L229.5,0z" +
+        "M196.8,351.2V158.2L366,254.7L281.4,303z"
 
     val Mark: ImageVector by lazy {
-        ImageVector.Builder(name = "EmbyMark", defaultWidth = 24.dp, defaultHeight = 24.dp, viewportWidth = 24f, viewportHeight = 24f)
-            .addPath(addPathNodes(FRAME), pathFillType = PathFillType.EvenOdd, fill = SolidColor(Color.White))
-            .addPath(addPathNodes(PLAY), fill = SolidColor(Color.White))
+        ImageVector.Builder(name = "EmbyMark", defaultWidth = 24.dp, defaultHeight = 24.dp, viewportWidth = 512f, viewportHeight = 512f)
+            .addPath(addPathNodes(SHAPE), pathFillType = PathFillType.EvenOdd, fill = SolidColor(Color.White))
             .build()
     }
 }

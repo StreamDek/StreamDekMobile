@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Emby logo in its own colours, for places that name the service: Settings, the Emby page.
+  Supplied for StreamDek's Emby integration; converted from the 512x512 SVG to an Android vector,
+  with the SVG's translate(0 -97) applied to the outer shape's absolute coordinates.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="72dp"
+    android:height="72dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <path
+        android:fillColor="#52B54B"
+        android:pathData="M97.1,132.4l26.5,26.5L0,282.5l132.4,132.4l26.5,-26.5L282.5,512l141.2,-141.2l-26.5,-26.5L512,229.5L379.6,97.1l-26.5,26.5L229.5,0z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M196.8,351.2V158.2L366,254.7L281.4,303z" />
+</vector>

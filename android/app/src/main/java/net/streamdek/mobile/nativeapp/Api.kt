@@ -215,7 +215,9 @@ class WatchlistStore(context: Context) {
           .put("description", item.description)
           .put("genres", JSONArray(item.genres))
           .put("addedAt", item.addedAt)
-          .put("updatedAt", item.updatedAt),
+          .put("updatedAt", item.updatedAt)
+          .put("posterShape", item.posterShape?.name?.lowercase(java.util.Locale.ROOT))
+          .put("landscapePoster", item.landscapePoster),
       )
     }
     prefs.edit().putString(ownerKey, array.toString()).apply()
@@ -4484,13 +4486,17 @@ private fun parseMediaItem(item: JSONObject): MediaItem =
     title = item.optString("title").ifBlank { item.optString("name") },
     year = parseMediaItemYear(item),
     poster = item.optString("poster").ifBlank { item.optString("logo") }.ifBlank { tmdbImageUrl(item.optString("poster_path"), "w500") },
-    backdrop = item.optString("backdrop").ifBlank { item.optString("background") }.ifBlank { item.optString("banner") }.ifBlank { item.optString("fanart") }.ifBlank { tmdbImageUrl(item.optString("backdrop_path"), "w780") },
+    backdrop = item.optString("backdrop").ifBlank { item.optString("background") }.ifBlank { item.optString("banner") }.ifBlank { item.optString("fanart") }.ifBlank { item.optString("landscapePoster") }.ifBlank { tmdbImageUrl(item.optString("backdrop_path"), "w780") },
     rating = parseRatingValue(item),
     description = item.optString("description").ifBlank { item.optString("overview") },
     genres = parseGenreNames(item),
     titleLogo = parseTitleLogo(item),
     addedAt = parseFlexibleTimestamp(item, "addedAt", "added_at", "listedAt", "listed_at"),
     updatedAt = parseFlexibleTimestamp(item, "updatedAt", "updated_at"),
+    // Carried from the add-on's response onto the item, and from there through every cache, so a
+    // row draws in the shape its add-on chose however it was reached.
+    posterShape = PosterShape.parse(item.opt("posterShape")),
+    landscapePoster = item.optString("landscapePoster").takeIf { it.isNotBlank() && it != "null" },
   )
 
 internal fun hasAddonEpisodeMetadata(meta: JSONObject): Boolean {

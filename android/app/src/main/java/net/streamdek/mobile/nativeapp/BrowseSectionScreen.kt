@@ -162,7 +162,13 @@ internal fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, ret
     )
     return
   }
-  val landscapeArtwork = ((isLiveRow || isLiveCatalogRowId(row.id)) && liveLandscapeCards) || isNetworkRow
+  // The shape the row's add-on asked for, read the same way Home reads it so a landscape row opens
+  // onto a landscape grid. New Episodes browses as posters, as it always has.
+  val addonShape = remember(row.id, row.items.size) {
+    val declared = dominantPosterShape(row.items.asSequence().take(BROWSE_ROW_KIND_SAMPLE).map(MediaItem::posterShape).asIterable())
+    resolveRowPosterShape(if (row.id == "new-episodes") PosterShape.Poster else null, declared, PosterShape.Poster)
+  }
+  val landscapeArtwork = ((isLiveRow || isLiveCatalogRowId(row.id)) && liveLandscapeCards) || isNetworkRow || addonShape == PosterShape.Landscape
   val showsList = layout == BrowseLayout.List
   // Landscape artwork is unreadable three across, so those rows toggle straight between their
   // card grid and the text list.
@@ -503,7 +509,7 @@ internal fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, ret
             showsList -> BrowseListRow(item = item, favourite = isFavourite(item), dimmed = disabled, onClick = { handleOpen(item) }, onLongPress = openActions, networkStyle = if (isNetworkRow) networkCardStyle else null)
             (isLiveRow || isLiveCatalogRowId(row.id)) && liveLandscapeCards -> NetworkHomeCard(item = item, sports = true, modifier = Modifier.fillMaxWidth(), dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) }, onLongPress = openActions)
             isNetworkRow -> NetworkHomeCard(item = item, sports = false, branded = networkCardStyle == NetworkCardStyle.Branded, modifier = Modifier.fillMaxWidth(), dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) })
-            else -> LibraryPosterTile(item = item, modifier = Modifier.alpha(if (disabled) 0.4f else 1f), showMeta = row.id == "new-episodes", favourite = isLiveRow && isFavourite(item), onClick = { handleOpen(item) }, onLongPress = openActions)
+            else -> LibraryPosterTile(item = item, modifier = Modifier.alpha(if (disabled) 0.4f else 1f), showMeta = row.id == "new-episodes", shape = addonShape, favourite = isLiveRow && isFavourite(item), onClick = { handleOpen(item) }, onLongPress = openActions)
           }
         }
         if (isLoadingMore) {

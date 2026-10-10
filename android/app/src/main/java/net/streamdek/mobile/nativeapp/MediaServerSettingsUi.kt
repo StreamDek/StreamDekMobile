@@ -161,6 +161,8 @@ internal fun MediaServerSettingsPage(
   onMessage: (String) -> Unit,
   ambientEnabled: Boolean = true,
   onAmbientChange: (Boolean) -> Unit = {},
+  continueLocation: MediaServerContinueLocation = MediaServerContinueLocation.StreamDek,
+  onContinueLocationChange: (MediaServerContinueLocation) -> Unit = {},
 ) {
   val state by manager.state.collectAsState()
   val scope = rememberCoroutineScope()
@@ -293,6 +295,8 @@ internal fun MediaServerSettingsPage(
           onToggle = { onAmbientChange(!ambientEnabled) },
         )
       }
+
+      MediaServerContinueLocationSection(stringResource(R.string.media_server_plex), continueLocation, PlexGold, onContinueLocationChange)
 
       SettingsSection(stringResource(R.string.plex_manage)) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
@@ -753,4 +757,42 @@ internal fun PlexLibrarySwitch(
     onRemove = onRemove,
     onToggle = onToggle,
   )
+}
+
+/**
+ * Where a provider's in-progress titles appear; see [MediaServerContinueLocation]. Offered on the
+ * Plex and Jellyfin pages alike, in the words the television and the web portal use too, and
+ * changed in place - nothing reconnects or reloads.
+ */
+@Composable
+internal fun MediaServerContinueLocationSection(
+  providerName: String,
+  location: MediaServerContinueLocation,
+  accent: Color,
+  onChange: (MediaServerContinueLocation) -> Unit,
+) {
+  val options = listOf(
+    Triple(MediaServerContinueLocation.ServerLibrary, R.string.media_server_continue_location_server, R.string.media_server_continue_location_server_detail),
+    Triple(MediaServerContinueLocation.StreamDek, R.string.media_server_continue_location_streamdek, R.string.media_server_continue_location_streamdek_detail),
+  )
+  SettingsSection(stringResource(R.string.media_server_continue_location_title)) {
+    PlexNote(stringResource(R.string.media_server_continue_location_detail, providerName))
+    options.forEach { (option, title, detail) ->
+      Row(
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable { onChange(option) }.padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        androidx.compose.material3.RadioButton(
+          selected = option == location,
+          onClick = { onChange(option) },
+          colors = androidx.compose.material3.RadioButtonDefaults.colors(selectedColor = accent),
+        )
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+          Text(stringResource(title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+          Text(stringResource(detail, providerName), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f))
+        }
+      }
+    }
+  }
 }

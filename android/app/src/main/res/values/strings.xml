@@ -2131,4 +2131,10 @@
   <string name="settings_community_kofi">Donate on Ko-fi</string>
   <string name="media_server_move_up">Move %1$s up</string>
   <string name="media_server_move_down">Move %1$s down</string>
+  <string name="media_server_continue_location_title">Continue Watching Location</string>
+  <string name="media_server_continue_location_detail">Choose where your %1$s playback progress appears. Progress is always kept on your server, so switching never loses a position.</string>
+  <string name="media_server_continue_location_server">Server Library</string>
+  <string name="media_server_continue_location_server_detail">Show Continue Watching only on your %1$s page.</string>
+  <string name="media_server_continue_location_streamdek">StreamDek</string>
+  <string name="media_server_continue_location_streamdek_detail">Also include %1$s playback in the Continue Watching row on Home and the Continue Watching page.</string>
 </resources>

@@ -2078,4 +2078,10 @@
   <string name="settings_community_kofi">Wesprzyj na Ko-fi</string>
   <string name="media_server_move_up">Przesuń %1$s w górę</string>
   <string name="media_server_move_down">Przesuń %1$s w dół</string>
+  <string name="media_server_continue_location_title">Miejsce sekcji Oglądaj dalej</string>
+  <string name="media_server_continue_location_detail">Wybierz, gdzie ma się pojawiać postęp odtwarzania z %1$s. Postęp jest zawsze zapisany na serwerze, więc zmiana nie powoduje utraty pozycji.</string>
+  <string name="media_server_continue_location_server">Biblioteka serwera</string>
+  <string name="media_server_continue_location_server_detail">Pokazuj Oglądaj dalej tylko na stronie %1$s.</string>
+  <string name="media_server_continue_location_streamdek">StreamDek</string>
+  <string name="media_server_continue_location_streamdek_detail">Uwzględniaj odtwarzanie z %1$s także w rzędzie Oglądaj dalej na stronie głównej i na stronie Oglądaj dalej.</string>
 </resources>

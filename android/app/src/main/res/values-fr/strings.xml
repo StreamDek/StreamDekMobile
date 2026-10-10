@@ -2016,4 +2016,10 @@
   <string name="settings_community_kofi">Faire un don sur Ko-fi</string>
   <string name="media_server_move_up">Monter %1$s</string>
   <string name="media_server_move_down">Descendre %1$s</string>
+  <string name="media_server_continue_location_title">Emplacement de Reprendre la lecture</string>
+  <string name="media_server_continue_location_detail">Choisissez où apparaît votre progression de lecture %1$s. La progression reste toujours sur votre serveur, changer ne fait perdre aucune position.</string>
+  <string name="media_server_continue_location_server">Bibliothèque du serveur</string>
+  <string name="media_server_continue_location_server_detail">Afficher Reprendre la lecture uniquement sur votre page %1$s.</string>
+  <string name="media_server_continue_location_streamdek">StreamDek</string>
+  <string name="media_server_continue_location_streamdek_detail">Inclure aussi la lecture %1$s dans la rangée Reprendre la lecture de l’accueil et sur la page Reprendre la lecture.</string>
 </resources>

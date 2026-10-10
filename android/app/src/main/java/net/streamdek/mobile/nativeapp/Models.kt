@@ -80,6 +80,13 @@ data class MediaItem(
   val isNextUp: Boolean = false,
   /** When a Next Up episode aired, which can move its series forward in Continue Watching. */
   val nextUpAiredAt: Long? = null,
+  /**
+   * The card shape the source asked for: Stremio's per-item `posterShape`. Null when it did not
+   * say, or said something unrecognisable, which leaves the row on its default. See [PosterShape].
+   */
+  val posterShape: PosterShape? = null,
+  /** A wide version of the card artwork, for landscape cards (`landscapePoster`, as TopX sends it). */
+  val landscapePoster: String? = null,
 )
 
 /**
@@ -359,6 +366,9 @@ data class CloudPlaybackPreferences(
   val subtitleOutlineColor: String? = null,
   val showNewEpisodesRow: Boolean? = null,
   val newEpisodesLandscape: Boolean? = null,
+  /** [MediaServerContinueLocation.key] for Plex and for Jellyfin; shared with the television. */
+  val plexContinueWatchingLocation: String? = null,
+  val jellyfinContinueWatchingLocation: String? = null,
   /**
    * Settings that describe this kind of device rather than the viewer, carried under
    * `platforms.mobile` (see [PLATFORM_PREFERENCES_KEY]): every phone on the account shares them, the

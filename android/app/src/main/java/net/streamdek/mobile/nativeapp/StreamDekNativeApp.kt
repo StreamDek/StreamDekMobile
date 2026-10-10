@@ -968,6 +968,9 @@ private val AppUiState.anyMediaServerLinked: Boolean get() = mediaServerState.li
 private val AppUiState.mediaNavigationVisible: Boolean get() = mediaServerState.navigationVisible || jellyfinServerState.navigationVisible
 @Suppress("UnusedReceiverParameter")
 private val AppUiState.mediaServerContinueWatching: List<MediaServerResume> get() = MediaServerAppStore.value.continueWatching
+/** The part of [mediaServerContinueWatching] that StreamDek's own Continue Watching shows; see [MediaServerContinueLocation]. */
+private val AppUiState.mediaServerContinueInStreamDek: List<MediaServerResume>
+  get() = mediaServerContinueWatching.shownInStreamDek(appearanceSettings.mediaServerContinueLocations)
 @Suppress("UnusedReceiverParameter")
 private val AppUiState.mediaServerPageRows: List<net.streamdek.mobile.nativeapp.mediaserver.MediaServerRow> get() = MediaServerAppStore.value.pageRows
 @Suppress("UnusedReceiverParameter")
@@ -1161,6 +1164,8 @@ private data class AppearanceUiSettings(
    * episode says it where a series poster -- identical for every episode ever made -- does not.
    */
   val newEpisodesLandscape: Boolean = true,
+  /** Where Plex's and Jellyfin's in-progress titles appear; see [MediaServerContinueLocation]. */
+  val mediaServerContinueLocations: MediaServerContinueLocations = MediaServerContinueLocations(),
   val liveCategoriesEnabled: Boolean = true,
   val liveProgressBarEnabled: Boolean = false,
   /** Whether the player draws its Live / VOD badge. On unless switched off; visual only. */
@@ -2310,6 +2315,10 @@ private class AppSettingsStore(
       liveLandscapeCards = profilePrefs.getBoolean("live_landscape_cards", true),
       showNewEpisodesRow = profilePrefs.getBoolean("show_new_episodes_row", false),
       newEpisodesLandscape = profilePrefs.getBoolean("new_episodes_landscape", true),
+      mediaServerContinueLocations = MediaServerContinueLocations(
+        plex = MediaServerContinueLocation.fromKey(profilePrefs.getString("plex_continue_watching_location", null)),
+        jellyfin = MediaServerContinueLocation.fromKey(profilePrefs.getString("jellyfin_continue_watching_location", null)),
+      ),
       liveCategoriesEnabled = profilePrefs.getBoolean("live_categories_enabled", true),
       liveProgressBarEnabled = profilePrefs.getBoolean("live_progress_bar", false),
       liveBadgeEnabled = profilePrefs.getBoolean("live_badge", true),
@@ -2410,6 +2419,10 @@ private class AppSettingsStore(
   fun saveLiveLandscapeCards(value: Boolean) { profilePrefs.edit().putBoolean("live_landscape_cards", value).apply() }
   fun saveShowNewEpisodesRow(value: Boolean) { profilePrefs.edit().putBoolean("show_new_episodes_row", value).apply() }
   fun saveNewEpisodesLandscape(value: Boolean) { profilePrefs.edit().putBoolean("new_episodes_landscape", value).apply() }
+  /** [provider] is "plex" or "jellyfin", which is also how the key is spelt. */
+  fun saveMediaServerContinueLocation(provider: String, value: MediaServerContinueLocation) {
+    profilePrefs.edit().putString("${provider}_continue_watching_location", value.key).apply()
+  }
   fun saveLiveCategoriesEnabled(value: Boolean) { profilePrefs.edit().putBoolean("live_categories_enabled", value).apply() }
   fun saveLiveProgressBarEnabled(value: Boolean) { profilePrefs.edit().putBoolean("live_progress_bar", value).apply() }
   fun saveLiveBadgeEnabled(value: Boolean) { profilePrefs.edit().putBoolean("live_badge", value).apply() }
@@ -4162,7 +4175,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     viewModelScope.launch {
       snapshotFlow { uiState.session?.user?.uid to uiState.activeProfileId }
         .distinctUntilChanged()
-        .collect { mediaServers.onSessionChanged() }
+        .collect { mediaServers.onSessionChanged(); MediaServerSourceFinder.clear() }
     }
     viewModelScope.launch {
       // In the viewer's chosen order (Settings > Jellyfin), which is the order the page shows them in.
@@ -4615,6 +4628,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     mediaServers.clearDevice()
     MediaServerHomeRows.rows = emptyList()
     MediaServerIdentities.clear()
+    MediaServerSourceFinder.clear()
     mediaServerResumeSec.clear()
     // The premium service keys belong to the account that just left, not to the device.
     DebridKeyStore.clear(getApplication())
@@ -6840,18 +6854,113 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       val key = mediaServerResumeKey(detail.id, episode?.seasonNumber, episode?.episodeNumber)
       val position = progress?.takeIf { !it.watched && it.positionMs > 0 }?.positionMs?.div(1000.0)
       if (position != null) mediaServerResumeSec[key] = position else if (progress != null) mediaServerResumeSec.remove(key)
+      val addons = addonsForMediaServerTitle(detail, episode)
       uiState = uiState.copy(
-        streamLoading = false,
-        pendingStreamSources = 0,
-        totalStreamSources = 1,
-        searchingStreamSources = emptyList(),
+        streamLoading = addons.isNotEmpty(),
+        pendingStreamSources = addons.size,
+        totalStreamSources = 1 + addons.size,
+        searchingStreamSources = addons.map { (addon, _, _) -> addon.manifest.name.ifBlank { addon.id } }.distinct(),
         failedStreamSources = if (streams.isEmpty()) listOf(label) else emptyList(),
         // The provider's order is the decision (Direct Play, Direct Stream, Transcode), so it is
         // kept rather than re-ranked against add-on results it has nothing in common with.
         availableStreams = streams,
         selectedEpisode = episode,
-        errorMessage = if (streams.isEmpty()) strings.getString(R.string.plex_title_unavailable) else null,
+        errorMessage = if (streams.isEmpty() && addons.isEmpty()) strings.getString(R.string.plex_title_unavailable) else null,
       )
+      if (addons.isNotEmpty()) loadAddonSourcesForMediaServerTitle(detail, episode, generation, streams, addons, label)
+    }
+  }
+
+  /**
+   * The add-on requests for a server title, by the TMDB or IMDb id the server holds for it - the
+   * other direction of unified sources. Nothing when the server knows no id: a title is never
+   * looked up on add-ons by its name alone.
+   */
+  private fun addonsForMediaServerTitle(detail: MediaDetail, episode: EpisodeItem?): List<Triple<InstalledAddon, String, String>> {
+    val known = MediaServerIdentities.of(detail.id) ?: return emptyList()
+    val baseId = known.imdbId?.takeIf { it.isNotBlank() } ?: known.tmdbId?.let { "tmdb:$it" } ?: return emptyList()
+    val series = normalizedMediaType(detail.type) == "tv"
+    if (series && episode == null) return emptyList()
+    val type = if (series) "series" else "movie"
+    val id = if (series && episode != null) "$baseId:${episode.seasonNumber}:${episode.episodeNumber}" else baseId
+    return uiState.addons
+      .filter { it.enabled && addonSupportsStreamType(it, type) }
+      .sortedWith(compareByDescending<InstalledAddon> { it.favourite }.thenBy { it.position })
+      .map { Triple(it, type, id) }
+  }
+
+  /** Add-on results after the server's own, which stay first and in the server's order. */
+  private fun loadAddonSourcesForMediaServerTitle(
+    detail: MediaDetail,
+    episode: EpisodeItem?,
+    generation: Long,
+    serverStreams: List<AddonStream>,
+    requests: List<Triple<InstalledAddon, String, String>>,
+    serverLabel: String,
+  ) {
+    val merged = linkedMapOf<String, AddonStream>()
+    val pending = requests.map { (addon, _, _) -> addon.manifest.name.ifBlank { addon.id } }.toMutableList()
+    val failed = linkedSetOf<String>()
+    if (serverStreams.isEmpty()) failed += serverLabel
+    val gate = Semaphore(4)
+    viewModelScope.launch {
+      requests.forEach { (addon, type, id) ->
+        launch {
+          val name = addon.manifest.name.ifBlank { addon.id }
+          val outcome = gate.withPermit { fetchAddonStreamsWithRetry(addon, type, id) }
+          outcome.getOrNull()?.forEach { stream -> merged.putIfAbsent(addonStreamPlaybackIdentity(stream), stream) }
+          pending.remove(name)
+          if (outcome.isFailure) failed += name
+          if (generation != streamRequestGeneration) return@launch
+          val rank = streamRanker()
+          val ranked = withContext(Dispatchers.Default) { rank(mediaStreamsOnly(merged.values.toList(), detail)) }
+          if (generation != streamRequestGeneration) return@launch
+          val all = serverStreams + ranked
+          uiState = uiState.copy(
+            streamLoading = pending.isNotEmpty(),
+            pendingStreamSources = pending.size,
+            searchingStreamSources = pending.distinct(),
+            failedStreamSources = failed.toList(),
+            availableStreams = all,
+            selectedEpisode = episode,
+            errorMessage = if (all.isEmpty() && pending.isEmpty()) strings.getString(R.string.plex_title_unavailable) else null,
+          )
+        }
+      }
+    }
+  }
+
+  /**
+   * The servers asked for a catalogue title's copies: every linked provider, for a film or a chosen
+   * episode with an id to match on. A server's own titles already ask their server, and live
+   * channels are not something a library holds.
+   */
+  private fun catalogueMediaServerProviders(detail: MediaDetail, episode: EpisodeItem?): List<net.streamdek.mobile.nativeapp.mediaserver.MediaServerProvider> {
+    if (uiState.detailIsLive || isMediaServerId(detail.id)) return emptyList()
+    if (detail.type != "movie" && episode == null) return emptyList()
+    if (TitleIds.ofCatalogue(detail.id, detail.imdbId).isEmpty) return emptyList()
+    return mediaServers.activeProviders().filter { mediaServers.stateOf(it.id).value.linked }
+  }
+
+  /**
+   * Which server copy each catalogue source plays, by the stream's playback identity, so playing
+   * one reports to that server as playing it from the server's own page would. Holds no tokens.
+   */
+  private val catalogueMediaServerStreams = java.util.concurrent.ConcurrentHashMap<String, MediaServerSourceMatch>()
+
+  /**
+   * One provider's sources for a catalogue title: every matching copy on every enabled server, in
+   * the server's own order (Direct Play, Direct Stream, Transcode), each labelled with its server.
+   */
+  private suspend fun mediaServerSourcesFor(provider: net.streamdek.mobile.nativeapp.mediaserver.MediaServerProvider, detail: MediaDetail, episode: EpisodeItem?): List<AddonStream> {
+    val context = mediaServerPlaybackContext()
+    val target = episode.asMediaServerEpisode()
+    return withContext(Dispatchers.IO) {
+      val refs = MediaServerSourceFinder.find(listOf(provider), detail.type, detail.title, TitleIds.ofCatalogue(detail.id, detail.imdbId))
+      refs.flatMap { ref ->
+        withTimeoutOrNull(20_000) { runCatching { provider.streams(ref, target, context) }.getOrNull() }.orEmpty()
+          .onEach { catalogueMediaServerStreams[addonStreamPlaybackIdentity(it)] = MediaServerSourceMatch(ref, target) }
+      }
     }
   }
 
@@ -6895,7 +7004,9 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val cloudStreamProviders = allScrapers.filterNot { it is SkyStreamMainApi }
     val cloudStreamSourceCount = if (cloudStreamProviders.isEmpty()) 0 else 1
     val skyStreamSourceCount = if (skyStreamProviders.isEmpty()) 0 else 1
-    val totalSources = addonRequests.size + pluginSourceCount + cloudStreamSourceCount + skyStreamSourceCount
+    // Plex and Jellyfin copies of this same title, asked beside the add-ons; see MediaServerSourceMatch.kt.
+    val serverProviders = catalogueMediaServerProviders(detail, episode)
+    val totalSources = addonRequests.size + pluginSourceCount + cloudStreamSourceCount + skyStreamSourceCount + serverProviders.size
     val generation = ++streamRequestGeneration
     val merged = linkedMapOf<String, AddonStream>()
     val requestGate = Semaphore(4)
@@ -6919,6 +7030,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     if (skyStreamSourceCount > 0) beginSource(SKYSTREAM_SOURCE_LABEL)
     if (cloudStreamSourceCount > 0) beginSource(CLOUDSTREAM_SOURCE_LABEL)
     addonRequests.forEach { (addon, _, _) -> beginSource(addon.manifest.name.ifBlank { addon.id }) }
+    serverProviders.forEach { beginSource(it.label) }
 
     // A re-run over results that are already on screen is a refresh, not a fresh search, so the
     // list stays put until the new one has something to put in its place. Blanking it first threw
@@ -7047,6 +7159,17 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         }
         if (skyStreamSourceCount > 0) launchScrapers(SKYSTREAM_SOURCE_LABEL, skyStreamProviders)
         if (cloudStreamSourceCount > 0) launchScrapers(CLOUDSTREAM_SOURCE_LABEL, cloudStreamProviders)
+      }
+      // Each server answers on its own time and publishes like any other source, so a server that
+      // is away or slow never holds back the add-ons.
+      serverProviders.forEach { provider ->
+        launch {
+          val outcome = runCatching { mediaServerSourcesFor(provider, detail, episode) }
+            .onFailure { Log.w("StreamDekMediaServer", "${provider.label} sources failed for ${detail.id}", it) }
+          outcome.getOrNull()?.forEach { stream -> merged.putIfAbsent(streamKey(stream), stream) }
+          endSource(provider.label, outcome.isFailure)
+          publish()
+        }
       }
       for ((addon, requestType, id) in addonRequests) {
           launch {
@@ -10172,6 +10295,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     preferences.subtitleOutlineColor?.let(appSettingsStore::saveSubtitleOutlineColor)
     preferences.showNewEpisodesRow?.let(appSettingsStore::saveShowNewEpisodesRow)
     preferences.newEpisodesLandscape?.let(appSettingsStore::saveNewEpisodesLandscape)
+    preferences.plexContinueWatchingLocation?.let { appSettingsStore.saveMediaServerContinueLocation(net.streamdek.mobile.nativeapp.mediaserver.PLEX_PROVIDER_ID, MediaServerContinueLocation.fromKey(it)) }
+    preferences.jellyfinContinueWatchingLocation?.let { appSettingsStore.saveMediaServerContinueLocation(net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID, MediaServerContinueLocation.fromKey(it)) }
 
     val mediaHubEnabled = preferences.mediaHubEnabled ?: uiState.mediaHubEnabled
     uiState = uiState.copy(
@@ -10212,6 +10337,12 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         heroTrailerMuted = preferences.heroTrailerMuted ?: uiState.heroTrailerMuted,
         showNewEpisodesRow = preferences.showNewEpisodesRow ?: uiState.showNewEpisodesRow,
         newEpisodesLandscape = preferences.newEpisodesLandscape ?: uiState.newEpisodesLandscape,
+        mediaServerContinueLocations = uiState.appearanceSettings.mediaServerContinueLocations.let { current ->
+          MediaServerContinueLocations(
+            plex = preferences.plexContinueWatchingLocation?.let(MediaServerContinueLocation::fromKey) ?: current.plex,
+            jellyfin = preferences.jellyfinContinueWatchingLocation?.let(MediaServerContinueLocation::fromKey) ?: current.jellyfin,
+          )
+        },
       ),
     )
 
@@ -11394,6 +11525,8 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       subtitleOutlineColor = uiState.subtitleOutlineColor,
       showNewEpisodesRow = uiState.showNewEpisodesRow,
       newEpisodesLandscape = uiState.newEpisodesLandscape,
+      plexContinueWatchingLocation = uiState.appearanceSettings.mediaServerContinueLocations.plex.key,
+      jellyfinContinueWatchingLocation = uiState.appearanceSettings.mediaServerContinueLocations.jellyfin.key,
       animationSpeed = uiState.animationSpeed.key,
       appLanguage = uiState.appLanguage,
       visualEffects = uiState.visualEffectsMode.key,
@@ -11569,6 +11702,18 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setNetworkCardStyle(style: NetworkCardStyle) { appSettingsStore.saveNetworkCardStyle(style); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(networkCardStyle = style)); syncCloudPreferences() }
   fun setLiveLandscapeCards(value: Boolean) { appSettingsStore.saveLiveLandscapeCards(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(liveLandscapeCards = value)); syncCloudPreferences() }
   fun setShowNewEpisodesRow(value: Boolean) { appSettingsStore.saveShowNewEpisodesRow(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(showNewEpisodesRow = value)); syncCloudPreferences() }
+  /**
+   * Where one provider's in-progress titles show. Only display changes: nothing is reloaded or
+   * disconnected, and the server keeps every position whichever is chosen.
+   */
+  fun setMediaServerContinueLocation(provider: String, value: MediaServerContinueLocation) {
+    appSettingsStore.saveMediaServerContinueLocation(provider, value)
+    val current = uiState.appearanceSettings.mediaServerContinueLocations
+    val next = if (provider == net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID) current.copy(jellyfin = value) else current.copy(plex = value)
+    uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(mediaServerContinueLocations = next))
+    syncCloudPreferences()
+  }
+
   fun setNewEpisodesLandscape(value: Boolean) { appSettingsStore.saveNewEpisodesLandscape(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(newEpisodesLandscape = value)); syncCloudPreferences() }
   fun setLiveCategoriesEnabled(value: Boolean) { appSettingsStore.saveLiveCategoriesEnabled(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(liveCategoriesEnabled = value)); syncCloudPreferences() }
 
@@ -13620,6 +13765,13 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     MediaServerReference.decode(player.mediaId)?.let { ref ->
       reportMediaServerPlayback(ref, player, normalizedProgress, mediaServerState)
       return
+    }
+    // A catalogue title played from a Plex or Jellyfin copy keeps its place in StreamDek, as any
+    // source does, and is reported to that server as well - the server's own history and resume
+    // point stay right whichever Continue Watching the viewer has chosen to show.
+    player.currentStream?.let { catalogueMediaServerStreams[addonStreamPlaybackIdentity(it)] }?.let { match ->
+      val serverPlayer = player.copy(mediaId = match.ref.encode(), seasonNumber = match.episode?.seasonNumber, episodeNumber = match.episode?.episodeNumber)
+      reportMediaServerPlayback(match.ref, serverPlayer, normalizedProgress, mediaServerState)
     }
     if (player.isLive) {
       // Live has no meaningful resume position, but the entry is still worth keeping
@@ -15961,7 +16113,7 @@ private fun MainScene(
             }
             MainTab.Library -> browseStateHolder.SaveableStateProvider("tab_library") {
               val openItem: (MediaItem) -> Unit = { item -> openDetail = item.type to item.id; viewModel.loadDetail(item.type, item.id, item) }
-              val libraryContinue = remember(uiState.traktContinueWatching, uiState.localContinueWatching, uiState.nextUpItems, uiState.playbackProgressRecords, uiState.favouriteChannels, uiState.m3uChannels, uiState.mediaServerContinueWatching) { combinedContinueWatching(uiState) }
+              val libraryContinue = remember(uiState.traktContinueWatching, uiState.localContinueWatching, uiState.nextUpItems, uiState.playbackProgressRecords, uiState.favouriteChannels, uiState.m3uChannels, uiState.mediaServerContinueInStreamDek) { combinedContinueWatching(uiState) }
               LibraryTab(
                 continueWatching = libraryContinue,
                 watchlistItems = uiState.mergedWatchlist,
@@ -16266,8 +16418,9 @@ private fun combinedContinueWatching(uiState: AppUiState): List<MediaItem> {
     }
   }
   val next = uiState.nextUpItems.takeIf { uiState.nextUpOwner == settingsOwnerKey(uiState) }.orEmpty().filterNot { item -> uiState.playbackProgressRecords.any { progressRecordSuppressesProviderItem(it, item) } }
-  // Titles part-way through on a personal media server join in, once each, newest position winning.
-  return reconcileContinueWatching(mergeNextUpContinueWatching(resume, next), uiState.mediaServerContinueWatching)
+  // Titles part-way through on a personal media server join in, once each, newest position winning -
+  // from each server whose Continue Watching the viewer has put here.
+  return reconcileContinueWatching(mergeNextUpContinueWatching(resume, next), uiState.mediaServerContinueInStreamDek)
     .filterNot { isLiveChannelResumeItem(it, liveChannelIds) }
 }
 
@@ -16466,7 +16619,7 @@ private fun HomeTab(uiState: AppUiState, scrollToTopSignal: Int, onReload: () ->
     return
   }
 
-  val continueWatching = remember(uiState.traktContinueWatching, uiState.localContinueWatching, uiState.nextUpItems, uiState.playbackProgressRecords, uiState.favouriteChannels, uiState.m3uChannels, uiState.mediaServerContinueWatching) { combinedContinueWatching(uiState) }
+  val continueWatching = remember(uiState.traktContinueWatching, uiState.localContinueWatching, uiState.nextUpItems, uiState.playbackProgressRecords, uiState.favouriteChannels, uiState.m3uChannels, uiState.mediaServerContinueInStreamDek) { combinedContinueWatching(uiState) }
   val rawHeroItems = remember(uiState.allHomeSections, uiState.homeSections, continueWatching, uiState.mergedWatchlist) {
     mixedHeroItems(uiState.allHomeSections.ifEmpty { uiState.homeSections }, continueWatching, uiState.mergedWatchlist)
   }
@@ -18616,6 +18769,16 @@ internal fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, con
     }
   }
   val home = LocalHomeLayout.current
+  // New Episodes has its own setting, which is the viewer's word and so outranks anything else;
+  // every other poster row takes the shape its add-on asks for, or stays portrait.
+  val rowShape = remember(rowId, items, newEpisodesLandscape) {
+    val viewerChoice = if (rowId == "new-episodes") {
+      if (newEpisodesLandscape) PosterShape.Landscape else PosterShape.Poster
+    } else {
+      null
+    }
+    resolveRowPosterShape(viewerChoice, dominantPosterShape(items.map(MediaItem::posterShape)), PosterShape.Poster)
+  }
   Column(verticalArrangement = Arrangement.spacedBy(home.rowHeaderGap)) {
     Column(
       modifier = Modifier.padding(horizontal = home.rowSideInset),
@@ -18661,7 +18824,7 @@ internal fun HomeStrip(rowId: String, title: String, items: List<MediaItem>, con
         } else if (rowId == "streaming_networks" || ((isSportsRow || isLiveCatalogRow) && liveLandscapeCards)) {
           NetworkHomeCard(item = item, sports = isSportsRow || isLiveCatalogRow, branded = networkCardStyle == NetworkCardStyle.Branded, dimmed = disabled, favourite = isFavourite(item), onClick = { handleOpen(item) }, onLongPress = { if (isSportsRow) { actionItem = item; onRefreshHandoffDevices() } })
         } else {
-          PosterCard(item = item, textMode = if (rowId == "new-episodes") HomeCardTextMode.ShowFull else homeCardTextMode, dimmed = disabled, landscape = rowId == "new-episodes" && newEpisodesLandscape, onClick = { handleOpen(item) }, onLongPress = { actionItem = item; if (isSportsRow) onRefreshHandoffDevices() })
+          PosterCard(item = item, textMode = if (rowId == "new-episodes") HomeCardTextMode.ShowFull else homeCardTextMode, dimmed = disabled, shape = rowShape, onClick = { handleOpen(item) }, onLongPress = { actionItem = item; if (isSportsRow) onRefreshHandoffDevices() })
         }
       }
     }
@@ -19316,12 +19479,12 @@ private fun SearchGridSkeleton(columns: Int, rows: Int = 3) {
 }
 
 @Composable
-internal fun LibraryPosterTile(item: MediaItem, modifier: Modifier = Modifier, showMeta: Boolean = true, favourite: Boolean = false, onClick: () -> Unit, onLongPress: () -> Unit = {}) {
+internal fun LibraryPosterTile(item: MediaItem, modifier: Modifier = Modifier, showMeta: Boolean = true, favourite: Boolean = false, shape: PosterShape = PosterShape.Poster, onClick: () -> Unit, onLongPress: () -> Unit = {}) {
   Column(
     modifier = modifier.fillMaxWidth().clip(StreamDekRadius.thumbShape).background(MaterialTheme.colorScheme.surface).border(1.dp, MaterialTheme.colorScheme.onBackground.copy(alpha = 0.10f), StreamDekRadius.thumbShape).pressable(item.id, item.type, onClick = onClick, onLongPress = onLongPress),
   ) {
-    Box(modifier = Modifier.fillMaxWidth().aspectRatio(0.68f)) {
-      AsyncImage(model = item.poster ?: item.backdrop, contentDescription = item.title, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+    Box(modifier = Modifier.fillMaxWidth().aspectRatio(if (shape == PosterShape.Poster) 0.68f else shape.aspectRatio)) {
+      CardArtwork(model = cardArtworkUrl(item.poster, item.backdrop, item.landscapePoster, item.posterShape, shape), contentDescription = item.title, modifier = Modifier.fillMaxSize())
       CardImdbRatingBadge(rating = item.rating)
       if (favourite) FavouriteChannelBadge(modifier = Modifier.align(Alignment.TopEnd))
       Box(modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().height(4.dp).background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.055f))) {
@@ -19678,7 +19841,7 @@ private fun ContinueTab(
   var filter by rememberSaveable { mutableStateOf(MediaFilter.All) }
   var columns by rememberSaveable { mutableStateOf(3) }
   var showClearConfirm by rememberSaveable { mutableStateOf(false) }
-  val allItems = remember(uiState.traktContinueWatching, uiState.localContinueWatching, uiState.nextUpItems, uiState.playbackProgressRecords, uiState.favouriteChannels, uiState.m3uChannels, uiState.mediaServerContinueWatching) { combinedContinueWatching(uiState) }
+  val allItems = remember(uiState.traktContinueWatching, uiState.localContinueWatching, uiState.nextUpItems, uiState.playbackProgressRecords, uiState.favouriteChannels, uiState.m3uChannels, uiState.mediaServerContinueInStreamDek) { combinedContinueWatching(uiState) }
   val items = remember(allItems, filter) { allItems.filteredBy(filter) }
   val modernHeader = uiState.headerStyle == HeaderStyle.Modern
   val listState = rememberLazyListState()
@@ -23042,6 +23205,8 @@ private fun SettingsTab(
             onMessage = playerSettingsViewModel::showMediaServerMessage,
             ambientEnabled = playerSettingsViewModel.plexAmbientEnabled,
             onAmbientChange = playerSettingsViewModel::changePlexAmbient,
+            continueLocation = uiState.appearanceSettings.mediaServerContinueLocations.plex,
+            onContinueLocationChange = { playerSettingsViewModel.setMediaServerContinueLocation(net.streamdek.mobile.nativeapp.mediaserver.PLEX_PROVIDER_ID, it) },
           )
         }
         SettingsRoute.Jellyfin -> item {
@@ -23049,6 +23214,8 @@ private fun SettingsTab(
             manager = playerSettingsViewModel.mediaServers,
             signedIn = uiState.session != null,
             onMessage = playerSettingsViewModel::showMediaServerMessage,
+            continueLocation = uiState.appearanceSettings.mediaServerContinueLocations.jellyfin,
+            onContinueLocationChange = { playerSettingsViewModel.setMediaServerContinueLocation(net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID, it) },
           )
         }
         SettingsRoute.ContentServices -> item {
@@ -32283,24 +32450,36 @@ private fun PosterCard(
   textMode: HomeCardTextMode = HomeCardTextMode.ShowFull,
   dimmed: Boolean = false,
   /**
-   * Wide 16:9 card using the item's backdrop instead of its poster.
+   * The card's proportions, decided for the whole row by [resolveRowPosterShape].
    *
-   * For New Episodes, where the backdrop holds the episode's own still. The meta block underneath
-   * is unchanged, so the two shapes read as the same card at different proportions rather than as
-   * two different components.
+   * Landscape is the wide card New Episodes uses for an episode's still, and what an add-on asking
+   * for landscape cards gets; square suits logo and channel catalogues. The meta block underneath is
+   * unchanged, so every shape reads as the same card at different proportions rather than as
+   * different components.
    */
-  landscape: Boolean = false,
+  shape: PosterShape = PosterShape.Poster,
   onClick: () -> Unit,
   onLongPress: () -> Unit = {},
 ) {
   // Width and height take the same multiplier, so the artwork keeps its proportions exactly: a
   // Compact poster is the Relaxed one at four fifths, not a differently shaped card.
   val home = LocalHomeLayout.current
+  val posterWidth = homeRowPosterWidth()
+  val cardWidth = when (shape) {
+    PosterShape.Poster -> posterWidth
+    PosterShape.Landscape -> posterWidth * 1.62f
+    PosterShape.Square -> posterWidth * 1.16f
+  }
+  val artworkHeight = when (shape) {
+    PosterShape.Poster -> 204.dp
+    PosterShape.Landscape -> 118.dp
+    PosterShape.Square -> posterWidth * 1.16f
+  }
   Column(
     modifier = Modifier
       // A scrolling row already answers a wider window by showing more of itself, so this grows
       // only slightly — just enough that a poster is not a postage stamp on a 13-inch screen.
-      .width(home.card(if (landscape) homeRowPosterWidth() * 1.62f else homeRowPosterWidth()))
+      .width(home.card(cardWidth))
       .alpha(if (dimmed) 0.4f else 1f)
       .pressable(item.id, item.type, onClick = onClick, onLongPress = onLongPress),
     verticalArrangement = Arrangement.spacedBy(home.cardMetaGap),
@@ -32308,15 +32487,14 @@ private fun PosterCard(
     Box(
       modifier = Modifier
         .fillMaxWidth()
-        .height(home.card(if (landscape) 118.dp else 204.dp))
+        .height(home.card(artworkHeight))
         .clip(StreamDekRadius.cardShape)
         .background(Color(0xFF171717)),
     ) {
-      AsyncImage(
-        model = if (landscape) item.backdrop ?: item.poster else item.poster ?: item.backdrop,
+      CardArtwork(
+        model = cardArtworkUrl(item.poster, item.backdrop, item.landscapePoster, item.posterShape, shape),
         contentDescription = item.title,
         modifier = Modifier.fillMaxSize(),
-        contentScale = ContentScale.Crop,
       )
       Box(
         modifier = Modifier.fillMaxSize().background(

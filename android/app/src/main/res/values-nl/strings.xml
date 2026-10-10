@@ -1964,4 +1964,10 @@
   <string name="settings_community_kofi">Doneren via Ko-fi</string>
   <string name="media_server_move_up">%1$s omhoog verplaatsen</string>
   <string name="media_server_move_down">%1$s omlaag verplaatsen</string>
+  <string name="media_server_continue_location_title">Locatie van Verder kijken</string>
+  <string name="media_server_continue_location_detail">Kies waar je %1$s-afspeelvoortgang verschijnt. Voortgang blijft altijd op je server bewaard, dus wisselen kost nooit een positie.</string>
+  <string name="media_server_continue_location_server">Serverbibliotheek</string>
+  <string name="media_server_continue_location_server_detail">Verder kijken alleen op je %1$s-pagina tonen.</string>
+  <string name="media_server_continue_location_streamdek">StreamDek</string>
+  <string name="media_server_continue_location_streamdek_detail">%1$s-weergave ook opnemen in de rij Verder kijken op Home en op de pagina Verder kijken.</string>
 </resources>

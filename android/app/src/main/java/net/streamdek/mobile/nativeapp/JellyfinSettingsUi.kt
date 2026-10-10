@@ -104,6 +104,8 @@ internal fun JellyfinSettingsPage(
   manager: MediaServerManager,
   signedIn: Boolean,
   onMessage: (String) -> Unit,
+  continueLocation: MediaServerContinueLocation = MediaServerContinueLocation.StreamDek,
+  onContinueLocationChange: (MediaServerContinueLocation) -> Unit = {},
 ) {
   val state by manager.jellyfinState.collectAsState()
   val ambient by manager.jellyfinAmbient.collectAsState()
@@ -396,6 +398,7 @@ internal fun JellyfinSettingsPage(
           onToggle = { manager.setJellyfinAmbient(!ambient) },
         )
       }
+      MediaServerContinueLocationSection(stringResource(R.string.media_server_jellyfin), continueLocation, JellyfinPurple, onContinueLocationChange)
       SettingsSection(stringResource(R.string.plex_manage)) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
           OutlinedButton(

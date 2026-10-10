@@ -1980,4 +1980,10 @@
   <string name="settings_community_kofi">Dona su Ko-fi</string>
   <string name="media_server_move_up">Sposta %1$s in su</string>
   <string name="media_server_move_down">Sposta %1$s in giù</string>
+  <string name="media_server_continue_location_title">Posizione di Continua a guardare</string>
+  <string name="media_server_continue_location_detail">Scegli dove appaiono i progressi di riproduzione di %1$s. I progressi restano sempre sul tuo server, quindi cambiare non perde alcuna posizione.</string>
+  <string name="media_server_continue_location_server">Libreria del server</string>
+  <string name="media_server_continue_location_server_detail">Mostra Continua a guardare solo nella tua pagina %1$s.</string>
+  <string name="media_server_continue_location_streamdek">StreamDek</string>
+  <string name="media_server_continue_location_streamdek_detail">Includi la riproduzione di %1$s anche nella riga Continua a guardare della Home e nella pagina Continua a guardare.</string>
 </resources>

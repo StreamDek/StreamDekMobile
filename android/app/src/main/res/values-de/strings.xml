@@ -1964,4 +1964,10 @@
   <string name="settings_community_kofi">Auf Ko-fi spenden</string>
   <string name="media_server_move_up">%1$s nach oben verschieben</string>
   <string name="media_server_move_down">%1$s nach unten verschieben</string>
+  <string name="media_server_continue_location_title">Ort für „Weiterschauen“</string>
+  <string name="media_server_continue_location_detail">Wähle, wo dein %1$s-Wiedergabefortschritt erscheint. Der Fortschritt bleibt immer auf deinem Server gespeichert, beim Wechseln geht keine Position verloren.</string>
+  <string name="media_server_continue_location_server">Server-Mediathek</string>
+  <string name="media_server_continue_location_server_detail">„Weiterschauen“ nur auf deiner %1$s-Seite anzeigen.</string>
+  <string name="media_server_continue_location_streamdek">StreamDek</string>
+  <string name="media_server_continue_location_streamdek_detail">%1$s-Wiedergabe auch in der Zeile „Weiterschauen“ auf der Startseite und auf der Seite „Weiterschauen“ anzeigen.</string>
 </resources>

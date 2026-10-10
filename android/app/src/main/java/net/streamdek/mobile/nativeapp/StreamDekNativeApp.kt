@@ -1134,6 +1134,8 @@ private data class AppearanceUiSettings(
   /** Device-local, like [animationSpeed]: see `VisualEffects.kt`. */
   val visualEffectsMode: VisualEffectsMode = VisualEffectsMode.Default,
   val showStreamsList: Boolean = true,
+  /** Plex, Jellyfin and Emby Direct Play, then Direct Stream, ahead of add-ons; see rankedStreams. Off by default. */
+  val preferMediaServerSource: Boolean = false,
   val heroTrailerAutoplay: Boolean = false,
   // 2160p by default: the resolver gates format selection on this value, so a lower default
   // silently discards the 4K renditions YouTube publishes for some trailers. The adaptive picker
@@ -1562,6 +1564,7 @@ private data class AppUiState(
   val navigationAutoCollapseSeconds: Int get() = appearanceSettings.navigationAutoCollapseSeconds
   val visualEffectsMode: VisualEffectsMode get() = appearanceSettings.visualEffectsMode
   val showStreamsList: Boolean get() = appearanceSettings.showStreamsList
+  val preferMediaServerSource: Boolean get() = appearanceSettings.preferMediaServerSource
   val heroTrailerAutoplay: Boolean get() = appearanceSettings.heroTrailerAutoplay
   val heroTrailerResolution: Int get() = appearanceSettings.heroTrailerResolution
   val heroTrailerDelaySeconds: Int get() = appearanceSettings.heroTrailerDelaySeconds
@@ -2308,6 +2311,7 @@ private class AppSettingsStore(
       visualEffectsMode = VisualEffectsMode.fromKey(prefs.getString(VISUAL_EFFECTS_PREFERENCE, null)),
       navigationAutoCollapseSeconds = prefs.getInt("navigation_auto_collapse_seconds", 5).coerceIn(2, 15),
       showStreamsList = profilePrefs.getBoolean("show_streams_list", true),
+      preferMediaServerSource = profilePrefs.getBoolean("prefer_media_server_source", false),
       heroTrailerAutoplay = profilePrefs.getBoolean("hero_trailer_autoplay", false),
       heroTrailerResolution = profilePrefs.getInt("hero_trailer_resolution", 1080).coerceIn(360, 2160),
       heroTrailerDelaySeconds = profilePrefs.getInt("hero_trailer_delay_seconds", DEFAULT_TRAILER_DELAY_SECONDS)
@@ -2412,6 +2416,7 @@ private class AppSettingsStore(
   fun saveDownloadsEnabled(value: Boolean) { prefs.edit().putBoolean("downloads_enabled", value).apply() }
   fun saveNavigationAutoCollapseSeconds(value: Int) { prefs.edit().putInt("navigation_auto_collapse_seconds", value.coerceIn(2, 15)).apply() }
   fun saveShowStreamsList(value: Boolean) { profilePrefs.edit().putBoolean("show_streams_list", value).apply() }
+  fun savePreferMediaServerSource(value: Boolean) { profilePrefs.edit().putBoolean("prefer_media_server_source", value).apply() }
   fun saveHeroTrailerAutoplay(value: Boolean) { profilePrefs.edit().putBoolean("hero_trailer_autoplay", value).apply() }
   fun saveHeroTrailerResolution(value: Int) { profilePrefs.edit().putInt("hero_trailer_resolution", value.coerceIn(360, 2160)).apply() }
   fun saveHeroTrailerDelaySeconds(value: Int) { profilePrefs.edit().putInt("hero_trailer_delay_seconds", value.coerceIn(0, MAX_TRAILER_DELAY_SECONDS)).apply() }
@@ -3277,8 +3282,17 @@ private fun trailerDelaySecondsFrom(value: String): Int =
 
 /** TMDB artwork recovered for a tracking-service row that arrived without any. */
 private data class TrackingArtwork(val poster: String?, val backdrop: String?)
-internal fun List<MediaItem>.containsMedia(item: MediaItem): Boolean =
-  any { it.id == item.id && normalizedMediaType(it.type) == normalizedMediaType(item.type) }
+internal fun List<MediaItem>.containsMedia(item: MediaItem): Boolean {
+  // A media server title is kept on the watchlist by its TMDB id (see toggleWatchlist), so it is
+  // looked for by that id too - asked by its server id, it would never be found, and the
+  // watchlist button on its page would not change when pressed.
+  val id = watchlistIdOf(item)
+  return any { it.id == id && normalizedMediaType(it.type) == normalizedMediaType(item.type) }
+}
+
+/** The id a title is kept on the watchlist under: a media server title's TMDB id, otherwise its own. */
+internal fun watchlistIdOf(item: MediaItem): String =
+  if (isMediaServerId(item.id)) MediaServerIdentities.of(item.id)?.tmdbId?.toString() ?: item.id else item.id
 
 private fun watchedTitleKey(type: String, id: String): String = "${normalizedMediaType(type)}:$id"
 internal fun watchedEpisodeKey(showId: String, seasonNumber: Int, episodeNumber: Int): String =
@@ -4322,6 +4336,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     val hasDebrid = uiState.debridAccounts.any { it.enabled }
     val preferredQuality = uiState.preferredQuality
     val maxFileSizeGb = uiState.maxFileSizeGb
+    val preferMediaServer = uiState.preferMediaServerSource
     val favouriteAddonIds = uiState.addons.filter { it.favourite }.mapTo(mutableSetOf()) { it.id } + favouriteCloudStreamIds + favouriteSkyStreamIds
     val favouritePluginProviderIds = pluginState.providers.filter { it.repoUrl in favouriteRepos }.mapTo(mutableSetOf()) { it.id }
     return { streams ->
@@ -4332,6 +4347,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         maxFileSizeGb = maxFileSizeGb,
         favouriteAddonIds = favouriteAddonIds,
         favouritePluginProviderIds = favouritePluginProviderIds,
+        preferMediaServer = preferMediaServer,
       )
     }
   }
@@ -7384,10 +7400,22 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     // handoff, for one) have to say which title they mean rather than inherit uiState.detail.
     detail: MediaDetail? = uiState.detail,
     episode: EpisodeItem? = null,
-  ): Result<List<AddonStream>> {
+  ): Result<List<AddonStream>> = coroutineScope {
     val merged = mutableListOf<AddonStream>()
     var lastError: Throwable? = null
     val candidates = ids.filter { it.isNotBlank() }.distinct()
+    // "Prefer media server source": the viewer's own Plex, Jellyfin and Emby copies join the pool
+    // the ranking picks from, asked beside the add-ons and given a bounded wait, so a server that
+    // is slow or away never holds back the add-on fallback. Off, the pool is what it always was.
+    val serverLookup = if (!live && detail != null && uiState.preferMediaServerSource) {
+      val providers = catalogueMediaServerProviders(detail, episode)
+      if (providers.isEmpty()) null else async {
+        withTimeoutOrNull(MEDIA_SERVER_AUTOPLAY_WAIT_MS) {
+          providers.map { provider -> async { runCatching { mediaServerSourcesFor(provider, detail, episode) }.getOrDefault(emptyList()) } }
+            .awaitAll().flatten()
+        }.orEmpty()
+      }
+    } else null
     val ownerId = detailSourceAddonId.takeIf { detail != null && detail.id == uiState.detail?.id }
     val ownerType = detailSourceCatalogType ?: type
     val enabledAddons = uiState.addons
@@ -7428,9 +7456,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
 
     merged += cloudStreamStreams(type, candidates, live, detail)
+    merged += serverLookup?.await().orEmpty()
 
     val unique = merged.distinctBy(::addonStreamPlaybackIdentity)
-    return lastError.let { error -> if (unique.isNotEmpty() || error == null) Result.success(unique) else Result.failure(error) }
+    lastError.let { error -> if (unique.isNotEmpty() || error == null) Result.success(unique) else Result.failure(error) }
   }
 
   /**
@@ -7921,6 +7950,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         selectedEpisode,
         resumePercentOverride ?: remembered.progressPercent,
         returnToEpisodeStreams = returnToEpisodeStreams,
+        remembered = true,
       )
       return
     }
@@ -10163,6 +10193,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     preferences.timingProvider?.let(appSettingsStore::saveTimingProvider)
     preferences.timingProviderFallbackEnabled?.let(appSettingsStore::saveTimingProviderFallbackEnabled)
     preferences.showStreamsList?.let(appSettingsStore::saveShowStreamsList)
+    preferences.preferMediaServerSource?.let(appSettingsStore::savePreferMediaServerSource)
     preferences.rememberLastSource?.let(appSettingsStore::saveRememberLastSource)
     preferences.favoriteSourceKeys?.map(String::trim)?.filter(String::isNotBlank)?.take(250)?.toSet()?.let(appSettingsStore::saveFavoriteSourceKeys)
     preferences.blurUnwatchedEpisodes?.let(appSettingsStore::saveBlurUnwatchedEpisodes)
@@ -10254,6 +10285,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
         externalRatingsEnabled = preferences.externalRatingsEnabled ?: uiState.externalRatingsEnabled,
         enabledRatingProviders = ratingProviders ?: uiState.enabledRatingProviders,
         showStreamsList = preferences.showStreamsList ?: uiState.showStreamsList,
+        preferMediaServerSource = preferences.preferMediaServerSource ?: uiState.preferMediaServerSource,
         blurUnwatchedEpisodes = preferences.blurUnwatchedEpisodes ?: uiState.blurUnwatchedEpisodes,
         fusionBadgesEnabled = preferences.fusionBadgesEnabled ?: uiState.fusionBadgesEnabled,
         streamDekFormattingEnabled = preferences.streamDekFormattingEnabled ?: uiState.streamDekFormattingEnabled,
@@ -11622,6 +11654,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       timingProvider = uiState.timingProvider,
       timingProviderFallbackEnabled = uiState.timingProviderFallbackEnabled,
       showStreamsList = uiState.showStreamsList,
+      preferMediaServerSource = uiState.preferMediaServerSource,
       rememberLastSource = uiState.rememberLastSource,
       favoriteSourceKeys = uiState.favoriteSourceKeys.sorted(),
       blurUnwatchedEpisodes = uiState.blurUnwatchedEpisodes,
@@ -11732,6 +11765,15 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
     syncCloudPreferences()
   }
   fun setShowStreamsList(value: Boolean) { appSettingsStore.saveShowStreamsList(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(showStreamsList = value)); syncCloudPreferences() }
+  fun setPreferMediaServerSource(value: Boolean) {
+    appSettingsStore.savePreferMediaServerSource(value)
+    uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(preferMediaServerSource = value))
+    // The open stream list is re-ordered at once rather than at the next search.
+    if (uiState.availableStreams.isNotEmpty() && uiState.detail?.id?.let(::isMediaServerId) != true) {
+      uiState = uiState.copy(availableStreams = rankedProfileStreams(uiState.availableStreams))
+    }
+    syncCloudPreferences()
+  }
   fun setHeroTrailerAutoplay(value: Boolean) { appSettingsStore.saveHeroTrailerAutoplay(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(heroTrailerAutoplay = value)); syncCloudPreferences() }
   fun setHeroTrailerResolution(value: Int) { appSettingsStore.saveHeroTrailerResolution(value); uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(heroTrailerResolution = value)); syncCloudPreferences() }
   fun setHeroTrailerDelaySeconds(value: Int) {
@@ -22034,6 +22076,7 @@ private fun SettingsScene(
       onSubtitleOutlineColorChange = viewModel::setSubtitleOutlineColor,
       onSubtitleDefaultSourceChange = viewModel::setSubtitleDefaultSource,
       onShowStreamsListChange = viewModel::setShowStreamsList,
+      onPreferMediaServerSourceChange = viewModel::setPreferMediaServerSource,
       onHeroTrailerAutoplayChange = viewModel::setHeroTrailerAutoplay,
       onHeroTrailerResolutionChange = viewModel::setHeroTrailerResolution,
       onHeroTrailerDelaySecondsChange = viewModel::setHeroTrailerDelaySeconds,
@@ -22206,6 +22249,7 @@ private fun SettingsTab(
   onSubtitleOutlineColorChange: (String) -> Unit,
   onSubtitleDefaultSourceChange: (String) -> Unit,
   onShowStreamsListChange: (Boolean) -> Unit,
+  onPreferMediaServerSourceChange: (Boolean) -> Unit,
   onHeroTrailerAutoplayChange: (Boolean) -> Unit,
   onHeroTrailerResolutionChange: (Int) -> Unit,
   onHeroTrailerDelaySecondsChange: (Int) -> Unit,
@@ -23048,6 +23092,8 @@ private fun SettingsTab(
               SettingsSwitchRow("SRC", Color(0xFF6366F1), stringResource(R.string.settings_m_remember_last_source), stringResource(R.string.settings_m_try_the_source_you_used_last_when), uiState.rememberLastSource, onRememberLastSourceChange)
               SettingsDivider()
               SettingsSwitchRow("LST", Color(0xFF22D3EE), stringResource(R.string.settings_m_show_streams_list), stringResource(R.string.settings_m_show_available_streams_on_title_pages_instead), uiState.showStreamsList, onShowStreamsListChange)
+              SettingsDivider()
+              SettingsSwitchRow("MS", Color(0xFF52B54B), stringResource(R.string.settings_m_prefer_media_server_source), stringResource(R.string.settings_m_prefer_media_server_source_description), uiState.preferMediaServerSource, onPreferMediaServerSourceChange)
             }
           }
           item {

@@ -20,7 +20,71 @@ private val STREAM_SIZE_PATTERN = Regex("""([\d.]+)\s*(GB|GiB|MB|MiB|TB|TiB)\b""
  */
 internal const val STREAM_PUBLISH_COALESCE_MS = 250L
 
-private class RankedStream(val stream: AddonStream, val favourite: Boolean, val score: Int, val name: String)
+/**
+ * How long automatic playback waits for the viewer's media servers when "Prefer media server
+ * source" is on. They are asked alongside the add-ons, so this only matters when a server is
+ * slower than every add-on; past it, the add-on and plugin sources are played without it.
+ */
+internal const val MEDIA_SERVER_AUTOPLAY_WAIT_MS = 6_000L
+
+private class RankedStream(
+  val stream: AddonStream,
+  val favourite: Boolean,
+  val score: Int,
+  val name: String,
+  /** 0 unless the media server preference is on; see [SourceTier]. */
+  val tier: Int = 0,
+  /** Quality within a media server tier; 0 for everything else. */
+  val serverQuality: Int = 0,
+)
+
+/**
+ * How a source plays, as the "Prefer media server source" setting ranks it: a server's Direct Play
+ * first, its Direct Stream next, then every add-on and plugin, and a server transcode last - kept
+ * for choosing by hand, never preferred over an add-on just because it is the viewer's own server.
+ *
+ * Read from the play method StreamDek's own planner chose for this device and engine (the
+ * `source` tag every Plex, Jellyfin and Emby source carries), not from the server's own label, so
+ * a file this device cannot decode is never a Direct Play here.
+ */
+internal enum class SourceTier { ServerDirectPlay, ServerDirectStream, AddonOrPlugin, ServerTranscode }
+
+private const val MEDIA_SERVER_SOURCE_PREFIX = "mediaserver:"
+
+internal fun sourceTierOf(stream: AddonStream): SourceTier {
+  if (!stream.addonId.startsWith(MEDIA_SERVER_SOURCE_PREFIX)) return SourceTier.AddonOrPlugin
+  return when (stream.source?.substringAfterLast(':')?.lowercase()) {
+    "directplay" -> SourceTier.ServerDirectPlay
+    "directstream" -> SourceTier.ServerDirectStream
+    else -> SourceTier.ServerTranscode
+  }
+}
+
+/**
+ * How good a media server copy is, for ordering copies that play the same way: the viewer's
+ * preferred quality first, then resolution, then dynamic range, then size. Only ever compared
+ * between copies already known to play here, so a higher number is never a copy that will fail.
+ */
+internal fun mediaServerQualityScore(stream: AddonStream, preferredQuality: String = "Auto"): Int {
+  val text = listOfNotNull(stream.quality, stream.title, stream.name).joinToString(" ").lowercase()
+  val resolution = when {
+    "2160" in text || "4k" in text -> 5
+    "1440" in text -> 4
+    "1080" in text -> 3
+    "720" in text -> 2
+    "576" in text || "480" in text -> 1
+    else -> 0
+  }
+  val range = when {
+    "dovi" in text || "dolby vision" in text -> 4
+    "hdr10plus" in text || "hdr10+" in text -> 3
+    "hdr" in text -> 2
+    "hlg" in text -> 1
+    else -> 0
+  }
+  val size = streamSizeGiB(stream)?.let { (it / 8.0).toInt().coerceIn(0, 9) } ?: 0
+  return preferredQualityBoost(stream, preferredQuality) * 1000 + resolution * 100 + range * 10 + size
+}
 
 internal fun parseStreamSizeGiB(size: String?): Double? {
   val raw = size?.trim().orEmpty()
@@ -92,6 +156,8 @@ internal fun rankedStreams(
   maxFileSizeGb: Int = 0,
   favouriteAddonIds: Set<String> = emptySet(),
   favouritePluginProviderIds: Set<String> = emptySet(),
+  /** "Prefer media server source": server Direct Play and Direct Stream ahead of everything else. */
+  preferMediaServer: Boolean = false,
 ): List<AddonStream> =
   streams
     // Every list that reaches the viewer is ranked here first, whatever produced it, so this is
@@ -111,10 +177,15 @@ internal fun rankedStreams(
         favourite = stream.addonId in favouriteAddonIds || stream.addonId.removePrefix("plugin:") in favouritePluginProviderIds,
         score = streamScore(stream, hasDebrid, preferredQuality, maxFileSizeGb),
         name = stream.title ?: stream.name ?: stream.filename ?: "",
+        tier = if (preferMediaServer) sourceTierOf(stream).ordinal else 0,
+        serverQuality = if (preferMediaServer && sourceTierOf(stream) != SourceTier.AddonOrPlugin) mediaServerQualityScore(stream, preferredQuality) else 0,
       )
     }
     .sortedWith(
-      compareByDescending<RankedStream> { it.favourite }
+      // With the preference off both keys are 0 for every stream, so the order is exactly what it was.
+      compareBy<RankedStream> { it.tier }
+        .thenByDescending { it.serverQuality }
+        .thenByDescending { it.favourite }
         .thenByDescending { it.score }
         .thenBy { it.name },
     )

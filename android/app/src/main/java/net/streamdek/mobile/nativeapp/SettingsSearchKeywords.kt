@@ -22,7 +22,7 @@ internal fun settingsRouteKeywords(route: SettingsRoute): String = when (route) 
   SettingsRoute.Audio -> "audio sound language languages spoken dub dubbed preferred secondary delay sync synchronisation synchronization " +
     "lip sync lag latency bluetooth headphones soundbar speakers offset early late"
   SettingsRoute.Streams -> "streams stream results source quality resolution 4k 1080p size limit filter badges labels " +
-    "formatting remember last source list"
+    "formatting remember last source list prefer media server plex jellyfin emby direct play direct stream"
   SettingsRoute.Downloads -> "download downloads offline saved save storage remove delete watch offline"
   SettingsRoute.Appearance -> "appearance language theme colour color dark light mode header navigation labels collapse scroll scrolling behaviour behavior font motion animation animations speed transitions reduce reduced cinematic visual effects glass blur transparency performance battery"
   SettingsRoute.HomeScreen -> "streamdek fuse media hub unified live vod home screen rows spotlight hero synopsis continue watching streaming networks network cards branded logo ambient glow background " +

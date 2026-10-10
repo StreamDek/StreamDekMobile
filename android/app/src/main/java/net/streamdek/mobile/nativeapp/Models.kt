@@ -423,6 +423,7 @@ data class CloudPlaybackPreferences(
   val timingProviderFallbackEnabled: Boolean? = null,
   val showStreamsList: Boolean? = null,
   val rememberLastSource: Boolean? = null,
+  val preferMediaServerSource: Boolean? = null,
   val blurUnwatchedEpisodes: Boolean? = null,
   val fusionBadgesEnabled: Boolean? = null,
   val streamDekFormattingEnabled: Boolean? = null,

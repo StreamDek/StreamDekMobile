@@ -42,6 +42,12 @@ internal data class PlexMediaFacts(
     val width: Int?,
     val height: Int?,
     val bitrateKbps: Int?,
+    /**
+     * Dolby Vision with nothing to fall back to - profile 5, which has no HDR10 or SDR base layer.
+     * Without a Dolby Vision decoder it plays with the wrong colours, so it is not playable as it is.
+     * Profiles 7 and 8 carry an HDR10 or SDR layer any decoder shows correctly, and are not this.
+     */
+    val dolbyVisionWithoutFallback: Boolean = false,
 )
 
 /** What this device can decode in hardware, codec to the largest frame, and which engine is chosen. */
@@ -63,6 +69,9 @@ internal object PlexPlaybackPlanner {
     /** Codecs mpv decodes comfortably in software at up to 1080p on a television's CPU. */
     private val softwareFriendly = setOf("h264", "mpeg2video", "mpeg4", "vc1", "msmpeg4v3", "vp8")
 
+    /** The Dolby Vision decoder's key in PlexDeviceCapabilities.hardwareVideo. */
+    private const val DOLBY_VISION = "dvhe"
+
     fun normaliseCodec(codec: String?): String? = when (val value = codec?.lowercase(Locale.US)?.trim()) {
         null, "" -> null
         "avc", "avc1", "h.264", "x264" -> "h264"
@@ -76,6 +85,8 @@ internal object PlexPlaybackPlanner {
     private fun engineOpensAnyContainer(engine: String) = !engine.equals("ExoPlayer", ignoreCase = true)
 
     private fun videoPlayable(facts: PlexMediaFacts, caps: PlexDeviceCaps): Boolean {
+        // mpv, chosen outright, reshapes Dolby Vision itself; Media3 and Automatic need the decoder.
+        if (facts.dolbyVisionWithoutFallback && DOLBY_VISION !in caps.hardwareVideo && !caps.engine.equals("MPV", ignoreCase = true)) return false
         val codec = normaliseCodec(facts.videoCodec) ?: return true // audio-only or unknown: let it try
         val hardware = caps.hardwareVideo[codec]
         val width = facts.width ?: 0
@@ -181,11 +192,13 @@ internal object PlexPlaybackUrls {
         identity: PlexClientIdentity,
         route: MediaServerRoute,
         profileExtra: String,
+        /** Which of the title's versions, when it has more than one. */
+        mediaIndex: Int = 0,
     ): String {
         val directStream = option.mode != PlexPlaybackMode.Transcode
         val params = linkedMapOf(
             "path" to "/library/metadata/$ratingKey",
-            "mediaIndex" to "0",
+            "mediaIndex" to mediaIndex.toString(),
             "partIndex" to "0",
             "protocol" to "hls",
             "fastSeek" to "1",

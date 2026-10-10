@@ -2055,4 +2055,6 @@
   <string name="emby_connect_add_failed">%1$s est injoignable depuis cet appareil. Saisissez plutôt son adresse.</string>
   <string name="media_server_sibling">C’est un serveur %1$s. Ajoutez-le plutôt dans Paramètres &gt; %1$s.</string>
   <string name="settings_dest_emby_description">Connectez votre serveur Emby et choisissez les bibliothèques affichées</string>
+  <string name="settings_m_prefer_media_server_source">Privilégier la source du serveur multimédia</string>
+  <string name="settings_m_prefer_media_server_source_description">Privilégie les sources Direct Play ou Direct Stream compatibles de vos serveurs Plex, Jellyfin et Emby connectés. Si aucune n’est disponible, la meilleure source de vos add-ons et plugins est utilisée automatiquement.</string>
 </resources>

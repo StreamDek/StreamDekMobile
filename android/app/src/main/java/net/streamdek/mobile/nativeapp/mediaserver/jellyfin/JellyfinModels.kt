@@ -127,6 +127,9 @@ internal data class JellyfinMediaStream(
     @SerializedName("BitRate") val bitRate: Int? = null,
     @SerializedName("VideoRange") val videoRange: String? = null,
     @SerializedName("VideoRangeType") val videoRangeType: String? = null,
+    /** Emby's names for the same thing: "DolbyVision", "Hdr10"... and a profile, "DoviProfile50". */
+    @SerializedName(value = "ExtendedVideoType") val extendedVideoType: String? = null,
+    @SerializedName(value = "ExtendedVideoSubType") val extendedVideoSubType: String? = null,
 )
 
 internal data class JellyfinMediaSource(

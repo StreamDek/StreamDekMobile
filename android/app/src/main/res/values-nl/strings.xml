@@ -2003,4 +2003,6 @@
   <string name="emby_connect_add_failed">%1$s is vanaf dit apparaat niet bereikbaar. Voer het adres in.</string>
   <string name="media_server_sibling">Dat is een %1$s-server. Voeg hem toe via Instellingen &gt; %1$s.</string>
   <string name="settings_dest_emby_description">Koppel je Emby-server en kies welke bibliotheken verschijnen</string>
+  <string name="settings_m_prefer_media_server_source">Mediaserverbron voorkeur geven</string>
+  <string name="settings_m_prefer_media_server_source_description">Geef voorrang aan compatibele Direct Play- of Direct Stream-bronnen van je verbonden Plex-, Jellyfin- en Emby-servers. Zijn die er niet, dan wordt automatisch de beste bron van je add-ons en plug-ins gebruikt.</string>
 </resources>

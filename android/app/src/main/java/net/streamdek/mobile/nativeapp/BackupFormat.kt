@@ -192,7 +192,7 @@ internal object BackupSettingsRegistry {
         BackupCategory.Playback,
         "preferred_audio_language", "secondary_audio_language", "preferred_subtitle_language", "secondary_subtitle_language",
         "use_forced_subtitles", "show_only_preferred_subtitle_languages", "addon_subtitle_loading",
-        "show_streams_list", "remember_last_source", "favorite_source_keys",
+        "show_streams_list", "remember_last_source", "prefer_media_server_source", "favorite_source_keys",
         "skip_intro_enabled", "skip_segments_enabled", "skip_recap_enabled", "skip_ending_enabled",
         "auto_skip_intro_enabled", "auto_skip_recap_enabled", "auto_skip_ending_enabled",
         "auto_play_next_episode", "prefer_binge_group", "auto_load_subtitles",

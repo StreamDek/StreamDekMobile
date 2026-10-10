@@ -183,6 +183,8 @@ internal data class PlexStream(
     val decision: String? = null,
     @SerializedName("DOVIPresent") val doviPresent: JsonElement? = null,
     @SerializedName("DOVIProfile") val doviProfile: Int? = null,
+    /** The video's transfer: "smpte2084" for HDR10, "arib-std-b67" for HLG. */
+    val colorTrc: String? = null,
 )
 
 internal fun JsonElement?.flag(): Boolean = runCatching {

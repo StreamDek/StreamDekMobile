@@ -107,6 +107,7 @@ internal fun cloudPreferencesPayload(preferences: CloudPlaybackPreferences): JSO
   val streams = JSONObject()
     .put("showStreamsList", preferences.showStreamsList)
     .put("rememberLastSource", preferences.rememberLastSource)
+    .put("preferMediaServerSource", preferences.preferMediaServerSource)
     .put("favoriteSourceKeys", preferences.favoriteSourceKeys?.let(::JSONArray))
     .put("blurUnwatchedEpisodes", preferences.blurUnwatchedEpisodes)
     .put("fusionBadgesEnabled", preferences.fusionBadgesEnabled)
@@ -376,6 +377,7 @@ internal fun parseCloudSettings(accountPreferences: JSONObject, profilePreferenc
     timingProviderFallbackEnabled = optionalBoolean(playback, "timingProviderFallbackEnabled"),
     showStreamsList = optionalBoolean(streams, "showStreamsList"),
     rememberLastSource = optionalBoolean(streams, "rememberLastSource"),
+    preferMediaServerSource = optionalBoolean(streams, "preferMediaServerSource"),
     favoriteSourceKeys = optionalStringList(streams, "favoriteSourceKeys"),
     blurUnwatchedEpisodes = optionalBoolean(detail, "blurUnwatchedEpisodes") ?: optionalBoolean(streams, "blurUnwatchedEpisodes"),
     fusionBadgesEnabled = optionalBoolean(streams, "fusionBadgesEnabled"),

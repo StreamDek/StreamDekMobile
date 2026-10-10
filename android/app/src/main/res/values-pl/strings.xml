@@ -2117,4 +2117,6 @@
   <string name="emby_connect_add_failed">%1$s jest niedostępny z tego urządzenia. Wpisz jego adres.</string>
   <string name="media_server_sibling">To serwer %1$s. Dodaj go w Ustawienia &gt; %1$s.</string>
   <string name="settings_dest_emby_description">Połącz swój serwer Emby i wybierz widoczne biblioteki</string>
+  <string name="settings_m_prefer_media_server_source">Preferuj źródło z serwera multimediów</string>
+  <string name="settings_m_prefer_media_server_source_description">Najpierw używaj zgodnych źródeł Direct Play lub Direct Stream z połączonych serwerów Plex, Jellyfin i Emby. Jeśli ich nie ma, automatycznie użyj najlepszego źródła z dodatków i wtyczek.</string>
 </resources>

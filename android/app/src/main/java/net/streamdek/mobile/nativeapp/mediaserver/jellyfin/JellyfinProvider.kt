@@ -659,11 +659,28 @@ internal class JellyfinProvider(
         }
     }
 
+    /** Dolby Vision with no HDR10 or SDR layer to fall back to: Jellyfin's plain "DOVI", Emby's profile 5. */
+    private fun JellyfinMediaStream.dolbyVisionWithoutFallback(): Boolean =
+        videoRangeType.equals(RANGE_DOVI_ONLY, ignoreCase = true) ||
+            extendedVideoSubType?.startsWith(EMBY_DOVI_PROFILE_5, ignoreCase = true) == true
+
+    /** The video's dynamic range, named one way for both servers: Jellyfin's own name, or Emby's mapped to it. */
+    private fun JellyfinMediaStream.dynamicRange(): String? {
+        videoRangeType?.takeIf { it.isNotBlank() && !it.equals(RANGE_SDR, true) }?.let { return it }
+        return when (extendedVideoType?.lowercase(Locale.US)) {
+            EMBY_DOLBY_VISION -> RANGE_DOLBY_VISION
+            EMBY_HDR10_PLUS -> RANGE_HDR10_PLUS
+            EMBY_HDR10 -> RANGE_HDR10
+            EMBY_HLG -> RANGE_HLG
+            else -> null
+        }
+    }
+
     private fun describeTechnical(source: JellyfinMediaSource): String {
         val streams = source.mediaStreams.orEmpty()
         val video = streams.firstOrNull { it.type.equals("Video", true) }
         val audio = streams.firstOrNull { it.type.equals("Audio", true) }
-        val hdr = video?.videoRangeType?.takeIf { !it.equals("SDR", true) && it.isNotBlank() }
+        val hdr = video?.dynamicRange()
         return listOfNotNull(
             describeQuality(video),
             hdr,
@@ -715,6 +732,7 @@ internal class JellyfinProvider(
                     width = video?.width,
                     height = video?.height,
                     bitrateKbps = source.bitrate?.div(1000),
+                    dolbyVisionWithoutFallback = video?.dolbyVisionWithoutFallback() == true,
                 ),
                 caps = caps,
                 route = route,
@@ -915,6 +933,17 @@ internal class JellyfinProvider(
     }
 
     companion object {
+        private const val RANGE_DOVI_ONLY = "DOVI"
+        private const val RANGE_SDR = "SDR"
+        private const val RANGE_DOLBY_VISION = "Dolby Vision"
+        private const val RANGE_HDR10_PLUS = "HDR10+"
+        private const val RANGE_HDR10 = "HDR10"
+        private const val RANGE_HLG = "HLG"
+        private const val EMBY_DOVI_PROFILE_5 = "DoviProfile5"
+        private const val EMBY_DOLBY_VISION = "dolbyvision"
+        private const val EMBY_HDR10_PLUS = "hdr10plus"
+        private const val EMBY_HDR10 = "hdr10"
+        private const val EMBY_HLG = "hyperloggamma"
         const val AUTH_HEADER = "Authorization"
         private const val FIELDS = "ProviderIds,Overview,Genres,DateCreated,ParentId,ChildCount,RecursiveItemCount"
         private const val ROW_SIZE = 20

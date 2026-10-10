@@ -2019,4 +2019,6 @@
   <string name="emby_connect_add_failed">No se puede llegar a %1$s desde este dispositivo. Escribe su dirección.</string>
   <string name="media_server_sibling">Es un servidor %1$s. Añádelo en Ajustes &gt; %1$s.</string>
   <string name="settings_dest_emby_description">Conecta tu servidor Emby y elige qué bibliotecas aparecen</string>
+  <string name="settings_m_prefer_media_server_source">Preferir fuente del servidor multimedia</string>
+  <string name="settings_m_prefer_media_server_source_description">Prioriza las fuentes compatibles de Direct Play o Direct Stream de tus servidores Plex, Jellyfin y Emby conectados. Si no hay ninguna, usa automáticamente la mejor fuente de tus complementos y plugins.</string>
 </resources>

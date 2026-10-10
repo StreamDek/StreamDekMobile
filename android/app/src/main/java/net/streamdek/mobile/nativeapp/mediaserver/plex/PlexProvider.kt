@@ -598,8 +598,37 @@ internal class PlexProvider(
         else -> null
     }
 
-    private fun describeTechnical(media: PlexMedia): String = listOfNotNull(
+    private data class PlexVersion(val index: Int, val media: PlexMedia, val part: PlexPart)
+
+    private fun PlexPart.videoStream(): PlexStream? = streams.orEmpty().firstOrNull { it.streamType == 1 }
+
+    private fun plexFacts(media: PlexMedia, part: PlexPart): PlexMediaFacts {
+        val video = part.videoStream()
+        return PlexMediaFacts(
+            container = part.container ?: media.container,
+            videoCodec = media.videoCodec,
+            audioCodec = media.audioCodec,
+            width = media.width,
+            height = media.height,
+            bitrateKbps = media.bitrate,
+            dolbyVisionWithoutFallback = video != null && video.doviPresent.flag() && video.doviProfile == 5,
+        )
+    }
+
+    /** The version's dynamic range, as the other servers name it: Dolby Vision, HDR10 or HLG. */
+    private fun dynamicRange(part: PlexPart): String? {
+        val video = part.videoStream() ?: return null
+        return when {
+            video.doviPresent.flag() -> RANGE_DOLBY_VISION
+            video.colorTrc.equals("smpte2084", ignoreCase = true) -> RANGE_HDR10
+            video.colorTrc.equals("arib-std-b67", ignoreCase = true) -> RANGE_HLG
+            else -> null
+        }
+    }
+
+    private fun describeTechnical(media: PlexMedia, part: PlexPart): String = listOfNotNull(
         describeQuality(media),
+        dynamicRange(part),
         media.videoCodec?.uppercase(Locale.US),
         media.audioCodec?.uppercase(Locale.US)?.let { codec -> media.audioChannels?.let { "$codec ${channelLayout(it)}" } ?: codec },
     ).joinToString(" · ")
@@ -622,23 +651,13 @@ internal class PlexProvider(
         val ratingKey = playableKey(ref, episode) ?: return emptyList()
         val endpoint = endpoint(ref.serverId) ?: return emptyList()
         val meta = metadataFor(ref.serverId, ratingKey, force = true) ?: return emptyList()
-        val media = meta.media.orEmpty().firstOrNull() ?: return emptyList()
-        val part = media.parts.orEmpty().firstOrNull() ?: return emptyList()
+        // Every version the server holds, not only the first: each is planned for this device on its
+        // own, so a 1080p copy that plays is offered beside a 4K one that would not.
+        val versions = meta.media.orEmpty().take(MAX_VERSIONS).withIndex()
+            .mapNotNull { (index, media) -> media.parts.orEmpty().firstOrNull()?.let { PlexVersion(index, media, it) } }
+        if (versions.isEmpty()) return emptyList()
         val route = PlexConnectionRanking.route(endpoint)
         val caps = PlexDeviceCaps(PlexDeviceCapabilities.hardwareVideo(), context.engine)
-        val plan = PlexPlaybackPlanner.plan(
-            facts = PlexMediaFacts(
-                container = part.container ?: media.container,
-                videoCodec = media.videoCodec,
-                audioCodec = media.audioCodec,
-                width = media.width,
-                height = media.height,
-                bitrateKbps = media.bitrate,
-            ),
-            caps = caps,
-            route = route,
-            remoteMaxKbps = context.remoteMaxBitrateKbps,
-        )
         val identity = PlexClientIdentity(
             clientIdentifier = context.clientIdentifier,
             product = PLEX_PRODUCT,
@@ -652,37 +671,41 @@ internal class PlexProvider(
         val headers = identity.headers() + mapOf("X-Plex-Session-Identifier" to sessionId) +
             (endpoint.accessToken?.let { mapOf(MediaServerAuth.TOKEN_HEADER to it) } ?: emptyMap())
         val text = labels()
-        val technical = describeTechnical(media)
-        val filename = part.file?.substringAfterLast('/')?.substringAfterLast('\\')
         val attribution = contextFor(ref.serverId)?.attribution ?: label
         val profileExtra = PlexPlaybackPlanner.profileExtra(caps)
-        Log.i("StreamDekPlex", "plan server=${ref.serverId} route=$route modes=${plan.joinToString(",") { it.mode.name }}")
-        return plan.mapNotNull { option ->
-            val url = when (option.mode) {
-                PlexPlaybackMode.DirectPlay -> part.key?.let { PlexPlaybackUrls.directPlay(endpoint.uri, it) } ?: return@mapNotNull null
-                else -> PlexPlaybackUrls.universal(endpoint.uri, ratingKey, option, sessionId, identity, route, profileExtra)
+        Log.i("StreamDekPlex", "plan server=${ref.serverId} route=$route versions=${versions.size}")
+        return versions.flatMap { (mediaIndex, media, part) ->
+            val plan = PlexPlaybackPlanner.plan(facts = plexFacts(media, part), caps = caps, route = route, remoteMaxKbps = context.remoteMaxBitrateKbps)
+            val technical = describeTechnical(media, part)
+            val filename = part.file?.substringAfterLast('/')?.substringAfterLast('\\')
+            // A second version's transcodes would only repeat the first's; its Direct Play and Direct Stream are what it adds.
+            plan.filter { mediaIndex == 0 || it.mode != PlexPlaybackMode.Transcode }.mapNotNull { option ->
+                val url = when (option.mode) {
+                    PlexPlaybackMode.DirectPlay -> part.key?.let { PlexPlaybackUrls.directPlay(endpoint.uri, it) } ?: return@mapNotNull null
+                    else -> PlexPlaybackUrls.universal(endpoint.uri, ratingKey, option, sessionId, identity, route, profileExtra, mediaIndex)
+                }
+                val modeLabel = when (option.mode) {
+                    PlexPlaybackMode.DirectPlay -> text.directPlay()
+                    PlexPlaybackMode.DirectStream -> text.directStream()
+                    PlexPlaybackMode.Transcode -> text.transcode(option.maxResolution?.substringAfter('x')?.let { "${it}p" } ?: "")
+                }
+                AddonStream(
+                    addonId = ref.sourceId,
+                    addonName = attribution,
+                    name = attribution,
+                    title = listOf(modeLabel, technical.takeIf { option.mode != PlexPlaybackMode.Transcode }).filterNot { it.isNullOrBlank() }.joinToString(" · "),
+                    description = filename,
+                    url = url,
+                    infoHash = null,
+                    fileIdx = null,
+                    filename = filename,
+                    quality = if (option.mode == PlexPlaybackMode.Transcode) option.maxResolution?.substringAfter('x')?.let { "${it}p" } else describeQuality(media),
+                    size = formatSize(part.size).takeIf { option.mode == PlexPlaybackMode.DirectPlay },
+                    cachedBy = emptyList(),
+                    source = "$PLEX_PROVIDER_ID:${option.mode.name.lowercase(Locale.US)}",
+                    requestHeaders = headers,
+                )
             }
-            val modeLabel = when (option.mode) {
-                PlexPlaybackMode.DirectPlay -> text.directPlay()
-                PlexPlaybackMode.DirectStream -> text.directStream()
-                PlexPlaybackMode.Transcode -> text.transcode(option.maxResolution?.substringAfter('x')?.let { "${it}p" } ?: "")
-            }
-            AddonStream(
-                addonId = ref.sourceId,
-                addonName = attribution,
-                name = attribution,
-                title = listOf(modeLabel, technical.takeIf { option.mode != PlexPlaybackMode.Transcode }).filterNot { it.isNullOrBlank() }.joinToString(" · "),
-                description = filename,
-                url = url,
-                infoHash = null,
-                fileIdx = null,
-                filename = filename,
-                quality = if (option.mode == PlexPlaybackMode.Transcode) option.maxResolution?.substringAfter('x')?.let { "${it}p" } else describeQuality(media),
-                size = formatSize(part.size).takeIf { option.mode == PlexPlaybackMode.DirectPlay },
-                cachedBy = emptyList(),
-                source = "$PLEX_PROVIDER_ID:${option.mode.name.lowercase(Locale.US)}",
-                requestHeaders = headers,
-            )
         }
     }
 
@@ -807,6 +830,11 @@ internal class PlexProvider(
         private const val CONTINUE_SIZE = 24
         private const val CHILDREN_PAGE = 200
         private const val CHILDREN_MAX = 2_000
+        /** The most versions of one title offered as sources. */
+        private const val MAX_VERSIONS = 4
+        private const val RANGE_DOLBY_VISION = "Dolby Vision"
+        private const val RANGE_HDR10 = "HDR10"
+        private const val RANGE_HLG = "HLG"
         private const val SEARCH_TIMEOUT_MS = 6_000L
         private const val LIBRARY_TTL_MS = 10 * 60_000L
         private const val METADATA_TTL_MS = 5 * 60_000L

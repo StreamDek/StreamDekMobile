@@ -2171,4 +2171,6 @@
   <string name="media_server_sibling">That’s a %1$s server. Add it under Settings &gt; %1$s instead.</string>
   <string name="media_server_emby">Emby</string>
   <string name="settings_dest_emby_description">Connect your Emby server and choose which libraries appear</string>
+  <string name="settings_m_prefer_media_server_source">Prefer Media Server Source</string>
+  <string name="settings_m_prefer_media_server_source_description">Prioritise compatible Direct Play or Direct Stream sources from your connected Plex, Jellyfin and Emby servers. If none are available, automatically use the best source from your add-ons and plugins.</string>
 </resources>

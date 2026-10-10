@@ -44,6 +44,15 @@ internal data class JellyfinClientIdentity(
         if (!token.isNullOrBlank()) append(", Token=\"").append(token).append('"')
     }
 
+    /** The same description without a token, after [scheme]: Emby's `Authorization: Emby ...`. */
+    fun clientDescription(scheme: String): String = buildString {
+        append(scheme).append(' ')
+        append("Client=\"").append(enc(client)).append("\", ")
+        append("Device=\"").append(enc(deviceName)).append("\", ")
+        append("DeviceId=\"").append(enc(deviceId)).append("\", ")
+        append("Version=\"").append(enc(version)).append('"')
+    }
+
     private fun enc(value: String) = URLEncoder.encode(value, "UTF-8")
 }
 
@@ -63,7 +72,11 @@ internal data class JellyfinEndpoint(val baseUrl: String, val token: String?) {
 internal class JellyfinClient(
     private val identity: () -> JellyfinClientIdentity,
     private val gson: Gson = Gson(),
+    /** Which server of the family this client speaks to; see [MediaBrowserFlavor]. */
+    val flavor: MediaBrowserFlavor = MediaBrowserFlavor.Jellyfin,
 ) {
+    private val tag get() = flavor.logTag
+
     private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(4, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
@@ -84,8 +97,8 @@ internal class JellyfinClient(
     /** The server answered, but not with success: 404 is how an older server says it has no such route. */
     class StatusException(val code: Int) : IOException("status $code")
 
-    /** The header a request to a signed-in server carries, for requests made outside this client. */
-    fun authorizationFor(token: String?): String = identity().authorization(token)
+    /** The header a media or image request to a signed-in server carries, for requests made outside this client. */
+    fun mediaHeaderFor(token: String): Pair<String, String> = flavor.mediaHeader(identity(), token)
 
     fun deviceId(): String = identity().deviceId
 
@@ -99,7 +112,7 @@ internal class JellyfinClient(
         return Request.Builder()
             .url(url)
             .header("Accept", "application/json")
-            .header("Authorization", identity().authorization(endpoint.token))
+            .apply { flavor.requestHeaders(identity(), endpoint.token).forEach { (name, value) -> header(name, value) } }
             .method(method, body ?: if (method == "GET" || method == "HEAD") null else ByteArray(0).toRequestBody(null))
             .build()
     }
@@ -120,19 +133,19 @@ internal class JellyfinClient(
             client.newCall(request).await().use { response ->
                 if (response.code == 401 || response.code == 403) throw UnauthorizedException()
                 if (!response.isSuccessful) {
-                    Log.w("StreamDekJellyfin", "$method ${logPath(path)} answered ${response.code}")
+                    Log.w(tag, "$method ${logPath(path)} answered ${response.code}")
                     return@use Result.failure(StatusException(response.code))
                 }
                 if (type == null) return@use Result.success(null)
                 val text = response.body?.charStream() ?: return@use Result.success(null)
                 Result.success(runCatching { gson.fromJson(text, type) }.onFailure {
-                    Log.w("StreamDekJellyfin", "$method ${logPath(path)} returned something unreadable")
+                    Log.w(tag, "$method ${logPath(path)} returned something unreadable")
                 }.getOrNull())
             }
         } catch (error: UnauthorizedException) {
             throw error
         } catch (error: IOException) {
-            Log.w("StreamDekJellyfin", "$method ${logPath(path)} failed: ${error.javaClass.simpleName}")
+            Log.w(tag, "$method ${logPath(path)} failed: ${error.javaClass.simpleName}")
             Result.failure(error)
         }
     }
@@ -184,8 +197,12 @@ internal class JellyfinClient(
 
     /** Whether [endpoint] answers and still accepts the signed-in user's token. */
     suspend fun probe(endpoint: JellyfinEndpoint, userId: String): ProbeResult = try {
-        var user = call(probeHttp, endpoint, "GET", "/Users/Me", emptyMap(), null, JellyfinUser::class.java)
-        // A server without /Users/Me still answers for the user by id.
+        var user = if (flavor.hasUsersMe) {
+            call(probeHttp, endpoint, "GET", "/Users/Me", emptyMap(), null, JellyfinUser::class.java)
+        } else {
+            Result.failure(StatusException(404))
+        }
+        // A server without /Users/Me (Emby, older Jellyfin) still answers for the user by id.
         if ((user.exceptionOrNull() as? StatusException)?.code == 404) {
             user = call(probeHttp, endpoint, "GET", "/Users/$userId", emptyMap(), null, JellyfinUser::class.java)
         }
@@ -204,7 +221,7 @@ internal class JellyfinClient(
                 mapOf("Username" to username, "Pw" to password), JellyfinAuthResult::class.java).getOrNull()
         }.getOrNull()
 
-    suspend fun quickConnectEnabled(baseUrl: String): Boolean =
+    suspend fun quickConnectEnabled(baseUrl: String): Boolean = flavor.quickConnect &&
         runCatching { call(probeHttp, JellyfinEndpoint(baseUrl, null), "GET", "/QuickConnect/Enabled", emptyMap(), null, Boolean::class.javaObjectType).getOrNull() }
             .getOrNull() == true
 
@@ -235,7 +252,7 @@ internal class JellyfinClient(
             DatagramSocket().use { socket ->
                 socket.broadcast = true
                 socket.soTimeout = 400
-                val message = "who is JellyfinServer?".toByteArray()
+                val message = flavor.discoveryMessage.toByteArray()
                 socket.send(DatagramPacket(message, message.size, InetAddress.getByName("255.255.255.255"), DISCOVERY_PORT))
                 val deadline = System.currentTimeMillis() + timeoutMs
                 val buffer = ByteArray(4096)
@@ -251,13 +268,74 @@ internal class JellyfinClient(
                     if (!reply.address.isNullOrBlank()) found.putIfAbsent(id, reply)
                 }
             }
-        }.onFailure { Log.w("StreamDekJellyfin", "discovery failed: ${it.javaClass.simpleName}") }
+        }.onFailure { Log.w(tag, "discovery failed: ${it.javaClass.simpleName}") }
         found.values.toList()
     }
+
+    // ── Emby Connect ─────────────────────────────────────────────────────────────────────────────
+    //
+    // Emby's own account service: sign in at connect.emby.media, list the servers the account is
+    // linked to, then exchange each server's access key for a local token on the server itself
+    // (https://dev.emby.media/doc/restapi/Emby-Connect.html). The emby.media password is sent once,
+    // to emby.media, and never kept; the Connect token is used for the listing and dropped, and only
+    // the server-issued local token is stored, exactly as after a password sign-in.
+
+    private fun connectRequest(url: String, connectToken: String?, body: RequestBody?): Request? {
+        val parsed = url.toHttpUrlOrNull() ?: return null
+        return Request.Builder()
+            .url(parsed)
+            .header("Accept", "application/json")
+            .header("X-Application", "${identity().client}/${identity().version}")
+            .apply { if (!connectToken.isNullOrBlank()) header("X-Connect-UserToken", connectToken) }
+            .method(if (body == null) "GET" else "POST", body)
+            .build()
+    }
+
+    private suspend fun <T> connectCall(request: Request, type: Class<T>): T? = withContext(Dispatchers.IO) {
+        runCatching {
+            http.newCall(request).await().use { response ->
+                if (response.code == 401 || response.code == 403) throw UnauthorizedException()
+                if (!response.isSuccessful) {
+                    Log.w(tag, "emby connect ${request.url.encodedPath} answered ${response.code}")
+                    return@use null
+                }
+                response.body?.charStream()?.let { gson.fromJson(it, type) }
+            }
+        }.onFailure { if (it is UnauthorizedException) throw it; Log.w(tag, "emby connect failed: ${it.javaClass.simpleName}") }.getOrNull()
+    }
+
+    /** Signs in to Emby Connect. Null when it could not be reached; throws [UnauthorizedException] when it refused. */
+    suspend fun embyConnectSignIn(nameOrEmail: String, password: String): EmbyConnectSession? {
+        if (!flavor.embyConnect) return null
+        val body = json(mapOf("nameOrEmail" to nameOrEmail, "rawpw" to password))
+        val request = connectRequest("$EMBY_CONNECT/service/user/authenticate", null, body) ?: return null
+        return connectCall(request, EmbyConnectSession::class.java)?.takeIf { it.token != null && it.userId != null }
+    }
+
+    /** The servers an Emby Connect account is linked to. */
+    suspend fun embyConnectServers(session: EmbyConnectSession): List<EmbyConnectServer> {
+        val userId = session.userId ?: return emptyList()
+        val request = connectRequest("$EMBY_CONNECT/service/servers?userId=${URLEncoder.encode(userId, "UTF-8")}", session.token, null) ?: return emptyList()
+        return connectCall(request, Array<EmbyConnectServer>::class.java)?.toList().orEmpty().filter { !it.systemId.isNullOrBlank() && !it.accessKey.isNullOrBlank() }
+    }
+
+    /**
+     * Trades a server's Emby Connect access key for a local sign-in on that server. The access key
+     * goes in X-Emby-Token for this one request, as Emby documents.
+     */
+    suspend fun embyConnectExchange(baseUrl: String, accessKey: String, connectUserId: String): EmbyConnectExchange? =
+        runCatching {
+            call(http, JellyfinEndpoint(baseUrl, accessKey), "GET", "/Connect/Exchange", mapOf("format" to "json", "ConnectUserId" to connectUserId), null, EmbyConnectExchange::class.java).getOrNull()
+        }.getOrNull()?.takeIf { !it.accessToken.isNullOrBlank() && !it.localUserId.isNullOrBlank() }
+
+    /** One user, by id, as the signed-in server describes them. */
+    suspend fun user(endpoint: JellyfinEndpoint, userId: String): JellyfinUser? =
+        runCatching { get(endpoint, "/Users/$userId", JellyfinUser::class.java) }.getOrNull()
 
     companion object {
         private val JSON = "application/json; charset=utf-8".toMediaType()
         private const val DISCOVERY_PORT = 7359
+        private const val EMBY_CONNECT = "https://connect.emby.media"
 
         /**
          * The addresses worth trying for what the viewer typed, most likely first. "jellyfin.example.com"

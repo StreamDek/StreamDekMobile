@@ -92,12 +92,14 @@ internal class BackupEngine(context: Context) {
       mediaServersByOwner[profile.ownerKey]?.let { media ->
         section.put("mediaServers", media)
         mediaServerProfiles += 1
-        // A Jellyfin sign-in is a credential, and is only ever in an encrypted backup.
-        if (includeSecrets) {
-          val servers = media.optJSONObject("jellyfin")?.optJSONArray("servers")
-          counts.credentials += (0 until (servers?.length() ?: 0)).count { servers?.optJSONObject(it)?.has("accessToken") == true }
-        } else if (media.optJSONObject("jellyfin") != null) {
-          omitted += BackupOmission(BackupCategory.Credentials, "Jellyfin sign-in (${profile.name})", BackupOmissionReason.NeedsPassphrase)
+        // A Jellyfin or Emby sign-in is a credential, and is only ever in an encrypted backup.
+        listOf("jellyfin" to "Jellyfin", "emby" to "Emby").forEach { (key, label) ->
+          if (includeSecrets) {
+            val servers = media.optJSONObject(key)?.optJSONArray("servers")
+            counts.credentials += (0 until (servers?.length() ?: 0)).count { servers?.optJSONObject(it)?.has("accessToken") == true }
+          } else if (media.optJSONObject(key) != null) {
+            omitted += BackupOmission(BackupCategory.Credentials, "$label sign-in (${profile.name})", BackupOmissionReason.NeedsPassphrase)
+          }
         }
       }
       profileArray.put(section)

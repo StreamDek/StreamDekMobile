@@ -204,6 +204,8 @@ enum class MediaServerPlaybackState { Playing, Paused, Stopped }
 
 const val PLEX_PROVIDER_ID = "plex"
 const val JELLYFIN_PROVIDER_ID = "jellyfin"
+/** Emby: the same family as Jellyfin, served by the same provider code; see MediaBrowserFlavor. */
+const val EMBY_PROVIDER_ID = "emby"
 
 /**
  * The Home Rows id for a media server row.

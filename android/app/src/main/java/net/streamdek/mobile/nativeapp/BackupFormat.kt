@@ -177,7 +177,7 @@ internal object BackupSettingsRegistry {
         "hero_trailer_resolution", "hero_trailer_delay_seconds", "hero_trailer_muted", "trailer_cache_clear_hours",
         "ratings_enabled", "external_ratings_enabled", "enabled_rating_providers", "show_new_episodes_row",
         "new_episodes_landscape", "default_app_catalogs_enabled", "home_catalog_rows", HOME_ROW_MODE_PREFERENCE,
-        "plex_continue_watching_location", "jellyfin_continue_watching_location",
+        "plex_continue_watching_location", "jellyfin_continue_watching_location", "emby_continue_watching_location",
         HOME_ROW_SOURCE_ORDER_PREFERENCE,
       ),
     )

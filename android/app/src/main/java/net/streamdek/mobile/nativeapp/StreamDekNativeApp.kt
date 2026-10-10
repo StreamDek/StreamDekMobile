@@ -784,6 +784,7 @@ internal enum class SettingsRoute(@StringRes val titleRes: Int, @StringRes val s
   /** Personal media servers - Plex today. Linking, servers, libraries and remote quality. */
   MediaServers(R.string.media_server_plex, R.string.settings_dest_plex_description),
   Jellyfin(R.string.media_server_jellyfin, R.string.settings_dest_jellyfin_description),
+  Emby(R.string.media_server_emby, R.string.settings_dest_emby_description),
   Addons(R.string.settings_m_add_ons, R.string.settings_route_addons_subtitle),
   Plugins(R.string.settings_m_plugins, R.string.settings_route_plugins_subtitle),
   M3uPlaylists(R.string.settings_m_playlists, R.string.settings_route_playlists_subtitle),
@@ -952,6 +953,8 @@ private data class MediaServerAppState(
   val searchResults: List<MediaItem> = emptyList(),
   /** Jellyfin's standing, as [state] is Plex's. */
   val jellyfin: MediaServerUiState = MediaServerUiState(provider = net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID),
+  /** Emby's. */
+  val emby: MediaServerUiState = MediaServerUiState(provider = net.streamdek.mobile.nativeapp.mediaserver.EMBY_PROVIDER_ID),
 )
 
 private object MediaServerAppStore {
@@ -962,10 +965,12 @@ private object MediaServerAppStore {
 private val AppUiState.mediaServerState: MediaServerUiState get() = MediaServerAppStore.value.state
 @Suppress("UnusedReceiverParameter")
 private val AppUiState.jellyfinServerState: MediaServerUiState get() = MediaServerAppStore.value.jellyfin
-/** Plex or Jellyfin linked on this profile. */
-private val AppUiState.anyMediaServerLinked: Boolean get() = mediaServerState.linked || jellyfinServerState.linked
+private val AppUiState.embyServerState: MediaServerUiState get() = MediaServerAppStore.value.emby
+/** Plex, Jellyfin or Emby linked on this profile. */
+private val AppUiState.anyMediaServerLinked: Boolean get() = mediaServerState.linked || jellyfinServerState.linked || embyServerState.linked
 /** The media destination is offered: a server linked with a library switched on. */
-private val AppUiState.mediaNavigationVisible: Boolean get() = mediaServerState.navigationVisible || jellyfinServerState.navigationVisible
+private val AppUiState.mediaNavigationVisible: Boolean get() =
+  mediaServerState.navigationVisible || jellyfinServerState.navigationVisible || embyServerState.navigationVisible
 @Suppress("UnusedReceiverParameter")
 private val AppUiState.mediaServerContinueWatching: List<MediaServerResume> get() = MediaServerAppStore.value.continueWatching
 /** The part of [mediaServerContinueWatching] that StreamDek's own Continue Watching shows; see [MediaServerContinueLocation]. */
@@ -2318,6 +2323,7 @@ private class AppSettingsStore(
       mediaServerContinueLocations = MediaServerContinueLocations(
         plex = MediaServerContinueLocation.fromKey(profilePrefs.getString("plex_continue_watching_location", null)),
         jellyfin = MediaServerContinueLocation.fromKey(profilePrefs.getString("jellyfin_continue_watching_location", null)),
+        emby = MediaServerContinueLocation.fromKey(profilePrefs.getString("emby_continue_watching_location", null)),
       ),
       liveCategoriesEnabled = profilePrefs.getBoolean("live_categories_enabled", true),
       liveProgressBarEnabled = profilePrefs.getBoolean("live_progress_bar", false),
@@ -4179,6 +4185,16 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }
     viewModelScope.launch {
       // In the viewer's chosen order (Settings > Jellyfin), which is the order the page shows them in.
+      kotlinx.coroutines.flow.combine(mediaServers.embyState, mediaServers.serverOrder, mediaServers.libraryOrder) { state, order, libraries -> state.inServerOrder(order, libraries) }.collect { state ->
+        val wasLinked = uiState.anyMediaServerLinked
+        uiState = uiState.withMediaServer { it.copy(emby = state) }
+        if (!uiState.anyMediaServerLinked && wasLinked) {
+          MediaServerHomeRows.rows = emptyList()
+          uiState = uiState.withMediaServer { it.copy(continueWatching = emptyList(), pageRows = emptyList(), searchResults = emptyList()) }
+        }
+      }
+    }
+    viewModelScope.launch {
       kotlinx.coroutines.flow.combine(mediaServers.jellyfinState, mediaServers.serverOrder, mediaServers.libraryOrder) { state, order, libraries -> state.inServerOrder(order, libraries) }.collect { state ->
         val wasLinked = uiState.anyMediaServerLinked
         uiState = uiState.withMediaServer { it.copy(jellyfin = state) }
@@ -6094,7 +6110,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
       // was otherwise made - so the player started with no episode selected, and everything that
       // works from the selection (previous, next, the end-of-episode card) had nothing to go on.
       if (episode != null) uiState = uiState.copy(selectedEpisode = episode)
-      playStream(stream, episode, entry.progressPercent)
+      playStream(stream, episode, entry.progressPercent, remembered = true)
     } else {
       // Cross-device SyncDek rows intentionally have no stream URL. Resolve through the same
       // device-local pipeline as Play; playStream will read this exact entry's resume position.
@@ -6337,7 +6353,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     detailMediaServerRef = ref
     val pageType = if (type == "series" || item.type == "series") "tv" else type
     val known = MediaServerIdentities.of(id)
-    val lookupId = if (ref.provider == net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID) {
+    val lookupId = if (ref.provider != net.streamdek.mobile.nativeapp.mediaserver.PLEX_PROVIDER_ID) {
       known?.tmdbId?.let { "tmdb:$it" } ?: known?.imdbId
     } else null
     uiState = uiState.copy(detailLoading = true, detail = null, detailIsLive = false, detailFallbackItem = item, selectedPerson = null, personLoading = false, selectedSeasonEpisodes = emptyList(), selectedSeasonNumber = null, selectedEpisode = null, detailSelectedTab = null, pendingStreamSources = 0, totalStreamSources = 0, searchingStreamSources = emptyList(), failedStreamSources = emptyList(), streamRefreshing = false, streamSearchStarted = false, availableStreams = emptyList(), errorMessage = null)
@@ -7489,7 +7505,10 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     }.getOrDefault(false)
   }
 
-  private suspend fun refreshStreamForPlayback(stream: AddonStream, detail: MediaDetail, episode: EpisodeItem?): AddonStream {
+  private suspend fun refreshStreamForPlayback(stream: AddonStream, detail: MediaDetail, episode: EpisodeItem?, remembered: Boolean = false): AddonStream {
+    if (remembered) MediaServerReference.providerOfSource(stream.addonId)?.let { providerId ->
+      return refreshMediaServerStream(stream, providerId, detail, episode)
+    }
     if (!needsFreshPlaybackUrl(stream)) return stream
     val addon = uiState.addons.firstOrNull { it.id == stream.addonId }
       ?: throw IllegalStateException("The addon needed to refresh this playback link is unavailable.")
@@ -7504,8 +7523,30 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     } ?: throw IllegalStateException("This addon could not refresh the selected playback link. Try another source.")
   }
 
-  private suspend fun resolvePlayback(stream: AddonStream, detail: MediaDetail, episode: EpisodeItem?): Result<ResolvedPlayback> = runCatching {
-    val playbackStream = refreshStreamForPlayback(stream, detail, episode)
+  /**
+   * A remembered media server source, asked of its server again before it plays.
+   *
+   * What is remembered is a link from an earlier viewing: its play session has ended, and the
+   * server's credentials were left out of it on purpose. A server that opens a session per
+   * viewing, as PlaybackInfo does, may never answer that link - so Continue Watching asks the
+   * server afresh, as pressing Play does, and plays the same copy in the same way when the server
+   * still offers it. The remembered link is the last resort, never the first.
+   */
+  private suspend fun refreshMediaServerStream(stream: AddonStream, providerId: String, detail: MediaDetail, episode: EpisodeItem?): AddonStream {
+    val provider = mediaServers.provider(providerId) ?: return stream
+    val ref = detailMediaServerRef?.takeIf { it.encode() == detail.id }
+    val fresh = if (ref != null) {
+      withContext(Dispatchers.IO) {
+        withTimeoutOrNull(20_000) { runCatching { provider.streams(ref, episode.asMediaServerEpisode(), mediaServerPlaybackContext()) }.getOrNull() }.orEmpty()
+      }
+    } else {
+      runCatching { mediaServerSourcesFor(provider, detail, episode) }.getOrDefault(emptyList())
+    }
+    return freshMediaServerStream(stream, fresh) ?: stream
+  }
+
+  private suspend fun resolvePlayback(stream: AddonStream, detail: MediaDetail, episode: EpisodeItem?, remembered: Boolean = false): Result<ResolvedPlayback> = runCatching {
+    val playbackStream = refreshStreamForPlayback(stream, detail, episode, remembered)
     val directUrl = playbackStream.url?.takeIf { it.isNotBlank() && !it.startsWith("magnet:", ignoreCase = true) }
     if (directUrl != null) {
       val shouldPrepareBridgeHls = detailLocalStreamId != null && playbackStream.requestHeaders.isNotEmpty()
@@ -7630,6 +7671,8 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     returnToEpisodeStreams: Boolean = false,
     /** True when this call is the app rolling on to the next ranked source, not a new request. */
     continuingAttempt: Boolean = false,
+    /** True when [stream] was remembered from an earlier viewing rather than just looked up. */
+    remembered: Boolean = false,
   ) {
     val detail = uiState.detail ?: return
     val selectedEpisode = episode ?: uiState.selectedEpisode
@@ -7674,7 +7717,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           playerReturnEpisodeId = if (returnToEpisodeStreams) selectedEpisode?.id else null,
         )
       },
-      block = { resolvePlayback(stream, detail, selectedEpisode) },
+      block = { resolvePlayback(stream, detail, selectedEpisode, remembered) },
       onSuccess = success@ { playback ->
         if (requestGeneration != playbackRequestGeneration || !attempt.owns(detail, selectedEpisode)) return@success
         // The loading scene stays in place here. Everything before this mark is source resolution;
@@ -10297,6 +10340,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
     preferences.newEpisodesLandscape?.let(appSettingsStore::saveNewEpisodesLandscape)
     preferences.plexContinueWatchingLocation?.let { appSettingsStore.saveMediaServerContinueLocation(net.streamdek.mobile.nativeapp.mediaserver.PLEX_PROVIDER_ID, MediaServerContinueLocation.fromKey(it)) }
     preferences.jellyfinContinueWatchingLocation?.let { appSettingsStore.saveMediaServerContinueLocation(net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID, MediaServerContinueLocation.fromKey(it)) }
+    preferences.embyContinueWatchingLocation?.let { appSettingsStore.saveMediaServerContinueLocation(net.streamdek.mobile.nativeapp.mediaserver.EMBY_PROVIDER_ID, MediaServerContinueLocation.fromKey(it)) }
 
     val mediaHubEnabled = preferences.mediaHubEnabled ?: uiState.mediaHubEnabled
     uiState = uiState.copy(
@@ -10341,6 +10385,7 @@ private class NativeAppViewModel(application: Application) : AndroidViewModel(ap
           MediaServerContinueLocations(
             plex = preferences.plexContinueWatchingLocation?.let(MediaServerContinueLocation::fromKey) ?: current.plex,
             jellyfin = preferences.jellyfinContinueWatchingLocation?.let(MediaServerContinueLocation::fromKey) ?: current.jellyfin,
+            emby = preferences.embyContinueWatchingLocation?.let(MediaServerContinueLocation::fromKey) ?: current.emby,
           )
         },
       ),
@@ -11527,6 +11572,7 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
       newEpisodesLandscape = uiState.newEpisodesLandscape,
       plexContinueWatchingLocation = uiState.appearanceSettings.mediaServerContinueLocations.plex.key,
       jellyfinContinueWatchingLocation = uiState.appearanceSettings.mediaServerContinueLocations.jellyfin.key,
+      embyContinueWatchingLocation = uiState.appearanceSettings.mediaServerContinueLocations.emby.key,
       animationSpeed = uiState.animationSpeed.key,
       appLanguage = uiState.appLanguage,
       visualEffects = uiState.visualEffectsMode.key,
@@ -11709,7 +11755,11 @@ private fun watchedOwnerKey(session: AuthSession?, activeProfileId: String?): St
   fun setMediaServerContinueLocation(provider: String, value: MediaServerContinueLocation) {
     appSettingsStore.saveMediaServerContinueLocation(provider, value)
     val current = uiState.appearanceSettings.mediaServerContinueLocations
-    val next = if (provider == net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID) current.copy(jellyfin = value) else current.copy(plex = value)
+    val next = when (provider) {
+      net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID -> current.copy(jellyfin = value)
+      net.streamdek.mobile.nativeapp.mediaserver.EMBY_PROVIDER_ID -> current.copy(emby = value)
+      else -> current.copy(plex = value)
+    }
     uiState = uiState.copy(appearanceSettings = uiState.appearanceSettings.copy(mediaServerContinueLocations = next))
     syncCloudPreferences()
   }
@@ -15228,11 +15278,11 @@ private fun MainScene(
   val mediaTabProviders = buildList {
     if (uiState.mediaServerState.navigationVisible) add(net.streamdek.mobile.nativeapp.mediaserver.PLEX_PROVIDER_ID)
     if (uiState.jellyfinServerState.navigationVisible) add(net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID)
+    if (uiState.embyServerState.navigationVisible) add(net.streamdek.mobile.nativeapp.mediaserver.EMBY_PROVIDER_ID)
   }
   val mediaTabLabelRes = when {
     mediaTabProviders.size > 1 -> R.string.media_server_my_media
-    mediaTabProviders.firstOrNull() == net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID -> R.string.media_server_jellyfin
-    else -> R.string.media_server_plex
+    else -> mediaServerBrand(mediaTabProviders.firstOrNull()).name
   }
   // The tab set follows the Plex connection: a tab that is no longer offered hands over to the one
   // that now holds its content, rather than leaving the viewer on a page the bar does not show.
@@ -15832,8 +15882,7 @@ private fun MainScene(
                       MainTab.Search to StreamDekNavIcons.SearchOutline,
                       MainTab.Plex to when {
                         mediaTabProviders.size > 1 -> JellyfinIcons.Stack
-                        mediaTabProviders.firstOrNull() == net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID -> JellyfinIcons.Mark
-                        else -> PlexIcons.Chevron
+                        else -> mediaServerBrand(mediaTabProviders.firstOrNull()).mark
                       },
                       MainTab.Library to StreamDekNavIcons.LibraryOutline,
                       MainTab.Settings to StreamDekNavIcons.SettingsOutline,
@@ -16083,6 +16132,7 @@ private fun MainScene(
               PlexTab(
                 plexState = uiState.mediaServerState,
                 jellyfinState = uiState.jellyfinServerState,
+                embyState = uiState.embyServerState,
                 initialProvider = viewModel.mediaServers.lastPageProvider,
                 serverContinueWatching = uiState.mediaServerContinueWatching,
                 pageRows = uiState.mediaServerPageRows,
@@ -16093,6 +16143,7 @@ private fun MainScene(
                 headerStyle = uiState.headerStyle,
                 plexAmbient = viewModel.plexAmbientEnabled,
                 jellyfinAmbient = viewModel.mediaServers.jellyfinAmbient.collectAsState().value,
+                embyAmbient = viewModel.mediaServers.embyAccounts.ambient.collectAsState().value,
                 onLoad = viewModel::loadMediaServerPage,
                 onProviderShown = { viewModel.mediaServers.lastPageProvider = it },
                 onOpen = openItem,
@@ -16107,7 +16158,13 @@ private fun MainScene(
                 onOpenSettings = { provider ->
                   previousTab = selectedTab
                   selectedTab = MainTab.Settings
-                  setSettingsRoute(if (provider == net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID) SettingsRoute.Jellyfin else SettingsRoute.MediaServers)
+                  setSettingsRoute(
+                    when (provider) {
+                      net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID -> SettingsRoute.Jellyfin
+                      net.streamdek.mobile.nativeapp.mediaserver.EMBY_PROVIDER_ID -> SettingsRoute.Emby
+                      else -> SettingsRoute.MediaServers
+                    },
+                  )
                 },
               )
             }
@@ -21154,12 +21211,13 @@ private fun SearchResultsSectionHeader(section: SearchResultSection, folds: Bool
   val title = when (section.kind) {
     SearchSourceKind.Plex -> section.name ?: stringResource(R.string.media_server_plex)
     SearchSourceKind.Jellyfin -> section.name ?: stringResource(R.string.media_server_jellyfin)
+    SearchSourceKind.Emby -> section.name ?: stringResource(R.string.media_server_emby)
     SearchSourceKind.Catalogue -> stringResource(R.string.search_section_catalogue)
     SearchSourceKind.Addon -> section.name ?: stringResource(R.string.stream_origin_addon)
     SearchSourceKind.Plugin -> section.name ?: stringResource(R.string.search_from_your_plugins)
   }
   val caption = when (section.kind) {
-    SearchSourceKind.Plex, SearchSourceKind.Jellyfin -> stringResource(R.string.search_section_your_library)
+    SearchSourceKind.Plex, SearchSourceKind.Jellyfin, SearchSourceKind.Emby -> stringResource(R.string.search_section_your_library)
     SearchSourceKind.Catalogue -> stringResource(R.string.search_section_catalogue_caption)
     SearchSourceKind.Addon -> stringResource(R.string.stream_origin_addon)
     SearchSourceKind.Plugin -> stringResource(R.string.search_section_plugin)
@@ -21167,6 +21225,7 @@ private fun SearchResultsSectionHeader(section: SearchResultSection, folds: Bool
   val mark = when (section.kind) {
     SearchSourceKind.Plex -> PlexIcons.Chevron
     SearchSourceKind.Jellyfin -> JellyfinIcons.Mark
+    SearchSourceKind.Emby -> EmbyIcons.Mark
     SearchSourceKind.Catalogue -> StreamDekNavIcons.SearchOutline
     SearchSourceKind.Addon -> StreamDekSettingsIcons.Addon
     SearchSourceKind.Plugin -> StreamDekSettingsIcons.Hub
@@ -22471,6 +22530,8 @@ private fun SettingsTab(
           SettingsDivider()
           JellyfinSettingsNavRow(uiState.jellyfinServerState, onClick = { onRouteChange(SettingsRoute.Jellyfin) })
           SettingsDivider()
+          EmbySettingsNavRow(uiState.embyServerState, onClick = { onRouteChange(SettingsRoute.Emby) })
+          SettingsDivider()
           SettingsNavRow("+", Color(0xFF22C55E), stringResource(R.string.settings_m_add_ons), stringResource(R.string.settings_summary_addons, uiState.addons.count { it.enabled }, uiState.addons.sumOf { supportedHomeCatalogCount(it) }), onClick = { onRouteChange(SettingsRoute.Addons) })
           SettingsDivider()
           SettingsNavRow("JS", Color(0xFFF59E0B), stringResource(R.string.settings_m_plugins), pluralStringResource(R.plurals.settings_summary_streaming_sources, enabledStreamingSourceCount(), enabledStreamingSourceCount()), onClick = { onRouteChange(SettingsRoute.Plugins) })
@@ -23216,6 +23277,15 @@ private fun SettingsTab(
             onMessage = playerSettingsViewModel::showMediaServerMessage,
             continueLocation = uiState.appearanceSettings.mediaServerContinueLocations.jellyfin,
             onContinueLocationChange = { playerSettingsViewModel.setMediaServerContinueLocation(net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID, it) },
+          )
+        }
+        SettingsRoute.Emby -> item {
+          EmbySettingsPage(
+            manager = playerSettingsViewModel.mediaServers,
+            signedIn = uiState.session != null,
+            onMessage = playerSettingsViewModel::showMediaServerMessage,
+            continueLocation = uiState.appearanceSettings.mediaServerContinueLocations.emby,
+            onContinueLocationChange = { playerSettingsViewModel.setMediaServerContinueLocation(net.streamdek.mobile.nativeapp.mediaserver.EMBY_PROVIDER_ID, it) },
           )
         }
         SettingsRoute.ContentServices -> item {

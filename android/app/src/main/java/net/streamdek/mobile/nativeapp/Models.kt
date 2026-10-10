@@ -369,6 +369,7 @@ data class CloudPlaybackPreferences(
   /** [MediaServerContinueLocation.key] for Plex and for Jellyfin; shared with the television. */
   val plexContinueWatchingLocation: String? = null,
   val jellyfinContinueWatchingLocation: String? = null,
+  val embyContinueWatchingLocation: String? = null,
   /**
    * Settings that describe this kind of device rather than the viewer, carried under
    * `platforms.mobile` (see [PLATFORM_PREFERENCES_KEY]): every phone on the account shares them, the

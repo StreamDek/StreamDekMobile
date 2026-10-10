@@ -529,7 +529,7 @@ internal fun MediaServerGroups(
     AlertDialog(
       onDismissRequest = { removingServer = null },
       title = { Text(stringResource(R.string.media_server_remove_title, server.name)) },
-      text = { Text(stringResource(if (provider == JELLYFIN_PROVIDER_ID) R.string.jellyfin_remove_server_body else R.string.media_server_remove_server_body)) },
+      text = { Text(stringResource(mediaServerBrand(provider).removeServerBody)) },
       confirmButton = {
         Button(onClick = {
           removingServer = null

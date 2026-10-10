@@ -3,10 +3,10 @@ package net.streamdek.mobile.nativeapp.mediaserver
 import net.streamdek.mobile.nativeapp.durableSettingsPreferences
 import android.content.Context
 import android.util.Log
-import net.streamdek.mobile.nativeapp.mediaserver.jellyfin.JellyfinAccount
 import net.streamdek.mobile.nativeapp.mediaserver.jellyfin.JellyfinClient
 import net.streamdek.mobile.nativeapp.mediaserver.jellyfin.JellyfinClientIdentity
 import net.streamdek.mobile.nativeapp.mediaserver.jellyfin.JellyfinProvider
+import net.streamdek.mobile.nativeapp.mediaserver.jellyfin.MediaBrowserFlavor
 import com.google.gson.Gson
 import net.streamdek.mobile.nativeapp.mediaserver.plex.PlexClient
 import net.streamdek.mobile.nativeapp.mediaserver.plex.PlexClientIdentity
@@ -102,42 +102,64 @@ class MediaServerManager internal constructor(
 
     private val displayPrefs = context?.durableSettingsPreferences(DISPLAY_PREFS)
 
-    private val jellyfinClient = JellyfinClient({
+    private fun mediaBrowserIdentity(): JellyfinClientIdentity {
         val plexIdentity = identity()
-        JellyfinClientIdentity(
+        return JellyfinClientIdentity(
             client = PlexProvider.PLEX_PRODUCT,
             deviceName = plexIdentity.deviceName,
             deviceId = plexIdentity.clientIdentifier,
             version = plexIdentity.version,
         )
-    })
-
-    internal val jellyfin: JellyfinProvider = JellyfinProvider(
-        client = jellyfinClient,
-        labels = labels,
-        onStateChanged = { publishJellyfin() },
-    ).also { provider ->
-        provider.onAddressChosen = { serverId, url -> jellyfinPreferred[serverId] = url }
     }
 
-    /** Jellyfin's standing, in the same shape as Plex's [state], for its settings page and destination. */
-    private val _jellyfinState = MutableStateFlow(MediaServerUiState(provider = JELLYFIN_PROVIDER_ID))
-    val jellyfinState: StateFlow<MediaServerUiState> = _jellyfinState.asStateFlow()
-    private val jellyfinPreferred = ConcurrentHashMap<String, String>()
+    /** What the Jellyfin and Emby sign-ins borrow from here; see [MediaBrowserAccounts.Host]. */
+    private val accountsHost = object : MediaBrowserAccounts.Host {
+        override val scope: CoroutineScope get() = this@MediaServerManager.scope
+        override val vault: MediaServerVault? get() = this@MediaServerManager.vault
+        override val prefs get() = displayPrefs
+        override fun scopeKey(): String? = this@MediaServerManager.scopeKey()
+        override fun activeScope(): String? = this@MediaServerManager.activeScope
+        override fun serverOrder(): List<String> = _serverOrder.value
+        override fun bump() = this@MediaServerManager.bump()
+        override suspend fun <T> call(type: Class<T>, method: String, path: String, body: Map<String, Any?>?): T? =
+            this@MediaServerManager.call(type, method, path, body)
+    }
 
-    private val _jellyfinAmbient = MutableStateFlow(displayPrefs?.getBoolean(KEY_JELLYFIN_AMBIENT, true) ?: true)
+    private fun mediaBrowserAccounts(flavor: MediaBrowserFlavor, labels: () -> MediaServerLabels): MediaBrowserAccounts {
+        val client = JellyfinClient(::mediaBrowserIdentity, flavor = flavor)
+        var accounts: MediaBrowserAccounts? = null
+        val provider = JellyfinProvider(client = client, labels = labels, onStateChanged = { accounts?.publish() })
+        return MediaBrowserAccounts(flavor, client, provider, accountsHost).also { accounts = it }
+    }
+
+    /** Jellyfin's sign-ins, on this device and at StreamDek. */
+    val jellyfinAccounts: MediaBrowserAccounts = mediaBrowserAccounts(MediaBrowserFlavor.Jellyfin, labels)
+
+    /** Emby's: the same code as Jellyfin's, in Emby's own terms. */
+    val embyAccounts: MediaBrowserAccounts = mediaBrowserAccounts(MediaBrowserFlavor.Emby, labels)
+
+    /** Both, for what treats them alike. */
+    val mediaBrowserAccounts: List<MediaBrowserAccounts> get() = listOf(jellyfinAccounts, embyAccounts)
+
+    /** The sign-ins for [provider], when it is Jellyfin or Emby. */
+    fun accountsFor(provider: String): MediaBrowserAccounts? = mediaBrowserAccounts.firstOrNull { it.flavor.providerId == provider }
+
+    internal val jellyfin: JellyfinProvider get() = jellyfinAccounts.provider
+    internal val emby: JellyfinProvider get() = embyAccounts.provider
+
+    /** Jellyfin's standing, in the same shape as Plex's [state], for its settings page and destination. */
+    val jellyfinState: StateFlow<MediaServerUiState> get() = jellyfinAccounts.state
+    val embyState: StateFlow<MediaServerUiState> get() = embyAccounts.state
+
     /** Whether the Jellyfin page and its lists wear the Jellyfin colour wash. On until switched off. */
-    val jellyfinAmbient: StateFlow<Boolean> = _jellyfinAmbient.asStateFlow()
+    val jellyfinAmbient: StateFlow<Boolean> get() = jellyfinAccounts.ambient
 
     /** Which server the media page showed last, so it opens there again when both are connected. */
     var lastPageProvider: String
         get() = displayPrefs?.getString(KEY_LAST_PAGE_PROVIDER, null) ?: PLEX_PROVIDER_ID
         set(value) { displayPrefs?.edit()?.putString(KEY_LAST_PAGE_PROVIDER, value)?.apply() }
 
-    fun setJellyfinAmbient(enabled: Boolean) {
-        _jellyfinAmbient.value = enabled
-        displayPrefs?.edit()?.putBoolean(KEY_JELLYFIN_AMBIENT, enabled)?.apply()
-    }
+    fun setJellyfinAmbient(enabled: Boolean) = jellyfinAccounts.setAmbient(enabled)
 
     // ── The server list in Settings, on this device ──────────────────────────────────────────────
 
@@ -217,8 +239,8 @@ class MediaServerManager internal constructor(
         if (moved == _serverOrder.value) return
         _serverOrder.value = moved
         saveListTidy()
-        // The server at the top names the Jellyfin account; see leadingJellyfinUser.
-        if (provider == JELLYFIN_PROVIDER_ID) publishJellyfin()
+        // The server at the top names the Jellyfin or Emby account; see MediaBrowserAccounts.leadingUser.
+        accountsFor(provider)?.publish()
     }
 
     fun setServerCollapsed(provider: String, serverId: String, collapsed: Boolean) {
@@ -232,7 +254,7 @@ class MediaServerManager internal constructor(
      * listing it. Every other library and server is left exactly as it was.
      */
     suspend fun removeLibrary(provider: String, serverId: String, libraryKey: String): Boolean {
-        val off = if (provider == JELLYFIN_PROVIDER_ID) setJellyfinLibraryEnabled(serverId, libraryKey, false) else setLibraryEnabled(serverId, libraryKey, false)
+        val off = accountsFor(provider)?.setLibraryEnabled(serverId, libraryKey, false) ?: setLibraryEnabled(serverId, libraryKey, false)
         if (!off) return false
         _removedEntries.value = _removedEntries.value + mediaServerEntryKey(provider, serverId, libraryKey)
         saveListTidy()
@@ -241,7 +263,7 @@ class MediaServerManager internal constructor(
 
     /** Brings a removed library back, switched on. */
     suspend fun restoreLibrary(provider: String, serverId: String, libraryKey: String): Boolean {
-        val on = if (provider == JELLYFIN_PROVIDER_ID) setJellyfinLibraryEnabled(serverId, libraryKey, true) else setLibraryEnabled(serverId, libraryKey, true)
+        val on = accountsFor(provider)?.setLibraryEnabled(serverId, libraryKey, true) ?: setLibraryEnabled(serverId, libraryKey, true)
         if (!on) return false
         _removedEntries.value = _removedEntries.value - mediaServerEntryKey(provider, serverId, libraryKey)
         saveListTidy()
@@ -257,8 +279,9 @@ class MediaServerManager internal constructor(
      */
     suspend fun removeServer(provider: String, serverId: String): Boolean {
         val entry = mediaServerEntryKey(provider, serverId)
-        if (provider == JELLYFIN_PROVIDER_ID) {
-            if (!disconnectJellyfin(serverId)) return false
+        val accounts = accountsFor(provider)
+        if (accounts != null) {
+            if (!accounts.disconnect(serverId)) return false
             // Nothing of a signed-out server is kept: not what was removed from it, nor how it was folded.
             _removedEntries.value = _removedEntries.value.filterNot { it == entry || it.startsWith("$entry/") }.toSet()
             _collapsedServers.value = _collapsedServers.value - entry
@@ -279,14 +302,16 @@ class MediaServerManager internal constructor(
      * that had been removed before the server was comes back switched off, as removing left it.
      */
     suspend fun restoreServer(provider: String, serverId: String): Boolean {
-        if (provider == JELLYFIN_PROVIDER_ID) return false
+        if (accountsFor(provider) != null) return false
         if (!setServerEnabled(serverId, true)) return false
         _removedEntries.value = _removedEntries.value - mediaServerEntryKey(provider, serverId)
         saveListTidy()
         return true
     }
 
-    private val providers: Map<String, MediaServerProvider> = mapOf(PLEX_PROVIDER_ID to plex, JELLYFIN_PROVIDER_ID to jellyfin)
+    private val providers: Map<String, MediaServerProvider> by lazy {
+        mapOf(PLEX_PROVIDER_ID to plex, JELLYFIN_PROVIDER_ID to jellyfin, EMBY_PROVIDER_ID to emby)
+    }
 
     fun provider(id: String): MediaServerProvider? = providers[id]
 
@@ -295,17 +320,19 @@ class MediaServerManager internal constructor(
     /** Every provider with something linked, for merged reads (search, continue watching, Home). */
     fun activeProviders(): List<MediaServerProvider> = buildList {
         if (_state.value.navigationVisible || _state.value.linked) add(plex)
-        if (_jellyfinState.value.linked) add(jellyfin)
+        if (jellyfinState.value.linked) add(jellyfin)
+        if (embyState.value.linked) add(emby)
     }
 
     /** The providers whose own page the navigation offers, in the order the page's switch lists them. */
     fun navigableProviders(): List<String> = buildList {
         if (_state.value.navigationVisible) add(PLEX_PROVIDER_ID)
-        if (_jellyfinState.value.navigationVisible) add(JELLYFIN_PROVIDER_ID)
+        if (jellyfinState.value.navigationVisible) add(JELLYFIN_PROVIDER_ID)
+        if (embyState.value.navigationVisible) add(EMBY_PROVIDER_ID)
     }
 
     /** The state of one provider, by id. */
-    fun stateOf(provider: String): StateFlow<MediaServerUiState> = if (provider == JELLYFIN_PROVIDER_ID) jellyfinState else state
+    fun stateOf(provider: String): StateFlow<MediaServerUiState> = accountsFor(provider)?.state ?: state
 
     // ── Restore and refresh ─────────────────────────────────────────────────────────────────────
 
@@ -320,21 +347,18 @@ class MediaServerManager internal constructor(
         loadListTidy(key)
         refreshJob?.cancel()
         plex.reset()
-        jellyfin.reset()
         MediaServerAuth.clear()
         preferredUris.clear()
-        jellyfinPreferred.clear()
         forgetProfileSyncState()
+        mediaBrowserAccounts.forEach { it.onSessionChanged(key) }
         if (key == null) {
             _state.value = MediaServerUiState(available = false)
-            _jellyfinState.value = MediaServerUiState(provider = JELLYFIN_PROVIDER_ID, available = false)
             bump()
             return
         }
         restore(key)
-        restoreJellyfin(key)
         refreshJob = scope.launch {
-            launch { refreshJellyfin(force = false) }
+            mediaBrowserAccounts.forEach { accounts -> launch { accounts.refresh(force = false) } }
             refresh(force = false)
         }
     }
@@ -427,14 +451,14 @@ class MediaServerManager internal constructor(
 
     fun refreshInBackground(force: Boolean = false) {
         scope.launch { refresh(force) }
-        scope.launch { refreshJellyfin(force) }
+        mediaBrowserAccounts.forEach { accounts -> scope.launch { accounts.refresh(force) } }
     }
 
     private fun unlinkLocally(key: String) {
         plex.reset()
         MediaServerAuth.clear()
-        // Plex going does not sign the device out of Jellyfin.
-        jellyfin.registerAuth()
+        // Plex going does not sign the device out of Jellyfin or Emby.
+        mediaBrowserAccounts.forEach { it.provider.registerAuth() }
         vault?.remove(key)
         _state.value = MediaServerUiState(available = true)
         bump()
@@ -611,547 +635,49 @@ class MediaServerManager internal constructor(
         // A sign-in kept with the profile is shared by every device on it, so signing out of StreamDek
         // here only forgets it here. One that never reached StreamDek belongs to this device alone and
         // is ended on its server.
-        val deviceOnly = jellyfin.accounts().filterNot { it.cloudSynced }
-        if (deviceOnly.isNotEmpty()) scope.launch { deviceOnly.forEach { account -> logoutQuietly(account) } }
+        mediaBrowserAccounts.forEach { it.clearDevice() }
         plex.reset()
-        jellyfin.reset()
         MediaServerAuth.clear()
         vault?.clear()
         plexServers.clear()
         activeScope = null
         _state.value = MediaServerUiState()
-        _jellyfinState.value = MediaServerUiState(provider = JELLYFIN_PROVIDER_ID)
         bump()
     }
 
     // ── Jellyfin ────────────────────────────────────────────────────────────────────────────────
     //
-    // Signed in from any device or the web portal, and kept with the profile at StreamDek, so that
-    // signing in once is signing in on every device the profile is used on. StreamDek holds each
-    // server's addresses, user, library choices and access token (sealed, and handed only to the
-    // profile's own signed-in devices); this device keeps its copy in the same encrypted vault as
-    // Plex's, under its own key per profile, and talks to the servers directly.
-    //
-    // The profile's copy is the one followed. A change made here is saved there against the
-    // revision this device last read, and a device offline at the time sends it on the next sync -
-    // unless the same server was changed elsewhere since, which then wins. A sign-in is always the
-    // viewer's latest word and is never refused. See syncJellyfinWithCloud.
+    // Kept in MediaBrowserAccounts, which Emby shares; these are the names callers already use.
 
-    private fun jellyfinVaultKey(key: String) = "jellyfin:$key"
+    suspend fun refreshJellyfin(force: Boolean) = jellyfinAccounts.refresh(force)
 
-    private fun restoreJellyfin(key: String) {
-        val snapshot = vault?.load(jellyfinVaultKey(key))
-        val accounts = snapshot?.servers.orEmpty().mapNotNull { stored ->
-            val id = stored.id ?: return@mapNotNull null
-            val token = stored.accessToken ?: return@mapNotNull null
-            val user = stored.userId ?: return@mapNotNull null
-            stored.preferredUri?.let { jellyfinPreferred[id] = it }
-            JellyfinAccount(
-                serverId = id,
-                name = stored.name ?: "Jellyfin",
-                addresses = stored.connections.orEmpty().mapNotNull { it.uri },
-                userId = user,
-                userName = stored.userName,
-                token = token,
-                enabled = stored.enabled != false,
-                libraryChoices = stored.libraryChoices.orEmpty(),
-                cloudSynced = stored.cloudSynced == true,
-                signedInAtMs = stored.signedInAtMs ?: 0L,
-                choicesChangedAtMs = stored.choicesChangedAtMs ?: 0L,
-                fromBackup = stored.fromBackup == true,
-            )
-        }
-        loadRestoredJellyfin(key)
-        if (accounts.isEmpty()) {
-            _jellyfinState.value = MediaServerUiState(provider = JELLYFIN_PROVIDER_ID, available = true)
-            return
-        }
-        jellyfin.setAccounts(accounts)
-        snapshot?.servers.orEmpty().forEach { stored ->
-            val id = stored.id ?: return@forEach
-            jellyfin.seedLibraries(id, stored.libraries.orEmpty().mapNotNull { library ->
-                val libraryKey = library.key ?: return@mapNotNull null
-                val kind = runCatching { MediaServerLibraryKind.valueOf(library.kind ?: "") }.getOrNull() ?: return@mapNotNull null
-                MediaServerLibrary(id, libraryKey, library.title ?: libraryKey, kind, stored.libraryChoices?.get(libraryKey) ?: (kind != MediaServerLibraryKind.Other), library.itemCount)
-            })
-        }
-        _jellyfinState.value = MediaServerUiState(provider = JELLYFIN_PROVIDER_ID, available = true, linked = true, accountName = leadingJellyfinUser(accounts))
-        publishJellyfin()
-        bump()
-    }
+    suspend fun findJellyfinServer(input: String): JellyfinServerCandidate? = jellyfinAccounts.findServer(input)
 
-    /**
-     * Brings this device in step with the profile's Jellyfin setup at StreamDek, then reaches every
-     * server and reads its libraries again. A device with nothing signed in still asks, which is how
-     * a television picks up a server signed in to from the phone or the web portal.
-     */
-    suspend fun refreshJellyfin(force: Boolean) {
-        val key = scopeKey() ?: return
-        runCatching { syncJellyfinWithCloud(key) }
-            .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it; Log.w("StreamDekMediaServers", "jellyfin sync failed: ${it.javaClass.simpleName}") }
-        if (jellyfin.accounts().isEmpty()) {
-            publishJellyfin()
-            return
-        }
-        _jellyfinState.update { it.copy(refreshing = true) }
-        try {
-            jellyfin.connect(force)
-            jellyfin.accounts().filter { it.enabled }.forEach { account -> runCatching { jellyfin.libraries(account.serverId, force) } }
-            if (key == activeScope) persistJellyfin(key)
-            reportJellyfinCatalogs()
-            bump()
-        } catch (error: Exception) {
-            if (error is kotlinx.coroutines.CancellationException) throw error
-            Log.w("StreamDekMediaServers", "jellyfin refresh failed: ${error.javaClass.simpleName}")
-        } finally {
-            _jellyfinState.update { it.copy(refreshing = false) }
-            publishJellyfin()
-        }
-    }
+    suspend fun discoverJellyfinServers(): List<JellyfinServerCandidate> = jellyfinAccounts.discoverServers()
 
-    /**
-     * The name shown as "Connected as" for Jellyfin: the account on the server at the top of the
-     * viewer's list. With several servers each has its own sign-in, and the one the viewer put
-     * first is the one they think of as theirs. Without a chosen order, the list is alphabetical,
-     * so this is the first server there - the same one Settings shows at the top.
-     */
-    private fun leadingJellyfinUser(accounts: List<JellyfinAccount>): String? {
-        val rank = _serverOrder.value.withIndex().associate { it.value to it.index }
-        return accounts.minWithOrNull(
-            compareBy<JellyfinAccount>({ rank[mediaServerEntryKey(JELLYFIN_PROVIDER_ID, it.serverId)] ?: Int.MAX_VALUE }, { it.name.lowercase() }),
-        )?.userName
-    }
+    suspend fun startJellyfinQuickConnect(server: JellyfinServerCandidate): JellyfinQuickConnectCode? = jellyfinAccounts.startQuickConnect(server)
 
-    private fun publishJellyfin() {
-        reportRefusedJellyfin()
-        val accounts = jellyfin.accounts()
-        val views = accounts.map { account ->
-            MediaServerView(
-                id = account.serverId,
-                name = account.name,
-                owned = true,
-                ownerName = account.userName,
-                enabled = account.enabled,
-                reachability = jellyfin.reachability(account.serverId),
-                libraries = jellyfin.cachedLibraries(account.serverId),
-                problem = jellyfin.problem(account.serverId),
-            )
-        }.sortedBy { it.name.lowercase() }
-        _jellyfinState.update {
-            it.copy(
-                available = scopeKey() != null,
-                linked = accounts.isNotEmpty(),
-                needsAttention = views.isNotEmpty() && views.all { view -> (view.reachability as? MediaServerReachability.Offline)?.reason == OfflineReason.Unauthorized },
-                accountName = leadingJellyfinUser(accounts),
-                servers = views,
-            )
-        }
-    }
+    suspend fun pollJellyfinQuickConnect(code: JellyfinQuickConnectCode): MediaServerLinkStatus = jellyfinAccounts.pollQuickConnect(code)
 
-    private fun persistJellyfin(key: String) {
-        val store = vault ?: return
-        val accounts = jellyfin.accounts()
-        if (accounts.isEmpty()) {
-            store.remove(jellyfinVaultKey(key))
-            return
-        }
-        store.save(
-            jellyfinVaultKey(key),
-            MediaServerVault.Snapshot(
-                linked = true,
-                servers = accounts.map { account ->
-                    MediaServerVault.StoredServer(
-                        id = account.serverId,
-                        name = account.name,
-                        owned = true,
-                        enabled = account.enabled,
-                        accessToken = account.token,
-                        connections = account.addresses.map { MediaServerVault.StoredConnection(it, JellyfinClient.isLocalHost(it.substringAfter("://").substringBefore('/').substringBefore(':')), false) },
-                        libraryChoices = account.libraryChoices,
-                        libraries = jellyfin.cachedLibraries(account.serverId).map { MediaServerVault.StoredLibrary(it.key, it.title, it.kind.name, it.itemCount) },
-                        preferredUri = jellyfinPreferred[account.serverId],
-                        userId = account.userId,
-                        userName = account.userName,
-                        cloudSynced = account.cloudSynced,
-                        signedInAtMs = account.signedInAtMs,
-                        choicesChangedAtMs = account.choicesChangedAtMs,
-                        fromBackup = account.fromBackup,
-                    )
-                },
-                savedAtMs = System.currentTimeMillis(),
-            ),
-        )
-    }
+    suspend fun signInToJellyfin(server: JellyfinServerCandidate, username: String, password: String): MediaServerLinkStatus =
+        jellyfinAccounts.signIn(server, username, password)
 
-    /** Looks for a Jellyfin server at what the viewer typed. Null when nothing there answers as Jellyfin. */
-    suspend fun findJellyfinServer(input: String): JellyfinServerCandidate? {
-        for (url in JellyfinClient.candidates(input)) {
-            val info = jellyfinClient.publicInfo(url) ?: continue
-            return JellyfinServerCandidate(
-                id = info.id ?: continue,
-                name = info.serverName?.takeIf { it.isNotBlank() } ?: "Jellyfin",
-                url = url,
-                localAddress = info.localAddress?.trimEnd('/')?.takeIf { it.isNotBlank() && !it.equals(url, true) },
-                version = info.version,
-                quickConnect = jellyfinClient.quickConnectEnabled(url),
-            )
-        }
-        return null
-    }
+    fun setJellyfinServerEnabled(serverId: String, enabled: Boolean) = jellyfinAccounts.setServerEnabled(serverId, enabled)
 
-    /** Jellyfin servers that answered the local-network discovery broadcast, checked before being offered. */
-    suspend fun discoverJellyfinServers(): List<JellyfinServerCandidate> =
-        jellyfinClient.discover().mapNotNull { reply ->
-            val address = reply.address?.trimEnd('/') ?: return@mapNotNull null
-            findJellyfinServer(address)
-        }.distinctBy { it.id }
+    fun setJellyfinLibraryEnabled(serverId: String, libraryKey: String, enabled: Boolean) = jellyfinAccounts.setLibraryEnabled(serverId, libraryKey, enabled)
 
-    /** Starts Quick Connect: a code the viewer approves from a Jellyfin app where they are already signed in. */
-    suspend fun startJellyfinQuickConnect(server: JellyfinServerCandidate): JellyfinQuickConnectCode? {
-        val started = jellyfinClient.quickConnectInitiate(server.url) ?: return null
-        val code = started.code ?: return null
-        val secret = started.secret ?: return null
-        return JellyfinQuickConnectCode(server, code, secret, System.currentTimeMillis() + 10 * 60_000L)
-    }
+    suspend fun disconnectJellyfin(serverId: String? = null): Boolean = jellyfinAccounts.disconnect(serverId)
 
-    /** One check of a Quick Connect code. On approval the server is added before this returns. */
-    suspend fun pollJellyfinQuickConnect(code: JellyfinQuickConnectCode): MediaServerLinkStatus {
-        if (System.currentTimeMillis() > code.expiresAtMs) return MediaServerLinkStatus.Expired
-        val state = jellyfinClient.quickConnectState(code.server.url, code.secret) ?: return MediaServerLinkStatus.Pending
-        if (state.authenticated != true) return MediaServerLinkStatus.Pending
-        val result = jellyfinClient.authenticateWithQuickConnect(code.server.url, code.secret) ?: return MediaServerLinkStatus.Failed
-        return addJellyfinAccount(code.server, result)
-    }
+    val jellyfinRestored: StateFlow<List<JellyfinBackupServer>> get() = jellyfinAccounts.restored
 
-    /**
-     * Signs in with a Jellyfin username and password. The password is sent once, to the server
-     * itself, and is not kept: only the token the server issues is stored.
-     */
-    suspend fun signInToJellyfin(server: JellyfinServerCandidate, username: String, password: String): MediaServerLinkStatus {
-        val result = try {
-            jellyfinClient.authenticateByName(server.url, username.trim(), password)
-        } catch (_: JellyfinClient.UnauthorizedException) {
-            null
-        } ?: return MediaServerLinkStatus.Failed
-        return addJellyfinAccount(server, result)
-    }
+    fun dismissRestoredJellyfin(serverId: String) = jellyfinAccounts.dismissRestored(serverId)
 
-    private suspend fun addJellyfinAccount(server: JellyfinServerCandidate, result: net.streamdek.mobile.nativeapp.mediaserver.jellyfin.JellyfinAuthResult): MediaServerLinkStatus {
-        val key = scopeKey() ?: return MediaServerLinkStatus.Failed
-        val token = result.accessToken ?: return MediaServerLinkStatus.Failed
-        val userId = result.user?.id ?: return MediaServerLinkStatus.Failed
-        val serverId = result.serverId ?: server.id
-        val account = JellyfinAccount(
-            serverId = serverId,
-            name = server.name,
-            addresses = listOfNotNull(server.url, server.localAddress).distinct(),
-            userId = userId,
-            userName = result.user.name,
-            token = token,
-            signedInAtMs = System.currentTimeMillis(),
-        )
-        // Signing in again to a server already here replaces that sign-in and keeps its choices.
-        val previous = jellyfin.accounts().firstOrNull { it.serverId == serverId }
-        jellyfin.setAccounts(
-            jellyfin.accounts().filterNot { it.serverId == serverId } +
-                account.copy(
-                    addresses = (account.addresses + previous?.addresses.orEmpty()).distinct(),
-                    enabled = previous?.enabled ?: true,
-                    libraryChoices = previous?.libraryChoices.orEmpty(),
-                ),
-        )
-        jellyfin.connect(force = true)
-        runCatching { jellyfin.libraries(serverId, force = true) }
-        persistJellyfin(key)
-        publishJellyfin()
-        bump()
-        // Kept with the profile, so every other device - and the web portal - has it too.
-        pushJellyfinSignIn(key, serverId)
-        return MediaServerLinkStatus.Linked(result.user.name)
-    }
-
-    fun setJellyfinServerEnabled(serverId: String, enabled: Boolean) = changeJellyfin { accounts ->
-        accounts.map { if (it.serverId == serverId) it.copy(enabled = enabled) else it }
-    }
-
-    fun setJellyfinLibraryEnabled(serverId: String, libraryKey: String, enabled: Boolean) = changeJellyfin { accounts ->
-        accounts.map { account ->
-            if (account.serverId != serverId) account
-            else account.copy(libraryChoices = jellyfin.cachedLibraries(serverId).associate { it.key to it.enabled } + account.libraryChoices + (libraryKey to enabled))
-        }
-    }
-
-    private fun changeJellyfin(change: (List<JellyfinAccount>) -> List<JellyfinAccount>): Boolean {
-        val key = scopeKey() ?: return false
-        val now = System.currentTimeMillis()
-        val before = jellyfin.accounts().associateBy { it.serverId }
-        val after = change(before.values.toList()).map { account ->
-            val old = before[account.serverId]
-            if (old != null && (old.enabled != account.enabled || old.libraryChoices != account.libraryChoices)) account.copy(choicesChangedAtMs = now) else account
-        }
-        jellyfin.setAccounts(after)
-        persistJellyfin(key)
-        publishJellyfin()
-        bump()
-        val changed = after.filter { it.choicesChangedAtMs == now }.map { it.serverId }
-        if (changed.isNotEmpty()) scope.launch { changed.forEach { pushJellyfinChoices(key, it) } }
-        return true
-    }
-
-    private suspend fun logoutQuietly(account: JellyfinAccount) {
-        val url = jellyfinPreferred[account.serverId] ?: account.addresses.firstOrNull() ?: return
-        runCatching { jellyfinClient.logout(net.streamdek.mobile.nativeapp.mediaserver.jellyfin.JellyfinEndpoint(url, account.token)) }
-    }
-
-    /**
-     * Signs out of one Jellyfin server - or all of them - for this profile, on every device: the
-     * session is ended on the server and the server is removed from the profile at StreamDek. If
-     * StreamDek cannot be reached, the removal is remembered and sent on the next sync, so the
-     * server does not come back from the profile's copy.
-     */
-    suspend fun disconnectJellyfin(serverId: String? = null): Boolean {
-        val key = scopeKey() ?: return false
-        val leaving = jellyfin.accounts().filter { serverId == null || it.serverId == serverId }
-        leaving.forEach { account ->
-            logoutQuietly(account)
-            account.addresses.forEach(MediaServerAuth::forget)
-            jellyfinPreferred.remove(account.serverId)
-        }
-        jellyfin.setAccounts(jellyfin.accounts().filterNot { account -> leaving.any { it.serverId == account.serverId } })
-        persistJellyfin(key)
-        publishJellyfin()
-        bump()
-        // Recorded before asking, so a sync running meanwhile cannot bring the server back.
-        leaving.forEach { account -> rememberPendingRemoval(key, account.serverId) }
-        jellyfinSync.withLock {
-            leaving.forEach { account ->
-                if (cloudDelete<JellyfinCloudStatusDto>("/media-servers/jellyfin/servers/${account.serverId}") != null) clearPendingRemoval(key, account.serverId)
-            }
-        }
-        return true
-    }
-
-    // ── Jellyfin at StreamDek ────────────────────────────────────────────────────────────────────
-
-    /** The profile's Jellyfin setup revision at StreamDek, as last read; choices are saved against it. */
-    @Volatile private var jellyfinRevision: Int? = null
-    /**
-     * One exchange with StreamDek about Jellyfin at a time: two quick toggles, or a toggle during a
-     * sync, would otherwise race - the first to finish clearing the second's "not sent yet" mark.
-     */
-    private val jellyfinSync = Mutex()
-
-    /** What was read about one profile, forgotten when another is chosen so it is never judged by it. */
+    /** What was read about one profile's Plex setup, forgotten when another is chosen so it is never judged by it. */
     private fun forgetProfileSyncState() {
         plexRevision = null
+        plexChangedAt = 0L
         reportedPlexCatalog.clear()
-        jellyfinRevision = null
-        reportedRefused.clear()
-        reportedJellyfinCatalog.clear()
-        forgetProfileRestoreState()
     }
-    /** Servers found refusing their token and already reported, so the report is sent once. */
-    private val reportedRefused = ConcurrentHashMap.newKeySet<String>()
-    private val reportedJellyfinCatalog = ConcurrentHashMap<String, String>()
-
-    private fun pendingRemovalsKey(key: String) = "jellyfinPendingRemovals:$key"
-
-    private fun rememberPendingRemoval(key: String, serverId: String) {
-        val prefs = displayPrefs ?: return
-        val current = prefs.getStringSet(pendingRemovalsKey(key), emptySet()).orEmpty()
-        prefs.edit().putStringSet(pendingRemovalsKey(key), current + serverId).apply()
-    }
-
-    private fun pendingRemovals(key: String): Set<String> =
-        displayPrefs?.getStringSet(pendingRemovalsKey(key), emptySet()).orEmpty()
-
-    private fun clearPendingRemoval(key: String, serverId: String) {
-        val prefs = displayPrefs ?: return
-        prefs.edit().putStringSet(pendingRemovalsKey(key), pendingRemovals(key) - serverId).apply()
-    }
-
-    private fun JellyfinAccount.signInBody(): Map<String, Any?> = mapOf(
-        "name" to name,
-        "addresses" to addresses,
-        "userId" to userId,
-        "userName" to userName,
-        "enabled" to enabled,
-        "libraries" to libraryChoices,
-        "catalog" to jellyfin.cachedLibraries(serverId).map { it.toCatalogEntry() },
-        // Last, so a truncated body in any log never reaches it.
-        "accessToken" to token,
-    )
-
-    /** Sends a sign-in made on this device to the profile's copy. Left to the next sync if StreamDek is away. */
-    private suspend fun pushJellyfinSignIn(key: String, serverId: String) = jellyfinSync.withLock { pushJellyfinSignInLocked(key, serverId) }
-
-    private suspend fun pushJellyfinSignInLocked(key: String, serverId: String) {
-        val account = jellyfin.accounts().firstOrNull { it.serverId == serverId } ?: return
-        val sentChoicesAt = account.choicesChangedAtMs
-        val saved = cloudPut<JellyfinCloudStatusDto>("/media-servers/jellyfin/servers/$serverId", account.signInBody()) ?: return
-        jellyfinRevision = saved.revision ?: jellyfinRevision
-        // Choices changed again while this was on its way stay marked, and are sent next.
-        markJellyfin(key, serverId) { it.copy(cloudSynced = true, choicesChangedAtMs = if (it.choicesChangedAtMs == sentChoicesAt) 0L else it.choicesChangedAtMs, fromBackup = false) }
-        clearPendingRemoval(key, serverId)
-        forgetRestoredJellyfin(key, serverId)
-    }
-
-    /**
-     * Sends a change of choices made on this device, against the revision last read. Refused when
-     * the profile moved on since; then the current setup is read (which re-applies this change on
-     * top, unless the server was changed elsewhere afterwards) and sent once more.
-     */
-    private suspend fun pushJellyfinChoices(key: String, serverId: String) = jellyfinSync.withLock { pushJellyfinChoicesLocked(key, serverId) }
-
-    private suspend fun pushJellyfinChoicesLocked(key: String, serverId: String) {
-        repeat(2) { attempt ->
-            val account = jellyfin.accounts().firstOrNull { it.serverId == serverId } ?: return
-            val sentAt = account.choicesChangedAtMs
-            if (sentAt == 0L) return
-            if (!account.cloudSynced) return pushJellyfinSignInLocked(key, serverId)
-            val body = mapOf(
-                "enabled" to account.enabled,
-                "libraries" to (jellyfin.cachedLibraries(serverId).associate { it.key to it.enabled } + account.libraryChoices),
-            ) + (jellyfinRevision?.let { mapOf("baseRevision" to it) } ?: emptyMap())
-            val saved = cloudPut<JellyfinCloudStatusDto>("/media-servers/jellyfin/servers/$serverId", body)
-            if (saved != null) {
-                jellyfinRevision = saved.revision ?: jellyfinRevision
-                markJellyfin(key, serverId) { if (it.choicesChangedAtMs == sentAt) it.copy(choicesChangedAtMs = 0L) else it }
-                return
-            }
-            if (attempt == 0) runCatching { syncJellyfinWithCloudLocked(key, pushPending = false) }
-        }
-    }
-
-    private fun markJellyfin(key: String, serverId: String, change: (JellyfinAccount) -> JellyfinAccount) {
-        if (key != scopeKey()) return
-        jellyfin.setAccounts(jellyfin.accounts().map { if (it.serverId == serverId) change(it) else it })
-        persistJellyfin(key)
-    }
-
-    /**
-     * Makes this device's Jellyfin sign-ins match the profile's copy at StreamDek.
-     *
-     *  - A server in the profile's copy is used as it is there: its token, user, addresses (with any
-     *    this device also knows) and choices - except choices changed here and not yet sent, which
-     *    are kept and sent, unless the server was changed elsewhere after them.
-     *  - A server only on this device that StreamDek once had was removed elsewhere, and goes. One
-     *    StreamDek never had (signed in offline, or before sync existed) is sent up - unless a
-     *    removal of that server was recorded after this device signed in.
-     *  - Removals made here while StreamDek was away are sent first.
-     *
-     * If StreamDek does not answer, nothing changes: the device carries on with what it has.
-     */
-    private suspend fun syncJellyfinWithCloud(key: String, pushPending: Boolean = true) =
-        jellyfinSync.withLock { syncJellyfinWithCloudLocked(key, pushPending) }
-
-    private suspend fun syncJellyfinWithCloudLocked(key: String, pushPending: Boolean) {
-        pendingRemovals(key).forEach { serverId ->
-            if (cloudDelete<JellyfinCloudStatusDto>("/media-servers/jellyfin/servers/$serverId") != null) clearPendingRemoval(key, serverId)
-        }
-        val cloud = cloudGet<JellyfinCloudServersDto>("/media-servers/jellyfin/servers?view=device") ?: return
-        if (key != scopeKey()) return
-        jellyfinRevision = cloud.status?.revision ?: jellyfinRevision
-        val pendingRemoval = pendingRemovals(key)
-        val removedAt = cloud.removed.orEmpty().mapNotNull { entry -> entry.id?.let { it to parseInstant(entry.removedAt) } }.toMap()
-        cloudJellyfinRemovedAt.clear()
-        cloudJellyfinRemovedAt.putAll(removedAt)
-        cloudJellyfinChangedAt.clear()
-        cloud.servers.orEmpty().forEach { remote -> remote.id?.let { cloudJellyfinChangedAt[it] = parseInstant(remote.updatedAt) } }
-        // A server signed in to on another device no longer needs signing in to from a backup here.
-        cloud.servers.orEmpty().mapNotNull { it.id }.forEach { forgetRestoredJellyfin(key, it) }
-        val local = jellyfin.accounts().associateBy { it.serverId }
-        val next = mutableListOf<JellyfinAccount>()
-        val toSignIn = mutableListOf<String>()
-        val toChoose = mutableListOf<String>()
-        cloud.servers.orEmpty().forEach { remote ->
-            val id = remote.id ?: return@forEach
-            if (id in pendingRemoval) return@forEach
-            val mine = local[id]
-            // No token from StreamDek (its copy could not be read): keep this device's own rather
-            // than treating the server as gone.
-            val token = remote.accessToken?.takeIf { it.isNotBlank() } ?: mine?.token ?: return@forEach
-            val userId = remote.userId ?: return@forEach
-            val addresses = remote.addresses.orEmpty().filter { it.startsWith("http") }
-            if (addresses.isEmpty()) return@forEach
-            val remoteChangedAt = parseInstant(remote.updatedAt)
-            // A sign-in here that StreamDek has not heard of yet, newer than its copy: this device's wins.
-            if (mine != null && !mine.cloudSynced && !mine.fromBackup && mine.signedInAtMs > remoteChangedAt) {
-                next += mine.copy(addresses = (mine.addresses + addresses).distinct())
-                toSignIn += id
-                return@forEach
-            }
-            val keepMine = mine != null && mine.choicesChangedAtMs > remoteChangedAt
-            next += JellyfinAccount(
-                serverId = id,
-                name = remote.name ?: mine?.name ?: "Jellyfin",
-                addresses = (addresses + mine?.addresses.orEmpty()).distinct(),
-                userId = userId,
-                userName = remote.userName ?: mine?.userName,
-                token = token,
-                enabled = if (keepMine) mine!!.enabled else remote.enabled != false,
-                libraryChoices = if (keepMine) mine!!.libraryChoices else remote.libraries.orEmpty(),
-                cloudSynced = true,
-                signedInAtMs = mine?.signedInAtMs ?: 0L,
-                choicesChangedAtMs = if (keepMine) mine!!.choicesChangedAtMs else 0L,
-                fromBackup = false,
-            )
-            if (keepMine) toChoose += id
-            if (remote.state != "needs_sign_in") reportedRefused.remove(id)
-        }
-        local.values.filter { mine -> next.none { it.serverId == mine.serverId } }.forEach { mine ->
-            val removal = removedAt[mine.serverId]
-            when {
-                // StreamDek had it and does not now: removed on another device or the portal.
-                mine.cloudSynced -> Unit
-                removal != null && removal >= mine.signedInAtMs -> Unit
-                else -> {
-                    next += mine
-                    toSignIn += mine.serverId
-                }
-            }
-        }
-        val changed = next.toSet() != local.values.toSet()
-        if (changed) {
-            val leaving = local.values.filter { mine -> next.none { it.serverId == mine.serverId } }
-            leaving.forEach { mine -> mine.addresses.forEach(MediaServerAuth::forget); jellyfinPreferred.remove(mine.serverId) }
-            jellyfin.setAccounts(next)
-            persistJellyfin(key)
-            publishJellyfin()
-            bump()
-        }
-        if (pushPending) {
-            toSignIn.forEach { pushJellyfinSignInLocked(key, it) }
-            toChoose.forEach { pushJellyfinChoicesLocked(key, it) }
-        }
-    }
-
-    /** Tells StreamDek the libraries each server has, so the web portal can name them. Only changes. */
-    private suspend fun reportJellyfinCatalogs() {
-        jellyfin.accounts().filter { it.cloudSynced }.forEach { account ->
-            val libraries = jellyfin.cachedLibraries(account.serverId)
-            if (libraries.isEmpty()) return@forEach
-            val signature = libraries.catalogSignature()
-            if (reportedJellyfinCatalog[account.serverId] == signature) return@forEach
-            val body = mapOf("catalog" to libraries.map { it.toCatalogEntry() })
-            if (cloudPut<JellyfinCloudStatusDto>("/media-servers/jellyfin/servers/${account.serverId}", body) != null) {
-                reportedJellyfinCatalog[account.serverId] = signature
-            }
-        }
-    }
-
-    /** A server whose token this device found refused: every other device shows "sign in again" too. */
-    private fun reportRefusedJellyfin() {
-        jellyfin.accounts().filter { it.cloudSynced }.forEach { account ->
-            val refused = (jellyfin.reachability(account.serverId) as? MediaServerReachability.Offline)?.reason == OfflineReason.Unauthorized
-            if (refused && reportedRefused.add(account.serverId)) {
-                // With a fingerprint of the refused token, so the report cannot mark a newer sign-in.
-                val hint = tokenHint(account.token)
-                scope.launch { cloudPut<JellyfinCloudStatusDto>("/media-servers/jellyfin/servers/${account.serverId}", mapOf("refused" to true, "refusedTokenHint" to hint)) }
-            }
-        }
-    }
-
 
     // ── Backup and restore ──────────────────────────────────────────────────────────────────────
     //
@@ -1160,45 +686,7 @@ class MediaServerManager internal constructor(
     // restore goes into the profile in use, and is reconciled three ways: the backup, the profile's
     // copy at StreamDek, and this device.
 
-    /** When the profile's copy of each Jellyfin server last changed, and which were removed when; as last read. */
-    private val cloudJellyfinChangedAt = ConcurrentHashMap<String, Long>()
-    private val cloudJellyfinRemovedAt = ConcurrentHashMap<String, Long>()
-
-    private fun forgetProfileRestoreState() {
-        plexChangedAt = 0L
-        cloudJellyfinChangedAt.clear()
-        cloudJellyfinRemovedAt.clear()
-    }
-
-    /** Servers a backup brought back without a sign-in, waiting for the viewer to sign in again. */
-    private val _jellyfinRestored = MutableStateFlow<List<JellyfinBackupServer>>(emptyList())
-    val jellyfinRestored: StateFlow<List<JellyfinBackupServer>> = _jellyfinRestored.asStateFlow()
-
-    private fun restoredKey(key: String) = "jellyfinRestored:$key"
     private fun plexRestoredKey(key: String) = "plexRestored:$key"
-
-    private fun loadRestoredJellyfin(key: String) {
-        val raw = displayPrefs?.getString(restoredKey(key), null)
-        _jellyfinRestored.value = runCatching { parseMediaServerBackup(org.json.JSONObject(raw ?: "{}")).jellyfin }.getOrDefault(emptyList())
-    }
-
-    private fun saveRestoredJellyfin(key: String, servers: List<JellyfinBackupServer>) {
-        val prefs = displayPrefs ?: return
-        val json = buildMediaServerBackup(MediaServerBackupData(null, servers.map { it.copy(accessToken = null) }), includeTokens = false)
-        if (json == null) prefs.edit().remove(restoredKey(key)).apply() else prefs.edit().putString(restoredKey(key), json.toString()).apply()
-        if (key == scopeKey()) _jellyfinRestored.value = servers
-    }
-
-    private fun forgetRestoredJellyfin(key: String, serverId: String) {
-        if (_jellyfinRestored.value.none { it.id == serverId }) return
-        saveRestoredJellyfin(key, _jellyfinRestored.value.filterNot { it.id == serverId })
-    }
-
-    /** The viewer set aside a server from a backup rather than sign in to it again. */
-    fun dismissRestoredJellyfin(serverId: String) {
-        val key = scopeKey() ?: return
-        forgetRestoredJellyfin(key, serverId)
-    }
 
     /**
      * One profile's setup as a backup carries it, read from what this device holds for that profile.
@@ -1217,20 +705,10 @@ class MediaServerManager internal constructor(
                 },
             )
         }
-        val jellyfinServers = store.load(jellyfinVaultKey(scope))?.servers.orEmpty().mapNotNull { stored ->
-            val id = stored.id ?: return@mapNotNull null
-            JellyfinBackupServer(
-                id = id,
-                name = stored.name ?: "Jellyfin",
-                addresses = stored.connections.orEmpty().mapNotNull { it.uri },
-                userId = stored.userId,
-                userName = stored.userName,
-                enabled = stored.enabled != false,
-                libraries = stored.libraryChoices.orEmpty(),
-                accessToken = stored.accessToken,
-            )
-        }
-        return buildMediaServerBackup(MediaServerBackupData(plex, jellyfinServers), includeTokens)
+        return buildMediaServerBackup(
+            MediaServerBackupData(plex, jellyfinAccounts.backupServers(scope), embyAccounts.backupServers(scope)),
+            includeTokens,
+        )
     }
 
     /**
@@ -1251,66 +729,8 @@ class MediaServerManager internal constructor(
         val kept = mutableListOf<String>()
         val needsSignIn = mutableListOf<String>()
 
-        if (backup.jellyfin.isNotEmpty()) {
-            runCatching { syncJellyfinWithCloud(key, pushPending = false) }
-            val local = jellyfin.accounts().associateBy { it.serverId }.toMutableMap()
-            val waiting = _jellyfinRestored.value.associateBy { it.id }.toMutableMap()
-            backup.jellyfin.forEach { server ->
-                val label = "Jellyfin · ${server.name}"
-                val mine = local[server.id]
-                val decision = decideJellyfinRestore(
-                    backupCreatedAt = backupCreatedAt,
-                    present = mine != null,
-                    sameChoices = mine != null && mine.enabled == server.enabled && server.libraries.all { (library, on) -> mine.libraryChoices[library] == on },
-                    hasToken = !server.accessToken.isNullOrBlank() && !server.userId.isNullOrBlank(),
-                    profileChangedAt = cloudJellyfinChangedAt[server.id] ?: 0L,
-                    profileRemovedAt = cloudJellyfinRemovedAt[server.id] ?: 0L,
-                    localChangedAt = mine?.choicesChangedAtMs ?: 0L,
-                )
-                when (decision) {
-                    MediaServerRestoreDecision.Unchanged -> restored += label
-                    MediaServerRestoreDecision.KeepNewer, MediaServerRestoreDecision.RemovedSince -> kept += label
-                    MediaServerRestoreDecision.ApplyChoices -> {
-                        local[server.id] = mine!!.copy(
-                            enabled = server.enabled,
-                            libraryChoices = mine.libraryChoices + server.libraries,
-                            choicesChangedAtMs = backupCreatedAt,
-                        )
-                        restored += label
-                    }
-                    MediaServerRestoreDecision.AddWithSignIn -> {
-                        local[server.id] = JellyfinAccount(
-                            serverId = server.id,
-                            name = server.name,
-                            addresses = server.addresses,
-                            userId = server.userId!!,
-                            userName = server.userName,
-                            token = server.accessToken!!,
-                            enabled = server.enabled,
-                            libraryChoices = server.libraries,
-                            cloudSynced = false,
-                            signedInAtMs = backupCreatedAt,
-                            choicesChangedAtMs = backupCreatedAt,
-                            fromBackup = true,
-                        )
-                        restored += label
-                    }
-                    else -> {
-                        waiting[server.id] = server.copy(accessToken = null)
-                        needsSignIn += label
-                    }
-                }
-            }
-            jellyfin.setAccounts(local.values.toList())
-            persistJellyfin(key)
-            saveRestoredJellyfin(key, waiting.values.toList())
-            publishJellyfin()
-            bump()
-            // Sends what the backup brought back, under the rules above; a server that turns out to
-            // refuse its restored token shows as needing a sign-in like any other.
-            runCatching { syncJellyfinWithCloud(key) }
-            scope.launch { refreshJellyfin(force = true) }
-        }
+        jellyfinAccounts.restoreFromBackup(backup.jellyfin, backupCreatedAt, restored, kept, needsSignIn)
+        embyAccounts.restoreFromBackup(backup.emby, backupCreatedAt, restored, kept, needsSignIn)
 
         backup.plex?.takeIf { it.linked }?.let { plexBackup ->
             runCatching { refresh(force = false) }
@@ -1409,6 +829,11 @@ data class JellyfinServerCandidate(
     val localAddress: String?,
     val version: String?,
     val quickConnect: Boolean,
+    /**
+     * Set when the server that answered is the other member of the family - a Jellyfin server typed
+     * in as Emby, or the other way round - to the name of the page to add it on instead.
+     */
+    val sibling: String? = null,
 )
 
 /** A Quick Connect code on screen. [secret] is what claims the sign-in, so it is never printed. */
@@ -1553,7 +978,6 @@ internal data class MediaServerLinkPollDto(
 )
 
 private const val DISPLAY_PREFS = "streamdek_media_servers"
-private const val KEY_JELLYFIN_AMBIENT = "jellyfinAmbient"
 private const val KEY_REMOVED_ENTRIES = "removedEntries"
 private const val KEY_COLLAPSED_SERVERS = "collapsedServers"
 private const val KEY_SERVER_ORDER = "serverOrder"

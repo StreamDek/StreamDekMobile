@@ -31,6 +31,7 @@ internal fun cloudPreferencesPayload(preferences: CloudPlaybackPreferences): JSO
     .put("newEpisodesLandscape", preferences.newEpisodesLandscape)
     .put("plexContinueWatchingLocation", preferences.plexContinueWatchingLocation)
     .put("jellyfinContinueWatchingLocation", preferences.jellyfinContinueWatchingLocation)
+    .put("embyContinueWatchingLocation", preferences.embyContinueWatchingLocation)
     .put("homeCatalogRows", preferences.homeCatalogRowsJson?.let(::JSONArray))
     // Beside the rows they arrange, so one profile document carries the whole Home layout: the
     // rows, the order of the sources they came from, and which of the two the viewer reads.
@@ -323,6 +324,7 @@ internal fun parseCloudSettings(accountPreferences: JSONObject, profilePreferenc
     newEpisodesLandscape = optionalBoolean(home, "newEpisodesLandscape"),
     plexContinueWatchingLocation = optionalString(home, "plexContinueWatchingLocation"),
     jellyfinContinueWatchingLocation = optionalString(home, "jellyfinContinueWatchingLocation"),
+    embyContinueWatchingLocation = optionalString(home, "embyContinueWatchingLocation"),
     // Read from this device type's own section only. Unlike the trailer settings there is no
     // shared value to fall back to: these were never anywhere but the phone.
     animationSpeed = optionalString(platform, "animationSpeed"),

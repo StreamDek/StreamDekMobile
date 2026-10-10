@@ -13,7 +13,8 @@ import org.json.JSONObject
  *   "plex":     { "linked": true, "accountName": "Henry",
  *                 "servers": [ { "id", "name", "enabled", "libraries": { key: on } } ] },
  *   "jellyfin": { "servers": [ { "id", "name", "addresses", "userId", "userName",
- *                                "enabled", "libraries", "accessToken"? } ] }
+ *                                "enabled", "libraries", "accessToken"? } ] },
+ *   "emby":     { "servers": [ ...the same shape as Jellyfin's... ] }
  * }
  * ```
  *
@@ -61,9 +62,11 @@ data class JellyfinBackupServer(
 data class MediaServerBackupData(
     val plex: PlexBackupState?,
     val jellyfin: List<JellyfinBackupServer>,
+    /** Emby's servers, in Jellyfin's shape: the two are one family; see MediaBrowserFlavor. */
+    val emby: List<JellyfinBackupServer> = emptyList(),
 ) {
-    val isEmpty: Boolean get() = (plex == null || !plex.linked) && jellyfin.isEmpty()
-    val tokenCount: Int get() = jellyfin.count { !it.accessToken.isNullOrBlank() }
+    val isEmpty: Boolean get() = (plex == null || !plex.linked) && jellyfin.isEmpty() && emby.isEmpty()
+    val tokenCount: Int get() = (jellyfin + emby).count { !it.accessToken.isNullOrBlank() }
 }
 
 private fun booleanMap(json: JSONObject?): Map<String, Boolean> = buildMap {
@@ -89,26 +92,48 @@ fun buildMediaServerBackup(data: MediaServerBackupData, includeTokens: Boolean):
                 }),
         )
     }
-    if (data.jellyfin.isNotEmpty()) {
-        root.put(
-            "jellyfin",
-            JSONObject().put("servers", JSONArray().apply {
-                data.jellyfin.forEach { server ->
-                    val item = JSONObject()
-                        .put("id", server.id)
-                        .put("name", server.name)
-                        .put("addresses", JSONArray(server.addresses))
-                        .put("userId", server.userId ?: JSONObject.NULL)
-                        .put("userName", server.userName ?: JSONObject.NULL)
-                        .put("enabled", server.enabled)
-                        .put("libraries", JSONObject(server.libraries))
-                    if (includeTokens && !server.accessToken.isNullOrBlank()) item.put("accessToken", server.accessToken)
-                    put(item)
-                }
-            }),
+    if (data.jellyfin.isNotEmpty()) root.put("jellyfin", mediaBrowserSection(data.jellyfin, includeTokens))
+    if (data.emby.isNotEmpty()) root.put("emby", mediaBrowserSection(data.emby, includeTokens))
+    return root
+}
+
+/** Jellyfin's or Emby's servers as a backup section. Tokens only when [includeTokens]. */
+private fun mediaBrowserSection(servers: List<JellyfinBackupServer>, includeTokens: Boolean): JSONObject =
+    JSONObject().put("servers", JSONArray().apply {
+        servers.forEach { server ->
+            val item = JSONObject()
+                .put("id", server.id)
+                .put("name", server.name)
+                .put("addresses", JSONArray(server.addresses))
+                .put("userId", server.userId ?: JSONObject.NULL)
+                .put("userName", server.userName ?: JSONObject.NULL)
+                .put("enabled", server.enabled)
+                .put("libraries", JSONObject(server.libraries))
+            if (includeTokens && !server.accessToken.isNullOrBlank()) item.put("accessToken", server.accessToken)
+            put(item)
+        }
+    })
+
+/** A Jellyfin or Emby section read back; a damaged server is left out. */
+private fun parseMediaBrowserSection(section: JSONObject?, defaultName: String): List<JellyfinBackupServer> {
+    val servers = section?.optJSONArray("servers")
+    return (0 until (servers?.length() ?: 0)).mapNotNull { index ->
+        val item = servers?.optJSONObject(index) ?: return@mapNotNull null
+        val id = item.text("id") ?: return@mapNotNull null
+        val addressArray = item.optJSONArray("addresses")
+        val addresses = (0 until (addressArray?.length() ?: 0)).mapNotNull { addressArray?.optString(it)?.takeIf { url -> url.startsWith("http://") || url.startsWith("https://") } }
+        if (addresses.isEmpty()) return@mapNotNull null
+        JellyfinBackupServer(
+            id = id,
+            name = item.text("name") ?: defaultName,
+            addresses = addresses.distinct(),
+            userId = item.text("userId"),
+            userName = item.text("userName"),
+            enabled = item.optBoolean("enabled", true),
+            libraries = booleanMap(item.optJSONObject("libraries")),
+            accessToken = item.text("accessToken"),
         )
     }
-    return root
 }
 
 /** Reads a backup section back; a damaged or missing part is simply absent. */
@@ -126,29 +151,14 @@ fun parseMediaServerBackup(json: JSONObject?): MediaServerBackupData {
             },
         )
     }
-    val servers = json.optJSONObject("jellyfin")?.optJSONArray("servers")
-    val jellyfin = (0 until (servers?.length() ?: 0)).mapNotNull { index ->
-        val item = servers?.optJSONObject(index) ?: return@mapNotNull null
-        val id = item.text("id") ?: return@mapNotNull null
-        val addressArray = item.optJSONArray("addresses")
-        val addresses = (0 until (addressArray?.length() ?: 0)).mapNotNull { addressArray?.optString(it)?.takeIf { url -> url.startsWith("http://") || url.startsWith("https://") } }
-        if (addresses.isEmpty()) return@mapNotNull null
-        JellyfinBackupServer(
-            id = id,
-            name = item.text("name") ?: "Jellyfin",
-            addresses = addresses.distinct(),
-            userId = item.text("userId"),
-            userName = item.text("userName"),
-            enabled = item.optBoolean("enabled", true),
-            libraries = booleanMap(item.optJSONObject("libraries")),
-            accessToken = item.text("accessToken"),
-        )
-    }
-    return MediaServerBackupData(plex, jellyfin)
+    val jellyfin = parseMediaBrowserSection(json.optJSONObject("jellyfin"), "Jellyfin")
+    val emby = parseMediaBrowserSection(json.optJSONObject("emby"), "Emby")
+    return MediaServerBackupData(plex, jellyfin, emby)
 }
 
 /** Leaves the tokens out, for a restore made without credentials. */
-fun MediaServerBackupData.withoutTokens(): MediaServerBackupData = copy(jellyfin = jellyfin.map { it.copy(accessToken = null) })
+fun MediaServerBackupData.withoutTokens(): MediaServerBackupData =
+    copy(jellyfin = jellyfin.map { it.copy(accessToken = null) }, emby = emby.map { it.copy(accessToken = null) })
 
 // ── Reconciling ─────────────────────────────────────────────────────────────────────────────────
 

@@ -15,6 +15,8 @@ import java.time.Instant
 import java.util.Locale
 
 internal data class JellyfinMappingContext(
+  /** "jellyfin" or "emby": which provider a title's id routes back to. */
+  val provider: String = JELLYFIN_PROVIDER_ID,
   val serverId: String,
   val baseUrl: String,
   /** "Jellyfin", or "Jellyfin · Home Server" when the profile uses more than one server. */
@@ -52,7 +54,7 @@ internal object JellyfinMapping {
   private const val TICKS_PER_MS = 10_000L
 
   fun reference(context: JellyfinMappingContext, itemId: String): MediaServerReference =
-    MediaServerReference(JELLYFIN_PROVIDER_ID, context.serverId, itemId)
+    MediaServerReference(context.provider, context.serverId, itemId)
 
   fun ms(ticks: Long?): Long? = ticks?.takeIf { it > 0 }?.div(TICKS_PER_MS)
 
@@ -120,7 +122,7 @@ internal object JellyfinMapping {
       progress = if (episodic) null else percent(ms(item.userData?.playbackPositionTicks), ms(item.runTimeTicks)),
       genres = item.genres.orEmpty().mapNotNull { it.trim().takeIf(String::isNotEmpty) },
       addedAt = instantMs(item.dateCreated).takeIf { it > 0 },
-      sourceAddonId = MediaServerReference.sourceIdOf(JELLYFIN_PROVIDER_ID, context.serverId),
+      sourceAddonId = MediaServerReference.sourceIdOf(context.provider, context.serverId),
       sourceAddonName = context.attribution,
       sourceMediaType = type,
       sourceCatalogId = libraryKey,
@@ -220,7 +222,7 @@ internal object JellyfinMapping {
             description = item.overview.orEmpty(),
             progress = percent(positionMs, durationMs),
             updatedAt = lastViewed.takeIf { it > 0 },
-            sourceAddonId = MediaServerReference.sourceIdOf(JELLYFIN_PROVIDER_ID, context.serverId),
+            sourceAddonId = MediaServerReference.sourceIdOf(context.provider, context.serverId),
             sourceAddonName = context.attribution,
             resumeSeasonNumber = season,
             resumeEpisodeNumber = number,
@@ -248,7 +250,7 @@ internal object JellyfinMapping {
             description = item.overview.orEmpty(),
             progress = percent(positionMs, durationMs),
             updatedAt = lastViewed.takeIf { it > 0 },
-            sourceAddonId = MediaServerReference.sourceIdOf(JELLYFIN_PROVIDER_ID, context.serverId),
+            sourceAddonId = MediaServerReference.sourceIdOf(context.provider, context.serverId),
             sourceAddonName = context.attribution,
           ),
           lastViewedAtMs = lastViewed,

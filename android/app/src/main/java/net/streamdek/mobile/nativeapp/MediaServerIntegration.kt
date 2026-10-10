@@ -173,16 +173,33 @@ internal fun unifiedLibrary(continueWatching: List<MediaItem>, watchlist: List<M
 }
 
 /**
+ * Which of a server's sources, just asked for, stands in for one remembered from an earlier
+ * viewing: the same server's same copy played the same way, then the same copy any way, then
+ * anything that server offers, then any server's. Null only when nothing was offered at all.
+ */
+internal fun freshMediaServerStream(remembered: AddonStream, fresh: List<AddonStream>): AddonStream? {
+  val sameServer = fresh.filter { it.addonId == remembered.addonId }
+  return sameServer.firstOrNull { it.source == remembered.source && it.title == remembered.title }
+    ?: sameServer.firstOrNull { it.source == remembered.source && it.filename == remembered.filename }
+    ?: sameServer.firstOrNull { remembered.filename != null && it.filename == remembered.filename }
+    ?: sameServer.firstOrNull()
+    ?: fresh.firstOrNull()
+}
+
+/**
  * A stream's request headers with anything a media server gave it removed, for every place a stream
  * is written down: remembered sources, backups, and hand-offs to another device. A server token is
  * sent to that server by [net.streamdek.mobile.nativeapp.mediaserver.MediaServerAuth] at request
  * time; it is never part of what is stored or sent on.
  */
 internal fun withoutMediaServerHeaders(headers: Map<String, String>): Map<String, String> {
-  // Plex's token headers, and Jellyfin's `Authorization: MediaBrowser ... Token=...`.
+  // Plex's token headers, Jellyfin's `Authorization: MediaBrowser ... Token=...`, and Emby's
+  // `X-Emby-Token` with its `Authorization: Emby ...`.
   fun isServerHeader(name: String, value: String) =
     name.startsWith("X-Plex-", ignoreCase = true) ||
-      (name.equals("Authorization", ignoreCase = true) && value.startsWith("MediaBrowser", ignoreCase = true))
+      name.startsWith("X-Emby-", ignoreCase = true) ||
+      (name.equals("Authorization", ignoreCase = true) &&
+        (value.startsWith("MediaBrowser", ignoreCase = true) || value.startsWith("Emby ", ignoreCase = true)))
   return if (headers.none { (name, value) -> isServerHeader(name, value) }) headers
   else headers.filterNot { (name, value) -> isServerHeader(name, value) }
 }

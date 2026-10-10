@@ -83,6 +83,7 @@ import androidx.compose.ui.zIndex
 import dev.chrisbanes.haze.rememberHazeState
 import net.streamdek.mobile.R
 import kotlinx.coroutines.launch
+import net.streamdek.mobile.nativeapp.mediaserver.EMBY_PROVIDER_ID
 import net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerReachability
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerReference
@@ -201,6 +202,14 @@ private val JellyfinAmbientRed = Color(0xFFEF4444)
 private val JellyfinAmbientEmber = Color(0xFFEA580C)
 private val JellyfinAmbientCrimson = Color(0xFFB91C1C)
 
+/** Each server page's scroll position, kept as provider, first visible item and offset. */
+private val MediaServerListStatesSaver = androidx.compose.runtime.saveable.listSaver<MutableMap<String, LazyListState>, Any>(
+  save = { states -> states.flatMap { (provider, state) -> listOf(provider, state.firstVisibleItemIndex, state.firstVisibleItemScrollOffset) } },
+  restore = { saved ->
+    saved.chunked(3).associateTo(mutableMapOf()) { entry -> entry[0] as String to LazyListState(entry[1] as Int, entry[2] as Int) }
+  },
+)
+
 /**
  * The media page: the viewer's own libraries, in StreamDek's look.
  *
@@ -225,6 +234,8 @@ internal fun PlexTab(
   headerStyle: HeaderStyle,
   plexAmbient: Boolean,
   jellyfinAmbient: Boolean,
+  embyState: MediaServerUiState = MediaServerUiState(provider = EMBY_PROVIDER_ID),
+  embyAmbient: Boolean = true,
   onLoad: (Boolean) -> Unit,
   onProviderShown: (String) -> Unit,
   onOpen: (MediaItem) -> Unit,
@@ -238,13 +249,33 @@ internal fun PlexTab(
   onRemoveFromContinueWatching: (MediaItem) -> Unit,
   onOpenSettings: (String) -> Unit,
 ) {
-  val providers = remember(plexState.navigationVisible, jellyfinState.navigationVisible) {
+  fun stateOf(provider: String) = when (provider) {
+    JELLYFIN_PROVIDER_ID -> jellyfinState
+    EMBY_PROVIDER_ID -> embyState
+    else -> plexState
+  }
+  fun ambientOf(provider: String) = when (provider) {
+    JELLYFIN_PROVIDER_ID -> jellyfinAmbient
+    EMBY_PROVIDER_ID -> embyAmbient
+    else -> plexAmbient
+  }
+  val providers = remember(plexState.navigationVisible, jellyfinState.navigationVisible, embyState.navigationVisible, jellyfinState.linked, embyState.linked, plexState.linked) {
     buildList {
       if (plexState.navigationVisible) add(PLEX_PROVIDER_ID)
       if (jellyfinState.navigationVisible) add(JELLYFIN_PROVIDER_ID)
-    }.ifEmpty { listOf(if (jellyfinState.linked && !plexState.linked) JELLYFIN_PROVIDER_ID else PLEX_PROVIDER_ID) }
+      if (embyState.navigationVisible) add(EMBY_PROVIDER_ID)
+    }.ifEmpty {
+      listOf(
+        when {
+          plexState.linked -> PLEX_PROVIDER_ID
+          jellyfinState.linked -> JELLYFIN_PROVIDER_ID
+          embyState.linked -> EMBY_PROVIDER_ID
+          else -> PLEX_PROVIDER_ID
+        },
+      )
+    }
   }
-  val linked = plexState.linked || jellyfinState.linked
+  val linked = plexState.linked || jellyfinState.linked || embyState.linked
   LaunchedEffect(linked) { if (linked) onLoad(false) }
   val pagerState = androidx.compose.foundation.pager.rememberPagerState(
     initialPage = providers.indexOf(initialProvider).coerceAtLeast(0),
@@ -252,15 +283,16 @@ internal fun PlexTab(
   )
   val current = providers.getOrElse(pagerState.currentPage) { providers.first() }
   LaunchedEffect(current) { onProviderShown(current) }
-  val listStates = remember { mutableMapOf<String, LazyListState>() }
+  // Saved with the tab, so coming back from a title, another tab or View All lands where the viewer was.
+  val listStates = rememberSaveable(saver = MediaServerListStatesSaver) { mutableMapOf<String, LazyListState>() }
   fun listStateOf(provider: String) = listStates.getOrPut(provider) { LazyListState() }
   val currentList = listStateOf(current)
   ReportScrollTop { currentList.firstVisibleItemIndex == 0 && currentList.firstVisibleItemScrollOffset == 0 }
-  val loading = pageLoading || plexState.refreshing || jellyfinState.refreshing
+  val loading = pageLoading || plexState.refreshing || jellyfinState.refreshing || embyState.refreshing
   val density = LocalDensity.current
   var headerHeight by remember { mutableStateOf(120.dp) }
   val scope = androidx.compose.runtime.rememberCoroutineScope()
-  val currentState = if (current == JELLYFIN_PROVIDER_ID) jellyfinState else plexState
+  val currentState = stateOf(current)
 
   Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
     // The glass samples everything in here, each page's colour wash included.
@@ -274,12 +306,12 @@ internal fun PlexTab(
         val provider = providers[page]
         MediaServerProviderPage(
           provider = provider,
-          state = if (provider == JELLYFIN_PROVIDER_ID) jellyfinState else plexState,
+          state = stateOf(provider),
           listState = listStateOf(provider),
           serverContinueWatching = serverContinueWatching,
           pageRows = pageRows,
           loading = loading,
-          ambient = if (provider == JELLYFIN_PROVIDER_ID) jellyfinAmbient else plexAmbient,
+          ambient = ambientOf(provider),
           headerBottom = headerHeight,
           continueWatchingStyle = continueWatchingStyle,
           homeCardTextMode = homeCardTextMode,
@@ -313,14 +345,14 @@ internal fun PlexTab(
           horizontalArrangement = Arrangement.spacedBy(12.dp),
           verticalAlignment = Alignment.CenterVertically,
         ) {
-          if (current == JELLYFIN_PROVIDER_ID) {
-            Image(painterResource(R.drawable.jellyfin_logo), contentDescription = null, modifier = Modifier.size(34.dp))
-          } else {
+          if (current == PLEX_PROVIDER_ID) {
             Image(painterResource(R.drawable.plex_logo), contentDescription = null, modifier = Modifier.size(36.dp).clip(CircleShape))
+          } else {
+            MediaServerLogo(current, 34.dp)
           }
           Column(Modifier.weight(1f)) {
             Text(
-              stringResource(if (current == JELLYFIN_PROVIDER_ID) R.string.media_server_jellyfin else R.string.media_server_plex),
+              stringResource(mediaServerBrand(current).name),
               style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground, maxLines = 1,
             )
             val enabledServers = currentState.servers.filter { it.enabled }
@@ -351,13 +383,13 @@ internal fun PlexTab(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
               ) {
                 Icon(
-                  if (provider == JELLYFIN_PROVIDER_ID) JellyfinIcons.Mark else PlexIcons.Chevron,
+                  mediaServerBrand(provider).mark,
                   contentDescription = null,
                   tint = if (selected) accentOf(provider) else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
                   modifier = Modifier.size(16.dp),
                 )
                 Text(
-                  stringResource(if (provider == JELLYFIN_PROVIDER_ID) R.string.media_server_jellyfin else R.string.media_server_plex),
+                  stringResource(mediaServerBrand(provider).name),
                   style = MaterialTheme.typography.labelLarge,
                   fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                   color = MaterialTheme.colorScheme.onBackground.copy(alpha = if (selected) 1f else 0.7f),
@@ -371,7 +403,6 @@ internal fun PlexTab(
   }
 }
 
-private val JellyfinAccent = Color(0xFFAA5CC3)
 
 /** Fades the top [fade] of what is drawn to nothing, so content leaving the list's top edge melts away. */
 private fun Modifier.fadeTopEdge(fade: androidx.compose.ui.unit.Dp): Modifier =
@@ -386,7 +417,7 @@ private fun Modifier.fadeTopEdge(fade: androidx.compose.ui.unit.Dp): Modifier =
       )
     }
 
-private fun accentOf(provider: String): Color = if (provider == JELLYFIN_PROVIDER_ID) JellyfinAccent else PlexGold
+private fun accentOf(provider: String): Color = mediaServerBrand(provider).accent
 
 /** One server's page inside the media page. */
 @Composable
@@ -414,7 +445,7 @@ private fun MediaServerProviderPage(
   onOpenSettings: () -> Unit,
   onRetry: () -> Unit,
 ) {
-  val jellyfin = provider == JELLYFIN_PROVIDER_ID
+  val brand = mediaServerBrand(provider)
   val continueItems = remember(serverContinueWatching, provider) {
     serverContinueWatching
       .filter { MediaServerReference.providerOfSource(it.item.sourceAddonId) == provider }
@@ -450,7 +481,7 @@ private fun MediaServerProviderPage(
   }
   Box(modifier = Modifier.fillMaxSize()) {
     // The pages sit side by side and nothing clips them, so each page's light is kept on its own page.
-    if (ambient) Box(Modifier.fillMaxSize().clipToBounds().then(if (jellyfin) Modifier.jellyfinAmbientGlow() else Modifier.plexAmbientGlow()))
+    if (ambient) Box(Modifier.fillMaxSize().clipToBounds().mediaServerAmbientGlow(provider))
     LazyColumn(
       state = listState,
       modifier = Modifier.fillMaxSize().padding(top = headerBottom).fadeTopEdge(18.dp),
@@ -471,8 +502,7 @@ private fun MediaServerProviderPage(
               stringResource(
                 when {
                   !refused -> R.string.plex_page_server_offline
-                  jellyfin -> R.string.jellyfin_page_server_refused
-                  else -> R.string.plex_page_server_refused
+                  else -> brand.pageServerRefused
                 },
                 server.name,
               ),
@@ -537,13 +567,13 @@ private fun MediaServerProviderPage(
             loading -> Box(Modifier.fillMaxWidth().padding(top = 48.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = accentOf(provider)) }
             offline.isNotEmpty() && offline.size == enabledServers.size -> LibraryEmptyState(
               icon = { Icon(Icons.Rounded.CloudOff, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), modifier = Modifier.size(54.dp)) },
-              title = stringResource(if (jellyfin) R.string.jellyfin_page_offline_title else R.string.plex_page_offline_title),
+              title = stringResource(brand.pageOfflineTitle),
               subtitle = stringResource(R.string.plex_page_offline_note),
             )
             else -> LibraryEmptyState(
-              icon = { Icon(if (jellyfin) JellyfinIcons.Mark else PlexIcons.Chevron, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), modifier = Modifier.size(54.dp)) },
+              icon = { Icon(brand.mark, null, tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), modifier = Modifier.size(54.dp)) },
               title = stringResource(R.string.plex_page_empty_title),
-              subtitle = stringResource(if (jellyfin) R.string.jellyfin_page_empty_note else R.string.plex_page_empty_note) + (problem?.let { "\n\n$it" } ?: ""),
+              subtitle = stringResource(brand.pageEmptyNote) + (problem?.let { "\n\n$it" } ?: ""),
             )
           }
         }
@@ -577,7 +607,7 @@ private fun serverRowKey(row: MediaServerRow, index: Int): String = "media-row-$
 @Composable
 private fun MediaServerSectionHeading(name: String, provider: String, rowCount: Int, modifier: Modifier = Modifier) {
   val accent = accentOf(provider)
-  val jellyfin = provider == JELLYFIN_PROVIDER_ID
+  val brand = mediaServerBrand(provider)
   val shape = RoundedCornerShape(18.dp)
   Row(
     modifier = modifier
@@ -594,11 +624,11 @@ private fun MediaServerSectionHeading(name: String, provider: String, rowCount: 
       modifier = Modifier.size(42.dp).clip(CircleShape).background(accent.copy(alpha = 0.24f)),
       contentAlignment = Alignment.Center,
     ) {
-      Icon(if (jellyfin) JellyfinIcons.Mark else PlexIcons.Chevron, contentDescription = null, tint = accent, modifier = Modifier.size(22.dp))
+      Icon(brand.mark, contentDescription = null, tint = accent, modifier = Modifier.size(22.dp))
     }
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
       Text(
-        stringResource(if (jellyfin) R.string.media_server_section_jellyfin else R.string.media_server_section_plex).uppercase(),
+        stringResource(brand.sectionLabel).uppercase(),
         style = MaterialTheme.typography.labelSmall,
         fontWeight = FontWeight.Bold,
         letterSpacing = 1.2.sp,
@@ -631,7 +661,7 @@ private fun MediaServerSectionHeading(name: String, provider: String, rowCount: 
 @Composable
 private fun PinnedServerBar(name: String, provider: String) {
   val accent = accentOf(provider)
-  val jellyfin = provider == JELLYFIN_PROVIDER_ID
+  val brand = mediaServerBrand(provider)
   val shape = RoundedCornerShape(50)
   Row(
     modifier = Modifier
@@ -644,9 +674,9 @@ private fun PinnedServerBar(name: String, provider: String) {
     horizontalArrangement = Arrangement.spacedBy(8.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
-    Icon(if (jellyfin) JellyfinIcons.Mark else PlexIcons.Chevron, contentDescription = null, tint = accent, modifier = Modifier.size(16.dp))
+    Icon(brand.mark, contentDescription = null, tint = accent, modifier = Modifier.size(16.dp))
     Text(
-      stringResource(if (jellyfin) R.string.media_server_section_jellyfin else R.string.media_server_section_plex),
+      stringResource(brand.sectionLabel),
       style = MaterialTheme.typography.labelMedium,
       color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.65f),
       maxLines = 1,
@@ -852,12 +882,8 @@ private const val DockedTitleScale = 0.82f
 /** The server's mark in one of its lists' search field, before the search icon, so the list reads as that server's. */
 @Composable
 internal fun PlexSearchBadge(provider: String = PLEX_PROVIDER_ID) {
-  if (provider == JELLYFIN_PROVIDER_ID) {
-    Image(
-      painterResource(R.drawable.jellyfin_logo),
-      contentDescription = stringResource(R.string.jellyfin_search_badge),
-      modifier = Modifier.size(20.dp),
-    )
+  if (provider != PLEX_PROVIDER_ID) {
+    MediaServerLogo(provider, 20.dp, contentDescription = stringResource(mediaServerBrand(provider).searchBadge))
   } else {
     Image(
       painterResource(R.drawable.plex_logo),

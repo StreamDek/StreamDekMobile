@@ -42,6 +42,49 @@ internal data class JellyfinAuthResult(
     override fun toString(): String = "JellyfinAuthResult(user=${user?.id}, serverId=$serverId, token=[redacted])"
 }
 
+/** Emby Connect's account user, as its sign-in names it. */
+internal data class EmbyConnectUser(
+    @SerializedName(value = "Id") val id: String? = null,
+    @SerializedName(value = "Name") val name: String? = null,
+    @SerializedName(value = "DisplayName") val displayName: String? = null,
+)
+
+/**
+ * An Emby Connect sign-in. Emby's documentation names the values ConnectAccessToken and
+ * ConnectUserId; the service answers with AccessToken and User.Id. Both are read.
+ */
+internal data class EmbyConnectSession(
+    @SerializedName(value = "AccessToken") val accessToken: String? = null,
+    @SerializedName(value = "ConnectAccessToken") val connectAccessToken: String? = null,
+    @SerializedName(value = "ConnectUserId") val connectUserId: String? = null,
+    @SerializedName(value = "User") val user: EmbyConnectUser? = null,
+) {
+    val token: String? get() = accessToken ?: connectAccessToken
+    val userId: String? get() = connectUserId ?: user?.id
+    val displayName: String? get() = user?.displayName ?: user?.name
+
+    override fun toString(): String = "EmbyConnectSession(user=$userId, token=[redacted])"
+}
+
+/** One server an Emby Connect account is linked to. */
+internal data class EmbyConnectServer(
+    @SerializedName(value = "SystemId") val systemId: String? = null,
+    @SerializedName(value = "Name") val name: String? = null,
+    @SerializedName(value = "Url") val url: String? = null,
+    @SerializedName(value = "LocalAddress") val localAddress: String? = null,
+    @SerializedName(value = "AccessKey") val accessKey: String? = null,
+) {
+    override fun toString(): String = "EmbyConnectServer(systemId=$systemId, name=$name, accessKey=[redacted])"
+}
+
+/** A server's local sign-in, traded for an Emby Connect access key. */
+internal data class EmbyConnectExchange(
+    @SerializedName(value = "LocalUserId") val localUserId: String? = null,
+    @SerializedName(value = "AccessToken") val accessToken: String? = null,
+) {
+    override fun toString(): String = "EmbyConnectExchange(user=$localUserId, token=[redacted])"
+}
+
 internal data class JellyfinQuickConnect(
     @SerializedName("Authenticated") val authenticated: Boolean? = null,
     @SerializedName("Secret") val secret: String? = null,

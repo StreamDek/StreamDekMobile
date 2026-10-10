@@ -450,8 +450,7 @@ internal fun BrowseSectionScreen(row: HomeRow, loadedItems: List<MediaItem>, ret
         .then(
           when {
             !plexAmbient || !isMediaServerBrowseRowId(row.id) -> Modifier
-            browseProvider == net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID -> Modifier.jellyfinAmbientGlow()
-            else -> Modifier.plexAmbientGlow()
+            else -> Modifier.mediaServerAmbientGlow(browseProvider)
           },
         ),
       contentPadding = run {

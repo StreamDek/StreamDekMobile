@@ -1,5 +1,6 @@
 package net.streamdek.mobile.nativeapp
 
+import net.streamdek.mobile.nativeapp.mediaserver.EMBY_PROVIDER_ID
 import net.streamdek.mobile.nativeapp.mediaserver.JELLYFIN_PROVIDER_ID
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerReference
 import net.streamdek.mobile.nativeapp.mediaserver.MediaServerResume
@@ -13,7 +14,8 @@ import net.streamdek.mobile.nativeapp.mediaserver.PLEX_PROVIDER_ID
  * between them never deletes a position: the server keeps every one, and they reappear wherever the
  * viewer next says to show them.
  *
- * Synced as `plexContinueWatchingLocation` / `jellyfinContinueWatchingLocation` under `home`, the
+ * Synced as `plexContinueWatchingLocation` / `jellyfinContinueWatchingLocation` /
+ * `embyContinueWatchingLocation` under `home`, the
  * same keys the television and the web portal read.
  */
 enum class MediaServerContinueLocation(val key: String) {
@@ -37,10 +39,12 @@ enum class MediaServerContinueLocation(val key: String) {
 data class MediaServerContinueLocations(
   val plex: MediaServerContinueLocation = MediaServerContinueLocation.StreamDek,
   val jellyfin: MediaServerContinueLocation = MediaServerContinueLocation.StreamDek,
+  val emby: MediaServerContinueLocation = MediaServerContinueLocation.StreamDek,
 ) {
   fun of(provider: String?): MediaServerContinueLocation = when (provider) {
     PLEX_PROVIDER_ID -> plex
     JELLYFIN_PROVIDER_ID -> jellyfin
+    EMBY_PROVIDER_ID -> emby
     else -> MediaServerContinueLocation.StreamDek
   }
 }
